@@ -235,14 +235,24 @@ impl CertifiedJoinIdentity {
 #[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let client: CollabServiceClient = runtime_portal::connect_service("collab")?.bootstrap();
-    Ok(CollabClient::from_raw(client))
+    let client = CollabClient::from_raw(client);
+    #[cfg(unix)]
+    let client = client.with_descriptors(runtime_portal::service_descriptors("collab")?);
+    Ok(client)
 }
+
+/// Where a connection's calls hand the broker descriptors, if it can.
+#[cfg(all(feature = "client", unix))]
+type Descriptors = Option<runtime_portal::descriptor_lane::DescriptorSender>;
+#[cfg(all(feature = "client", not(unix)))]
+type Descriptors = Option<std::convert::Infallible>;
 
 /// Idiomatic Rust wrapper over the generated [`CollabServiceClient`].
 #[derive(Clone)]
 #[cfg(feature = "client")]
 pub struct CollabClient {
     inner: Rc<CollabServiceClient>,
+    descriptors: Descriptors,
 }
 
 #[cfg(feature = "client")]
@@ -252,7 +262,21 @@ impl CollabClient {
     pub fn from_raw(client: CollabServiceClient) -> Self {
         Self {
             inner: Rc::new(client),
+            descriptors: None,
         }
+    }
+
+    /// Hand the broker descriptors over `lane`, the descriptor lane of the
+    /// very connection `self` calls over; see
+    /// [`ChannelHandle::local_file_clipboard_command`].
+    #[cfg(unix)]
+    #[must_use]
+    pub fn with_descriptors(
+        mut self,
+        lane: runtime_portal::descriptor_lane::DescriptorSender,
+    ) -> Self {
+        self.descriptors = Some(lane);
+        self
     }
 
     /// Join (or implicitly create) a channel by id, presenting the
@@ -320,6 +344,7 @@ impl CollabClient {
         let handle = reply.get()?.get_handle()?;
         Ok(ChannelHandle {
             inner: Rc::new(handle),
+            descriptors: self.descriptors.clone(),
         })
     }
 }
@@ -354,6 +379,7 @@ pub struct TaskChildWait {
 #[cfg(feature = "client")]
 pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
+    descriptors: Descriptors,
 }
 
 mod speakers;
@@ -989,11 +1015,17 @@ impl ChannelHandle {
         )
     }
 
-    /// Run a bounded local Files command under its original invocation, if any.
-    /// Submit a local Files command on this admitted channel.
+    /// Submit a bounded local Files command on this admitted channel, under
+    /// its original invocation, if any.
+    ///
+    /// Each selected descriptor names a descriptor open in this process, which
+    /// must stay open until this returns. A duplicate of it is handed to the
+    /// broker on this connection's descriptor lane, and the command sent
+    /// names it by its lane number instead.
     ///
     /// # Errors
-    /// Rejects oversized, malformed or unavailable commands and replies.
+    /// Rejects oversized, malformed or unavailable commands and replies, and
+    /// selected descriptors on a connection without a descriptor lane.
     pub async fn local_file_clipboard_command(
         &self,
         command: &file_clipboard::Command,
@@ -1003,10 +1035,19 @@ impl ChannelHandle {
         if !command.valid() {
             return Err(failed("invalid local clipboard command".into()));
         }
-        let bytes = serde_json::to_vec(command).map_err(|error| failed(error.to_string()))?;
-        if bytes.len() > file_clipboard::MAX_WIRE_BYTES {
+        // Measure with the widest lane number, so the bound holds whatever
+        // numbers the descriptors receive.
+        let mut widest = command.clone();
+        for selected in widest.selected_mut() {
+            selected.descriptor = file_clipboard::MAX_DESCRIPTOR;
+        }
+        let widest = serde_json::to_vec(&widest).map_err(|error| failed(error.to_string()))?;
+        if widest.len() > file_clipboard::MAX_WIRE_BYTES {
             return Err(failed("clipboard command exceeds bound".into()));
         }
+        let mut command = command.clone();
+        self.hand_over_selected(&mut command).map_err(failed)?;
+        let bytes = serde_json::to_vec(&command).map_err(|error| failed(error.to_string()))?;
         let mut request = self.inner.local_file_clipboard_request();
         request.get().set_command_json(&bytes);
         request
@@ -1018,6 +1059,46 @@ impl ChannelHandle {
             return Err(failed("clipboard reply exceeds bound".into()));
         }
         serde_json::from_slice(bytes).map_err(|error| failed(error.to_string()))
+    }
+
+    /// Hand each selected descriptor of `command` to the broker, renaming it
+    /// by its lane number.
+    fn hand_over_selected(&self, command: &mut file_clipboard::Command) -> Result<(), String> {
+        let mut selected = command.selected_mut().peekable();
+        if selected.peek().is_none() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            let lane = self
+                .descriptors
+                .as_ref()
+                .ok_or("this connection cannot hand the host descriptors")?;
+            // Duplicate every descriptor before sending any, so a closed one
+            // leaves nothing on the lane that no request names.
+            let selected = selected
+                .map(|selected| {
+                    let raw = i32::try_from(selected.descriptor)
+                        .map_err(|_| "invalid selected descriptor".to_string())?;
+                    // SAFETY: the caller keeps every selected descriptor open
+                    // until this call returns; the borrow ends with the duplicate.
+                    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw) };
+                    let fd = fd
+                        .try_clone_to_owned()
+                        .map_err(|error| format!("selected descriptor unavailable: {error}"))?;
+                    Ok((selected, fd))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            for (selected, fd) in selected {
+                selected.descriptor = lane.send(fd).map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &self.descriptors;
+            Err("selected descriptors require Unix".into())
+        }
     }
 
     /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated

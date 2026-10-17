@@ -308,6 +308,19 @@ pub fn connect_service_fd(name: &str) -> Result<OwnedFd, NotAvailable> {
     shared::connect(name, fd)
 }
 
+#[cfg(all(unix, feature = "rpc"))]
+/// The descriptor lane of the launcher-inherited service `name`: a descriptor
+/// sent on it reaches the service ahead of every call any client of `name`
+/// in this process makes afterwards, numbered as [`descriptor_lane`] says.
+///
+/// # Errors
+///
+/// As [`connect_service`].
+pub fn service_descriptors(name: &str) -> Result<descriptor_lane::DescriptorSender, NotAvailable> {
+    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
+    shared::descriptors(name, fd)
+}
+
 #[cfg(feature = "rpc")]
 /// Helper for service crates: open a connection to an inherited service
 /// ([`connect_service`]) and pull out the bootstrap.
@@ -407,6 +420,9 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+#[cfg(all(unix, feature = "rpc"))]
+pub mod descriptor_lane;
 
 /// A child forked between a descriptor's creation and its `exec` holds a copy of
 /// that descriptor until the `exec` closes it (every descriptor here is

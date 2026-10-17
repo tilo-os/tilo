@@ -54,6 +54,7 @@ getrandom.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }
+tempfile.workspace = true
 
 [[test]]
 name = "native"

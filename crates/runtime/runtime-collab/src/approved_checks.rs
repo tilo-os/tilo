@@ -746,6 +746,7 @@ mod tests {
     async fn approved_check_reports_unsupported_broker_refuses_without_terminal_fallback() {
         let channel = crate::ChannelHandle {
             inner: std::rc::Rc::new(capnp_rpc::new_client(WireAbi)),
+            descriptors: None,
         };
         let request = Request {
             version: 1,

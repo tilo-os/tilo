@@ -13972,6 +13972,9 @@ async fn drive_connection(
         None
     };
     let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
+    let handed_descriptors = local_media
+        .as_ref()
+        .and_then(|local| local.descriptors.clone());
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
         lease: Rc::new(ConnectionLease {
@@ -13984,7 +13987,16 @@ async fn drive_connection(
         directories,
         peer_id,
     });
-    let rpc = runtime_portal::serve_connected_io(stream, client.client);
+    // Files hands over the objects it selects on its own connection; the
+    // broker keeps them for the request naming them. Every other peer's
+    // descriptors are closed on receipt.
+    let rpc = match handed_descriptors {
+        Some(received) => runtime_portal::serve_connected_io(
+            runtime_portal::descriptor_lane::DescriptorStream::receiving(stream, received),
+            client.client,
+        ),
+        None => runtime_portal::serve_connected_io(stream, client.client),
+    };
     let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
