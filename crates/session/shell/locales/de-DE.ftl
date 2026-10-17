@@ -2675,6 +2675,13 @@ onboarding-migration-cleanup-unavailable = Deine Sachen sind in Tilo bereit. Das
 onboarding-migration-cleanup-resume = Aufräumen erneut versuchen
 onboarding-migration-cleanup-running = Deine Sachen sind in Tilo bereit. Temporäre Dateien werden entfernt …
 
+# Warum die erste Kopie angehalten hat, mit ihrem Status gemeldet.
+onboarding-copy-cleanup-unavailable = Das Aufräumen temporärer Dateien ist nicht verfügbar.
+onboarding-copy-cleanup-unconfirmed = Das abschließende Aufräumen konnte nicht bestätigt werden.
+onboarding-copy-cleanup-mismatch = Die Bestätigung des Aufräumens gehört zu einer anderen Kopie.
+onboarding-copy-receipt-mismatch = Die Bestätigung der Kopie gehört zu einer anderen Kopie.
+onboarding-copy-cleanup-confirmation-unavailable = Die Bestätigung des Aufräumens ist nicht verfügbar.
+
 session-retained-retirement = Aufräumen aufbewahrter Dateien
 session-retained-retirement-detail = Die Besitzer der aufbewahrten Dateien dieser Sitzung und das beobachtete Aufräumen ansehen.
 
