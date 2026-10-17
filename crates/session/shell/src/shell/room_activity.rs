@@ -354,6 +354,30 @@ fn read_persisted(reader: &LocalRecordReader, looks: Vec<PersistedLook>) -> Vec<
         .collect()
 }
 
+/// Each room document of each run's room, read for that run's share. Lists
+/// and reads the disk: never on the compositor loop.
+fn read_room_documents(
+    reader: &LocalRecordReader,
+    rooms: Vec<(RunGroup, crate::shell::state::RoomId)>,
+) -> Vec<PersistedFound> {
+    let mut found = Vec::new();
+    for (run, room) in rooms {
+        for document in reader.room_documents(room) {
+            let revision = reader.revision(&document.id).map(LookedRevision::Persisted);
+            let share = reader
+                .load(&document.id)
+                .and_then(|doc| group_share(&run, document.id.as_str(), &doc));
+            found.push(PersistedFound {
+                run: run.clone(),
+                id: document.id,
+                revision,
+                share: PersistedShare::Read(share),
+            });
+        }
+    }
+    found
+}
+
 /// Test support: hold the persisted reads of a run until released, as a
 /// disk that does not answer would.
 #[cfg(test)]
@@ -526,8 +550,14 @@ impl ShortcutRunRecorder {
             .collect();
         let known = local.known();
         let mut persisted = Vec::new();
+        // An app whose content is the room's own document (Notes) keeps it
+        // beside its records: the worker lists those of each run's room.
+        let mut rooms = Vec::new();
         for run in &mut self.pending {
             let room = crate::shell::state::RoomId::parse(run.finished.room());
+            if let Some(room) = room {
+                rooms.push((run.finished.group(), room));
+            }
             let candidates: BTreeSet<RecordId> = open
                 .iter()
                 .cloned()
@@ -540,7 +570,10 @@ impl ShortcutRunRecorder {
                 .collect();
             persisted.extend(run.look_open(&candidates, &open, records));
         }
-        let Some(reader) = local.local_reader().filter(|_| !persisted.is_empty()) else {
+        let Some(reader) = local
+            .local_reader()
+            .filter(|_| !persisted.is_empty() || !rooms.is_empty())
+        else {
             return false;
         };
         let (found, running) = mpsc::channel();
@@ -549,7 +582,9 @@ impl ShortcutRunRecorder {
         let spawned = std::thread::Builder::new()
             .name("tilo-shortcut-look".into())
             .spawn(move || {
-                let _ = found.send(read_persisted(&reader, persisted));
+                let mut read = read_persisted(&reader, persisted);
+                read.extend(read_room_documents(&reader, rooms));
+                let _ = found.send(read);
                 wake.wake();
             });
         match spawned {
@@ -1957,6 +1992,66 @@ mod tests {
         assert_eq!(run.steps[0].app, "so.tilo.notes");
         assert_eq!(run.steps[0].record, record.to_string());
         assert_eq!(run.steps[0].run.start, run.steps[0].run.end);
+    }
+
+    /// An app whose content is the room's own document (Notes keeps its
+    /// notebook there) keeps it beside its records, and nothing announces
+    /// it as one. An agent's task run that changed it is still recorded,
+    /// from that document as this device holds it.
+    #[test]
+    fn a_task_run_over_an_apps_room_document_is_recorded() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::room_document_path_for_test(data.path(), "so.tilo.notes", room);
+        std::fs::create_dir_all(path.parent().expect("room directory")).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "body", "Hello").unwrap();
+        doc.commit();
+        doc.put(automerge::ROOT, "body", "Hallo").unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "notes.notebook/pages/one",
+            "notes.page",
+            "Launch notes",
+        )
+        .with_app("so.tilo.notes", "Notes")
+        .with_group("task:translate", "Translate", "task");
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        std::fs::write(&path, doc.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+        let records = RecordStore::in_memory();
+
+        let mut pane = RoomActivityPane::new();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::ended(
+                EndedRun::Task(EndedTaskRun {
+                    room: room.to_string(),
+                    task_id: "task:translate".into(),
+                    title: "Translate".into(),
+                    agent: "agent:scribe".into(),
+                    person: "person:ada".into(),
+                    instruction: None,
+                    outcome: "completed".into(),
+                }),
+                Instant::now(),
+            ));
+        let now = Instant::now();
+        assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now));
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now));
+        drop(pane);
+
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task.as_deref(), Some("task:translate"));
+        assert_eq!(runs[0].steps.len(), 1);
+        assert_eq!(runs[0].steps[0].app, "so.tilo.notes");
+        assert_eq!(
+            Some(runs[0].steps[0].record.clone()),
+            crate::shell::room_records::room_document_id(room, "so.tilo.notes")
+                .map(|id| id.to_string())
+        );
     }
 
     /// `tree` as the recorder locks it.

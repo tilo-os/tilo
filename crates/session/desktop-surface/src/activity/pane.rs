@@ -2322,6 +2322,12 @@ impl RoomActivityPane {
                             .unwrap_or(&indexed.run.label)
                             .clone()
                     }));
+                // A task's run groups its changes under the task itself.
+                filter.work_groups.extend(
+                    self.agent_runs
+                        .iter()
+                        .filter_map(|indexed| indexed.run.task.clone()),
+                );
             }
             LensSelection::App(app) => filter.apps.push(app.clone()),
             LensSelection::ResourceKind(kind) => filter.resource_kinds.push(kind.clone()),
