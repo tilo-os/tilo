@@ -559,8 +559,26 @@ pub fn clipboard_history(store: &SharedSelection) -> Vec<ClipboardHistorySnapsho
         .unwrap_or_default()
 }
 
+/// The text of retained item `id`, for pasting it into the focused field
+/// once the person chose it (Super+V). `None` for an item without text (an
+/// image, a file list) or invalid UTF-8; those are only made the clipboard.
+pub fn history_item_text(store: &SharedSelection, id: [u8; 32]) -> Option<String> {
+    let bytes = {
+        let store = store.lock().ok()?;
+        let item = store.history.iter().find(|item| item.id == id)?;
+        text_mime_types()
+            .iter()
+            .find_map(|mime| item.values.get(mime))?
+            .clone()
+    };
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
 /// Make a retained item the live clipboard and queue normal Wayland
-/// publication. This is the only payload-reading clipboard-manager action.
+/// publication. With [`history_item_text`], the only payload-reading
+/// clipboard-manager actions; both run only on the person's choice.
 pub fn activate_history_item(store: &SharedSelection, id: [u8; 32]) -> bool {
     let Ok(mut store) = store.lock() else {
         return false;

@@ -404,6 +404,14 @@ pub enum OpenTarget {
     Here(u64),
 }
 
+/// Where clipboard history was summoned to paste: the focused field's caret
+/// and the focused window, in desktop coordinates, either unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PasteOrigin {
+    pub caret: Option<vello::kurbo::Rect>,
+    pub window: Option<vello::kurbo::Rect>,
+}
+
 /// One monitor's brightness control in Quick Settings.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayBrightness {
@@ -463,6 +471,11 @@ pub struct QuickSettingsState {
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
+    /// Set while clipboard history is open to paste (Super+V): where it was
+    /// summoned from, so it opens there instead of under the tray and a
+    /// choice is pasted into that field. `None` when history is browsed from
+    /// Quick Settings. Cleared whenever Quick Settings opens another way.
+    pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
@@ -549,6 +562,7 @@ impl Default for QuickSettingsState {
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -589,6 +603,7 @@ impl QuickSettingsState {
             rotation_available: false,
             rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
+            paste_origin: None,
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
@@ -619,6 +634,7 @@ impl QuickSettingsState {
 
     /// Replace stale drill-in history with one authoritative destination.
     pub fn show_level(&mut self, level: QsLevel) {
+        self.paste_origin = None;
         self.nav_stack.clear();
         self.nav_stack.push(QsLevel::Root);
         if level != QsLevel::Root {
@@ -1973,8 +1989,31 @@ impl ChromeState {
         self.overlays.quick_settings = opening;
         if opening {
             self.overlays.ws_settings = false;
+            self.quick_settings.paste_origin = None;
         }
         self.bump();
+    }
+
+    /// Back out of the Quick Settings page on screen (its Back chevron, or
+    /// Escape): to the page it was drilled into from, or, for clipboard
+    /// history opened to paste, out of Quick Settings altogether — it was
+    /// summoned on its own, at the caret, and has no page behind it there.
+    pub fn quick_settings_back(&mut self) {
+        if self.quick_settings.paste_origin.take().is_some() {
+            self.overlays.quick_settings = false;
+            self.quick_settings
+                .show_level(crate::shell::quick_settings::QsLevel::Root);
+        } else {
+            self.quick_settings.pop_level();
+        }
+        self.bump();
+    }
+
+    /// Open clipboard history to paste (Super+V): at `origin` (the caret,
+    /// else the focused window), and a choice goes into that field.
+    pub fn open_clipboard_history_to_paste(&mut self, origin: PasteOrigin) {
+        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        self.quick_settings.paste_origin = Some(origin);
     }
 
     /// Reveal Quick Settings without toggle semantics, for deep links such as
