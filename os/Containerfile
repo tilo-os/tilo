@@ -562,6 +562,8 @@ FROM builder-base AS builder
 COPY --from=builder-sources /build/ /build/
 # The cooperative editor stays an OS-owned asset, outside app/runtime grants.
 RUN python3 crates/runtime/ush/native/build.py --out /out/ush-editor/bash-editor.so
+# Preloaded into the confined NTFS driver (crates/system/ntfs-mount).
+RUN python3 crates/system/ntfs-mount/native/build.py --out /out/ntfs-mount/fuse-handoff.so
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
@@ -740,9 +742,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p imager -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-session-record -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p imager -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-session-record -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm -p tilo-ntfs-mount" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential --bin tilo-ntfs-mount" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -786,7 +788,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -864,6 +866,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-windows-rail \
           target/release/tilo-windows-runtime \
           target/release/tilo-account-credential \
+          target/release/tilo-ntfs-mount \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
@@ -1696,6 +1699,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # so the image shipped a printers pane that was permanently empty and correct
     # about it. The socket below is what makes those calls reach a daemon.
     #
+    # `ntfs-3g` is the userspace NTFS driver behind "Open safely": the NTFS
+    # mount service runs it confined, as its own account, for drives the person
+    # does not know (crates/system/ntfs-mount). Its probe also checks a volume
+    # for hibernation and an unfinished journal before any driver mounts it.
+    #
     # NetworkManager is Tilo's sole network and DNS authority. The Fedora bootc
     # base may also carry systemd-networkd and systemd-resolved, adding duplicate
     # network state machines (and a direct libssl consumer) without serving a Tilo
@@ -1721,6 +1729,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     ModemManager \
     fwupd \
     fuse3 \
+    ntfs-3g \
     cage \
     && dnf clean all \
     && ln -sfn ../run/NetworkManager/resolv.conf /etc/resolv.conf \
@@ -2329,7 +2338,15 @@ COPY \
     os/usr/lib/systemd/system/tilo-cache-gc.timer \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
+    os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
+    os/usr/lib/systemd/system/tilo-ntfs-mount.service \
+    os/usr/lib/systemd/system/tilo-ntfs-boot-disks.service \
     /usr/lib/systemd/system/
+# NTFS drives: the kernel driver loads only when the consent-gated mount
+# service asks for it, and UDisks may not mount one around that service.
+COPY os/etc/modprobe.d/tilo-ntfs.conf /etc/modprobe.d/tilo-ntfs.conf
+COPY os/usr/lib/tmpfiles.d/tilo-ntfs-mount.conf /usr/lib/tmpfiles.d/tilo-ntfs-mount.conf
+COPY os/etc/polkit-1/rules.d/49-tilo-ntfs.rules /etc/polkit-1/rules.d/49-tilo-ntfs.rules
 # User provisioning is needed on the installed OS as well as live media.
 # disk-image.sh seeds these native units; custom installers additionally stage
 # their own /etc handoff so they can install older independently signed targets.
@@ -2446,10 +2463,12 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
+    os/usr/lib/sysusers.d/tilo-ntfs.conf \
     /usr/lib/sysusers.d/
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.
 #
@@ -2746,6 +2765,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
+    systemctl enable tilo-ntfs-mount.socket tilo-ntfs-boot-disks.service && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
     systemctl --global enable tilo-models.socket && \

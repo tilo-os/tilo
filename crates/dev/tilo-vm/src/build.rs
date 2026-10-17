@@ -92,11 +92,18 @@ pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandL
 /// Build outputs a component ships that cargo does not make: where the file
 /// is installed, where the installer finds it under the profile directory,
 /// and the script the image build runs to make it (`os/Containerfile`).
-const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[(
-    "/usr/lib/tilo/ush/bash-editor.so",
-    "ush-editor/bash-editor.so",
-    "crates/runtime/ush/native/build.py",
-)];
+const NATIVE_OUTPUTS: &[(&str, &str, &str)] = &[
+    (
+        "/usr/lib/tilo/ush/bash-editor.so",
+        "ush-editor/bash-editor.so",
+        "crates/runtime/ush/native/build.py",
+    ),
+    (
+        "/usr/lib/tilo/ntfs-mount/fuse-handoff.so",
+        "ntfs-mount/fuse-handoff.so",
+        "crates/system/ntfs-mount/native/build.py",
+    ),
+];
 
 /// The non-cargo builds `component` needs before the installer can lay it
 /// out, each writing into `target_dir`'s profile directory.

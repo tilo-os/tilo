@@ -378,6 +378,7 @@ members = [
     "crates/system/install-helpers",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
+    "crates/system/ntfs-mount",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
