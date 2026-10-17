@@ -858,7 +858,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - **Sandboxing protocol details and Wayland client attribution** — `docs/architecture/security.md`.
 - **Peer sync, foreign-surface streaming, remote input replay** — `docs/architecture/collaboration.md`.
 - **xdg-desktop-portal backend** — `docs/architecture/security.md` and `crates/session/shell/src/portal/`.
-- **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
+- **WorkspaceTree CRDT shape** — `docs/architecture/overview.md` plus `docs/architecture/workspace-tree.md`.
 - **Future**: vello → DMA-BUF direct interop and libei input emulation in addition to the control socket.
 
 ## Where to read first

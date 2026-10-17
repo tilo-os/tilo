@@ -1,5 +1,5 @@
 //! The inbound-op validation pipeline, implementing the validation steps
-//! specified in `2026-06-29-spaces-channels-and-cryptographic-roles.md`.
+//! specified in `docs/security/spaces-channels-and-roles.md`.
 //! Each step has a dedicated [`ValidationError`] variant so callers can
 //! pattern-match the failure and surface a precise reason in the audit log.
 //!

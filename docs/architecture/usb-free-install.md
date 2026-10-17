@@ -1,11 +1,11 @@
-# USB-free Full Tilo installation: implementation design
+# USB-free Full Tilo installation
 
 Date: 2026-09-22
-Status: Implementation contract. Supersedes the "first proof only" sequencing of
-[`2026-09-16-internal-install-feasibility.md`](2026-09-16-internal-install-feasibility.md)
-where the two differ; that document's evidence and safety findings still hold.
+The implementation contract for installing Full Tilo from the running OS
+without a USB drive. The product journey it serves is in
+[`docs/guided-setup.md`](../guided-setup.md).
 
-Decisions taken with the owner on 2026-09-22:
+Design decisions:
 
 - Windows and Linux hosts are built together on one shared staging core.
 - Windows space comes from a **guided NTFS shrink** of the system volume, after

@@ -4,7 +4,7 @@
   "source_audit": {
     "commit": "d19f1a0ae2b1d05ec382188fd975bd5762e10704",
     "date": "2026-09-12",
-    "map_path": "docs/superpowers/specs/2026-09-12-macos-app-capability-map.md",
+    "map": "2026-09-12 macOS app capability map (retired; its findings are the records below)",
     "map_sha256_at_revalidation": "aaacb4357e7210465e7192f09158630854d438a850115b4629522393c59703c7",
     "note": "Original row-level source-audit provenance is preserved."
   },
