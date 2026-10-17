@@ -257,16 +257,11 @@ pub(crate) enum AttachmentImportResult {
 }
 
 /// The picker enumerates files off-thread too: even metadata on a mounted or
-/// hostile workspace must not stall the composer click.
-pub(crate) enum AttachmentPickerResult {
-    Ready {
-        generation: u64,
-        entries: Vec<crate::picker::PickEntry>,
-    },
-    Failed {
-        generation: u64,
-        reason: String,
-    },
+/// hostile workspace must not stall the composer click. A workspace that
+/// cannot be read lists nothing: this device's files are still offered.
+pub(crate) struct AttachmentPickerResult {
+    pub generation: u64,
+    pub entries: Vec<crate::picker::PickEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -363,6 +358,8 @@ pub(crate) enum Hit {
     Attach,
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
+    /// Choose files on this device with the platform's file chooser.
+    AttachDevice,
     StartCall,
     StopSharingLiveContext,
     CopyResourceLink(Id),
@@ -423,6 +420,7 @@ impl Hit {
             Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
+            Self::AttachDevice => "chat.attach-device".into(),
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
@@ -671,6 +669,12 @@ pub struct ChatApp {
     /// bound: selecting another file while one is reading is refused rather
     /// than creating unbounded reader threads and byte buffers.
     pub(crate) attachment_pending: Option<AttachmentImportPending>,
+    /// The platform file chooser, while it is open: the files chosen on
+    /// this device arrive here with their bytes.
+    pub(crate) device_pick: Option<ui::portal::ContentsChannel>,
+    /// Files chosen, pasted or dropped that wait for the one import at a
+    /// time: their names and bytes.
+    pub(crate) device_files: VecDeque<(String, Vec<u8>)>,
     pub(crate) attachment_next_token: u64,
     pub(crate) attachment_result_tx: SyncSender<AttachmentImportResult>,
     pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
@@ -1038,6 +1042,8 @@ impl ChatApp {
             attach_open: false,
             attach_entries: Vec::new(),
             attachment_pending: None,
+            device_pick: None,
+            device_files: VecDeque::new(),
             attachment_next_token: 0,
             attachment_result_tx,
             attachment_result_rx,
@@ -1676,10 +1682,19 @@ impl ChatApp {
                 self.attachment_picker_pending = Some(0);
                 self.attachment_status = Some("Loading attachments…".into());
             }
+            "attach-upload" => {
+                // A browser page, where the files to share are the person's
+                // own: the chooser has answered and the upload is under way.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.external_services = false;
+                self.attachment_status = Some("Uploading quarterly-plan.pdf…".into());
+            }
             "attach-error" => {
                 self.stage_view("attach");
                 self.attachment_status =
-                    Some("Attachment import failed: file is unavailable".into());
+                    Some("Not shared: the file is no longer there; choose it again".into());
             }
             "edit" => {
                 // The inline message editor open on your own last message,
@@ -3636,7 +3651,8 @@ impl ChatApp {
                     Hit::ComposerEmoji(_) => {
                         (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
                     }
-                    Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
+                    Hit::Attach => ("Share a file".into(), Role::Button, false),
+                    Hit::AttachDevice => ("Upload from this device".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
                         format!(
                             "Attach {}",
@@ -4467,6 +4483,7 @@ impl Widget for ChatApp {
             }
         }
         self.settle_attachment_picker();
+        self.settle_device_files();
         self.settle_attachment_import();
         self.refresh_person_conversation();
         self.canonical_dirty |= self.agent_tasks.pump();

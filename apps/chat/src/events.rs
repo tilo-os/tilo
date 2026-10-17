@@ -191,6 +191,13 @@ impl ChatApp {
                     EventDispatch::new(event, scale, modifiers, doc, handled),
                 );
             }
+            // A file dropped on the conversation is shared there.
+            WindowEvent::DroppedFile(path) => {
+                if self.can_participate() {
+                    self.begin_attachment_import(path);
+                }
+                *handled = true;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 44.0,
@@ -721,6 +728,12 @@ impl ChatApp {
         self.focused_composer_mut().ensure_draft(doc);
         self.focused_composer_mut()
             .handle(event, scale, modifiers, doc);
+        // A pasted picture is shared as one, like a chosen file.
+        for image in self.focused_composer_mut().take_pasted_images() {
+            let extension = image.mime.rsplit('/').next().unwrap_or("png");
+            self.device_files
+                .push_back((format!("Pasted image.{extension}"), image.bytes));
+        }
         match self.focused_composer_mut().take_outcome() {
             Some(FieldOutcome::Submit) => self.send_focused(doc),
             Some(FieldOutcome::Cancel) | None => {}
@@ -992,6 +1005,7 @@ impl ChatApp {
             Hit::AttachPick(path) => {
                 self.attach_file(doc, std::path::Path::new(&path));
             }
+            Hit::AttachDevice => self.choose_device_files(),
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
                 self.on_hit_start_call(doc);
             }
@@ -1804,6 +1818,12 @@ impl ChatApp {
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
+        // Without a workspace on this device (a browser page) the files to
+        // share are the person's own: the platform's chooser opens at once.
+        if !self.external_services {
+            self.choose_device_files();
+            return;
+        }
         // A dismissed picker may still have one bounded enumeration worker.
         // Reopen its pending request instead of spawning another reader; this
         // keeps the reply channel backpressured and prevents a click storm
@@ -1827,16 +1847,16 @@ impl ChatApp {
         let sender = self.attachment_picker_result_tx.clone();
         let dir = crate::picker::attach_dir();
         let job = move || {
-            let result = if crate::picker::folder_readable(&dir) {
-                AttachmentPickerResult::Ready {
-                    generation,
-                    entries: crate::picker::list_attachments(&dir),
-                }
+            // No workspace here: the picker offers this device's files
+            // alone, with nothing to apologise for.
+            let entries = if crate::picker::folder_readable(&dir) {
+                crate::picker::list_attachments(&dir)
             } else {
-                AttachmentPickerResult::Failed {
-                    generation,
-                    reason: "workspace is unavailable".into(),
-                }
+                Vec::new()
+            };
+            let result = AttachmentPickerResult {
+                generation,
+                entries,
             };
             let _ = sender.send(result);
         };
@@ -1849,10 +1869,7 @@ impl ChatApp {
         let Ok(result) = self.attachment_picker_result_rx.try_recv() else {
             return;
         };
-        let generation = match &result {
-            AttachmentPickerResult::Ready { generation, .. }
-            | AttachmentPickerResult::Failed { generation, .. } => *generation,
-        };
+        let generation = result.generation;
         if self.attachment_picker_pending != Some(generation) {
             return;
         }
@@ -1865,15 +1882,81 @@ impl ChatApp {
             return;
         }
         self.attachment_picker_pending = None;
-        match result {
-            AttachmentPickerResult::Ready { entries, .. } => {
-                self.attach_entries = entries;
-                self.attachment_status = None;
-            }
-            AttachmentPickerResult::Failed { reason, .. } => {
-                self.attachment_status = Some(format!("Attachment picker failed: {reason}"));
+        self.attach_entries = result.entries;
+        self.attachment_status = None;
+    }
+
+    /// Open the platform's file chooser for files on this device (on the web,
+    /// the browser's own). What is chosen is imported as shared content and
+    /// posted, one file at a time.
+    pub(crate) fn choose_device_files(&mut self) {
+        if !self.can_participate() || self.device_pick.is_some() {
+            return;
+        }
+        self.attach_open = false;
+        let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
+        self.device_pick = Some(
+            ui::portal::PickRequest::open_multiple("Share files", "Share")
+                .max_contents_bytes(limit)
+                .send_contents(),
+        );
+    }
+
+    /// Take what the file chooser answered, and start the next waiting
+    /// file's import once none is in flight.
+    pub(crate) fn settle_device_files(&mut self) {
+        if let Some(pick) = &self.device_pick {
+            match pick.try_recv() {
+                Ok(ui::portal::ContentsOutcome::Picked(files)) => {
+                    self.device_pick = None;
+                    self.device_files
+                        .extend(files.into_iter().map(|file| (file.name, file.bytes)));
+                }
+                Ok(ui::portal::ContentsOutcome::Cancelled) => self.device_pick = None,
+                Ok(ui::portal::ContentsOutcome::Failed(reason)) => {
+                    self.device_pick = None;
+                    self.attachment_status = Some(format!(
+                        "Couldn't open the files ({reason}). Try choosing them again."
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.device_pick = None;
+                    self.attachment_status =
+                        Some("The file chooser closed. Try choosing the files again.".into());
+                }
             }
         }
+        if self.attachment_pending.is_none()
+            && let Some((name, bytes)) = self.device_files.pop_front()
+        {
+            self.begin_bytes_import(name, bytes);
+        }
+    }
+
+    /// Import `bytes`, a file named `name` from this device (chosen, pasted
+    /// or dropped), into the active channel.
+    pub(crate) fn begin_bytes_import(&mut self, name: String, bytes: Vec<u8>) -> bool {
+        if !self.can_participate() || self.attachment_pending.is_some() {
+            return false;
+        }
+        let token = self.attachment_next_token;
+        let Some(next) = token.checked_add(1) else {
+            return false;
+        };
+        self.attachment_next_token = next;
+        self.attachment_pending = Some(AttachmentImportPending {
+            token,
+            channel: self.active_channel.clone(),
+        });
+        self.attachment_status = Some(format!("Uploading {name}…"));
+        let sender = self.attachment_result_tx.clone();
+        let content = self.content.clone();
+        let job = move || {
+            let _ = sender.send(store_attachment(&content, token, name, &bytes));
+        };
+        run_worker("chat-attachment-import", job, &mut self.attachment_status);
+        true
     }
 
     /// Accept one attachment import. The path is consumed by a single bounded
@@ -1973,7 +2056,7 @@ impl ChatApp {
             let AttachmentImportResult::Failed { reason, .. } = result else {
                 return;
             };
-            self.attachment_status = Some(format!("Attachment import failed: {reason}"));
+            self.attachment_status = Some(format!("Not shared: {reason}"));
             return;
         };
         if !self.can_participate() {
@@ -2021,30 +2104,48 @@ fn prepare_attachment_import(
         reason: reason.into(),
     };
     let Ok((dir, name)) = tilo_files::file_at(path) else {
-        return fail("file is unavailable");
+        return fail("the file is no longer there; choose it again");
     };
     let limit = usize::try_from(crate::record::MAX_ATTACHMENT_BYTES).unwrap_or(usize::MAX);
     let bytes = match tilo_files::blocking::read_bounded(&dir, &name, limit) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return fail("file exceeds 32 MiB"),
-        Err(_) => return fail("could not read file"),
+        Ok(None) => return fail("files up to 32 MiB can be shared"),
+        Err(_) => return fail("the file could not be read; check it still exists"),
     };
-    if bytes.is_empty() {
-        return fail("file is empty");
-    }
     let name = path
         .file_name()
         .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
-    let meta = tilo_content::sniff(&bytes);
-    let blob = match content.put(&bytes) {
+    store_attachment(content, token, name, &bytes)
+}
+
+/// Keep `bytes`, a file named `name`, as shared content: what an attachment
+/// refers to, whichever way the file arrived.
+fn store_attachment(
+    content: &tilo_content::ContentStore,
+    token: u64,
+    name: String,
+    bytes: &[u8],
+) -> AttachmentImportResult {
+    let fail = |reason: &str| AttachmentImportResult::Failed {
+        token,
+        reason: reason.into(),
+    };
+    if bytes.is_empty() {
+        return fail("the file is empty");
+    }
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > crate::record::MAX_ATTACHMENT_BYTES {
+        return fail("files up to 32 MiB can be shared");
+    }
+    let meta = tilo_content::sniff(bytes);
+    let blob = match content.put(bytes) {
         Ok(blob) => blob,
         Err(error) => {
             eprintln!("chat: content store refused an attachment: {error}");
-            return fail("shared content store refused the attachment");
+            return fail("there is no room to keep it here; free some space and try again");
         }
     };
-    if content.read(&blob).as_deref() != Some(bytes.as_slice()) {
-        return fail("shared byte verification failed");
+    if content.read(&blob).as_deref() != Some(bytes) {
+        return fail("the stored copy did not match; try again");
     }
     AttachmentImportResult::Ready {
         token,
@@ -2781,9 +2882,9 @@ mod tests {
             app.attach_open = true;
             app.attachment_picker_pending = Some(7);
             app.attachment_picker_result_tx
-                .try_send(AttachmentPickerResult::Failed {
+                .try_send(AttachmentPickerResult {
                     generation: 6,
-                    reason: "old worker".into(),
+                    entries: Vec::new(),
                 })
                 .unwrap();
             app.settle_attachment_picker();
@@ -2799,9 +2900,9 @@ mod tests {
             // cancellation, rather than leaking the bounded worker slot.
             app.attach_open = false;
             app.attachment_picker_result_tx
-                .try_send(AttachmentPickerResult::Failed {
+                .try_send(AttachmentPickerResult {
                     generation: 7,
-                    reason: "workspace is unavailable".into(),
+                    entries: Vec::new(),
                 })
                 .unwrap();
             app.settle_attachment_picker();
@@ -3330,6 +3431,51 @@ mod tests {
             app.land(doc);
             crate::testing::messages(doc, channel).len() == expected_count
         });
+    }
+
+    /// Where this device has no workspace (a browser page), Share opens the
+    /// platform's chooser at once; what it, a paste or a drop hands over is
+    /// shared from its bytes, one file at a time.
+    #[test]
+    fn files_from_this_device_are_shared_from_their_bytes() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_crit".into();
+        app.external_services = false;
+        app.on_hit(Hit::Attach, &mut ui::widget::Edits::lend(&mut doc));
+        assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+        assert!(!app.attach_open, "no workspace listing where there is none");
+        app.device_pick = None;
+
+        let before = crate::testing::messages(&doc, "c_crit").len();
+        app.device_files
+            .push_back(("first.txt".into(), b"one".to_vec()));
+        app.device_files
+            .push_back(("second.txt".into(), b"two".to_vec()));
+        tilo_test_env::wait_until("both chosen files", || {
+            app.settle_device_files();
+            app.settle_attachment_import();
+            app.land(&mut doc);
+            crate::testing::messages(&doc, "c_crit").len() == before + 2
+        });
+        let names: Vec<String> = crate::testing::messages(&doc, "c_crit")
+            .iter()
+            .rev()
+            .take(2)
+            .filter_map(|message| message.attachment.as_ref().map(|a| a.name().to_owned()))
+            .collect();
+        assert_eq!(names, ["second.txt", "first.txt"]);
+
+        app.device_files.push_back(("empty.txt".into(), Vec::new()));
+        tilo_test_env::wait_until("the refused file", || {
+            app.settle_device_files();
+            app.settle_attachment_import();
+            app.attachment_pending.is_none() && app.device_files.is_empty()
+        });
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some("Not shared: the file is empty"),
+            "a failure says what happened, never that a workspace is unavailable"
+        );
     }
 
     fn settle_picker_until(app: &mut ChatApp) {

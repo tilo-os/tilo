@@ -391,6 +391,12 @@ impl DraftComposer {
         }
     }
 
+    /// Images pasted into the composer since the last call: shared as
+    /// attachments, never kept in the draft's text.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::clipboard::ClipboardImage> {
+        self.host.widget_mut().editor_mut().take_pasted_images()
+    }
+
     /// Make the draft shown exist before its first keystroke.
     pub fn ensure_draft(&mut self, doc: &AutoCommit) {
         let source = self.host.widget_mut().source_mut();
