@@ -801,115 +801,101 @@ impl GlobalShortcutsBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
-            let registered = self
+            let cancel = move |_: &LifecycleEntry| {
+                if let Ok(mut state) = state.lock() {
+                    if let Some(record) = state.sessions.get_mut(&cleanup_session) {
+                        record.binding = false;
+                    }
+                }
+                service.cancel_bind(&cleanup_request);
+            };
+            let outcome = self
                 .lifecycle
-                .register_request(connection, &request_path, entry, move |_| {
-                    if let Ok(mut state) = state.lock() {
-                        if let Some(record) = state.sessions.get_mut(&cleanup_session) {
-                            record.binding = false;
+                .with_request(connection, &request_path, entry, cancel, async {
+                    let request = GlobalShortcutBindingRequest {
+                        handle: request_path.clone(),
+                        session: key.clone(),
+                        app_id: current.caller.app_id.clone(),
+                        parent_window,
+                        shortcuts: shortcuts.clone(),
+                    };
+                    let (reply, rx) = oneshot::channel();
+                    let outcome = match self.service.request_bind(request, reply) {
+                        PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+                        PortalResult::Cancelled => PortalResult::Cancelled,
+                        PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+                        PortalResult::Failed(error) => PortalResult::Failed(error),
+                    };
+                    let approved = match outcome {
+                        PortalResult::Success(GlobalShortcutConsent::Allowed(bindings)) => {
+                            let requested: HashSet<_> = shortcuts
+                                .iter()
+                                .map(|shortcut| shortcut.id.as_str())
+                                .collect();
+                            let mut seen = HashSet::new();
+                            if bindings.iter().all(|shortcut| {
+                                requested.contains(shortcut.id.as_str())
+                                    && seen.insert(shortcut.id.clone())
+                                    && shortcut
+                                        .preferred_trigger
+                                        .as_deref()
+                                        .and_then(canonical_accelerator)
+                                        .is_some()
+                            }) {
+                                Some(bindings)
+                            } else {
+                                None
+                            }
                         }
-                    }
-                    service.cancel_bind(&cleanup_request);
-                })
-                .await;
-            if !matches!(registered, Ok(true)) {
-                if let Ok(mut state) = self.state.lock() {
-                    if let Some(record) = state.sessions.get_mut(&key) {
-                        record.binding = false;
-                    }
-                }
-                return Err(Ended::Failed);
-            }
-            let request = GlobalShortcutBindingRequest {
-                handle: request_path.clone(),
-                session: key.clone(),
-                app_id: current.caller.app_id.clone(),
-                parent_window,
-                shortcuts: shortcuts.clone(),
-            };
-            let (reply, rx) = oneshot::channel();
-            let outcome = match self.service.request_bind(request, reply) {
-                PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
-                PortalResult::Cancelled => PortalResult::Cancelled,
-                PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
-                PortalResult::Failed(error) => PortalResult::Failed(error),
-            };
-            let approved = match outcome {
-                PortalResult::Success(GlobalShortcutConsent::Allowed(bindings)) => {
-                    let requested: HashSet<_> = shortcuts
-                        .iter()
-                        .map(|shortcut| shortcut.id.as_str())
+                        PortalResult::Success(GlobalShortcutConsent::Denied) => Some(Vec::new()),
+                        PortalResult::Cancelled
+                        | PortalResult::Unavailable(_)
+                        | PortalResult::Failed(_) => None,
+                    };
+                    let approved = approved.or_fail()?;
+                    let approved: HashMap<_, _> = approved
+                        .into_iter()
+                        .map(|shortcut| (shortcut.id, shortcut.preferred_trigger))
                         .collect();
-                    let mut seen = HashSet::new();
-                    if bindings.iter().all(|shortcut| {
-                        requested.contains(shortcut.id.as_str())
-                            && seen.insert(shortcut.id.clone())
-                            && shortcut
-                                .preferred_trigger
-                                .as_deref()
-                                .and_then(canonical_accelerator)
-                                .is_some()
-                    }) {
-                        Some(bindings)
-                    } else {
-                        None
+                    let selected: Vec<_> = shortcuts
+                        .into_iter()
+                        .filter_map(|mut shortcut| {
+                            let trigger = approved.get(&shortcut.id)?.clone()?;
+                            shortcut.preferred_trigger = Some(trigger);
+                            Some(shortcut)
+                        })
+                        .collect();
+                    let wire = selected
+                        .iter()
+                        .map(GlobalShortcut::wire)
+                        .collect::<Vec<_>>();
+                    let stored = self.state.lock().is_ok_and(|mut state| {
+                        state.sessions.get_mut(&key).is_some_and(|record| {
+                            if record.owner != auth.owner.as_str() || record.caller != auth.caller {
+                                false
+                            } else {
+                                record.shortcuts = selected;
+                                record.binding = false;
+                                true
+                            }
+                        })
+                    });
+                    if !stored {
+                        self.service.release_session(&key);
+                        return Err(Ended::Failed);
                     }
-                }
-                PortalResult::Success(GlobalShortcutConsent::Denied) => Some(Vec::new()),
-                PortalResult::Cancelled
-                | PortalResult::Unavailable(_)
-                | PortalResult::Failed(_) => None,
-            };
-            let Some(approved) = approved else {
-                if let Ok(mut state) = self.state.lock() {
-                    if let Some(record) = state.sessions.get_mut(&key) {
-                        record.binding = false;
-                    }
-                }
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            };
-            let approved: HashMap<_, _> = approved
-                .into_iter()
-                .map(|shortcut| (shortcut.id, shortcut.preferred_trigger))
-                .collect();
-            let selected: Vec<_> = shortcuts
-                .into_iter()
-                .filter_map(|mut shortcut| {
-                    let trigger = approved.get(&shortcut.id)?.clone()?;
-                    shortcut.preferred_trigger = Some(trigger);
-                    Some(shortcut)
+                    let _ = Self::shortcuts_changed(&sig, session, wire).await;
+                    Ok(Results::new())
                 })
-                .collect();
-            let wire = selected
-                .iter()
-                .map(GlobalShortcut::wire)
-                .collect::<Vec<_>>();
-            let stored = self.state.lock().is_ok_and(|mut state| {
-                state.sessions.get_mut(&key).is_some_and(|record| {
-                    if record.owner != auth.owner.as_str() || record.caller != auth.caller {
-                        false
-                    } else {
-                        record.shortcuts = selected;
-                        record.binding = false;
-                        true
-                    }
-                })
-            });
-            if !stored {
-                self.service.release_session(&key);
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-            let _ = Self::shortcuts_changed(&sig, session, wire).await;
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
                 .await;
-            Ok(Results::new())
+            // A bind that did not complete frees the session for the next one.
+            if outcome.is_err()
+                && let Ok(mut state) = self.state.lock()
+                && let Some(record) = state.sessions.get_mut(&key)
+            {
+                record.binding = false;
+            }
+            outcome
         })
         .await
     }

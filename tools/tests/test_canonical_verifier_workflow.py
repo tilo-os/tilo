@@ -1,46 +1,34 @@
-"""Execute the producer workflow's real shell with bounded native ELF fixtures."""
+"""Execute the verifier bundle producer with bounded native ELF fixtures."""
 import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.forgejo/workflows/release-verifier-bundles.yml'
+SCRIPT = ROOT / 'tools/ci/verifier-bundle.sh'
+T_TOML = ROOT / 't.toml'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
-
-
-def production_script():
-    step = WORKFLOW.read_text().split('      - name: Build and bundle only canonical verifier tools\n', 1)[1]
-    block = step.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
-    return '\n'.join(line[10:] if line.startswith(' ' * 10) else line for line in block.splitlines())
 
 
 class VerifierWorkflowTests(unittest.TestCase):
     def test_verifier_workflow_is_native_only_and_binds_only_valid_bundles(self):
-        with self.subTest(phase='manual native only no publication or secret expansion'):
-            source = WORKFLOW.read_text()
-            triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
-            self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
-            self.assertIn('arch: x86_64\n            runner: runner', source)
-            self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
-            self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
-            self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
-            self.assertIn('uses: ./.forgejo/actions/prepare-rust-build', source)
-            # No secret: the runner provides the compiler cache.
-            self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z0-9_]+)', source)))
-            bundle_job = source.split('\n  bundle:\n', 1)[1]
-            self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
-            self.assertNotIn('CARGO_TARGET_DIR', source)
+        with self.subTest(phase='dispatch only, native, no publication or secret'):
+            checks = T_TOML.read_text().split('\n[[check]]\n')
+            for arch in ('x86_64', 'aarch64'):
+                check = next(c for c in checks if f'name = "verifier-bundle-{arch}"' in c)
+                self.assertIn('on = ["dispatch"]', check)
+                self.assertIn(f'requires = ["arch={arch}"]', check)
+                self.assertIn(f'bash tools/ci/verifier-bundle.sh {arch} ', check)
+                self.assertIn('outputs = ["/target/verifier-bundle/**"]', check)
+                self.assertNotIn('secrets', check)
+                self.assertNotIn('id_token', check)
+            source = SCRIPT.read_text()
+            self.assertNotIn('CARGO_TARGET_DIR=', source)
             self.assertNotIn('curl ', source)
-            self.assertNotIn('publish:', source)
-            self.assertIn('persist-credentials: false', bundle_job)
-            self.assertIn('if-no-files-found: error', source)
-            self.assertIn('retention-days: 14', source)
             self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
         with self.subTest(phase='actual shell only builds two packages and binds deterministic artifacts'):
             with tempfile.TemporaryDirectory() as directory:
@@ -53,8 +41,6 @@ class VerifierWorkflowTests(unittest.TestCase):
                 descriptor = json.loads((root / f'target/verifier-bundle/{arch}.tar.descriptor.json').read_text())
                 self.assertEqual(head, descriptor['source_sha'])
                 self.assertEqual(BUILDER, descriptor['compatible_builder'])
-                self.assertEqual((root / f'target/verifier-bundle/{arch}.tar.gz').read_bytes(),
-                                 (root / f'target/verifier-repeat/{arch}.tar.gz').read_bytes())
                 self.assertEqual({'tilo_pkg_sha256', 'tilo_runtime_bundle_sha256'}, set(descriptor['canonical_binaries']))
         with self.subTest(phase='wrong source wrong native lane or compile failure cannot emit bundle'):
             for failure in ('head_ok', 'arch_ok', 'compile_ok'):
@@ -85,10 +71,11 @@ class VerifierWorkflowTests(unittest.TestCase):
                          'cp /bin/true target/release/tilo-runtime-bundle\n')
         cargo.chmod(0o755)
         env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
-                   GITHUB_SHA=head if head_ok else '0' * 40,
-                   VERIFIER_ARCH=platform.machine() if arch_ok else 'wrong-architecture',
-                   BUILDER_IMAGE=BUILDER, FIXTURE_CARGO_FAIL='0' if compile_ok else '1')
-        return subprocess.run(['bash', '-c', production_script()], cwd=root, env=env,
+                   FIXTURE_CARGO_FAIL='0' if compile_ok else '1')
+        env.pop('CARGO_TARGET_DIR', None)
+        arguments = [platform.machine() if arch_ok else 'wrong-architecture',
+                     head if head_ok else '0' * 40, BUILDER, 'target/verifier-bundle']
+        return subprocess.run(['bash', str(SCRIPT), *arguments], cwd=root, env=env,
                               capture_output=True, text=True), head
 
 

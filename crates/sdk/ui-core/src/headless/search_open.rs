@@ -14,6 +14,7 @@ impl FrameHarness {
     /// # Errors
     /// Returns an error while another dialog or command holds the window.
     pub fn open_search(&mut self, request: &SearchRequest) -> Result<(), String> {
+        self.invalidate_local();
         if self.action_palette.is_some()
             || self.caller_palette.palette.is_some()
             || self.root.modal_capture().is_some()

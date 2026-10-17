@@ -390,10 +390,6 @@ fn channel_u8(value: f32) -> u8 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "the fixtures use exactly representable scales and offsets"
-)]
 mod tests {
     use super::*;
 

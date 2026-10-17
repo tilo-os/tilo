@@ -249,6 +249,8 @@ fn always_is_kept_privately_for_the_next_session_and_only_an_owner_gives_it() {
     answer(&chrome, PromptChoice::Always, None);
     consent.pump(&chrome);
     assert!(matches!(decided.try_recv(), Ok(Consent::Admit { .. })));
+    // The answer is written on the state writer.
+    crate::shell::durable_writer::global().flush();
     let mode = std::fs::metadata(&store).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 
@@ -269,6 +271,28 @@ fn always_is_kept_privately_for_the_next_session_and_only_an_owner_gives_it() {
         renamed.try_recv().is_err(),
         "another client name is another client"
     );
+}
+
+/// `pump` runs on the compositor's loop, which must never wait for the disk:
+/// remembering an "Always" answer hands its write to the state writer.
+#[cfg(target_os = "linux")]
+#[test]
+fn remembering_always_never_waits_for_the_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("tilo/agent-door-bindings.json");
+    crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        let chrome = chrome_with_room();
+        let (sender, mut consent) = channel(Some(store.clone()), None);
+        let mut decided = ask(&sender, facts("/usr/bin/node"));
+        consent.pump(&chrome);
+        answer(&chrome, PromptChoice::Always, None);
+        consent.pump(&chrome);
+        assert!(matches!(decided.try_recv(), Ok(Consent::Admit { .. })));
+    });
+    crate::shell::durable_writer::global().flush();
+    let stored: StoredBindings = serde_json::from_slice(&std::fs::read(&store).unwrap()).unwrap();
+    assert_eq!(stored.bindings.len(), 1, "the answer is remembered");
+    assert_eq!(stored.bindings[0].key.client, "Claude Code");
 }
 
 #[test]

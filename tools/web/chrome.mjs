@@ -91,15 +91,24 @@ export async function launch({args = []} = {}) {
   const child = spawn(supervised ? 'python3' : browser, supervised
     ? [fileURLToPath(new URL('./owned_browser.py', import.meta.url)), browser, ...browserArgs]
     : browserArgs, {stdio: ['ignore', 'ignore', 'pipe']});
+  // The end of what the browser (or its supervisor) said: why a launch or a
+  // shutdown failed is otherwise lost with the pipe.
+  let said = '';
   const endpoint = await new Promise((resolve, reject) => {
     let buffered = '';
     child.stderr.on('data', chunk => {
+      said = (said + chunk).slice(-4000);
+      if (buffered === null) return;
       buffered += chunk;
       const match = buffered.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (match) resolve(match[1]);
+      if (match) { buffered = null; resolve(match[1]); }
     });
-    child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${buffered.slice(-400)}`)));
+    child.on('exit', code => reject(new Error(`Chrome exited (${code}): ${said.slice(-400)}`)));
   });
+  // Browser and supervisor lines that explain a failed shutdown, not
+  // Chrome's routine noise.
+  const shutdownLines = () => said.split('\n')
+    .filter(line => !/registration_request|DEPRECATED_ENDPOINT/.test(line)).slice(-12).join('\n');
   const ws = new WebSocket(endpoint);
   await new Promise((resolve, reject) => {
     ws.addEventListener('open', resolve, {once: true});
@@ -217,13 +226,13 @@ export async function launch({args = []} = {}) {
           // Keep the subreaper alive to stop its own descendants; killing it
           // would orphan precisely the writers whose exit we need to prove.
           child.kill('SIGTERM');
-          throw new Error('owned browser shutdown timed out; profile retained');
+          throw new Error(`owned browser shutdown timed out; profile retained\n${shutdownLines()}`);
         }
         child.kill('SIGKILL');
         await exited;
       }
       if (supervised && child.exitCode !== 0) {
-        throw new Error(`owned browser shutdown failed (${child.exitCode}); profile retained`);
+        throw new Error(`owned browser shutdown failed (${child.exitCode}); profile retained\n${shutdownLines()}`);
       }
       // Only the supervisor's successful exit proves every owned writer was
       // reaped. Keep filesystem retries bounded and report persistent errors.

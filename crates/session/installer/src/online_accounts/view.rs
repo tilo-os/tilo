@@ -425,12 +425,14 @@ impl AccountsForm {
             .push(Box::new(
                 Text::new(&t("installer-online-title")).with_role(TextRole::Title),
             ))
-            .push(Box::new(Text::new(&t("installer-online-private"))))
-            .push(Box::new(self.providers(idle, provider)));
+            .push(Box::new(Text::new(&t("installer-online-private"))));
         column = self.windows_view(column);
         column = self.saved_and_suggested(column, idle);
         column = column
-            .push(Box::new(Text::new(&t("installer-online-manual"))))
+            .push(Box::new(
+                Text::new(&t("installer-online-manual")).with_role(TextRole::Heading),
+            ))
+            .push(Box::new(self.providers(idle, provider)))
             .push(Box::new(Text::new(&t(provider.label()))))
             .push(Box::new(Text::new(&t("installer-online-email"))))
             .push(Box::new(
@@ -489,11 +491,24 @@ impl AccountsForm {
                 ));
             }
         }
-        Box::new(column.push(Box::new(self.actions(status))))
+        Box::new(
+            column
+                .push(Box::new(Text::new(&t("installer-online-skip-note"))))
+                .push(Box::new(self.actions(status))),
+        )
     }
 
     fn saved_and_suggested(&self, mut column: Column, idle: bool) -> Column {
-        for account in self.connected.with(Clone::clone) {
+        let connected = self.connected.with(Clone::clone);
+        if !connected.is_empty() {
+            column = column
+                .push(Box::new(
+                    Text::new(&t("installer-online-connected")).with_role(TextRole::Heading),
+                ))
+                .push(Box::new(Text::new(&t("installer-online-adopted"))))
+                .push(Box::new(Text::new(&t("installer-online-loading"))));
+        }
+        for account in connected {
             column = column
                 .push(Box::new(Text::new(&t(account.provider.label()))))
                 .push(Box::new(Text::new(&account.identity)));
@@ -509,7 +524,11 @@ impl AccountsForm {
         }
         let hints = self.hints.with(Clone::clone);
         if !hints.is_empty() {
-            column = column.push(Box::new(Text::new(&t("installer-online-previous"))));
+            column = column
+                .push(Box::new(
+                    Text::new(&t("installer-online-previous")).with_role(TextRole::Heading),
+                ))
+                .push(Box::new(Text::new(&t("installer-online-suggestions-note"))));
         }
         for (index, hint) in hints.into_iter().enumerate() {
             column = column.push(Box::new(Text::new(&t(hint.provider.label()))));
@@ -612,6 +631,83 @@ fn bounded_field(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn perform(form: &AccountsForm, actions: &str) {
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), form.view(), (1280, 1600));
+        let heads = harness.state_mut().doc.get_heads();
+        let spec = ui::headless::parse_spec(actions).unwrap();
+        for action in &spec.actions {
+            harness.perform(action).unwrap();
+        }
+        assert_eq!(harness.state_mut().doc.get_heads(), heads);
+    }
+
+    #[test]
+    fn suggestion_widgets_prefill_editable_private_details_before_explicit_consent() {
+        let form = AccountsForm::new();
+        form.select_source(Some("source".into())).unwrap();
+        form.accept_hints(
+            "source",
+            vec![AccountHint {
+                provider: Provider::Nextcloud,
+                email: "private@example.org".into(),
+                server: "https://cloud.example.org".into(),
+                sources: account_custody::hints::HintSources::default(),
+            }],
+        )
+        .unwrap();
+        perform(
+            &form,
+            r#"{"actions":[{"perform":{"target":"installer.online.hint.0","action":"activate"}}]}"#,
+        );
+        assert_eq!(form.email.with(Clone::clone), "private@example.org");
+        assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
+        assert!(form.connected.with(Vec::is_empty));
+        assert!(form.drain_commands().is_empty());
+        assert!(!form.files.with(|value| *value));
+        assert!(!form.mail.with(|value| *value));
+        assert!(!form.calendar.with(|value| *value));
+        perform(
+            &form,
+            r#"{"actions":[
+            {"perform":{"target":"installer.online.email","action":"set_value","value":"edited@example.org"}},
+            {"perform":{"target":"installer.online.server","action":"set_value","value":"https://edited.example.org"}},
+            {"perform":{"target":"installer.online.files","action":"toggle_check"}},
+            {"perform":{"target":"installer-online-add","action":"activate"}}
+        ]}"#,
+        );
+        assert!(
+            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+            if request.email == "edited@example.org"
+                && request.server == "https://edited.example.org"
+                && request.files && !request.mail && !request.calendar)
+        );
+    }
+
+    #[test]
+    fn continuing_widget_cancels_pending_request_without_forgetting_connected_services() {
+        let form = AccountsForm::new();
+        let account = ConnectedAccount {
+            provider: Provider::Google,
+            identity: "private@example.org".into(),
+            files: true,
+            mail: false,
+            calendar: true,
+        };
+        form.set_connected(vec![account.clone()]);
+        form.submit(false).unwrap();
+        perform(
+            &form,
+            r#"{"actions":[{"perform":{"target":"installer-online-skip","action":"activate"}}]}"#,
+        );
+        assert!(matches!(
+            &form.drain_commands()[..],
+            [AccountsCommand::SkipOffline]
+        ));
+        assert!(form.connected.with(|accounts| accounts == &[account]));
+        assert!(form.status() == AccountsStatus::SigningIn);
+    }
 
     #[test]
     fn connected_accounts_are_owner_supplied_and_survive_hint_source_changes() {

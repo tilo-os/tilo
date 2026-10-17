@@ -1,18 +1,11 @@
 //! Preparation stays alive across the installer-to-media-writer transition.
 //! Prepared setup is ciphertext; optional home export retains its password in
 //! private zeroizing custody until the streaming writer finishes.
-mod delivery_retirement;
+#[path = "prepared_media/delivery_retirement.rs"]
+pub(in crate::setup) mod delivery_retirement;
 #[cfg(test)]
-pub(in crate::setup) mod native_retained;
-pub(in crate::setup) fn retain_read_medium(
-    key: String,
-    child: std::process::Child,
-    file: std::fs::File,
-    request: tempfile::TempDir,
-) {
-    delivery_retirement::retain_read_medium(key, child, file, request);
-}
-
+#[path = "prepared_media/native_retained.rs"]
+pub(crate) mod native_retained;
 use super::super::{
     media_setup::{DeliveryReceipt, MediaFilesystemGrant, PreparedSetupDelivery},
     portable_transfer::{ExportReview, Purpose},
@@ -29,51 +22,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-#[derive(Clone, Copy)]
-pub(crate) enum ReturnReason {
-    ReviewedHomeChanged,
-    ReviewedHomeUnavailable,
-}
-impl ReturnReason {
-    fn from_state(state: &str) -> Option<Self> {
-        match state {
-            "source-changed" => Some(Self::ReviewedHomeChanged),
-            "source-unavailable" => Some(Self::ReviewedHomeUnavailable),
-            _ => None,
-        }
-    }
-    pub fn error_key(self) -> &'static str {
-        match self {
-            Self::ReviewedHomeChanged => "installer-source-changed",
-            Self::ReviewedHomeUnavailable => "installer-source-unavailable",
-        }
-    }
-    pub fn button_key(self) -> &'static str {
-        match self {
-            Self::ReviewedHomeChanged => "installer-source-review",
-            Self::ReviewedHomeUnavailable => "installer-source-refresh",
-        }
-    }
-    fn state(self) -> &'static str {
-        match self {
-            Self::ReviewedHomeChanged => "source-changed",
-            Self::ReviewedHomeUnavailable => "source-unavailable",
-        }
-    }
-}
-#[derive(Clone)]
-pub(crate) struct Navigation {
-    pub artifact: ui::LocalState<Option<Arc<PreparedMedia>>>,
-    pub showing_media: ui::LocalState<bool>,
-    pub reason: ui::LocalState<Option<ReturnReason>>,
-}
-impl Navigation {
-    pub fn review_home(&self, reason: ReturnReason) {
-        self.reason.set(Some(reason));
-        self.showing_media.set(false);
-    }
-}
-
+use super::prepared_media::{PreparedMedia, ReturnReason};
 #[derive(Clone)]
 struct TaskProgress {
     cancel: Arc<AtomicBool>,
@@ -158,7 +107,7 @@ struct PreparationWork<'a, R> {
 #[derive(Default)]
 pub(crate) struct Delivery {
     artifact: Option<Arc<PreparedMedia>>,
-    target: Option<crate::model::TargetDrive>,
+    target: Option<imager_backend::imager_model::TargetDrive>,
     worker: Option<std::sync::mpsc::Receiver<io::Result<Delivered>>>,
     joined: Option<std::thread::JoinHandle<()>>,
     cancel: Option<Arc<AtomicBool>>,
@@ -273,7 +222,7 @@ impl Delivery {
                 })
         })
     }
-    pub fn expectation(&self) -> Option<&crate::model::PreparedSetupExpectation> {
+    pub fn expectation(&self) -> Option<&imager_backend::imager_model::PreparedSetupExpectation> {
         self.artifact
             .as_ref()
             .map(|artifact| artifact.expectation())
@@ -293,7 +242,7 @@ impl Delivery {
         self.home_receipt = None;
         self.state = "waiting-for-write";
     }
-    pub fn written(&mut self, target: crate::model::TargetDrive) {
+    pub fn written(&mut self, target: imager_backend::imager_model::TargetDrive) {
         self.target = Some(target);
         self.receipt = None;
         self.awaiting_setup_receipt = None;
@@ -584,7 +533,7 @@ impl Drop for Delivery {
 }
 
 #[derive(Default)]
-pub(super) struct Controller {
+pub(crate) struct Controller {
     worker: Option<std::sync::mpsc::Receiver<io::Result<Arc<PreparedMedia>>>>,
     prepared: Option<Arc<PreparedMedia>>,
     joined: Option<std::thread::JoinHandle<()>>,
@@ -595,7 +544,7 @@ pub(super) struct Controller {
     capacity_review: Arc<Mutex<Option<(String, super::super::staging::plan::Plan)>>>,
 }
 impl Controller {
-    pub fn start_with_selections(
+    pub(in crate::setup) fn start_with_selections(
         &mut self,
         identity: Arc<PreparedIdentity>,
         accounts: Option<super::accounts::PreparedAccounts>,
@@ -911,29 +860,21 @@ impl Drop for Controller {
     }
 }
 
-pub(in crate::setup) struct MediaSelections {
-    pub home_applications: bool,
-    pub home: Option<Arc<super::super::portable_home_media::HomeSource>>,
-    pub retained: Option<super::super::migration_intent::MigrationIntent>,
-    pub planned_direct: Option<super::super::staging::plan::Plan>,
-    pub applications: Option<PortableAppsSelection>,
-    pub browser: Option<super::browser::SelectedSources>,
-    pub sessions: Option<super::service_sessions::SelectedSources>,
-}
-pub(in crate::setup) struct PortableAppsSelection {
-    pub source: Arc<super::super::flatpak_transfer::portable::PortableFlatpakSource>,
-    pub include_user_state: bool,
-}
+use super::prepared_media::{MediaSelections, PortableAppsSelection};
+#[path = "prepared_media/fresh.rs"]
 mod fresh;
+#[path = "prepared_media/offline.rs"]
 pub(crate) mod offline;
 #[cfg(target_os = "linux")]
+#[path = "prepared_media/original_copy.rs"]
 mod original_copy;
 #[cfg(test)]
+#[path = "prepared_media/recovery_tests.rs"]
 mod recovery_tests;
 
 struct PreparedBrowser {
     source: super::browser::SelectedSources,
-    plan: browser_continuity::Plan,
+    plan: imager_backend::browser_selection::Plan,
     expectation: super::super::browser_transfer::Expectation,
     archive: Mutex<super::super::portable_transfer::ImportReview>,
 }
@@ -942,14 +883,14 @@ struct PreparedApplications {
     expectation: super::super::flatpak_transfer::portable::Expectation,
     archive: Mutex<super::super::portable_transfer::ImportReview>,
 }
-pub(crate) struct PreparedMedia {
-    _custody: tempfile::TempDir,
+pub(crate) struct NativePreparedMedia {
+    _custody: imager_backend::session::BackendSession,
     delivery: Mutex<PreparedSetupDelivery>,
     public_key: [u8; 32],
     account_ids: Vec<String>,
     sealed_bytes: u64,
     reserved_data_bytes: AtomicU64,
-    expectation: crate::model::PreparedSetupExpectation,
+    expectation: imager_backend::imager_model::PreparedSetupExpectation,
     install_profile: Option<prepared_setup::PublicInstallProfile>,
     retained: Option<super::super::migration_intent::MigrationIntent>,
     pending_applications_intent: Option<super::super::migration_intent::MigrationIntent>,
@@ -970,7 +911,7 @@ pub(crate) struct PreparedMedia {
             super::super::staging::plan::Plan,
         )>,
     >,
-    transfer_generation: Mutex<Option<Arc<Self>>>,
+    transfer_generation: Mutex<Option<Arc<PreparedMedia>>>,
 }
 struct HomePreparation {
     source: Arc<super::super::portable_home_media::HomeSource>,
@@ -1176,14 +1117,12 @@ impl PreparedMedia {
         if let Some(home) = &home {
             home.validate_with_cancel(cancel)?;
         }
-        tilo_unlock_protocol::startup_secret::validate(&password, false)
-            .map_err(io::Error::other)?;
-        let custody = tempfile::Builder::new()
-            .prefix("tilo-prepared-media-")
-            .tempdir()?;
-        let root = custody.path().canonicalize()?;
+        imager_backend::startup_password::validate(&password).map_err(io::Error::other)?;
+        let custody = imager_backend::session::BackendSession::create(
+            imager_backend::session::SessionIntent::PrepareMedia,
+        )?;
+        let root = custody.path().to_path_buf();
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
         let tree = root.join("setup");
         std::fs::create_dir(&tree)?;
         std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o700))?;
@@ -1305,18 +1244,13 @@ impl PreparedMedia {
                 .map_err(|_| io::Error::other("Selected accounts could not be prepared"))?;
         }
         if !account_ids.is_empty() {
-            let artifact = super::super::account_transfer::PasswordSealedAccounts::read(
+            if super::super::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
                 &tree.join(prepared_setup::ACCOUNTS_FILE),
+                password.as_bytes(),
+                binding.as_bytes(),
+                &account_ids,
             )
-            .map_err(|_| io::Error::other("Selected accounts could not be inspected"))?;
-            let ids: Vec<accounts::AccountId> = account_ids
-                .iter()
-                .cloned()
-                .map(accounts::AccountId::new)
-                .collect();
-            if artifact
-                .requires_protected_consumer(password.as_bytes(), binding.as_bytes(), &ids)
-                .map_err(|_| io::Error::other("Selected accounts could not be inspected"))?
+            .map_err(|_| io::Error::other("Selected accounts could not be inspected"))?
             {
                 manifest.account_custody_protocol = Some(1);
             }
@@ -1404,7 +1338,7 @@ impl PreparedMedia {
                 .ok_or_else(|| io::Error::other("Prepared media capacity overflows"))?;
         }
         std::fs::remove_dir_all(&tree)?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new(Self::from_native(NativePreparedMedia {
             _custody: custody,
             delivery: Mutex::new(delivery),
             public_key: identity.public_key(),
@@ -1437,7 +1371,7 @@ impl PreparedMedia {
                     reservation: home_reservation,
                 }))
             }),
-        }))
+        })))
     }
     fn capacity_with_home(&self, home: u64) -> io::Result<u64> {
         [
@@ -1690,7 +1624,7 @@ impl PreparedMedia {
         }
         Ok(())
     }
-    pub fn validate_for_write(&self, cancel: &AtomicBool) -> io::Result<()> {
+    pub fn native_validate_for_write(&self, cancel: &AtomicBool) -> io::Result<()> {
         self.validate_recovery(cancel)?;
         if let Some(identity) = &self.current_identity {
             identity.validate()?;
@@ -1868,7 +1802,7 @@ impl PreparedMedia {
             })
         })
     }
-    pub fn projection(&self) -> serde_json::Value {
+    fn native_projection(&self) -> serde_json::Value {
         serde_json::json!({"public_key":hex::encode(self.public_key),
             "account_ids":self.account_ids,"sealed_bytes":self.sealed_bytes,
             "setup_binding":self.manifest.setup_binding,
@@ -2014,23 +1948,23 @@ impl PreparedMedia {
         }
         Ok(Delivered::Complete { setup, home })
     }
-    pub fn expectation(&self) -> &crate::model::PreparedSetupExpectation {
+    pub fn native_expectation(&self) -> &imager_backend::imager_model::PreparedSetupExpectation {
         &self.expectation
     }
     pub(crate) fn install_profile(&self) -> Option<&prepared_setup::PublicInstallProfile> {
         self.install_profile.as_ref()
     }
-    pub(crate) fn account_custody_protocol(&self) -> Option<u32> {
+    pub(crate) fn native_account_custody_protocol(&self) -> Option<u32> {
         self.manifest.account_custody_protocol
     }
 
-    pub(crate) fn service_session_protocol(&self) -> Option<u32> {
+    pub(crate) fn native_service_session_protocol(&self) -> Option<u32> {
         self.manifest
             .service_sessions
             .as_ref()
             .map(|sessions| sessions.consumer_protocol)
     }
-    pub(crate) fn applications_protocol(&self) -> Option<u32> {
+    pub(crate) fn native_applications_protocol(&self) -> Option<u32> {
         if self.manifest.offline_applications.is_some() {
             return Some(2);
         }
@@ -2040,7 +1974,7 @@ impl PreparedMedia {
             .as_ref()
             .and_then(|applications| (applications.consumer_protocol == 2).then_some(2))
     }
-    pub(crate) fn home_archive_protocol(&self) -> Option<u32> {
+    pub(crate) fn native_home_archive_protocol(&self) -> Option<u32> {
         (self.manifest.portable_home.is_some() || self.manifest.portable_flatpak.is_some())
             .then_some(super::super::home_admission::ARCHIVE_PROTOCOL)
     }
@@ -2157,14 +2091,12 @@ fn prepare_applications(
     use super::super::{
         flatpak_transfer::portable::StageGrant,
         migration::PinnedDirectory,
-        portable_home_media::MediaGrant,
         portable_transfer::{ImportReview, Purpose},
     };
     let pin = PinnedDirectory::open_absolute(root)?;
     pin.create_child(std::ffi::OsStr::new("applications-stage"))?;
     pin.create_child(std::ffi::OsStr::new("applications-journals"))?;
-    let allocation = MediaGrant::from_reviewed_pin(pin.clone())?
-        .limits()?
+    let allocation = super::super::portable_home_media::reviewed_directory_limits(pin.clone())?
         .plaintext_bytes
         / 2;
     let stage = root.join("applications-stage");
@@ -2181,7 +2113,7 @@ fn prepare_applications(
     )?;
     let operation = uuid::Uuid::new_v4().to_string();
     let package = root.join(format!("applications-{operation}.sealed"));
-    let limits = MediaGrant::from_reviewed_pin(pin)?.limits()?;
+    let limits = super::super::portable_home_media::reviewed_directory_limits(pin)?;
     let expectation = staged.seal_reporting(
         &package,
         &operation,
@@ -2209,6 +2141,7 @@ fn prepare_applications(
 }
 
 #[cfg(test)]
+#[path = "prepared_media/capacity_tests.rs"]
 mod capacity_tests;
 #[cfg(test)]
 mod tests {
@@ -2604,7 +2537,7 @@ mod tests {
         )
         .unwrap();
         let password = "a sufficiently long installation password";
-        let mut draft = crate::model::InstallProfile::default();
+        let mut draft = imager_backend::imager_model::InstallProfile::default();
         draft.user.username = "ada".into();
         draft.user.full_name = "Ada Lovelace".into();
         let profile = prepared_setup::PublicInstallProfile::from_draft(&draft).unwrap();
@@ -2667,7 +2600,6 @@ mod tests {
                 Installation, InstalledRef,
                 portable::{self, PortableFlatpakSource},
             },
-            migration::PinnedDirectory,
             portable_home_media::MediaGrant,
         };
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -2734,9 +2666,7 @@ mod tests {
         let storage = root.join("medium");
         std::fs::create_dir(&storage).unwrap();
         std::fs::set_permissions(&storage, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let media =
-            MediaGrant::from_reviewed_pin(PinnedDirectory::open_absolute(&storage).unwrap())
-                .unwrap();
+        let media = MediaGrant::open(&storage).unwrap();
         let apps = prepared.applications.as_ref().unwrap();
         let mut archive = apps.archive.lock().unwrap();
         media
@@ -3266,6 +3196,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "prepared_media/browser_tests.rs"]
 mod browser_tests;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -3317,6 +3248,7 @@ pub(crate) fn home_media_fixture(root: &std::path::Path) -> Arc<PreparedMedia> {
 }
 
 #[cfg(test)]
+#[path = "prepared_media/session_tests.rs"]
 mod session_tests;
 
 #[cfg(all(test, target_os = "linux"))]
@@ -3376,4 +3308,205 @@ pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc
     assert_eq!(artifact.applications_protocol(), Some(2));
     assert!(artifact.manifest.portable_home.is_none());
     artifact
+}
+
+impl PreparedMedia {
+    fn from_native(native: NativePreparedMedia) -> Self {
+        Self {
+            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
+            api: super::prepared_media::PreparedApi {
+                projection: Self::native_projection,
+                expectation: Self::native_expectation,
+                account_custody_protocol: Self::native_account_custody_protocol,
+                service_session_protocol: Self::native_service_session_protocol,
+                applications_protocol: Self::native_applications_protocol,
+                home_archive_protocol: Self::native_home_archive_protocol,
+                validate_for_write: Self::native_validate_for_write,
+                install_profile_draft: |prepared| {
+                    prepared
+                        .install_profile()
+                        .map(|profile| profile.to_draft())
+                        .transpose()
+                },
+            },
+        }
+    }
+}
+impl std::ops::Deref for PreparedMedia {
+    type Target = NativePreparedMedia;
+    fn deref(&self) -> &Self::Target {
+        self.native_payload
+            .get()
+            .expect("prepared media retains its native owner")
+    }
+}
+
+impl std::ops::DerefMut for PreparedMedia {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.native_payload
+            .get_mut()
+            .expect("prepared media retains its native owner")
+    }
+}
+
+impl super::prepared_media::DeliveryState for Delivery {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn finish_close(&mut self) -> std::io::Result<()> {
+        Delivery::finish_close(self)
+    }
+    fn has_artifact(&self, artifact: &Arc<PreparedMedia>) -> bool {
+        Delivery::has_artifact(self, artifact)
+    }
+    fn artifact(&self) -> Option<Arc<PreparedMedia>> {
+        Delivery::artifact(self)
+    }
+    fn mark_source_changed(&mut self) {
+        Delivery::mark_source_changed(self)
+    }
+    fn mark_source_unavailable(&mut self) {
+        Delivery::mark_source_unavailable(self)
+    }
+    fn review_reason(&self) -> Option<ReturnReason> {
+        Delivery::review_reason(self)
+    }
+    fn reserved_data_bytes(&self) -> u64 {
+        Delivery::reserved_data_bytes(self)
+    }
+    fn expectation(&self) -> Option<&imager_backend::imager_model::PreparedSetupExpectation> {
+        Delivery::expectation(self)
+    }
+    fn requires_data_partition(&self) -> bool {
+        Delivery::requires_data_partition(self)
+    }
+    fn writing(&mut self) {
+        Delivery::writing(self)
+    }
+    fn written(&mut self, target: imager_backend::imager_model::TargetDrive) {
+        Delivery::written(self, target)
+    }
+    fn awaiting_original_boot(&self) -> bool {
+        Delivery::awaiting_original_boot(self)
+    }
+    fn original_boot_drive(&self) -> Option<String> {
+        Delivery::original_boot_drive(self)
+    }
+    fn pending(&self) -> bool {
+        Delivery::pending(self)
+    }
+    fn busy(&self) -> bool {
+        Delivery::busy(self)
+    }
+    fn start(&mut self, root: std::path::PathBuf) -> Result<(), &'static str> {
+        Delivery::start(self, root)
+    }
+    fn requires_offline_export(&self) -> bool {
+        Delivery::requires_offline_export(self)
+    }
+    fn start_automatic(&mut self) -> Result<(), &'static str> {
+        Delivery::start_automatic(self)
+    }
+    fn progress_label(&self) -> Option<String> {
+        Delivery::progress_label(self)
+    }
+    fn cancel(&self) -> Result<(), &'static str> {
+        Delivery::cancel(self)
+    }
+    fn poll(&mut self) -> bool {
+        Delivery::poll(self)
+    }
+    fn needs_source_review(&self) -> bool {
+        Delivery::needs_source_review(self)
+    }
+    fn failed(&self) -> bool {
+        Delivery::failed(self)
+    }
+    fn projection(&self) -> serde_json::Value {
+        Delivery::projection(self)
+    }
+}
+impl std::ops::Deref for super::prepared_media::Delivery {
+    type Target = Delivery;
+    fn deref(&self) -> &Self::Target {
+        self.native
+            .get()
+            .expect("native adapter installed")
+            .as_any()
+            .downcast_ref()
+            .expect("matching native adapter")
+    }
+}
+impl std::ops::DerefMut for super::prepared_media::Delivery {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.native
+            .get_mut()
+            .expect("native adapter installed")
+            .as_any_mut()
+            .downcast_mut()
+            .expect("matching native adapter")
+    }
+}
+
+impl super::prepared_media::ControllerState for Controller {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn busy(&self) -> bool {
+        Controller::busy(self)
+    }
+    fn cancel(&self) -> Result<(), &'static str> {
+        Controller::cancel(self)
+    }
+    fn phase_key(&self) -> Option<String> {
+        Controller::phase_key(self)
+    }
+    fn progress_label(&self) -> Option<String> {
+        Controller::progress_label(self)
+    }
+    fn take_progress_changed(&mut self) -> bool {
+        Controller::take_progress_changed(self)
+    }
+    fn poll(&mut self) -> Option<Result<Arc<PreparedMedia>, &'static str>> {
+        Controller::poll(self)
+    }
+    fn require_source_review(&mut self, reason: ReturnReason) {
+        Controller::require_source_review(self, reason)
+    }
+    fn review_reason(&self) -> Option<ReturnReason> {
+        Controller::review_reason(self)
+    }
+    fn active_home_projection(&self) -> Option<serde_json::Value> {
+        Controller::active_home_projection(self)
+    }
+    fn projection(&self) -> serde_json::Value {
+        Controller::projection(self)
+    }
+}
+impl std::ops::Deref for super::prepared_media::Controller {
+    type Target = Controller;
+    fn deref(&self) -> &Self::Target {
+        self.native
+            .get()
+            .expect("native adapter installed")
+            .as_any()
+            .downcast_ref()
+            .expect("matching native adapter")
+    }
+}
+impl std::ops::DerefMut for super::prepared_media::Controller {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.native
+            .get_mut()
+            .expect("native adapter installed")
+            .as_any_mut()
+            .downcast_mut()
+            .expect("matching native adapter")
+    }
 }

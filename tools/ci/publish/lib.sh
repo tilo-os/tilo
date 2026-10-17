@@ -8,6 +8,9 @@
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 scratch=${TMPDIR:-/tmp}
+# Build scripts that prepare test fixtures (tilo-fs) write them to this cache; the source tree
+# is read-only in t's sandbox, so it lives in the build directory.
+export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_root/target}/test-assets}
 
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
@@ -24,6 +27,55 @@ channel() {
 
 require_commit() {
   [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a commit: ${T_COMMIT:-unset}"
+}
+
+# An identity token from t for audience $1 (`id_token = ["$1"]` in the check), on stdout: a JWT
+# naming this repository, reference and commit, valid for minutes. Parsed with sed because the
+# skopeo image has curl but no jq.
+id_token() {
+  [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} && -n ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} ]] \
+    || die "no identity token for $1: the check needs id_token = [\"$1\"] and a trusted run"
+  local token
+  token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$1" \
+    | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]*\)".*/\1/p') \
+    || die "t gave no identity token for $1"
+  [[ -n $token ]] || die "t gave no identity token for $1"
+  printf '%s' "$token"
+}
+
+# buildah without a daemon, as root in t's sandbox: chroot isolation and the vfs driver need no
+# user namespace of their own and no writable root. The store lives under $scratch/NAME; `b`
+# runs buildah on it.
+use_buildah() {
+  local store=$scratch/${1:-buildah}
+  export STORAGE_DRIVER=vfs BUILDAH_ISOLATION=chroot
+  mkdir -p "$store"
+  # The image's own storage.conf names an additional image store under its read-only root.
+  printf '[storage]\ndriver = "vfs"\n' > "$store/storage.conf"
+  export CONTAINERS_STORAGE_CONF=$store/storage.conf
+  buildah_root=$store/root
+  buildah_runroot=$store/run
+}
+b() { buildah --root "$buildah_root" --runroot "$buildah_runroot" "$@"; }
+
+# Copy the repository into DEST without what IGNOREFILE (a .dockerignore without `!` lines)
+# leaves out. BuildKit applies such a file to every use of the context; buildah only to COPY,
+# not to a RUN's bind mount of it, so builds that bind the context get a filtered copy.
+stage_context() {
+  local ignorefile=$1 dest=$2 pattern excludes=()
+  grep -q '^!' "$ignorefile" && die "$ignorefile has exceptions, which stage_context does not apply"
+  while IFS= read -r pattern; do
+    pattern=${pattern%/}
+    case $pattern in
+      '' | '#'*) ;;
+      '**/'*) excludes+=(--no-anchored "--exclude=${pattern#'**/'}") ;;
+      *) excludes+=(--anchored "--exclude=./$pattern") ;;
+    esac
+  done < "$ignorefile"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
 }
 
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.

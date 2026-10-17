@@ -4,6 +4,7 @@
 //! its enrollment pins, which also carries the room's channel governance
 //! between this device and the room's steward. The room's governor applies a
 //! foreign device's limits to this device there, as it does to every member.
+use neighbour_wire::NeighbourMsg;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -23,10 +24,8 @@ use tilo_joined_room::{
     NativeWorkspaceOwner,
     session::{self, Connect, Input, Scope},
 };
-use tilo_peer_state::{
-    InputDisposition, NeighbourMsg,
-    owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService},
-};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::InputDisposition;
 use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tokio::sync::Notify;
 

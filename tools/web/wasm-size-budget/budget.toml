@@ -16,6 +16,6 @@ headroom = 0.01
 # start module, which the page loads first; each app's own code, including
 # its instantiations of the resource, action and view framework, is in the
 # module fetched when the app first opens and is not counted here. Measured
-# at 23398271 bytes by app-sdk run 114404.
+# at 22461366 bytes by the sdk-web-size steps at f5024bd931.
 [bundles.desktop]
-bytes = 23658496
+bytes = 22740992

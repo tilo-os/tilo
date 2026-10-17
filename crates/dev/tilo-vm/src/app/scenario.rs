@@ -43,7 +43,10 @@ enum FirstBootSurface {
 fn is_identity_setup(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     text.contains("tilo identity setup")
-        && (text.contains("create your local")
+        // The first step (shell onboarding-intro-title / onboarding-choice-existing).
+        && (text.contains("set up your tilo identity")
+            || text.contains("use my existing tilo identity")
+            || text.contains("create your local")
             || text.contains("connect an existing identity")
             || text.contains("back up your tilo identity")
             || text.contains("your identity is ready"))
@@ -1684,7 +1687,12 @@ impl App {
                 .output(&plan.vm(&["shot", "first-boot-observe"]))
                 && shot.success
             {
+                // Canonical: on macOS /tmp is a link to /private/tmp, and
+                // Homebrew's tesseract (leptonica) rewrites any path that
+                // starts with /tmp to its own temporary directory, where the
+                // shot is not, so the unlock prompt was never recognized.
                 let source = PathBuf::from(shot.stdout.trim());
+                let source = std::fs::canonicalize(&source).unwrap_or(source);
                 if source.is_file()
                     && let Ok(ocr) = std::process::Command::new("tesseract")
                         .arg(&source)
@@ -1863,6 +1871,12 @@ mod tests {
         assert!(super::is_identity_setup(
             "Tilo identity setup\nCreate your local identity"
         ));
+        // Tesseract's reading of the first step on an installed target.
+        assert!(super::is_identity_setup(
+            "Tilo identity setup Step1of5\n\nSet up your Tilo identity\n\n\
+             Use my existing Tilo identity >\n4 Create anew identity >"
+        ));
+        assert!(!super::is_identity_setup("Set up your Tilo identity"));
         assert!(!super::is_identity_setup(
             "Fedora Linux 44\nscenario-tilo login:"
         ));

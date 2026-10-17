@@ -92,6 +92,7 @@ impl Future for Load {
                 return Poll::Ready(loaded);
             }
             state.waker = Some(context.waker().clone());
+            drop(state);
             return Poll::Pending;
         }
         let slot = Arc::new(Slot::default());

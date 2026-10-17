@@ -1,4 +1,5 @@
 //! Pending source-offline preparation; no restart or export is executed here.
+#[path = "offline/applications.rs"]
 mod applications;
 use super::*;
 use crate::{
@@ -6,6 +7,7 @@ use crate::{
     model::{Source, SourceIdentity, TargetDrive},
 };
 use std::fs::{File, OpenOptions};
+#[cfg(all(test, feature = "native-capture-qualification"))]
 use std::os::unix::fs::PermissionsExt;
 
 /// Retains existing image and media descriptor grants through resealing.
@@ -489,10 +491,9 @@ fn reseal_amendment(
         #[cfg(target_os = "linux")]
         Amendment::StagingCopy(_) | Amendment::ComputerApplications(_) => 0,
     };
-    let custody = tempfile::Builder::new()
-        .prefix("tilo-pending-offline-")
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()?;
+    let custody = imager_backend::session::BackendSession::create(
+        imager_backend::session::SessionIntent::AmendOfflineMedia,
+    )?;
     let parent_path = custody.path().join("original.sealed");
     let mut output = OpenOptions::new()
         .read(true)
@@ -602,7 +603,7 @@ fn reseal_amendment(
     })?;
     std::fs::remove_dir_all(&quarantine)?;
     std::fs::remove_file(&parent_path)?;
-    Ok(Arc::new(PreparedMedia {
+    Ok(Arc::new(PreparedMedia::from_native(NativePreparedMedia {
         _custody: custody,
         delivery: Mutex::new(delivery),
         public_key: original.public_key,
@@ -644,7 +645,7 @@ fn reseal_amendment(
                 .clone(),
         ),
         transfer_generation: Mutex::new(None),
-    }))
+    })))
 }
 
 fn copy_sidecar(
@@ -1228,34 +1229,7 @@ mod tests {
     }
 }
 
-pub(in crate::setup) fn original_source_plans(
-    plan: &super::super::super::migration_handoff::Plan,
-) -> io::Result<Vec<Vec<u8>>> {
-    plan.validate()?;
-    // This is a geometry check, after validating the full retained selection.
-    // Home geometry does not need to embed the complete public app inventory;
-    // every installation source geometry is still independently checked below.
-    let mut geometry = plan.clone();
-    geometry.flatpak_inventory = None;
-    let mut plans = vec![geometry.bytes()?];
-    if plan.categories.flatpak {
-        let inventory = plan
-            .flatpak_inventory
-            .as_ref()
-            .ok_or_else(|| io::Error::other("Pending selected installations are missing"))?;
-        let inventory = super::super::super::flatpak_transfer::HandoffInventory::parse(
-            &serde_json::to_vec(inventory)?,
-        )
-        .map_err(io::Error::other)?;
-        inventory
-            .validate_operation(&plan.operation_id)
-            .map_err(io::Error::other)?;
-        for (_, bytes) in inventory.sources() {
-            plans.push(bytes.to_vec());
-        }
-    }
-    Ok(plans)
-}
+pub(in crate::setup) use imager_backend::setup::source_geometry::original_source_plans;
 
 pub(crate) struct PreparedOriginalMedia {
     pub artifact: Arc<PreparedMedia>,

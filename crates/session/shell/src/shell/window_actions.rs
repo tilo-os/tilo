@@ -188,12 +188,6 @@ impl DuplicateError {
 /// workspace, or a strip/group/tab list gone empty underneath the
 /// active ids); [`DuplicateError::ForeignWindow`] when the focused tab
 /// is a client-owned or peer surface the compositor can't clone.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "every field this reads is chained from the previous lookup (ws -> strip -> group \
-              -> tab), so the ChromeState borrow can't be dropped before the last one without \
-              cloning each step early for no real gain"
-)]
 pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
@@ -905,11 +899,6 @@ mod tests {
     }
 
     /// The group the user is looking at, and the number of tabs in it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the borrow is used for exactly one chained expression that is this fn's tail \
-                  return value; there is no later point to drop it earlier than"
-    )]
     fn focused_group_tab_count(st: &ChromeState) -> usize {
         let g = focused_group(st).expect("a focused group");
         let tree = st.tree();

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::doc_markdown,
-    reason = "PipeWire and wpctl are established product names"
-)]
 //! Audio pane — output volume + mute, microphone input level, device
 //! capabilities, diagnostics, and per-application routing.
 //!

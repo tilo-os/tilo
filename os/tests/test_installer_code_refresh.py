@@ -253,7 +253,7 @@ class Guest(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); state = root / 'state'; state.mkdir(mode=0o700)
-            files = {'usr/libexec/tilo-install': b'first', 'usr/libexec/tilo-install-dev-ssh.py': b'second'}
+            files = {'usr/libexec/tilo-install': b'first', 'usr/libexec/tilo-boot-mount-contract': b'second'}
             for relative in files:
                 path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'old')
             previous = {'sha256':'b'*64, 'state':'applied'}
@@ -261,7 +261,7 @@ class Guest(unittest.TestCase):
             calls = []
             def command(*argv):
                 calls.append(argv)
-                if argv[:2] == ('mount', '--bind') and argv[-1].endswith('tilo-install-dev-ssh.py'):
+                if argv[:2] == ('mount', '--bind') and argv[-1].endswith('tilo-boot-mount-contract'):
                     raise ValueError('simulated mount failure')
                 return ''
             descriptor = os.open(state / 'lock', os.O_CREAT | os.O_RDWR, 0o600)
@@ -344,7 +344,7 @@ class Guest(unittest.TestCase):
 
 class Bootstrap(unittest.TestCase):
     def test_promotion_receipt_masks_only_cmdline_payload_and_virtual_size(self):
-        probe=load('promotion_pe_identity',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        probe=load('promotion_pe_identity',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
         raw=bytearray(512); raw[:2]=b'MZ'; struct.pack_into('<I',raw,60,64); raw[64:68]=b'PE\0\0'
         struct.pack_into('<H',raw,70,1); raw[88:96]=b'.cmdline'; struct.pack_into('<I',raw,96,4)
         struct.pack_into('<II',raw,104,64,256); raw[256:260]=b'old\0'
@@ -357,7 +357,7 @@ class Bootstrap(unittest.TestCase):
 
     def test_promotion_metadata_is_bounded_before_archive_or_scratch_writes(self):
         builder=load('bounded_promotion_builder',ROOT/'dev/make-installer-probe-fixture.py')
-        probe=load('bounded_promotion_probe',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        probe=load('bounded_promotion_probe',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); (root/'input').write_bytes(b'kernel')
             for metadata in ([], {'composefs_digest':'a'*128,'origin':'x'*16385,
@@ -371,7 +371,7 @@ class Bootstrap(unittest.TestCase):
 
     def test_original_ci_boot_fixture_validates_real_archive_and_refuses_tampering(self):
         from types import SimpleNamespace
-        probe=load('original_boot_fixture',ROOT/'usr/libexec/tilo-installer-code-target-probe.py')
+        probe=load('original_boot_fixture',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
         builder=load('boot_fixture_builder',ROOT/'dev/make-installer-probe-fixture.py')
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary); root=base/'inputs'; root.mkdir()
@@ -403,7 +403,7 @@ class Bootstrap(unittest.TestCase):
 
     def test_seed_validation_precedes_any_bind_and_exec_uses_frozen_daemon(self):
         from types import SimpleNamespace
-        bootstrap = load('refresh_bootstrap_test', ROOT / 'usr/libexec/tilo-installer-code-bootstrap.py')
+        bootstrap = load('refresh_bootstrap_test', ROOT / 'dev/installer-code-bootstrap/tilo-installer-code-bootstrap.py')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             files = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',

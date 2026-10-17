@@ -26,13 +26,24 @@ itself; the page seeds its own desktop and documents.
 | request | answer |
 |---|---|
 | `POST /rooms` | `201 {roomId, origin, room, userPublicKey, expiresAt, pageTicket, joinUrl, admit, events, invitations, app}`; `503` when all rooms are in use |
-| `POST /rooms/<id>/invitations` `{record?}` | `201 {joinUrl, ticket}`: one more guest, whose link opens `record` (else the room's Writer); `429` beyond `TILO_ROOMS_MAX_GUESTS`. The body may be empty |
+| `POST /rooms/<id>/invitations?key=<owner key>` `{record?}` | `201 {joinUrl, ticket}`: one more guest, whose link opens `record` (else the room's Writer); `429` beyond `TILO_ROOMS_MAX_GUESTS`. The body may be empty. Owner only: see below |
 | `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403 {error}` for a spent, unknown or busy ticket, or when the room certified nobody for that code (no browser showed it within a minute, more than one did, or the policy refused it), which leaves the ticket usable |
-| `GET /rooms/<id>/events` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends |
+| `GET /rooms/<id>/events?key=<owner key>` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends. Owner only: see below |
 | `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs` and `page.html` |
 | `GET /open/<path>` | the same bundle as the web entry guest links name: `index.html` (desktop), `app/index.html` (full tab) |
 | `GET /open/entry.json` | `{tickets}`: where the entry pages redeem a link's guest ticket (`<api>/rooms/`) |
 | `GET /healthz` | `{ok: true}` |
+
+Minting invitations and watching members belong to whoever created the
+room. `POST /rooms` answers `invitations` and `events` as complete URLs that
+carry the room's owner key, 32 random bytes in hex, in the query (an
+`EventSource` cannot send headers); pages use them as given and never build
+them. Everything a guest link shows is public: the room's host is its
+service id and the link names the room's uuid. So neither route answers
+without the key, a wrong key or the uuid in place of the id reads as `404 no
+such room`, and a guest link grants exactly its one guest's admission.
+`admit` takes no key: it spends a single-use ticket on the pairing code a
+browser shows, and accepts the room's id or its uuid.
 
 `joinUrl` is a link in the web link grammar
 (docs/architecture/web-routing.md):
@@ -198,12 +209,13 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
 | `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep, `docs/benchmarks/room-host-capacity-2026-10.md`) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
-| `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
+| `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
 | `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
+| `TILO_ROOMS_PRUNE_AFTER_MINS` | `60` | minutes (1–525600) a guest may go without a session before the relay removes them from the room, so the room does not slow with every visitor it ever had; a pruned guest who comes back joins through the door again as the same person, and their address is not cooled down. Owners and moderators are never pruned |
 | `TILO_ROOMS_RESET_SECS` | `21600` | every this many seconds, snapshot the seeded notes and canvas (last 10 kept under `<state>/relay/snapshots/<app>/`) and reset them to their starting content; chat is never reset; `0` disables |
 
 Every guest and every spectator holds a web session on the child relay, so
@@ -254,9 +266,9 @@ that change: `plan` picks the newest main commit with both images (or
 and platform in the registry and prints the exact manifest diff and pull
 request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
 the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
-reports which revision each service runs and how far main is ahead. The
-`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
-every Monday and the promotion on a manual run. Promotions are batched: each
+reports which revision each service runs and how far main is ahead. t's
+`cloud-drift` check runs `drift` every Monday, and `t dispatch cloud-promotion
+--ref stable` the promotion (`t.toml`). Promotions are batched: each
 web entry deploy makes open tabs offer a reload.
 
 Locally, `dev/run.py` runs the persistent room as production does: this
@@ -277,7 +289,33 @@ starts `run.py` from prebuilt binaries and a bundle and writes
 `summary.json` and `summary.md`; the `Browser / authentication` workflow
 runs it nightly and on demand.
 
+`dev/limits-e2e.py` checks the persistent room's enabled limits and what
+it keeps, over plain HTTP with no browser or bundle: on scratch state with
+small caps it fills the guest cap, the spectator cap and each per-address
+join window exactly, checks every refusal's status, wording and
+`Retry-After`, that a refused visitor holds no seat and that one told "full"
+gets in once an unused seat's hold ends, the caps and refusal counters on
+`/metrics`; then it restarts the service and checks the room, its spectator
+person, the guest ledger and each address's join window survive, that each
+seeded app keeps exactly its ten newest reset snapshots (chat none), and
+that SIGTERM stops the service and its relay within 20 seconds (eu1's
+grace period). The same workflow runs it before the browser check.
+
+`dev/owner-key-e2e.py` checks a throwaway room's owner routes the same way:
+it creates a room as a page does, then checks that nothing a guest link
+shows (the room's host, its uuid, the link without its ticket), a wrong key
+or the uuid with the right key mints an invitation or opens the member
+stream, each refused as no such room and spending no guest slot; that the
+answer's `invitations` and `events` URLs work as given; and that an invitee
+still redeems their ticket at the room's uuid. It runs with `limits-e2e.py`.
+
 ```sh
+python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
+  --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+  --out target/limits-e2e
+python3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py \
+  --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+  --out target/owner-key-e2e
 node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle DIR \
   --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
   --out target/auth-e2e [--allow-dev]

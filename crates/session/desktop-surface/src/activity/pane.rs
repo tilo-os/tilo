@@ -3795,7 +3795,6 @@ impl RoomActivityPane {
     }
 
     #[allow(
-        clippy::too_many_lines,
         clippy::cast_precision_loss,
         reason = "comparison paint, bounds, and text layout stay in one retained-rendering pass so labels, hit geometry, and accessible summary cannot diverge"
     )]
@@ -4200,7 +4199,6 @@ impl RoomActivityPane {
 
     #[allow(
         clippy::too_many_lines,
-        clippy::cast_precision_loss,
         reason = "catch-up cards share one ordered retained-rendering pass; count conversions only affect bounded display geometry"
     )]
     fn draw_catch_up(
@@ -8025,10 +8023,6 @@ fn draw_presence_trail(
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "presence-trail painting receives the shared renderer context and uses bounded frame and pointer counts only for display geometry"
-)]
 fn draw_replay_pointers(
     scene: &mut Scene,
     transform: Affine,
@@ -8076,7 +8070,6 @@ fn draw_replay_pointers(
 
 #[allow(
     clippy::too_many_lines,
-    clippy::cast_precision_loss,
     reason = "brief-card rendering keeps its geometry, summary, and accessible label in one retained pass"
 )]
 fn draw_brief_card(

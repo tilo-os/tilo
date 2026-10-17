@@ -29,15 +29,6 @@
 //! to [`accounts::AccountSyncHealth::NeedsAuthentication`], which Settings
 //! shows as "Sign in again".
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod clients;
 #[cfg(feature = "custody")]
 mod custodian;

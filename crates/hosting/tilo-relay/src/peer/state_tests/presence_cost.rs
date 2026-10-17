@@ -1,8 +1,8 @@
 //! Presence byte budgets on the actual writer, with a controlled ingress schedule.
 use super::*;
 use collab_types::{PeerPresence, PeerPresencePayload};
+use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, StateFraming};
-use tilo_peer_state::NeighbourMsg;
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;

@@ -20,8 +20,9 @@
 //!   redeems to hold it: nothing asks a room's governance before the room is
 //!   held.
 //! - A member's own business in a room a host governs (provider
-//!   `tilo.member`): claiming this device's topology namespace and recording
-//!   its own effect receipt, on the room's session.
+//!   `tilo.member`): claiming this device's topology namespace, recording
+//!   its own effect receipt, and having the host create the empty record of
+//!   an app this device opens there first, on the room's session.
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
     personal_continuity_topic_id, registered_home_peer_addrs, relay_topics_for_home_peers,
@@ -43,7 +44,8 @@ use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom,
     GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS,
-    MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
+    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing,
+    member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -501,34 +503,7 @@ impl ShellNetwork {
         caller: &tilo_user_identity::DeviceCert,
         app: &str,
     ) -> Option<Result<u64, String>> {
-        let route = self.native_owner().and_then(|owner| {
-            owner.with_current(room, |view| {
-                if !view.governor().capabilities.can_act_as_host {
-                    return Ok(None);
-                }
-                let identity = self
-                    .host_identity
-                    .as_ref()
-                    .ok_or("native identity unavailable")?;
-                let (certificate, _) = identity.current_native_material(view.workspace())?;
-                if view.device() != &certificate || caller != &certificate {
-                    return Err("app authorship caller differs from admitted native custody".into());
-                }
-                let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
-                        .map_err(|error| error.to_string())?;
-                if hint.room != room.to_string()
-                    || &hint.governing_authority != view.governor()
-                    || &hint.host_device_certificate != view.governor()
-                {
-                    return Err("app authorship host differs from current admitted governor".into());
-                }
-                iroh::EndpointId::from_bytes(&view.governor().device_public_key)
-                    .map(Some)
-                    .map_err(|error| error.to_string())
-            })
-        });
-        let host = match route {
+        let host = match self.governing_host(room, caller) {
             Ok(None) => return None,
             Ok(Some(host)) => host,
             Err(error) => return Some(Err(error)),
@@ -560,6 +535,90 @@ impl ShellNetwork {
             }
             .await,
         )
+    }
+
+    /// Have the host governing `room` create `app`'s record `record` there
+    /// (`""` for the primary), empty and signed by the host, as `caller`,
+    /// this device: what opening an app there for the first time asks when
+    /// the room does not hold its record. The app's first state then goes to
+    /// the record as this device's own change. `None` when no host governs
+    /// the room: a device governing it creates the record through its own
+    /// owner. Answers whether the host created it (rather than finding it).
+    pub(crate) async fn prepare_application_record_at_host(
+        &self,
+        room: RoomId,
+        caller: &tilo_user_identity::DeviceCert,
+        app: &str,
+        record: &str,
+    ) -> Option<Result<bool, String>> {
+        let host = match self.governing_host(room, caller) {
+            Ok(None) => return None,
+            Ok(Some(host)) => host,
+            Err(error) => return Some(Err(error)),
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("app".into(), app.into());
+        arguments.insert("record".into(), record.into());
+        let invoke = invocation(
+            MEMBER_ACTIONS_PROVIDER,
+            member_resource(&room.to_string()),
+            PREPARE_APPLICATION_RECORD,
+            arguments,
+        );
+        Some(
+            async {
+                let answer =
+                    self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)?;
+                let status =
+                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+                        .await
+                        .map_err(|_| "app record reply worker stopped")?
+                        .map_err(|_| "the host did not answer the app record in time")??;
+                receipt_value(status)?
+                    .get("created")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| "the host answered the app record with something else".into())
+            }
+            .await,
+        )
+    }
+
+    /// The device of the host governing `room`, to ask a host or member
+    /// operation of as `caller`, this device's admitted custody of the room:
+    /// pinned to the current governor and its authenticated transport hint.
+    /// `None` when no host governs the room.
+    fn governing_host(
+        &self,
+        room: RoomId,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<Option<iroh::EndpointId>, String> {
+        self.native_owner().and_then(|owner| {
+            owner.with_current(room, |view| {
+                if !view.governor().capabilities.can_act_as_host {
+                    return Ok(None);
+                }
+                let identity = self
+                    .host_identity
+                    .as_ref()
+                    .ok_or("native identity unavailable")?;
+                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                if view.device() != &certificate || caller != &certificate {
+                    return Err("host operation caller differs from admitted native custody".into());
+                }
+                let (hint, _) =
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                        .map_err(|error| error.to_string())?;
+                if hint.room != room.to_string()
+                    || &hint.governing_authority != view.governor()
+                    || &hint.host_device_certificate != view.governor()
+                {
+                    return Err("host differs from current admitted governor".into());
+                }
+                iroh::EndpointId::from_bytes(&view.governor().device_public_key)
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            })
+        })
     }
 
     /// Keep the invitation `issued` to `room` on `terms` among the pending

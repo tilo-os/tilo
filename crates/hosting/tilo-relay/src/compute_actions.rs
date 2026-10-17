@@ -23,6 +23,7 @@
 //! offered nothing, and invoking is [`ActionHostError::UnknownAction`], the
 //! same answer as for an action that does not exist.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Map, Value, json};
@@ -38,9 +39,11 @@ use tilo_actions::{
 use tilo_user_identity::DeviceCert;
 
 use crate::app_serving::AppServingPlane;
+use crate::compute::MAX_COMPUTE_INPUTS;
+use crate::compute_transport::{InputWeight, WeighedPlacement};
 use crate::host_authority::HostOperation;
 use crate::peer::WorkspaceRegistry;
-use crate::placement::{ComputeRequirements, NoEligibleWorker, Placement, PlacementCandidate};
+use crate::placement::{ComputeRequirements, NoEligibleWorker, PlacementCandidate};
 use crate::workspace::SharedWorkspace;
 
 /// The provider compute placement is answered under. It is the host's, not
@@ -95,6 +98,25 @@ fn place_row(workspace_id: u64) -> CatalogueRow {
                     "The installed app whose entrypoint the job runs.",
                 ),
                 ActionParam::optional("gpu", ParamType::Boolean, "Whether the job needs a GPU."),
+                ActionParam::optional(
+                    "input_bytes",
+                    ParamType::Integer,
+                    "The bytes of the job's inputs, which a worker has to receive.",
+                ),
+                ActionParam::optional(
+                    "local_wall_ms",
+                    ParamType::Integer,
+                    "How long the job takes on the asking device for inputs this size. With \
+                     `input_bytes`, a worker is named only when moving the inputs to it is \
+                     faster than that.",
+                ),
+                ActionParam::optional(
+                    "inputs",
+                    ParamType::Array,
+                    "The job's inputs, each an object of `digest` (hex blake3) and `bytes`, at \
+                     most 64. Inputs a device was seen to hold already are not weighed as \
+                     moving to it.",
+                ),
             ],
             view: None,
         }),
@@ -109,8 +131,30 @@ fn invalid(reason: impl Into<String>) -> ActionHostError {
     }
 }
 
+/// What an invocation asks placement for.
+#[derive(Debug, PartialEq, Eq)]
+struct JobTerms {
+    app: String,
+    gpu: bool,
+    /// The inputs' weight against the asking device's own run, when the
+    /// caller named both.
+    weight: Option<InputWeight>,
+}
+
+/// A non-negative whole-number argument, or `None` when absent.
+fn count(arguments: &Map<String, Value>, name: &str) -> Result<Option<u64>, ActionHostError> {
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| invalid(format!("`{name}` must be a whole number of at least 0"))),
+        Some(_) => Err(invalid(format!("`{name}` must be a number"))),
+    }
+}
+
 /// The job terms named by an invocation's arguments.
-fn job_terms(argument: &InvokeArgument) -> Result<(String, bool), ActionHostError> {
+fn job_terms(argument: &InvokeArgument) -> Result<JobTerms, ActionHostError> {
     let empty = Map::new();
     let arguments = match argument {
         InvokeArgument::None => &empty,
@@ -127,7 +171,55 @@ fn job_terms(argument: &InvokeArgument) -> Result<(String, bool), ActionHostErro
         Some(Value::Bool(gpu)) => *gpu,
         Some(_) => return Err(invalid("`gpu` must be true or false")),
     };
-    Ok((app, gpu))
+    let inputs = listed_inputs(arguments)?;
+    let listed = inputs
+        .iter()
+        .fold(0_u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
+    let input_bytes = count(arguments, "input_bytes")?;
+    let weight = match (
+        input_bytes.or_else(|| (!inputs.is_empty()).then_some(listed)),
+        count(arguments, "local_wall_ms")?,
+    ) {
+        (Some(input_bytes), Some(local_wall_ms)) => Some(InputWeight {
+            input_bytes: input_bytes.max(listed),
+            local_wall_ms,
+            inputs,
+        }),
+        _ => None,
+    };
+    Ok(JobTerms { app, gpu, weight })
+}
+
+/// The `inputs` argument: distinct digests, each with its bytes; a digest
+/// named twice counts once.
+fn listed_inputs(arguments: &Map<String, Value>) -> Result<Vec<([u8; 32], u64)>, ActionHostError> {
+    let listed = match arguments.get("inputs") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(listed)) if listed.len() <= MAX_COMPUTE_INPUTS => listed,
+        Some(Value::Array(_)) => {
+            return Err(invalid(format!(
+                "`inputs` names at most {MAX_COMPUTE_INPUTS} inputs"
+            )));
+        }
+        Some(_) => return Err(invalid("`inputs` must be a list")),
+    };
+    let mut inputs = BTreeMap::new();
+    for input in listed {
+        let malformed = || invalid("each of `inputs` is an object of `digest` (hex) and `bytes`");
+        let Value::Object(input) = input else {
+            return Err(malformed());
+        };
+        let mut digest = [0; 32];
+        match input.get("digest") {
+            Some(Value::String(hex)) => {
+                hex::decode_to_slice(hex, &mut digest).map_err(|_| malformed())?;
+            }
+            _ => return Err(malformed()),
+        }
+        let bytes = count(input, "bytes")?.ok_or_else(malformed)?;
+        inputs.entry(digest).or_insert(bytes);
+    }
+    Ok(inputs.into_iter().collect())
 }
 
 fn candidate_json(candidate: &PlacementCandidate) -> Value {
@@ -213,34 +305,56 @@ impl ComputeActions {
             .cloned()
     }
 
-    /// Where a job with `needs` should run among its workspace's workers.
-    async fn placed(&self, needs: &ComputeRequirements<'_>) -> Result<Placement, NoEligibleWorker> {
+    /// Where a job with `needs` should run among its workspace's workers,
+    /// weighed against moving its inputs when `weight` says what they are.
+    async fn placed(
+        &self,
+        needs: &ComputeRequirements<'_>,
+        weight: Option<&InputWeight>,
+    ) -> Result<WeighedPlacement, NoEligibleWorker> {
         match self.workspace(needs.workspace_id).await {
-            Some(workspace) => workspace
-                .lock()
-                .await
-                .compute
-                .place(needs, tilo_clock::unix_now_ms()),
-            None => crate::placement::place_compute_job(needs, []),
+            Some(workspace) => workspace.lock().await.compute.place_weighed(
+                needs,
+                weight,
+                tilo_clock::unix_now_ms(),
+            ),
+            None => crate::placement::place_compute_job(needs, []).map(WeighedPlacement::Worker),
         }
     }
 
-    /// The placement for a job of `app` (needing a GPU when `gpu`) asked by
-    /// `requester` in `workspace_id`, as the action answers it.
-    async fn place(&self, workspace_id: u64, requester: [u8; 32], app: &str, gpu: bool) -> Value {
+    /// The placement for a job on `terms` asked by `requester` in
+    /// `workspace_id`, as the action answers it.
+    async fn place(&self, workspace_id: u64, requester: [u8; 32], terms: &JobTerms) -> Value {
+        let (app, gpu) = (terms.app.as_str(), terms.gpu);
         let needs = ComputeRequirements {
             requester,
             workspace_id,
             app_id: app,
             gpu,
         };
-        match self.placed(&needs).await {
-            Ok(placement) => {
+        match self.placed(&needs, terms.weight.as_ref()).await {
+            Ok(WeighedPlacement::Worker(placement)) => {
                 tracing::info!(workspace_id, app, gpu, %placement, "placed compute job");
                 json!({
                     "worker": hex::encode(placement.worker),
                     "reason": placement.to_string(),
                     "candidates": placement.considered.iter().map(candidate_json).collect::<Vec<_>>(),
+                })
+            }
+            Ok(WeighedPlacement::Local(heavier)) => {
+                tracing::info!(workspace_id, app, gpu, %heavier, "compute job stays with its requester");
+                json!({
+                    "worker": Value::Null,
+                    "reason": heavier.to_string(),
+                    "estimate": {
+                        "worker": hex::encode(heavier.worker),
+                        "input_bytes": heavier.input_bytes,
+                        "held_bytes": heavier.held_bytes,
+                        "bytes_per_second": heavier.bytes_per_second,
+                        "transfer_ms": heavier.transfer_ms,
+                        "local_wall_ms": heavier.local_wall_ms,
+                    },
+                    "candidates": heavier.considered.iter().map(candidate_json).collect::<Vec<_>>(),
                 })
             }
             Err(refused) => {
@@ -316,7 +430,7 @@ impl ActionHost for InWorkspace {
         else {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         };
-        let (app, gpu) = match job_terms(&request.argument) {
+        let terms = match job_terms(&request.argument) {
             Ok(terms) => terms,
             Err(error) => return Pending::ready(Err(error)),
         };
@@ -340,7 +454,7 @@ impl ActionHost for InWorkspace {
         let (actions, workspace_id) = (self.actions.clone(), self.workspace_id);
         let (completer, answer) = tilo_actions::remote::pending();
         self.actions.shared.runtime.spawn(async move {
-            let value = actions.place(workspace_id, requester, &app, gpu).await;
+            let value = actions.place(workspace_id, requester, &terms).await;
             let state = InvocationState::new(
                 invocation,
                 InvocationUpdate::Succeeded {

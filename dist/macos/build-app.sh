@@ -12,6 +12,8 @@ cd "$repo"
   || { printf 'build-app.sh runs on macOS only\n' >&2; exit 2; }
 
 out="${1:-target/dist-macos}"
+# Where Cargo puts its builds: the checkout's target/ unless CARGO_TARGET_DIR says otherwise.
+cargo_target="${CARGO_TARGET_DIR:-target}"
 here=dist/macos
 version="${TILO_VERSION:-$(<dist/VERSION)}"
 version="${version#runtime-v}"
@@ -77,12 +79,12 @@ contents="$app/Contents"
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Library/LaunchAgents"
 lipo -create -output "$contents/MacOS/Tilo" \
-  target/aarch64-apple-darwin/release/store \
-  target/x86_64-apple-darwin/release/store
+  "$cargo_target"/aarch64-apple-darwin/release/store \
+  "$cargo_target"/x86_64-apple-darwin/release/store
 for binary in tilo-runtime tilo-runtime-update; do
   lipo -create -output "$contents/MacOS/$binary" \
-    "target/aarch64-apple-darwin/release/$binary" \
-    "target/x86_64-apple-darwin/release/$binary"
+    "$cargo_target/aarch64-apple-darwin/release/$binary" \
+    "$cargo_target/x86_64-apple-darwin/release/$binary"
 done
 for binary in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
               "$contents/MacOS/tilo-runtime-update"; do
@@ -175,7 +177,7 @@ if [ -n "$update_key_file" ]; then
   printf '{"version":"%s","url":"%s","sha256":"%s"}' "$version" \
     "$release_page/releases/download/runtime-v$version/tilo-macos-universal.zip" \
     "$(awk '{print $1}' "$artifact.zip.sha256")" >"$feed"
-  target/aarch64-apple-darwin/release/tilo-runtime-update sign --key "$update_key_file" \
+  "$cargo_target"/aarch64-apple-darwin/release/tilo-runtime-update sign --key "$update_key_file" \
     "$feed" >"$feed.sig"
 fi
 

@@ -2,11 +2,7 @@
 use super::{FileExplorerWidget, Ran};
 use crate::i18n::t;
 use host_fs::RetainedObject;
-use std::{
-    io,
-    path::{Component, Path},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 use ui::{
     collaboration::{CollabEvent, CollabRequest, open_selected},
     tilo_actions::InvocationId,
@@ -83,102 +79,12 @@ struct Pending {
     receipt: Option<Result<Completion, String>>,
     verified: bool,
 }
-#[cfg(target_os = "linux")]
-struct Proof {
-    remote: std::os::unix::net::UnixStream,
-    control: std::os::unix::net::UnixStream,
-    worker: Option<std::thread::JoinHandle<io::Result<()>>>,
-}
-#[cfg(not(target_os = "linux"))]
-struct Proof;
-#[cfg(target_os = "linux")]
-impl Proof {
-    fn start() -> io::Result<Self> {
-        Self::start_with_timeout(std::time::Duration::from_secs(10))
-    }
-    fn start_with_timeout(timeout: std::time::Duration) -> io::Result<Self> {
-        let deadline = std::time::Instant::now() + timeout;
-        let (mut local, remote) = std::os::unix::net::UnixStream::pair()?;
-        let control = local.try_clone()?;
-        let fence = local.try_clone()?;
-        let worker = std::thread::Builder::new()
-            .name("files-selected-open-proof".into())
-            .spawn(move || {
-                // Bound the entire handshake, including peers that slowly progress
-                // across process_binding::complete's individual read timeouts.
-                let (done, finished) = std::sync::mpsc::channel();
-                let watchdog = std::thread::Builder::new()
-                    .name("files-selected-open-deadline".into())
-                    .spawn(move || {
-                        if finished
-                            .recv_timeout(
-                                deadline.saturating_duration_since(std::time::Instant::now()),
-                            )
-                            .is_err()
-                        {
-                            let _ = fence.shutdown(std::net::Shutdown::Both);
-                        }
-                    })?;
-                let result = runtime_portal::process_binding::complete(&mut local);
-                let _ = done.send(());
-                watchdog
-                    .join()
-                    .map_err(|_| io::Error::other("selected open deadline worker failed"))?;
-                result
-            })?;
-        Ok(Self {
-            remote,
-            control,
-            worker: Some(worker),
-        })
-    }
-    fn descriptor(&self) -> Result<u32, String> {
-        use std::os::fd::AsRawFd as _;
-        u32::try_from(self.remote.as_raw_fd()).map_err(|_| t("files-open-with-launch-unavailable"))
-    }
-    fn finished(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_none_or(std::thread::JoinHandle::is_finished)
-    }
-    fn result(&mut self) -> Result<(), String> {
-        self.worker
-            .take()
-            .ok_or(t("files-open-with-launch-unavailable"))?
-            .join()
-            .map_err(|_| t("files-open-with-launch-unavailable"))?
-            .map_err(|_| t("files-open-with-launch-unavailable"))
-    }
-}
-#[cfg(target_os = "linux")]
-impl Drop for Proof {
-    fn drop(&mut self) {
-        let _ = self.control.shutdown(std::net::Shutdown::Both);
-        let _ = self.remote.shutdown(std::net::Shutdown::Both);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-#[cfg(not(target_os = "linux"))]
-impl Proof {
-    fn start() -> io::Result<Self> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "selected open requires Linux process custody",
-        ))
-    }
-    fn descriptor(&self) -> Result<u32, String> {
-        Err(t("files-open-with-launch-unavailable"))
-    }
-    fn finished(&self) -> bool {
-        true
-    }
-    fn result(&mut self) -> Result<(), String> {
-        Err(t("files-open-with-launch-unavailable"))
-    }
-}
+use runtime_portal::process_binding::Proof;
 impl Client {
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.is_some() || self.deferred.is_some() || self.request.is_some()
+    }
+
     fn start(
         &mut self,
         command: Command,
@@ -186,7 +92,7 @@ impl Client {
         custody: (Arc<RetainedObject>, Arc<RetainedObject>),
         proof: Proof,
     ) -> Result<(), String> {
-        if self.pending.is_some() || !command.valid() {
+        if self.is_pending() || !command.valid() {
             return Err(t("files-open-with-busy"));
         }
         self.next = self
@@ -249,9 +155,9 @@ impl Client {
             if !pending.proof.finished() {
                 return None;
             }
-            if let Err(error) = pending.proof.result() {
+            if pending.proof.result().is_err() {
                 self.abandon();
-                return Some(Err(error));
+                return Some(Err(t("files-open-with-launch-unavailable")));
             }
             pending.verified = true;
         }
@@ -266,16 +172,8 @@ impl Client {
     }
 }
 pub(super) fn components(path: &Path) -> Result<Vec<Vec<u8>>, String> {
-    path.strip_prefix("/run/tilo/retained-home")
-        .map_err(|_| t("files-open-with-selection-changed"))?
-        .components()
-        .map(|part| match part {
-            Component::Normal(name) => host_fs::names::unix_path_bytes(Path::new(name))
-                .map(<[u8]>::to_vec)
-                .ok_or_else(|| t("files-open-with-selection-changed")),
-            _ => Err(t("files-open-with-selection-changed")),
-        })
-        .collect()
+    tilo_files::native::retained_home::components(path)
+        .ok_or_else(|| t("files-open-with-selection-changed"))
 }
 impl FileExplorerWidget {
     pub(super) fn begin_selected_open(
@@ -412,7 +310,9 @@ impl FileExplorerWidget {
         let parent_descriptor = parent
             .descriptor()
             .ok_or(t("files-open-with-selection-changed"))?;
-        let proof_descriptor = proof.descriptor()?;
+        let proof_descriptor = proof
+            .descriptor()
+            .map_err(|_| t("files-open-with-launch-unavailable"))?;
         let request_id = uuid::Uuid::new_v4().to_string();
         let components = components(&path)?;
         let command = match access {
@@ -555,7 +455,7 @@ fn open_with_outcome(
     })
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -645,42 +545,5 @@ mod tests {
         });
         assert!(validate_completion(&legacy, &request_id, Some(&expected)).is_err());
         assert!(open_with_outcome(Ok(legacy)).is_err());
-    }
-    #[test]
-    fn stalled_actual_proof_has_total_deadline() {
-        let mut proof = Proof::start_with_timeout(std::time::Duration::from_millis(50))
-            .expect("owned socketpair");
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !proof.finished() && std::time::Instant::now() < until {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(
-            proof.finished(),
-            "actual handshake must stop without a challenge"
-        );
-        assert!(
-            proof.result().is_err(),
-            "stalled peer never supplied kernel proof"
-        );
-    }
-    #[test]
-    fn cancellation_stops_actual_proof_before_descriptor_custody_ends() {
-        let proof = Proof::start().expect("owned socketpair");
-        let started = std::time::Instant::now();
-        // Drop shuts down the exact owned endpoint and joins the responder;
-        // no discovery, unrelated process signal or childwait approximation.
-        drop(proof);
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
-    }
-    #[test]
-    fn components_preserve_non_utf8_names_and_refuse_parent_escape() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let name = std::ffi::OsStr::from_bytes(b"/run/tilo/retained-home/folder/\xff.txt");
-        assert_eq!(
-            components(Path::new(name)).expect("POSIX names"),
-            vec![b"folder".to_vec(), b"\xff.txt".to_vec()]
-        );
-        assert!(components(Path::new("/elsewhere/file.txt")).is_err());
-        assert!(components(Path::new("/run/tilo/retained-home/../file.txt")).is_err());
     }
 }

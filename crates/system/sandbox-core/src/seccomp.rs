@@ -721,7 +721,6 @@ pub mod testing {
             for flag in super::WEB_ENGINE_SANDBOX_NAMESPACES {
                 #[allow(
                     clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
                     reason = "namespace flags are 32-bit clone flags"
                 )]
                 let flags = (*flag | libc::CLONE_UNTRACED as u64) as libc::c_int;

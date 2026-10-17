@@ -18,6 +18,7 @@ use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, GrantId, RoomPolicy, Subject, TreePath,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
+pub use tilo_workspace_join::{DocumentRow, GovernedMember};
 use web_time::{Duration, SystemTime};
 mod backend;
 mod bounded;
@@ -162,12 +163,6 @@ pub struct PlaintextChanges {
     pub heads: Vec<automerge::ChangeHash>,
     pub bytes: Vec<u8>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DocumentRow {
-    pub app_id: String,
-    pub record_id: String,
-    pub heads: Vec<String>,
-}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedAccess {
     pub member_devices: Vec<[u8; 32]>,
@@ -183,20 +178,6 @@ pub struct RecordReaders {
     /// The member devices kept out of every channel whose record the steward
     /// cannot name: those a Deny over a pattern of records could keep out.
     pub unrouted: BTreeSet<[u8; 32]>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedMember {
-    pub user_public_key: [u8; 32],
-    pub role: crate::join::MemberRole,
-    pub display_name: Option<String>,
-    pub active_device_keys: Vec<[u8; 32]>,
-    pub removed: bool,
-    /// Made an administrator by the governance writer: `role` is then
-    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) holding every
-    /// governance action of the workspace, bounded by that role
-    /// ([`tilo_action_policy::roles::administrator_grant`]).
-    #[serde(default)]
-    pub administrator: bool,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(

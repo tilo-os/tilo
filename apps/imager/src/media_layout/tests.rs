@@ -73,7 +73,7 @@ pub(crate) fn disk() -> (tempfile::TempDir, std::path::PathBuf, File) {
     (dir, path, file)
 }
 #[test]
-fn production_provision_preserves_payload_and_matches_boot_profile_reader() {
+fn production_provision_preserves_payload_and_matches_native_partition_reader() {
     let (_dir, path, file) = disk();
     let mut original = vec![0; 128];
     file.read_exact_at(&mut original, 1024)
@@ -93,22 +93,34 @@ fn production_provision_preserves_payload_and_matches_boot_profile_reader() {
         binding(&file, MEDIA_BYTES, "usb:test").expect("independent binding"),
         result
     );
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../os/usr/libexec/tilo-media-profile-offset.py");
-    let output = Command::new("python3")
-        .arg(script)
+    // Read the on-disk GPT through util-linux, independently of the writer's
+    // own decoder. The profile occupies the reserved gap after LastUsableLBA.
+    let output = Command::new("sfdisk")
+        .arg("--json")
         .arg(path)
-        .arg(MEDIA_BYTES.to_string())
         .output()
-        .expect("production profile reader");
+        .expect("native partition reader (util-linux sfdisk)");
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let readback: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let table = &readback["partitiontable"];
+    let sector_bytes = table["sectorsize"].as_u64().expect("sector size");
     assert_eq!(
-        String::from_utf8(output.stdout).expect("offset").trim(),
-        result.profile_offset.to_string()
+        (table["lastlba"].as_u64().expect("last usable LBA") + 1) * sector_bytes,
+        result.profile_offset
+    );
+    let partition = &table["partitions"][1];
+    assert_eq!(partition["start"].as_u64(), Some(result.first_lba));
+    assert_eq!(
+        partition["size"].as_u64(),
+        Some(result.last_lba - result.first_lba + 1)
+    );
+    assert_eq!(
+        partition["uuid"].as_str(),
+        Some(result.partition_guid.as_str())
     );
 }
 #[test]

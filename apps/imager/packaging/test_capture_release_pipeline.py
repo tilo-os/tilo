@@ -35,6 +35,9 @@ class PrerequisiteBase(unittest.TestCase):
             self.assertEqual(recorded['base'], base)
             self.assertFalse(recorded['qualification'])
             self.assertFalse(recorded['candidate_executables_included'])
+            for name in ('tilo-staging-handoff', 'tilo-install-handoff-copy.py', 'tilo-firstboot-files'):
+                self.assertNotIn('os/usr/libexec/' + name, recorded['sources'])
+                self.assertFalse((context / 'rootfs/usr/libexec' / name).exists())
 
     def test_mutable_or_injected_base_refused_before_allocating_context(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -124,6 +127,12 @@ class BuildOrder(unittest.TestCase):
             self.assertLess(host, cohort)
             self.assertLess(cohort, qualification)
             self.assertIn('--with-writer', commands[worker])
+            prerequisites = commands[worker - 1]
+            for package, name in (('tilo-install-helpers', 'tilo-staging-handoff'),
+                                  ('tilo-install-helpers', 'tilo-install-handoff-copy'),
+                                  ('tilo-firstboot-files', 'tilo-firstboot-files')):
+                self.assertIn(package, prerequisites)
+                self.assertIn(name, prerequisites)
             self.assertIn('tilo-firstboot-home-seeds', commands[host])
             self.assertIn('tilo-installer-prepared-setup-extract', commands[host])
             self.assertNotIn('TILO_CAPTURE_PINS', calls[worker][1])

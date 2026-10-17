@@ -746,6 +746,9 @@ fn map_granted_files(
     landlock_read: &mut Vec<PathBuf>,
     landlock_write: &mut Vec<PathBuf>,
 ) {
+    // (host path, mount point, writable) of every file grant, for the
+    // private-store masks below.
+    let mut mounted: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
     for (index, source) in capabilities.ro_paths.iter().enumerate() {
         if is_host_microphone_endpoint(capabilities, source) {
             continue;
@@ -757,6 +760,7 @@ fn map_granted_files(
         }
         let destination = PathBuf::from(format!("{FILES_MOUNT}/read/{index:03}"));
         bind(argv, "--ro-bind-try", source, &destination);
+        mounted.push((source.clone(), destination.clone(), false));
         landlock_read.push(destination);
     }
     for (index, source) in capabilities.rw_paths.iter().enumerate() {
@@ -774,7 +778,65 @@ fn map_granted_files(
         }
         let destination = PathBuf::from(format!("{FILES_MOUNT}/write/{index:03}"));
         bind(argv, "--bind-try", source, &destination);
+        mounted.push((source.clone(), destination.clone(), true));
         landlock_write.push(destination);
+    }
+    push_private_store_masks(argv, capabilities, &mounted);
+}
+
+/// Hide the Tilo private stores a file grant contains
+/// ([`CapabilityPlan::masked_dirs`]) at the grant's mount point here, as the
+/// native launcher does at the grant's own path. Every grant is its own
+/// mount in a capsule, so inside a writable one each directory on the way to
+/// a store is pinned (bound onto itself, which makes it a mount point the app
+/// cannot rename) — all pins first, so none re-exposes a store already
+/// masked — then each store gets an empty read-only tmpfs.
+fn push_private_store_masks(
+    argv: &mut Vec<String>,
+    capabilities: &CapabilityPlan,
+    mounted: &[(PathBuf, PathBuf, bool)],
+) {
+    let mut pins: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut masks: Vec<PathBuf> = Vec::new();
+    for store in &capabilities.masked_dirs {
+        for (source, destination, writable) in mounted {
+            let Ok(rel) = store.strip_prefix(source) else {
+                continue;
+            };
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            if *writable {
+                let (mut host, mut inside) = (source.clone(), destination.clone());
+                let mut parts = rel.components().peekable();
+                while let Some(part) = parts.next() {
+                    if parts.peek().is_none() {
+                        break;
+                    }
+                    host.push(part);
+                    inside.push(part);
+                    if !pins.iter().any(|(_, at)| at == &inside) {
+                        pins.push((host.clone(), inside.clone()));
+                    }
+                }
+            }
+            let at = destination.join(rel);
+            if !masks.contains(&at) {
+                masks.push(at);
+            }
+        }
+    }
+    pins.sort_by_key(|(_, at)| at.components().count());
+    for (host, at) in &pins {
+        bind(argv, "--bind", host, at);
+    }
+    for at in &masks {
+        argv.extend([
+            "--tmpfs".to_string(),
+            at.display().to_string(),
+            "--remount-ro".to_string(),
+            at.display().to_string(),
+        ]);
     }
 }
 
@@ -1879,6 +1941,51 @@ mod tests {
                     .bwrap_argv
                     .iter()
                     .any(|arg| arg == "/run/user/1000/pipewire-0")
+            );
+        }
+        // Phase `private_stores_inside_a_file_grant_are_masked_at_its_mount`.
+        {
+            let route = route(Layer::Wine);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::assuming_provider();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let capabilities = CapabilityPlan {
+                rw_paths: vec![PathBuf::from("/home/alice")],
+                masked_dirs: vec![PathBuf::from("/home/alice/.config/tilo")],
+                pinned_dirs: vec![PathBuf::from("/home/alice/.config")],
+                ..CapabilityPlan::empty()
+            };
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &capabilities,
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            let argv = &command.bwrap_argv;
+            let position = |pattern: &[&str]| {
+                argv.windows(pattern.len())
+                    .position(|w| w.iter().zip(pattern).all(|(a, b)| a == b))
+            };
+            let grant = position(&["--bind-try", "/home/alice", "/run/tilo/files/write/000"]);
+            let pin = position(&[
+                "--bind",
+                "/home/alice/.config",
+                "/run/tilo/files/write/000/.config",
+            ]);
+            let mask = position(&[
+                "--tmpfs",
+                "/run/tilo/files/write/000/.config/tilo",
+                "--remount-ro",
+                "/run/tilo/files/write/000/.config/tilo",
+            ]);
+            assert!(
+                matches!((grant, pin, mask), (Some(g), Some(p), Some(m)) if g < p && p < m),
+                "the store must be pinned and masked after the grant's mount: {argv:?}"
             );
         }
         // Phase `planner_rejects_a_symlinked_capsule_data_component`.

@@ -12,10 +12,8 @@ pub(super) struct Belongings {
     pub accounts: account_transfer::Inventory,
     pub flatpak: Option<flatpak_transfer::Inventory>,
     pub administrator_settings: Option<Vec<flatpak_transfer::AdministratorSettings>>,
-    #[cfg(unix)]
     pub browser: super::browser::Selection,
     pub browser_unavailable: bool,
-    #[cfg(target_os = "linux")]
     pub sessions: super::service_sessions::Selection,
     pub sessions_unavailable: bool,
     pub home_unavailable: bool,
@@ -78,30 +76,23 @@ impl Belongings {
             .as_ref()
             .ok()
             .and_then(|inventory| flatpak_transfer::administrator_settings(&home, inventory));
-        #[cfg(unix)]
         let browser = super::browser::Selection::discover(&home, &accounts.candidates);
-        #[cfg(target_os = "linux")]
-        let sessions = super::service_sessions::Selection::discover(&home, &accounts.candidates);
+        let sessions = imager_backend::service_selection::supported()
+            .then(|| super::service_sessions::Selection::discover(&home, &accounts.candidates));
         Self {
             windows: None,
-            #[cfg(target_os = "linux")]
-            sessions_unavailable: sessions
-                .as_ref()
-                .map_or(true, |selection| selection.unavailable()),
-            #[cfg(not(target_os = "linux"))]
-            sessions_unavailable: false,
-            #[cfg(target_os = "linux")]
-            sessions: sessions.unwrap_or_default(),
+            sessions_unavailable: sessions.as_ref().is_some_and(|result| {
+                result
+                    .as_ref()
+                    .map_or(true, |selection| selection.unavailable())
+            }),
+            sessions: sessions.and_then(Result::ok).unwrap_or_default(),
             home: Some(home),
             roots,
             accounts,
             administrator_settings,
             flatpak: flatpak.ok(),
-            #[cfg(unix)]
             browser_unavailable: browser.is_err(),
-            #[cfg(not(unix))]
-            browser_unavailable: false,
-            #[cfg(unix)]
             browser: browser.unwrap_or_default(),
             home_unavailable: false,
             flatpak_unavailable,
@@ -129,10 +120,11 @@ impl Belongings {
     }
 
     pub fn report(&self) -> serde_json::Value {
-        #[cfg(target_os = "linux")]
-        let sessions = self.sessions.report();
-        #[cfg(not(target_os = "linux"))]
-        let sessions = serde_json::Value::Null;
+        let sessions = if imager_backend::service_selection::supported() {
+            self.sessions.report()
+        } else {
+            serde_json::Value::Null
+        };
         serde_json::json!({
             "windows": self.windows,
             "windows_budget": self.windows.as_ref().map(|inventory| inventory.budget()),

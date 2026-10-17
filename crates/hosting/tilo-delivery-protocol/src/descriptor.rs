@@ -1,14 +1,15 @@
 //! Canonical signed transport bootstrap under the current governed workspace.
 //!
-//! Callers retain the real committed-owner guard while supplying `StatePeer`.
+//! Callers retain the real committed-owner guard while supplying its
+//! [`CommittedWorkspace`] view.
 //! A signed endpoint cannot appoint its own governor, host, generation floor or
 //! TLS trust. This module does not install or advertise any live ingress.
 
 use crate::auth::{self, VERSION};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::{StatePeer, join::TransportHint};
-use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, verify_device_cert_at};
+use tilo_workspace_join::TransportHint;
 use web_time::SystemTime;
 
 /// Distinct kind covered by the existing transport-pin signature domain.
@@ -49,12 +50,40 @@ pub enum GenerationExpectation {
     },
 }
 
+/// The reads a descriptor check makes of the current committed governed
+/// workspace. Implement this only on the committed native owner view, held
+/// under its publication guard for the whole operation: an arbitrary cloned or
+/// stale replica, or a value a caller fills in, cannot substitute for that
+/// owner. Keeping it a trait lets this wasm-clean contract verify against the
+/// native admission core without linking it.
+pub trait CommittedWorkspace {
+    /// Governor certificate the committed workspace is admitted under.
+    fn authority(&self) -> &DeviceCert;
+    /// Canonical room identifier of the committed workspace.
+    fn room(&self) -> &str;
+    /// Owner recorded in the admitted room's governance, or `None` when no room
+    /// is admitted or its governance names no owner.
+    fn governance_owner(&self) -> Option<String>;
+    /// Current committed revocations.
+    fn revocations(&self) -> Vec<RevocationEntry>;
+    /// Whether `device` is exactly one of the current verified certificates.
+    fn has_certificate(&self, device: &DeviceCert) -> bool;
+    /// Whether `device` is a current governed member device at `now`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if governed access cannot be derived at `now`.
+    fn is_member_device(&self, device: &[u8; 32], now: SystemTime) -> Result<bool, String>;
+    /// Whether `device` currently holds member authority at `now`.
+    fn has_permissions(&self, device: [u8; 32], now: SystemTime) -> bool;
+}
+
 /// Trusted owner inputs, not wire claims or an authorization snapshot DTO.
 /// Hold the actual committed native publication guard through each operation;
-/// an arbitrary cloned or stale `StatePeer` cannot substitute for that owner.
+/// an arbitrary cloned or stale replica cannot substitute for that owner.
 pub struct DescriptorAuthority<'a> {
     /// Actual current committed governed workspace.
-    pub peer: &'a StatePeer,
+    pub peer: &'a dyn CommittedWorkspace,
     /// Independently pinned exact governor certificate.
     pub pinned_governor: &'a DeviceCert,
     /// Independently appointed exact service host; never taken from this hint.
@@ -162,7 +191,7 @@ pub fn issue_transport_hint_with_media(
     validate_payload(&payload, current)?;
     let opaque_json = serde_json::to_string(&hex::encode(encode_payload(&payload)?))
         .map_err(|_| DescriptorError::Codec)?;
-    let hint = tilo_peer_state::join::sign_transport_hint(
+    let hint = tilo_workspace_join::sign_transport_hint(
         KIND,
         opaque_json,
         current.pinned_host.clone(),
@@ -290,7 +319,7 @@ fn inspect_pinned_payload(
     {
         return Err(DescriptorError::Lifetime);
     }
-    tilo_peer_state::join::verify_transport_hint_at(
+    tilo_workspace_join::verify_transport_hint_at(
         hint,
         &RevocationList::new(),
         payload.issued_at_ns,
@@ -463,12 +492,12 @@ fn check_hint(
     let digest = hint_digest(hint)?;
     let revocations = validate_authority(current)?;
     validate_payload(&payload, current)?;
-    tilo_peer_state::join::verify_transport_hint_at(hint, &revocations, now_ns(current.now)?)
+    tilo_workspace_join::verify_transport_hint_at(hint, &revocations, now_ns(current.now)?)
         .map_err(|_| DescriptorError::Signature)?;
     check_generation(payload.generation, digest, current.generation)?;
     Ok(payload)
 }
-fn current_revocations(peer: &StatePeer) -> Result<RevocationList, DescriptorError> {
+fn current_revocations(peer: &dyn CommittedWorkspace) -> Result<RevocationList, DescriptorError> {
     let mut revocations = RevocationList::new();
     for entry in peer.revocations() {
         revocations
@@ -486,10 +515,7 @@ fn validate_authority(
         || current.pinned_host.user_public_key == [0; 32]
         || peer.authority() != current.pinned_governor
         || !tilo_relay_protocol::room_workspace_id_matches(peer.room(), current.workspace)
-        || peer.admitted_room().is_none()
-        || tilo_peer_state::room::governance_of(peer.admitted_room())
-            .owner
-            .as_deref()
+        || peer.governance_owner().as_deref()
             != Some(hex::encode(current.pinned_governor.user_public_key).as_str())
     {
         return Err(DescriptorError::Authority);
@@ -514,17 +540,14 @@ fn validate_device(
     verify_device_cert_at(device, now_ns(current.now)?)
         .map_err(|_| DescriptorError::Certificate)?;
     if revoked.is_revoked(&device.device_public_key)
-        || !current.peer.certificates().contains(device)
+        || !current.peer.has_certificate(device)
         || !current
             .peer
-            .governed_access(current.now)
+            .is_member_device(&device.device_public_key, current.now)
             .map_err(|_| DescriptorError::Authority)?
-            .member_devices
-            .contains(&device.device_public_key)
-        || current
+        || !current
             .peer
-            .permissions(device.device_public_key, current.now)
-            .is_err()
+            .has_permissions(device.device_public_key, current.now)
     {
         return Err(DescriptorError::Authority);
     }

@@ -61,7 +61,7 @@ fn shared_private_policy_matches_existing_exact_revision_and_expiry_order() {
     .unwrap();
     assert_eq!(
         result.revision,
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.expiries, vec![3, 7, 8]);
 }
@@ -92,7 +92,7 @@ fn bounded_private_policy_matches_governance_revision_and_expiries() {
     .unwrap();
     assert_eq!(
         result.revision(),
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.next_expiry_after(3), Some(7));
     assert_eq!(result.next_expiry_after(7), Some(8));

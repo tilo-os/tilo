@@ -313,9 +313,22 @@ pub struct FrameHarness {
     /// it: a component publishing a shared forest is filtered and surveyed
     /// only where its forest changed.
     bound_resources: crate::bound_dispatch::BoundResourceCache,
-    /// Advanced every frame: the harness keeps no other record of local
-    /// changes, so nothing local is taken from an earlier frame.
+    /// Advanced by every frame that publishes, so nothing local is taken
+    /// from an earlier frame. A quiet frame publishes nothing.
     bound_resource_frames: u64,
+    /// Advanced by every entry point that can reach a widget, the document
+    /// or what a frame presents ([`Self::invalidate_local`]). Only
+    /// [`Self::poll_frame`] and a wheel coalesced into it leave it alone.
+    local_epoch: u64,
+    /// What the last complete frame's bookkeeping read. A frame that finds
+    /// all of it unchanged is quiet: see [`FrameWitness`].
+    frame_witness: Option<FrameWitness>,
+    /// Frames that skipped sync and publication as quiet, since construction.
+    quiet_frames: u64,
+    /// The host drives frames through [`Self::poll_frame`], so a witness can
+    /// make one quiet. A host that only calls [`Self::relayout`] never reads
+    /// one and does not pay for taking it.
+    polls_frames: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_focus_pending: bool,
     history_pointer_owned: bool,
@@ -439,6 +452,26 @@ struct HostLayout {
     style: Style,
     /// Its height is the root's content height rather than the viewport's.
     content_height: bool,
+}
+
+/// Everything a frame's sync, host tick and publication read that a frame
+/// cannot see change, as the last complete frame left it.
+///
+/// A frame polled with all of it unchanged, no entry point called since
+/// ([`FrameHarness::invalidate_local`]), no wake drained and no widget
+/// reporting a change of its own in `update` is quiet: it lays out and draws,
+/// but its sync would read what the last one read and its publication would
+/// write what the last one wrote, so it runs neither (the live App syncs
+/// only when something set `needs_sync` in the same way). Anything this does
+/// not follow keeps every frame loud: framework History, palettes and search
+/// presented, legacy tiles, uncommitted documents.
+struct FrameWitness {
+    local_epoch: u64,
+    document: (Vec<automerge::ChangeHash>, usize),
+    presentation: u64,
+    focused: Option<NodeId>,
+    permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+    owners: Vec<crate::bound_dispatch::BoundOwnerMark>,
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -783,12 +816,14 @@ impl FrameHarness {
 
     #[cfg(feature = "native")]
     pub(crate) fn resize_component_capture(&mut self, viewport: (u32, u32)) {
+        self.invalidate_local();
         let _ = self.resize(viewport);
     }
 
     /// Shared final-output boundary for prepared CLI capture and audit.
     #[cfg(feature = "native")]
     pub(crate) fn prepare_component_output(&mut self) {
+        self.invalidate_local();
         self.pump_component_wakes();
     }
 
@@ -800,6 +835,7 @@ impl FrameHarness {
     /// # Errors
     /// Returns the record writer's durable storage failure.
     pub fn flush_component_records(&mut self) -> Result<(), String> {
+        self.invalidate_local();
         let result = self
             .component_wake
             .as_ref()
@@ -818,6 +854,7 @@ impl FrameHarness {
         &mut self,
         queue: crate::owner_wake::OwnerWakeQueue,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.invalidate_local();
         if self.owner_wake_queue.is_some() {
             return Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime);
         }
@@ -842,6 +879,11 @@ impl FrameHarness {
         let mut attempted = false;
         let mut completed = 0;
         let result = self.service_owner_model_batch(&mut attempted, &mut completed);
+        // The host asks whenever it idles; only work actually taken up can
+        // have changed what the next frame reads.
+        if attempted {
+            self.invalidate_local();
+        }
         crate::owner_wake::OwnerModelServiceReport {
             attempted,
             completed,
@@ -920,6 +962,7 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.invalidate_local();
         self.pending_app_activation = None;
         self.bound_publication.clear();
         self.control_domain.close();
@@ -1015,6 +1058,7 @@ impl FrameHarness {
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
+        self.invalidate_local();
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
         );
@@ -1041,6 +1085,9 @@ impl FrameHarness {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        // Whatever reaches a widget through the map may change what the
+        // next frame reads, wherever it is called from.
+        self.invalidate_local();
         // SAFETY: exclusive FrameHarness access prevents overlapping target references.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
@@ -1052,6 +1099,7 @@ impl FrameHarness {
         action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
+        self.invalidate_local();
         let author = self.author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
         unsafe {
@@ -1074,6 +1122,7 @@ impl FrameHarness {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.invalidate_local();
         // SAFETY: exclusive FrameHarness owns both maps and the stable live tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_node(
@@ -1178,6 +1227,7 @@ impl FrameHarness {
         &mut self,
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.invalidate_local();
         registration.validate_root(self.root.as_ref())?;
         let mut history =
             crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?;
@@ -1196,11 +1246,13 @@ impl FrameHarness {
     /// Replace permissions for the legacy host document. Bound components keep
     /// their own independently scoped permission contexts.
     pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
+        self.invalidate_local();
         self.permissions = permissions;
     }
 
     #[cfg(test)]
     pub(crate) fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
+        self.invalidate_local();
         if let Some(history) = &mut self.history {
             history.set_clock(clock);
         }
@@ -1235,6 +1287,7 @@ impl FrameHarness {
         &mut self,
         id: crate::history_mode::pending_controls::PendingControlId,
     ) -> Option<crate::history_mode::pending_controls::ContinuationToken> {
+        self.invalidate_local();
         self.history.as_mut()?.pending_control_token(id)
     }
 
@@ -1243,6 +1296,7 @@ impl FrameHarness {
         &mut self,
         token: &crate::history_mode::pending_controls::ContinuationToken,
     ) -> Option<crate::history_mode::pending_controls::PendingControlStatus> {
+        self.invalidate_local();
         self.continue_pending_history_control_checked(token, false)
     }
 
@@ -1262,6 +1316,7 @@ impl FrameHarness {
     /// confirming text into its dialog and press Enter. Answers the action
     /// confirmed; `None`, changing nothing, when nothing is asked.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.invalidate_local();
         let (address, expected) = self.asking()?;
         self.type_text(&expected);
         self.key("Enter");
@@ -1273,6 +1328,7 @@ impl FrameHarness {
         &mut self,
         token: &crate::history_mode::pending_controls::ContinuationToken,
     ) -> bool {
+        self.invalidate_local();
         self.history
             .as_mut()
             .is_some_and(|history| history.cancel_pending_control(token))
@@ -1431,6 +1487,10 @@ impl FrameHarness {
             history_chrome_enabled: false,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
+            local_epoch: 0,
+            frame_witness: None,
+            quiet_frames: 0,
+            polls_frames: false,
             history_layout: None,
             history_focus_pending: false,
             history_pointer_owned: false,
@@ -1566,6 +1626,7 @@ impl FrameHarness {
     /// # Panics
     /// When the root was not mounted through [`Self::for_root`] as a `W`.
     pub fn root_mut<W: Widget + 'static>(&mut self) -> &mut W {
+        self.invalidate_local();
         assert_eq!(
             self.root_type,
             Some(std::any::TypeId::of::<W>()),
@@ -1583,6 +1644,7 @@ impl FrameHarness {
     /// # Panics
     /// When the root was not mounted through [`Self::for_root`] as a `W`.
     pub fn root_and_state_mut<W: Widget + 'static>(&mut self) -> (&mut W, &mut State) {
+        self.invalidate_local();
         assert_eq!(
             self.root_type,
             Some(std::any::TypeId::of::<W>()),
@@ -1604,6 +1666,7 @@ impl FrameHarness {
         &mut self,
         viewport: (u32, u32),
     ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         self.viewport = viewport;
         self.try_relayout()
     }
@@ -1614,6 +1677,7 @@ impl FrameHarness {
     /// # Errors
     /// As [`Self::resize`].
     pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         self.invalidate_layout_tree();
         self.try_relayout()
     }
@@ -1627,6 +1691,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
     ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
         self.text.apply_typography(&self.theme.tokens.typography);
@@ -1639,6 +1704,7 @@ impl FrameHarness {
     /// root marked it handled. Nothing is laid out until the next frame,
     /// which rebuilds only if the root reports a structural change.
     pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
+        self.invalidate_local();
         let modifiers = self.modifiers;
         self.dispatch_to_root_with(event, &modifiers)
     }
@@ -1650,6 +1716,7 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> bool {
+        self.invalidate_local();
         self.dispatch_to_root_outcome(event, modifiers).handled
     }
 
@@ -1660,6 +1727,7 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        self.invalidate_local();
         if let Err(error) = self.readmit_owner_service_layout() {
             tracing::warn!(
                 ?error,
@@ -1703,6 +1771,7 @@ impl FrameHarness {
 
     /// Deliver an authenticated transport answer through the native widget tree.
     pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        self.invalidate_local();
         crate::widget::handle_collab_event(self.root.as_mut(), event);
         self.relayout();
     }
@@ -1728,6 +1797,7 @@ impl FrameHarness {
     /// Returns a layout error if measurement or bounded composition settlement
     /// fails. The failed frame is not painted; callers may retry the resize.
     pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.invalidate_local();
         if self.viewport == viewport && self.last_layout_viewport == Some(viewport) {
             return Ok(());
         }
@@ -1743,6 +1813,7 @@ impl FrameHarness {
         &mut self,
         transport: Box<dyn tilo_actions::ActionTransport>,
     ) -> Result<(), String> {
+        self.invalidate_local();
         if !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() {
             return Err("cannot replace transport while actions are pending".into());
         }
@@ -1751,6 +1822,7 @@ impl FrameHarness {
     }
 
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
+        self.invalidate_local();
         self.pump_component_wakes();
         &mut self.action_registry
     }
@@ -1806,11 +1878,13 @@ impl FrameHarness {
     /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
+        self.invalidate_local();
         self.perform_history(crate::undo::UndoRequest::Undo)
     }
 
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
+        self.invalidate_local();
         self.perform_history(crate::undo::UndoRequest::Redo)
     }
 
@@ -1872,6 +1946,7 @@ impl FrameHarness {
     /// History selected by the focused component, or the outer history when unbound.
     /// Widget publication remains specific to each widget's own component binding.
     pub fn undo_status(&mut self) -> crate::undo::UndoStatus {
+        self.invalidate_local();
         if self.pump_component_wakes_checked().is_err() {
             return crate::undo::UndoStatus::default();
         }
@@ -1948,9 +2023,198 @@ impl FrameHarness {
         acted
     }
 
+    /// Something a frame's sync, host tick or publication reads may have
+    /// changed in a way no frame can see: the next frame does all of them.
+    ///
+    /// Every public entry point that takes `&mut self` calls this first
+    /// (`every_mutable_entry_point_invalidates_local_state` holds them to
+    /// it), so a caller holding the harness can change nothing behind a quiet
+    /// frame's back. [`Self::poll_frame`] does not, and neither does a wheel
+    /// coalesced into it that the root declares view-only.
+    fn invalidate_local(&mut self) {
+        self.local_epoch = self.local_epoch.wrapping_add(1);
+    }
+
+    /// Frames that found nothing new to sync or publish ([`FrameWitness`])
+    /// since construction.
+    #[must_use]
+    pub fn quiet_frames(&self) -> u64 {
+        self.quiet_frames
+    }
+
+    /// Whether the witness follows everything this frame's bookkeeping
+    /// would read. Presentations and owners it does not follow keep every
+    /// frame loud.
+    fn bookkeeping_followed(&self) -> bool {
+        !self.layout_requested
+            && !self.owner_service_layout_retired
+            && self.pending_app_activation.is_none()
+            && !self.framework_input.get()
+            && self.history.is_none()
+            && !self.history_chrome_enabled
+            && self.records.is_none()
+            && self.record_persistence.is_none()
+            && self
+                .action_palette
+                .as_deref()
+                .is_none_or(|palette| !palette.is_presented())
+            && !self.search_pending
+            && self.global_search_query().is_none()
+            && self.caller_palette.palette.is_none()
+            && !self.has_pending_owner_models()
+            && !self.bindings.has_legacy()
+    }
+
+    /// What this frame's bookkeeping reads that no frame sees change.
+    fn read_witness(&self) -> FrameWitness {
+        FrameWitness {
+            local_epoch: self.local_epoch,
+            document: crate::doc::settle_mark(&self.state.doc),
+            presentation: crate::widget::resource_presentation_epoch(),
+            focused: self.focused,
+            permissions: self.permissions.directory_witness(),
+            owners: crate::bound_dispatch::bound_owner_standing(
+                self.root.as_ref(),
+                &self.state.doc,
+            ),
+        }
+    }
+
+    /// Whether everything `witness` read stands as it did, with every
+    /// document committed. The cheap comparisons go first.
+    fn witness_holds(&self, witness: &FrameWitness) -> bool {
+        witness.local_epoch == self.local_epoch
+            && witness.focused == self.focused
+            && witness.presentation == crate::widget::resource_presentation_epoch()
+            && witness.document.1 == 0
+            && self.bookkeeping_followed()
+            && witness.document == crate::doc::settle_mark(&self.state.doc)
+            && witness.permissions == self.permissions.directory_witness()
+            && crate::bound_dispatch::same_owner_standing(
+                &witness.owners,
+                &crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
+            )
+    }
+
+    /// Whether a polled frame's host tick would find nothing: no entry point
+    /// since the last complete frame (each runs its own tick), and nothing
+    /// in flight that a tick advances.
+    fn tick_is_idle(&self) -> bool {
+        self.frame_witness
+            .as_ref()
+            .is_some_and(|witness| witness.local_epoch == self.local_epoch)
+            && self.bound_invocations.is_empty()
+            && self.pending_control_invocations.is_empty()
+            && self.acting_for.is_empty()
+            && !self.owner_service_layout_retired
+            && !self.has_pending_owner_models()
+    }
+
+    /// The frame's sync: what the widgets took up is written, the document
+    /// read, and what that sync took up written and shown in the same frame.
+    fn sync_frame(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
+        // What the widgets took up since the last frame (an edit a child
+        // made on its own) is written before the document is read again.
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        self.root.sync(&self.state.doc, &self.state.root);
+        // A sync reads the document only. What it took up is written now,
+        // through actions, and shown in this same frame.
+        let before = crate::doc::settle_mark(&self.state.doc);
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        let settled = crate::doc::settle_mark(&self.state.doc) != before;
+        let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
+        if settled || submitted {
+            self.idle_control_tick();
+            self.root.update(&self.state.doc, &self.state.root);
+            self.root.sync(&self.state.doc, &self.state.root);
+        }
+    }
+
+    /// A debug build's proof of a quiet frame, as the accessibility walk
+    /// proves an unchanged tree: run the tick, sync and publication it
+    /// skipped anyway, and require that they changed nothing the frame's
+    /// semantics, document or composition show, and that the History surfaces
+    /// whose walks it skipped still rest. A difference fails a test
+    /// outright; any other debug build logs it and keeps what the work
+    /// found, so a missed change is never stale where it can be seen.
+    #[cfg(debug_assertions)]
+    fn verify_quiet_frame(&mut self) {
+        let shown = |harness: &mut Self| {
+            (
+                serde_json::to_string(&harness.inspection()).unwrap_or_default(),
+                crate::doc::settle_mark(&harness.state.doc),
+                harness.root.layout_needs_measure(),
+            )
+        };
+        let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
+            // The History walks it skipped hold only while every surface
+            // still rests once the frame is drawn.
+            let resting = crate::history_mode::embedded::surfaces_at_rest(
+                self.root.as_ref(),
+                &self.state.doc,
+                f64::from(self.viewport.0),
+            )
+            .is_some();
+            let before = shown(self);
+            self.host_tick();
+            self.sync_frame();
+            self.publish_undo_status();
+            let replaced = self.composition_changed();
+            (before, shown(self), replaced, resting)
+        });
+        let consistent = before == after && !replaced && resting;
+        if consistent {
+            return;
+        }
+        // Where the semantics first differ, with some context either side.
+        let differs = before
+            .0
+            .bytes()
+            .zip(after.0.bytes())
+            .position(|(was, now)| was != now)
+            .or_else(|| {
+                (before.0.len() != after.0.len()).then(|| before.0.len().min(after.0.len()))
+            });
+        let excerpt = |text: &str, at: usize| {
+            let start = text.floor_char_boundary(at.saturating_sub(160));
+            let end = text.floor_char_boundary(at.saturating_add(160).min(text.len()));
+            text.get(start..end).unwrap_or_default().to_owned()
+        };
+        let message = format!(
+            "a quiet frame skipped a sync or publication that changed what it shows: \
+             document moved {}, needs measure {} -> {}, composition replaced {replaced}, \
+             History at rest {resting}, semantics {}",
+            before.1 != after.1,
+            before.2,
+            after.2,
+            differs.map_or_else(
+                || "unchanged".to_owned(),
+                |at| format!(
+                    "were `{}`, are `{}`",
+                    excerpt(&before.0, at),
+                    excerpt(&after.0, at)
+                )
+            ),
+        );
+        assert!(
+            consistent || !cfg!(any(test, feature = "test-support")),
+            "{message}"
+        );
+        tracing::error!("{message}");
+        self.request_layout();
+    }
+
     /// Hand the live undo status to every laid-out widget, so a control
     /// renders and reports the same truth it would live.
     fn publish_undo_status(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.publish_undo_status");
         // The legacy status warmer observes live heads (and can therefore
         // close an unfinished transaction). Framework navigation must not.
         if self.framework_input.get()
@@ -2053,6 +2317,7 @@ impl FrameHarness {
     }
     /// Use a different palette for subsequent frames.
     pub fn set_theme(&mut self, theme: Theme) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
@@ -2067,6 +2332,7 @@ impl FrameHarness {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.interaction = environment;
         self.root.set_interaction_environment(environment);
@@ -2081,6 +2347,7 @@ impl FrameHarness {
 
     /// Switch platform HIG behavior without cross-compiling the test.
     pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.platform = conventions;
         self.root.set_platform_conventions(conventions);
@@ -2099,6 +2366,7 @@ impl FrameHarness {
     /// completes. A caller must still retire maps before replacing widgets;
     /// this scheduling request does not establish topology validity.
     pub fn request_layout(&mut self) {
+        self.invalidate_local();
         self.layout_requested = true;
         self.last_layout_viewport = None;
     }
@@ -2249,6 +2517,7 @@ impl FrameHarness {
         name: &str,
         bytes: Vec<u8>,
     ) -> Result<bool, crate::font_catalog::FontCatalogError> {
+        self.invalidate_local();
         let changed = self.text.install_browser_font(name, bytes)?;
         if changed {
             self.invalidate_layout_tree();
@@ -2260,6 +2529,7 @@ impl FrameHarness {
     /// Rearm shaping demand after a host fetch failed, without producing a
     /// frame or mutating focus/document state on asynchronous completion.
     pub fn browser_font_failed(&mut self) {
+        self.invalidate_local();
         self.text.browser_font_failed();
         self.invalidate_layout_tree();
     }
@@ -2351,15 +2621,25 @@ impl FrameHarness {
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
-        if !frame.needs_redraw
-            && !frame.needs_animation_frame
-            && frame
-                .next_wake_deadline
-                .is_none_or(|deadline| deadline > crate::time::now())
-        {
+        let due = frame
+            .next_wake_deadline
+            .is_some_and(|deadline| deadline <= crate::time::now());
+        if !frame.needs_redraw && !frame.needs_animation_frame && !due {
             return Ok(false);
         }
-        self.host_tick();
+        if due {
+            // A deadline is a time a widget asked to be woken at, and what it
+            // does then its sync may read (a row notes when its windows were
+            // last synced to know which deadlines had their frame).
+            self.invalidate_local();
+        }
+        self.polls_frames = true;
+        // The tick follows interaction, and every interaction since the last
+        // complete frame ran its own: with nothing in flight it has nothing
+        // to dispatch, record or undo.
+        if !self.tick_is_idle() {
+            self.host_tick();
+        }
         self.try_relayout()?;
         Ok(true)
     }
@@ -2502,6 +2782,7 @@ impl FrameHarness {
         &mut self,
         operation: &crate::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String> {
+        self.invalidate_local();
         let bound = self
             .root
             .as_any_mut()
@@ -2512,6 +2793,7 @@ impl FrameHarness {
 
     /// Deliver the existing trusted host selection through the mounted canonical adapter.
     pub fn request_device_shell(&mut self) -> bool {
+        self.invalidate_local();
         let Some(bound) = self
             .root
             .as_any_mut()
@@ -2525,6 +2807,7 @@ impl FrameHarness {
     /// Consume one device-local shell request through the mounted app's canonical adapter.
     /// This exposes no mutable document or direct surface callback.
     pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+        self.invalidate_local();
         let bound = self
             .root
             .as_any_mut()?
@@ -2536,6 +2819,7 @@ impl FrameHarness {
     /// record set handled it — `false` means the caller should persist the
     /// document itself, as an app without records does.
     pub fn persist_tick(&mut self) -> bool {
+        self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
             wake.binding.records.tick();
@@ -2552,6 +2836,7 @@ impl FrameHarness {
 
     /// Write out every open record and wait for it to land.
     pub fn persist_flush(&mut self) {
+        self.invalidate_local();
         if let Err(error) = self.try_persist_flush() {
             tracing::error!(%error, "headless record persistence failed");
         }
@@ -2562,6 +2847,7 @@ impl FrameHarness {
     /// # Errors
     /// Reports unavailable or failed record writers.
     pub fn try_persist_flush(&mut self) -> Result<(), String> {
+        self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
             return wake.binding.records.try_flush();
@@ -2590,6 +2876,7 @@ impl FrameHarness {
         reason = "one exclusive sync/build/admission/measure/apply sequence keeps layout ownership explicit"
     )]
     pub fn relayout(&mut self) {
+        self.invalidate_local();
         self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout() {
             tracing::error!(
@@ -2688,10 +2975,32 @@ impl FrameHarness {
             // SAFETY: no structural mutation since these maps were admitted.
             unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) }
         };
+        // Read before anything below can move it: whether this frame's sync
+        // and publication would only repeat the last frame's.
+        let witnessed = self
+            .frame_witness
+            .take()
+            .is_some_and(|witness| self.witness_holds(&witness));
+        let focused_at_start = self.focused;
+        let epoch_at_start = self.local_epoch;
         self.drain_component_wakes();
-        if let Some(wake) = &self.component_wake {
-            wake.dirty.set(false);
-        }
+        let woken = self
+            .component_wake
+            .as_ref()
+            .is_some_and(|wake| wake.dirty.replace(false));
+        // A frame nothing new reached leaves every framework History surface
+        // where it was. While each rests, this one walk stands for the
+        // several below (entry capture, refresh, review, focus and control
+        // return), which would find nothing to do.
+        let history_at_rest = (witnessed && !woken)
+            .then(|| {
+                crate::history_mode::embedded::surfaces_at_rest(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    f64::from(self.viewport.0),
+                )
+            })
+            .flatten();
         // Seal controls that were already queued when the framework entry
         // callback fired. Hidden update/sync output is deliberately excluded.
         if let Some(history) = &mut self.history
@@ -2704,36 +3013,30 @@ impl FrameHarness {
             );
         }
         self.capture_palette_history();
-        crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
+        // A surface at rest captures no input, so it has no entries to seal.
+        if history_at_rest.is_none() {
+            crate::history_mode::embedded::capture_entries(self.root.as_mut(), &self.state.doc);
+        }
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        self.root.update(&self.state.doc, &self.state.root);
+        let updated = self.root.update(&self.state.doc, &self.state.root);
         self.tick_records();
-        let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
-        // What the widgets took up since the last frame (an edit a child
-        // made on its own) is written before the document is read again.
-        self.root.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
-        self.root.sync(&self.state.doc, &self.state.root);
-        // A sync reads the document only. What it took up is written now,
-        // through actions, and shown in this same frame.
-        let before = crate::widget::settle_mark(&self.state.doc);
-        self.root.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
-        );
-        let settled = crate::widget::settle_mark(&self.state.doc) != before;
-        let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
-        if settled || submitted {
-            self.idle_control_tick();
-            self.root.update(&self.state.doc, &self.state.root);
-            self.root.sync(&self.state.doc, &self.state.root);
-        }
-        if let Some(p) = self.profiler.as_mut() {
-            p.record_since(crate::profiling::Pass::Sync, t_sync);
+        // As the live App syncs only when something set `needs_sync`: a
+        // frame whose widgets noticed nothing of their own, after nothing
+        // the witness follows moved, has nothing new to sync or publish.
+        let quiet = history_at_rest.is_some()
+            && !updated
+            && !structure_changed
+            && !crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
+        if quiet {
+            self.quiet_frames = self.quiet_frames.saturating_add(1);
+        } else {
+            let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
+            self.sync_frame();
+            if let Some(p) = self.profiler.as_mut() {
+                p.record_since(crate::profiling::Pass::Sync, t_sync);
+            }
         }
 
         let (standalone_history_changed, standalone_history_topology_changed) =
@@ -2811,12 +3114,17 @@ impl FrameHarness {
             || history_invalidated
             || standalone_history_topology_changed
             || self.take_composition_dirty()
-            || crate::history_mode::embedded::needs_refresh(
-                self.root.as_ref(),
-                &self.state.doc,
-                history_width,
-                None,
-            );
+            || if quiet {
+                // Asked of the same document at the same width above.
+                history_at_rest == Some(true)
+            } else {
+                crate::history_mode::embedded::needs_refresh(
+                    self.root.as_ref(),
+                    &self.state.doc,
+                    history_width,
+                    None,
+                )
+            };
         let must_compute = structure
             || viewport_changed
             || standalone_history_changed
@@ -3044,11 +3352,14 @@ impl FrameHarness {
         if !stats.rebuilt {
             self.retained_frames = self.retained_frames.saturating_add(1);
         }
+        // A quiet frame that kept its composition kept every History surface
+        // at rest: none asks for review, returns focus or denies it.
+        let history_resting = quiet && !stats.rebuilt;
         if self
             .history
             .as_ref()
             .is_some_and(|history| history.has_review_request())
-            || crate::history_mode::embedded::has_review(self.root.as_ref())
+            || (!history_resting && crate::history_mode::embedded::has_review(self.root.as_ref()))
         {
             // Admission follows complete composition settlement. Remove raw
             // maps before replacing modal chrome, then build its fresh map.
@@ -3070,13 +3381,15 @@ impl FrameHarness {
             );
             return self.try_relayout();
         }
-        if let Some(focus) = unsafe {
-            crate::history_mode::embedded::restore_focus(
-                self.root.as_mut(),
-                &self.node_map,
-                &self.bindings,
-            )
-        } {
+        if !history_resting
+            && let Some(focus) = unsafe {
+                crate::history_mode::embedded::restore_focus(
+                    self.root.as_mut(),
+                    &self.node_map,
+                    &self.bindings,
+                )
+            }
+        {
             self.focused = Some(focus);
         }
 
@@ -3092,7 +3405,9 @@ impl FrameHarness {
                 history.restore_focus(&self.node_map, &self.bindings)
             });
         } else {
-            let admitted = self.history_focus_admission();
+            // Surfaces at rest deny no focus.
+            let admission = (!history_resting).then(|| self.history_focus_admission());
+            let admitted = |node: NodeId| admission.as_ref().is_none_or(|admitted| admitted(node));
             let eligible = |node: NodeId| {
                 (self.focus_trap_active
                     || self
@@ -3132,11 +3447,15 @@ impl FrameHarness {
             } else {
                 kept
             };
-            drop(admitted);
+            drop(admission);
             self.focused = found;
         }
 
-        self.update_focus_trap(focus);
+        // Nothing asks to trap focus that did not last frame: a trap comes
+        // with input, a sync or a recomposition, and this frame had none.
+        if !history_resting || self.focus_trap_active {
+            self.update_focus_trap(focus);
+        }
         if self.action_palette.is_none()
             && let Some(saved) = self.ordinary_palette_return_focus.take()
             && !self.focus_trap_active
@@ -3152,8 +3471,15 @@ impl FrameHarness {
 
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
-        // enabled state the user would see.
-        self.publish_undo_status();
+        // enabled state the user would see. A quiet frame that kept its
+        // composition and focus would write what the last frame wrote.
+        let quiet = quiet
+            && !stats.rebuilt
+            && self.focused == focused_at_start
+            && self.local_epoch == epoch_at_start;
+        if !quiet {
+            self.publish_undo_status();
+        }
 
         self.validate_app_activation_frame()?;
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
@@ -3352,7 +3678,9 @@ impl FrameHarness {
                 history.finish_control_return();
             }
         }
-        crate::history_mode::embedded::finish_returns(self.root.as_mut());
+        if !history_resting {
+            crate::history_mode::embedded::finish_returns(self.root.as_mut());
+        }
 
         self.restore_history_focus();
         // Draw and History-return callbacks remain original. A late mutation
@@ -3366,6 +3694,13 @@ impl FrameHarness {
         }
         self.check_retained_geometry_if_due();
         self.scene_capture_protected = protected_paint.finish();
+        #[cfg(debug_assertions)]
+        if quiet {
+            self.verify_quiet_frame();
+        }
+        // Only a polled frame reads it, and only while it follows everything.
+        self.frame_witness =
+            (self.polls_frames && self.bookkeeping_followed()).then(|| self.read_witness());
         Ok(())
     }
 
@@ -3382,6 +3717,7 @@ impl FrameHarness {
         timeout: crate::time::Duration,
         condition: impl FnMut(&Self) -> bool,
     ) -> bool {
+        self.invalidate_local();
         let background = crate::background::Background::current();
         self.wait_until_on(timeout, || background.now(), condition)
     }
@@ -3397,6 +3733,9 @@ impl FrameHarness {
     ) -> bool {
         self.relayout();
         self.idle_control_tick();
+        // Visual readiness includes saves. Like a live window's idle pass,
+        // offer edits to the writer before sampling their durability again.
+        self.persist_tick();
         self.relayout();
         if condition(self) {
             return true;
@@ -3428,6 +3767,9 @@ impl FrameHarness {
             background.park(slice.min(deadline));
             self.relayout();
             self.idle_control_tick();
+            // A later frame can produce another edit; submission and ACK
+            // servicing must continue throughout the same bounded wait.
+            self.persist_tick();
             self.relayout();
             if condition(self) {
                 return true;
@@ -3445,6 +3787,7 @@ impl FrameHarness {
     /// bound is measured on it too: an executor with a virtual clock (a
     /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        self.invalidate_local();
         /// How long [`Self::settle_for_capture`] waits between idle passes.
         const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
         let Some(deadline) = crate::time::now().checked_add(bound) else {
@@ -3502,6 +3845,7 @@ impl FrameHarness {
     /// Returns an error instead of capturing an unfinished placeholder when
     /// the work does not complete within `timeout`.
     pub fn wait_for_visuals(&mut self, timeout: crate::time::Duration) -> Result<(), String> {
+        self.invalidate_local();
         if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
             Ok(())
         } else {
@@ -3519,6 +3863,7 @@ impl FrameHarness {
         name: &str,
         timeout: crate::time::Duration,
     ) -> Result<(), String> {
+        self.invalidate_local();
         self.pump_component_wakes();
         if self.wait_until(timeout, |driver| driver.targets().contains_key(name)) {
             Ok(())
@@ -3744,6 +4089,7 @@ impl FrameHarness {
 
     /// Remember a stable component/control identity, never a layout NodeId.
     pub fn remember_app_focus(&mut self) {
+        self.invalidate_local();
         if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
@@ -3871,6 +4217,7 @@ impl FrameHarness {
     /// Resolve focus only in the selected, live app instance. A missing control
     /// is an authoritative no-owner result; layout cannot revive another app.
     pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
+        self.invalidate_local();
         // A new explicit selection replaces failed prior selection metadata;
         // its callbacks still require the original fresh layout admission.
         self.pending_app_activation = None;
@@ -3892,6 +4239,7 @@ impl FrameHarness {
     }
 
     pub fn activate_app_focus(&mut self, instance: crate::application::InstanceId) {
+        self.invalidate_local();
         self.pending_app_activation = None;
         if self.readmit_owner_service_layout().is_err() {
             return;
@@ -4216,6 +4564,7 @@ impl FrameHarness {
     /// Advance keyboard focus like Tab (or Shift+Tab when `back`), cycling the
     /// focus order. Returns the newly-focused node.
     pub fn tab(&mut self, back: bool) -> Option<NodeId> {
+        self.invalidate_local();
         self.pump_component_wakes();
         let order = self.focus_order();
         if order.is_empty() {
@@ -4406,6 +4755,7 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        self.invalidate_local();
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
@@ -4601,6 +4951,7 @@ impl FrameHarness {
     /// One assertion proves both that every control is reachable by keyboard
     /// and that each announces a sensible role + label.
     pub fn tab_through(&mut self) -> Vec<(crate::a11y::Role, Option<String>)> {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.set_focused(None);
         let count = self.focus_order().len();
@@ -4684,6 +5035,7 @@ impl FrameHarness {
         name: &str,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        self.invalidate_local();
         self.pump_component_wakes_checked()
             .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
         self.perform_semantic_named(name, None, action)
@@ -4702,6 +5054,7 @@ impl FrameHarness {
         semantic_target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        self.invalidate_local();
         use crate::a11y::Action as SemanticAction;
         use automerge::transaction::Transactable;
         self.pump_component_wakes_checked()
@@ -4881,6 +5234,7 @@ impl FrameHarness {
     /// [`SemanticExpectation::within`] drives live-equivalent frames until it
     /// matches or the explicit bound expires.
     pub fn expect(&mut self, expected: &SemanticExpectation) -> Result<(), String> {
+        self.invalidate_local();
         self.pump_component_wakes();
         let Some(timeout) = expected.timeout_ms.map(crate::time::Duration::from_millis) else {
             return self.expect_now(expected);
@@ -5370,6 +5724,7 @@ impl FrameHarness {
     /// component when one of its actions breaks its contract, so a test
     /// asserts this is empty rather than finding the surface gone at runtime.
     pub fn component_contract_violations(&mut self) -> Vec<tilo_actions::ContractViolation> {
+        self.invalidate_local();
         self.drain_component_wakes();
         let components = match crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
@@ -5407,6 +5762,7 @@ impl FrameHarness {
 
     /// The live document. Used to dump state and to hand to a saver.
     pub fn state_mut(&mut self) -> &mut State {
+        self.invalidate_local();
         self.pump_component_wakes();
         &mut self.state
     }
@@ -5414,6 +5770,12 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        // A wheel whose frame the host takes is judged once dispatched
+        // (`dispatch_with_host_navigation`): only one the root declares
+        // view-only leaves the next frame quiet. Every other event counts.
+        if !(self.coalesce_wheel_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
+            self.invalidate_local();
+        }
         if self.pump_component_wakes_checked().is_err() {
             return;
         }
@@ -5522,6 +5884,7 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        self.invalidate_local();
         if self.pump_component_wakes_checked().is_err() {
             return;
         }
@@ -5753,6 +6116,11 @@ impl FrameHarness {
         // frame lays out, runs for whatever else is pending.
         let coalesced_view_only =
             self.coalesce_wheel_frames && !history_input && focus_target.is_none();
+        if !(coalesced_view_only && view_only_wheel) {
+            // Anything but such a wheel may have changed what the next
+            // frame's sync and publication read.
+            self.invalidate_local();
+        }
         if history_handled {
             if let Err(error) = self.history_tick() {
                 tracing::debug!(%error, "headless History input refused");
@@ -5840,6 +6208,7 @@ impl FrameHarness {
     /// would be replaced unseen. The event is still dispatched at once,
     /// against the last frame's layout, as a native window dispatches it.
     pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
+        self.invalidate_local();
         self.coalesce_wheel_frames = coalesce;
     }
 
@@ -5998,6 +6367,7 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, false, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
@@ -6014,6 +6384,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
         ambient: &tilo_actions::ActionContext,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, false, Some(ambient), None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
@@ -6029,6 +6400,7 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
@@ -6053,6 +6425,7 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.invalidate_local();
         self.start_bound_job_for(None, address, arguments, confirmed)
     }
 
@@ -6078,6 +6451,7 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.invalidate_local();
         self.start_bound_job_within(invoker, None, address, arguments, confirmed)
     }
 
@@ -6101,6 +6475,7 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.invalidate_local();
         self.pump_component_wakes();
         let invocation = tilo_actions::InvocationId::new();
         let delivered = invoker.map(|invoker| {
@@ -6211,6 +6586,7 @@ impl FrameHarness {
         &mut self,
         invocation: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        self.invalidate_local();
         self.pump_component_wakes();
         let target = self.bound_invocations.get(&invocation).cloned()?;
         let update = crate::bound_dispatch::poll_resource_operation(
@@ -7452,6 +7828,7 @@ impl FrameHarness {
     /// then lift it: the touchscreen's secondary click. The hold is resolved
     /// at its deadline instead of waiting for it in real time.
     pub fn touch_hold_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.send_touch_phase(winit::event::TouchPhase::Started, x, y);
         if let Some(deadline) = self.touch_pointer.long_press_deadline() {
@@ -7464,6 +7841,7 @@ impl FrameHarness {
     /// Deliver one finger's contact update at logical `(x, y)`; `id`
     /// distinguishes simultaneous fingers.
     pub fn touch(&mut self, id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.send(&WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -7477,6 +7855,7 @@ impl FrameHarness {
     /// Move the pointer to `(x, y)` and press+release the left button — the
     /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.send(&crate::synthetic_input::cursor_moved(
             x * self.input_scale,
@@ -7491,6 +7870,7 @@ impl FrameHarness {
     /// widened for exactly these two presses, so a slow host cannot split
     /// them into two single clicks.
     pub fn double_click_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
         crate::gesture::with_capture_multi_click_interval(
             crate::time::Duration::from_secs(3600),
             || {
@@ -7504,6 +7884,7 @@ impl FrameHarness {
     /// `to` and release there: a pointer drag in logical coordinates, as a
     /// drawing or a handle drag sees it.
     pub fn drag_at(&mut self, from: (f64, f64), to: (f64, f64)) {
+        self.invalidate_local();
         self.pump_component_wakes();
         let moved = |this: &mut Self, (x, y): (f64, f64)| {
             this.send(&crate::synthetic_input::cursor_moved(
@@ -7527,6 +7908,7 @@ impl FrameHarness {
 
     /// Direct-touch activation at logical coordinates.
     pub fn tap_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
         self.pump_component_wakes();
         for phase in [
             winit::event::TouchPhase::Started,
@@ -7539,6 +7921,7 @@ impl FrameHarness {
     /// Move one direct touch through enough intermediate points for widgets
     /// to receive smooth pixel scroll deltas rather than one synthetic jump.
     pub fn swipe_at(&mut self, start: (f64, f64), end: (f64, f64)) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.send_touch_phase(winit::event::TouchPhase::Started, start.0, start.1);
         for fraction in [0.25, 0.5, 0.75, 1.0] {
@@ -7560,6 +7943,7 @@ impl FrameHarness {
     /// Returns an error when `name` is absent or its widget has no tappable
     /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
+        self.invalidate_local();
         let center = self.named_center(name)?;
         self.tap_at(center.x, center.y);
         Ok(())
@@ -7588,6 +7972,7 @@ impl FrameHarness {
     ///
     /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
+        self.invalidate_local();
         let center = self.named_center(name)?;
         self.click_at(center.x, center.y);
         Ok(())
@@ -7600,6 +7985,7 @@ impl FrameHarness {
     /// [`crate::app::App`]'s live routing; every delivered key then follows
     /// the normal root-widget event path.
     pub fn key(&mut self, spec: &str) {
+        self.invalidate_local();
         // Press and release are one interaction even when the press returns
         // to live content and replaces the chrome before release arrives.
         let framework = crate::history_mode::embedded::keyboard_captured(
@@ -7622,6 +8008,7 @@ impl FrameHarness {
 
     /// Type a string one character at a time.
     pub fn type_text(&mut self, text: &str) {
+        self.invalidate_local();
         self.pump_component_wakes();
         for ch in text.chars() {
             self.key(&ch.to_string());
@@ -7634,6 +8021,7 @@ impl FrameHarness {
     /// than physical-key handling. It models a completed input-method
     /// composition without manufacturing a rendered frame for every character.
     pub fn commit_text(&mut self, text: &str) {
+        self.invalidate_local();
         if self.pump_component_wakes_checked().is_err() {
             return;
         }
@@ -7644,6 +8032,7 @@ impl FrameHarness {
     /// # Errors
     /// Rejects a non-finite or non-positive scale.
     pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {
+        self.invalidate_local();
         if !scale.is_finite() || scale <= 0.0 {
             return Err("input scale must be finite and positive".into());
         }
@@ -7672,6 +8061,7 @@ impl FrameHarness {
     /// selections, names), for a live host applying peers' presence. Takes
     /// effect in the next relayout.
     pub fn presence_mut(&mut self) -> &mut PresenceCtx {
+        self.invalidate_local();
         &mut self.presence
     }
 
@@ -7679,6 +8069,7 @@ impl FrameHarness {
     /// Capture and integration hosts use this to exercise the same presence
     /// rendering that a live broker frame supplies, without a broker process.
     pub fn set_presence_context(&mut self, presence: PresenceCtx) {
+        self.invalidate_local();
         self.presence = presence;
         self.relayout();
     }
@@ -7688,6 +8079,7 @@ impl FrameHarness {
     /// [`Self::set_presence_context`] this never runs a synchronous relayout,
     /// so live remote carets cost one ordinary frame at display cadence.
     pub fn update_presence(&mut self, update: impl FnOnce(&mut PresenceCtx) -> bool) -> bool {
+        self.invalidate_local();
         let changed = update(&mut self.presence);
         self.presence_redraw |= changed;
         changed
@@ -7717,6 +8109,7 @@ impl FrameHarness {
     /// Send wheel line-deltas at the last pointer position. Move the pointer
     /// inside the intended content viewport first, as a live user would.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
+        self.invalidate_local();
         self.pump_component_wakes();
         // Deltas are line counts chosen by the driver's own caller (test
         // code or an agent), always small integers; there is no fallible
@@ -7736,6 +8129,7 @@ impl FrameHarness {
     /// each pass and commit a per-frame sample. Called by
     /// [`crate::profiling::run_scenario`].
     pub fn begin_profiling(&mut self) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.profiler = Some(crate::profiling::FrameProfiler::for_capture());
     }
@@ -7749,6 +8143,7 @@ impl FrameHarness {
 
     /// Stop per-pass timing; subsequent frames pay nothing again.
     pub fn end_profiling(&mut self) {
+        self.invalidate_local();
         self.profiler = None;
     }
 
@@ -7766,6 +8161,7 @@ impl FrameHarness {
     /// returns to the environment's choice. Benchmarks use this to compare
     /// both paths inside one process.
     pub fn set_full_relayout(&mut self, forced: Option<bool>) {
+        self.invalidate_local();
         self.full_relayout_override = forced;
     }
 
@@ -7857,6 +8253,7 @@ impl FrameHarness {
     /// Describes the first node (in traversal order) whose child count,
     /// location or size differs, or the layout error of the rebuild.
     pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
+        self.invalidate_local();
         use crate::widget::layout::composition_geometry;
         if !self.layout_built {
             return Ok(());
@@ -7910,6 +8307,7 @@ impl FrameHarness {
     /// retained geometry against a fresh rebuild and panic on a mismatch.
     /// `0` disables the check (the default).
     pub fn set_retained_geometry_check(&mut self, every: u32) {
+        self.invalidate_local();
         self.retained_geometry_check_every = if cfg!(debug_assertions) { every } else { 0 };
     }
 
@@ -7935,6 +8333,7 @@ impl FrameHarness {
     /// Render one frame with no input and record it. A frame here is one
     /// `relayout`, which runs the sync → build → apply → draw passes.
     pub fn profile_frame(&mut self) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.relayout();
     }
@@ -7958,6 +8357,7 @@ impl FrameHarness {
 
     /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`.
     pub fn set_modifiers(&mut self, names: &[String]) {
+        self.invalidate_local();
         self.pump_component_wakes();
         let mut st = winit::keyboard::ModifiersState::empty();
         for n in names {
@@ -7979,6 +8379,7 @@ impl FrameHarness {
     ///
     /// Returns an error if the action cannot be performed.
     pub fn perform(&mut self, action: &Action) -> Result<(), String> {
+        self.invalidate_local();
         self.pump_component_wakes();
         match action {
             Action::ClickNamed(name) => self.click_named(name),
@@ -8061,6 +8462,7 @@ impl FrameHarness {
         confirm: bool,
         confirmation_phrase: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.pump_component_wakes();
         let resources = self.resources();
         let spec = tilo_actions::door::resolve(&resources, address)
@@ -8121,6 +8523,7 @@ impl FrameHarness {
     /// first invocation (`HostWorker::join_participant`). A host whose own author
     /// is that participant makes the component act as the agent. Idempotent.
     pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        self.invalidate_local();
         crate::collaboration::participants::join_participant(self.root.as_mut(), participant);
         crate::collaboration::participants::set_participant_label(
             self.root.as_mut(),
@@ -8134,6 +8537,7 @@ impl FrameHarness {
     /// and its scene at that size. `None` when it shows nothing more than
     /// the window. The next frame lays the root out again as it lives.
     pub fn complete_content(&mut self) -> Option<(vello::kurbo::Size, Scene)> {
+        self.invalidate_local();
         use crate::widget::CompleteContentWidgetExt as _;
         let size = self.root.complete_content_size()?;
         let origin = self.root.get_rect().origin();
@@ -8167,6 +8571,7 @@ impl FrameHarness {
     /// This is how a screenshot scenario stages view state (a selection, an
     /// open dialog) in the widget that owns it, instead of reaching around it.
     pub fn with_widget_mut<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+        self.invalidate_local();
         self.pump_component_wakes();
         let output = visit(self.widget_mut::<T>()?);
         self.relayout();
@@ -8180,6 +8585,7 @@ impl FrameHarness {
     /// a frame: for a test reading or poking a widget between the events it
     /// sends. `None` when no widget of that type opts in to `as_any_mut`.
     pub fn widget_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        self.invalidate_local();
         fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
             if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
                 return widget.as_any_mut()?.downcast_mut::<T>();
@@ -8193,6 +8599,7 @@ impl FrameHarness {
     /// [`crate::app::UserEvent::External`] — a worker's progress line, or a
     /// wake-up for requests the app queued itself — then run the host tick.
     pub fn deliver_external(&mut self, payload: &str) {
+        self.invalidate_local();
         self.pump_component_wakes();
         self.root.on_external_event(
             payload,
@@ -8249,6 +8656,7 @@ impl FrameHarness {
     /// The document rendered as JSON, for a harness to diff across a
     /// restart.
     pub fn dump_json(&mut self) -> String {
+        self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
             return wake
@@ -13096,6 +13504,10 @@ impl Drop for FrameHarness {
     }
 }
 
+#[cfg(all(test, feature = "native"))]
+#[path = "headless/visual_persistence_tests.rs"]
+mod visual_persistence_tests;
+
 // Draft to append under cfg(test) in headless.rs after initial source release.
 #[cfg(test)]
 mod prepared_driver_tests {
@@ -13988,6 +14400,10 @@ mod owner_layout_custody_tests;
 #[cfg(test)]
 #[path = "headless/owner_layout_demand_tests.rs"]
 mod owner_layout_demand_tests;
+
+#[cfg(test)]
+#[path = "headless/quiet_frame_tests.rs"]
+mod quiet_frame_tests;
 #[cfg(test)]
 #[path = "headless/replaced_composition_tests.rs"]
 mod replaced_composition_tests;

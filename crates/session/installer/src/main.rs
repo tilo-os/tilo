@@ -21,15 +21,6 @@
 // actions invoke, state-dump) on its console endpoints — see
 // crates/session/console-control for where they listen and why only there.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::sync::{Arc, Mutex};
 
 use installer::InstallerApp;

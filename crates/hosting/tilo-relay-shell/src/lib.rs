@@ -16,16 +16,43 @@
 //! browser legacy-window bridge, which decodes and originates those
 //! messages on the browser live plane.
 //!
+//! [`selection`] is native shell replay selection: with a desktop
+//! [`RetentionAuthority`](retained_proof::RetentionAuthority)
+//! bound to a workspace store, retention and replay select an immutable basis
+//! and retire only what exact historical proof pairs cover. The store reaches
+//! it only through the `tilo_relay_store::shell` seam, binding through the
+//! adapter [`ShellPayloads::replay`] returns ([`NeighbourReplay`]).
+//! [`retained_proof`] is the historical proof selection judges by: it pairs
+//! a retained room with its snapshots and tails against the pinned governor,
+//! decoding every peer-supplied Automerge body in `tilo_automerge_isolate`.
+//!
 //! An adapter that classifies nothing makes the host keep every entry and
 //! fold none: unknown data never grants removal.
+
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::BTreeSet;
 
 #[cfg(feature = "web")]
 pub mod legacy;
 mod neighbour;
+pub mod retained_proof;
+pub mod selection;
 
 pub use neighbour::NeighbourPayloads;
+pub use selection::binding::{NeighbourReplay, ShellAuthority};
+
+// Selection verifies peer-supplied Automerge bytes in worker processes
+// started from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 /// The document a retained entry belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,4 +143,11 @@ pub trait ShellPayloads: Send + Sync + 'static {
     /// An upper bound on the memory one decoded body holds beyond its bytes,
     /// for the store's bounded-work accounting.
     fn decoded_overhead(&self) -> usize;
+
+    /// The shell replay adapter that binds a workspace's shell retention
+    /// authority, or `None` when this adapter's host selects no shell replay:
+    /// a store bound through it would then refuse the authority.
+    fn replay(&self) -> Option<&dyn tilo_relay_store::shell::ShellReplay> {
+        None
+    }
 }

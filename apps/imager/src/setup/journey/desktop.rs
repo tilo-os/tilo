@@ -29,6 +29,7 @@ impl InstallerPreview {
         } else {
             None
         };
+        let install_profile = self.public_install_profile()?;
         self.media_preparation.start_with_selections(
             identity,
             accounts,
@@ -47,7 +48,7 @@ impl InstallerPreview {
                 .filter(|selected| !selected.profiles().is_empty()),
             },
             zeroize::Zeroizing::new(self.journey.password.clone()),
-            Some(self.public_install_profile()?),
+            Some(install_profile),
         )?;
         self.desktop_pending = true;
         Ok(())

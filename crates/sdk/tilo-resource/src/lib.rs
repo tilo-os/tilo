@@ -119,6 +119,7 @@ pub mod history;
 pub mod items;
 pub mod keyed;
 pub mod kind;
+mod map;
 pub mod model;
 pub mod order;
 pub mod ordered;
@@ -146,11 +147,12 @@ pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id, Membership};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
-pub use effect::{Answers, Effect, EffectDecl, NoEffect};
+pub use effect::{Answers, Effect, EffectDecl, EffectOffload, NoEffect};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
+pub use map::Map;
 pub use model::{
     Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, edit_whole, load_slot,
     read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,

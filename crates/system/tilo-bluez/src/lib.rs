@@ -36,15 +36,6 @@
 //! reply that does not fit the question, nobody answering in time — returns a
 //! D-Bus error to `BlueZ`. Silence never becomes consent.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod agent;
 pub mod client;
 pub mod model;

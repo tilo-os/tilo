@@ -17,6 +17,8 @@ pub mod availability;
 #[cfg(feature = "filesystem")]
 mod blob_access;
 #[cfg(feature = "filesystem")]
+pub mod cache_policy;
+#[cfg(feature = "filesystem")]
 mod canonical_frame;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
@@ -99,6 +101,8 @@ pub mod record_subscription;
 pub mod record_transaction;
 #[cfg(feature = "filesystem")]
 pub mod replica_ack;
+#[cfg(feature = "filesystem")]
+pub mod replica_content;
 #[cfg(feature = "filesystem")]
 mod rich_metadata;
 #[cfg(feature = "filesystem")]

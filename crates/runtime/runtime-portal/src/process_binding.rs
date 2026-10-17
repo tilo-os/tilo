@@ -7,6 +7,9 @@ pub const ENV: &str = "TILO_COLLAB_EXEC_PEER";
 /// One-time native process binding before Cap'n Proto traffic begins.
 pub const MAGIC: [u8; 4] = *b"QPE1";
 
+mod proof;
+pub use proof::Proof;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

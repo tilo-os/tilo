@@ -153,3 +153,42 @@ fn a_note_at_rest_walks_no_widgets_and_a_key_publishes_on_its_frame() {
     })
     .unwrap();
 }
+
+/// A hand resting on the mouse over a note's text moves the pointer a pixel
+/// at a time: a move that changes no hover repaints nothing and walks no
+/// widgets, so the frame costs the host no accessibility walk.
+#[test]
+fn a_pointer_moving_within_a_block_walks_no_widgets() {
+    ui::i18n::I18nManager::init("en-US");
+    drive_live_window::<NotesShell, _>(|app| {
+        let mut damage = SurfaceDamage::default();
+        a_note_holding(app, &mut damage, "Rest");
+        let text = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Block text"))
+            .and_then(|node| node.bounds)
+            .expect("the note's text on screen")
+            .center();
+        // Over the text: the block is hovered from here on.
+        input(app, &mut damage, cursor_moved(text.x, text.y));
+        rest(app, &mut damage);
+
+        let builds = app.semantic_tree_builds_for_test();
+        for step in 1..=6_u8 {
+            app.surface_input(
+                &Region,
+                cursor_moved(text.x + f64::from(step), text.y),
+                false,
+            );
+            let (delta, _) = frame(app, &mut damage);
+            assert!(delta.is_empty(), "a pointer move published {delta:?}");
+        }
+        assert_eq!(
+            app.semantic_tree_builds_for_test(),
+            builds,
+            "pointer moves within a block walked the widgets"
+        );
+    })
+    .unwrap();
+}

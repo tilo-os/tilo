@@ -21,6 +21,7 @@ REBUILD_PATHS = {
     "tools/ci/install-pdfium.sh",
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",
+    "tools/ci/windows/wine-prefix.sh",
 }
 REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/")
 WORKFLOW = ".forgejo/workflows/build-ci-builder.yml"

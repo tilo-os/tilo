@@ -27,7 +27,8 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http", "webview"]
-optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings"]
+# Reviewed account-session imports need secret custody; ordinary browsing does not.
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -11,9 +11,7 @@ use crate::services::{
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::roles::AgentPreset;
-use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
-};
+use tilo_owner_commit::{CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,

@@ -42,9 +42,9 @@ async fn retained_by(
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
-        .filter_map(|body| {
-            match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body.body) {
-                Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        .filter_map(
+            |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
+                Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
                     record_id,
                     envelope,
@@ -56,8 +56,8 @@ async fn retained_by(
                         .is_some_and(|metadata| metadata.channel == channel),
                 ),
                 _ => None,
-            }
-        })
+            },
+        )
         .collect()
 }
 

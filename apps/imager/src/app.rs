@@ -61,8 +61,8 @@ use ui::widget::{
 use crate::customize::CzField;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
-    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TiloRelease,
-    fmt_eta, fmt_rate, fmt_size,
+    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
+    TargetDriveIcon, TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::page::{self, Frame};
 use crate::resource::{Imager, ImagerEffect};
@@ -76,9 +76,7 @@ use ui::tilo_resource::Effect as _;
 
 const DROP_TITLE: &str = "Choose a disk image";
 const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
-#[cfg(target_os = "linux")]
 struct SourceCheckActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
-#[cfg(target_os = "linux")]
 impl Drop for SourceCheckActivity {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
@@ -163,17 +161,11 @@ pub struct ImagerApp {
     selected: Option<usize>,
     action: Action,
     progress: Progress,
-    #[cfg(target_os = "linux")]
     prepared_delivery: crate::setup::journey::prepared_media::Delivery,
-    #[cfg(target_os = "linux")]
     written_target: Option<TargetDrive>,
-    #[cfg(target_os = "linux")]
     write_preflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(target_os = "linux")]
     preparation_navigation: Option<crate::setup::journey::prepared_media::Navigation>,
-    #[cfg(target_os = "linux")]
     original_source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
-    #[cfg(target_os = "linux")]
     offline_media_review:
         Option<std::sync::Arc<crate::setup::journey::prepared_media::offline::OfflineMediaReview>>,
     /// Peer-local destructive-write arming text. This must never replicate:
@@ -257,17 +249,11 @@ impl ImagerApp {
             ssh_public_key: String::new(),
             windows_preparation: None,
             progress: Progress::default(),
-            #[cfg(target_os = "linux")]
             prepared_delivery: crate::setup::journey::prepared_media::Delivery::default(),
-            #[cfg(target_os = "linux")]
             written_target: None,
-            #[cfg(target_os = "linux")]
             write_preflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            #[cfg(target_os = "linux")]
             preparation_navigation: None,
-            #[cfg(target_os = "linux")]
             original_source: None,
-            #[cfg(target_os = "linux")]
             offline_media_review: None,
             confirm_text: String::new(),
             status: String::new(),
@@ -304,7 +290,6 @@ impl ImagerApp {
     pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn with_prepared_media(
         mut self,
         prepared: Option<std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>>,
@@ -319,7 +304,6 @@ impl ImagerApp {
         self
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn with_original_source(
         mut self,
         source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
@@ -328,7 +312,6 @@ impl ImagerApp {
         self
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) fn with_preparation_navigation(
         mut self,
         navigation: crate::setup::journey::prepared_media::Navigation,
@@ -337,7 +320,6 @@ impl ImagerApp {
         self
     }
 
-    #[cfg(target_os = "linux")]
     fn renew_prepared_artifact(&mut self) {
         if self.prepared_delivery.busy() {
             return;
@@ -437,16 +419,9 @@ impl ImagerApp {
     }
 
     fn has_prepared_install_profile(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.prepared_delivery
-                .artifact()
-                .is_some_and(|prepared| prepared.install_profile().is_some())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.prepared_delivery
+            .artifact()
+            .is_some_and(|prepared| matches!(prepared.install_profile_draft(), Ok(Some(_))))
     }
 
     /// Guided setup already owns these choices in its authenticated manifest.
@@ -456,13 +431,11 @@ impl ImagerApp {
     }
 
     fn effective_install_profile(&self) -> Result<InstallProfile, String> {
-        #[cfg(target_os = "linux")]
         if let Some(prepared) = self.prepared_delivery.artifact()
-            && let Some(public) = prepared.install_profile()
-        {
-            let mut profile = public.to_draft().map_err(|_| {
+            && let Some(mut profile) = prepared.install_profile_draft().map_err(|_| {
                 crate::setup::strings::t("installer-preview-install-profile-invalid")
-            })?;
+            })?
+        {
             // These are separate operator choices on Confirm, not identity fields.
             profile.wifi_ssid.clone_from(&self.profile.wifi_ssid);
             profile.enroll_local_identity = self.profile.enroll_local_identity;
@@ -508,7 +481,6 @@ impl ImagerApp {
             })
     }
 
-    #[cfg(target_os = "linux")]
     fn require_media_account_protocol(
         &self,
         source: &Source,
@@ -534,7 +506,6 @@ impl ImagerApp {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     fn require_media_service_session_protocol(
         &self,
         source: &Source,
@@ -562,7 +533,6 @@ impl ImagerApp {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     fn require_media_applications_protocol(
         &self,
         source: &Source,
@@ -590,7 +560,6 @@ impl ImagerApp {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
     fn require_media_home_protocol(
         &self,
         source: &Source,
@@ -750,23 +719,12 @@ impl ImagerApp {
         if source.size == 0 {
             return None;
         }
-        #[cfg(target_os = "linux")]
-        {
-            crate::media_capacity::required(
-                source.size,
-                self.prepared_delivery.reserved_data_bytes(),
-                self.prepared_delivery.requires_data_partition(),
-                self.source_is_official(source),
-            )
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            source.size.checked_add(if self.source_is_official(source) {
-                crate::profile::PROFILE_BLOCK_SIZE as u64
-            } else {
-                0
-            })
-        }
+        crate::media_capacity::required(
+            source.size,
+            self.prepared_delivery.reserved_data_bytes(),
+            self.prepared_delivery.requires_data_partition(),
+            self.source_is_official(source),
+        )
     }
     fn capacity_message(&self, drive: &TargetDrive) -> String {
         use crate::setup::strings::{t, t_args};
@@ -824,7 +782,6 @@ impl ImagerApp {
                 self.profile.enroll_local_identity
             ),
         };
-        #[cfg(target_os = "linux")]
         let profile = format!(
             "{profile}|{}|{}",
             self.prepared_delivery.projection(),
@@ -912,7 +869,6 @@ impl ImagerApp {
             Step::Write => self.write_body(),
             Step::Done => self.done_body(),
         };
-        #[cfg(target_os = "linux")]
         let body = if self.prepared_delivery.needs_source_review() {
             self.prepared_body()
         } else {
@@ -951,11 +907,9 @@ impl ImagerApp {
 
     /// Back at the leading edge, the step's main action at the trailing one.
     fn footer(&self) -> Row {
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.awaiting_original_boot() {
             return Row::new().no_wrap();
         }
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.needs_source_review() {
             return Row::new().no_wrap();
         }
@@ -1504,7 +1458,6 @@ impl ImagerApp {
 
     /// The success hero's headline and explanation.
     fn done_ok_copy(&self) -> (&'static str, String) {
-        #[cfg(target_os = "linux")]
         if self.action == Action::Flash && self.prepared_delivery.expectation().is_some() {
             return (
                 "The drive is ready",
@@ -1532,7 +1485,6 @@ impl ImagerApp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn prepared_body(&self) -> Column {
         use crate::setup::strings::t;
         if self.prepared_delivery.awaiting_original_boot() {
@@ -1611,7 +1563,6 @@ impl ImagerApp {
     }
 
     fn done_body(&self) -> Column {
-        #[cfg(target_os = "linux")]
         if self.progress.phase == JobPhase::Success && self.prepared_delivery.pending() {
             return self.prepared_body();
         }
@@ -1850,27 +1801,12 @@ impl ImagerApp {
         self.status = s.to_string();
     }
     fn original_files_ready(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.original_source.is_none() || self.prepared_delivery.requires_offline_export()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            true
-        }
+        self.original_source.is_none() || self.prepared_delivery.requires_offline_export()
     }
     fn original_files_preparing(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.write_preflight
-                .load(std::sync::atomic::Ordering::Acquire)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        self.write_preflight
+            .load(std::sync::atomic::Ordering::Acquire)
     }
-    #[cfg(target_os = "linux")]
     fn original_preparation_inputs(
         &mut self,
         device: &str,
@@ -1921,7 +1857,6 @@ impl ImagerApp {
         Ok((original, source, target, artifact))
     }
     fn prepare_original_files(&mut self) {
-        #[cfg(target_os = "linux")]
         if self.step == Step::Confirm
             && !self.original_files_ready()
             && !self.original_files_preparing()
@@ -2004,7 +1939,6 @@ impl ImagerApp {
         if !self.startup_write_state_reconciled {
             return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
         }
-        #[cfg(target_os = "linux")]
         if self
             .write_preflight
             .load(std::sync::atomic::Ordering::Acquire)
@@ -2051,7 +1985,6 @@ impl ImagerApp {
             .media_target(device)
             .and_then(|index| self.targets.get(index))
             .ok_or("Select an image source and target drive before writing")?;
-        #[cfg(target_os = "linux")]
         Self::require_stopped_target(target)?;
         let required = self.required_capacity().ok_or_else(|| {
             crate::setup::strings::t(
@@ -2068,18 +2001,17 @@ impl ImagerApp {
         self.writer_refusal().map_err(|(_, reason)| reason)?;
         Ok(())
     }
-    #[cfg(target_os = "linux")]
     fn start_prepared_delivery(&mut self) -> Result<(), &'static str> {
         if self.prepared_delivery.requires_offline_export() {
             let review = self
                 .offline_media_review
                 .clone()
                 .ok_or("installer-original-grant-required")?;
-            self.prepared_delivery
-                .start_awaiting_offline_export_automatic(review)
-        } else {
-            self.prepared_delivery.start_automatic()
+            return self
+                .prepared_delivery
+                .start_awaiting_offline_export_automatic(review);
         }
+        self.prepared_delivery.start_automatic()
     }
     fn cancel_write(&mut self) -> Result<(), String> {
         let Some(control) = self.job_control.clone() else {
@@ -2108,7 +2040,6 @@ impl ImagerApp {
         if self.source_is_official(&source) {
             request_profile.validate_media_profile()?;
         }
-        #[cfg(target_os = "linux")]
         let request_profile = {
             let mut profile = request_profile;
             profile.prepared_setup = self.prepared_delivery.expectation().cloned();
@@ -2123,16 +2054,7 @@ impl ImagerApp {
             windows_preparation: self.windows_preparation.clone(),
             #[cfg(target_os = "linux")]
             offline_layout: None,
-            provision_migration_data: {
-                #[cfg(target_os = "linux")]
-                {
-                    self.prepared_delivery.requires_data_partition()
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    false
-                }
-            },
+            provision_migration_data: self.prepared_delivery.requires_data_partition(),
         })
     }
 
@@ -2140,7 +2062,6 @@ impl ImagerApp {
         if !self.original_files_ready() {
             return Err(crate::setup::strings::t("installer-original-not-prepared"));
         }
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.busy() {
             return Err(crate::setup::strings::t("installer-media-delivery-busy"));
         }
@@ -2150,12 +2071,10 @@ impl ImagerApp {
         let (Some(mut src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
-        #[cfg(target_os = "linux")]
         Self::require_stopped_target(&tgt)?;
         // Treat the collaborative source record as a claim, never as trust.
         // Only an exact bundled-catalog match may transport a setup profile.
         src.installable = self.source_is_official(&src);
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.pending() && !src.installable {
             return Err(crate::setup::strings::t(
                 "installer-media-official-required",
@@ -2165,28 +2084,24 @@ impl ImagerApp {
             src.kind = SourceKind::IsoFile;
             src.expected_sha256 = None;
         }
-        #[cfg(target_os = "linux")]
         self.require_media_account_protocol(
             &src,
             self.prepared_delivery
                 .artifact()
                 .and_then(|artifact| artifact.account_custody_protocol()),
         )?;
-        #[cfg(target_os = "linux")]
         self.require_media_service_session_protocol(
             &src,
             self.prepared_delivery
                 .artifact()
                 .and_then(|artifact| artifact.service_session_protocol()),
         )?;
-        #[cfg(target_os = "linux")]
         self.require_media_home_protocol(
             &src,
             self.prepared_delivery
                 .artifact()
                 .and_then(|artifact| artifact.home_archive_protocol()),
         )?;
-        #[cfg(target_os = "linux")]
         self.require_media_applications_protocol(
             &src,
             self.prepared_delivery
@@ -2264,7 +2179,6 @@ impl ImagerApp {
         };
         match start {
             crate::write::JobStart::Started => {
-                #[cfg(target_os = "linux")]
                 {
                     self.prepared_delivery.writing();
                     self.written_target = Some(tgt.clone());
@@ -2530,7 +2444,6 @@ impl ImagerApp {
             })
         };
         self.progress = outcome;
-        #[cfg(target_os = "linux")]
         if self.progress.phase == JobPhase::Success && self.prepared_delivery.pending() {
             if let Some(target) = self.written_target.take() {
                 self.prepared_delivery.written(target);
@@ -2562,7 +2475,6 @@ impl ImagerApp {
             "progress": self.progress.overall(),
             "message": self.status,
         });
-        #[cfg(target_os = "linux")]
         let status = {
             let mut status = status;
             status["prepared_setup"] = self.prepared_delivery.projection();
@@ -2743,210 +2655,174 @@ impl ImagerApp {
                 }
             }
             ImagerEffect::PrepareOfflineMigration { device } => {
-                #[cfg(target_os = "linux")]
-                {
-                    let (original, source, target, artifact) =
-                        match self.original_preparation_inputs(&device) {
-                            Ok(inputs) => inputs,
-                            Err(reason) => {
-                                self.fail(&reason);
-                                return Err(reason);
-                            }
-                        };
-                    let expected_source = source.clone();
-                    let expected_target = target.clone();
-                    let retained = artifact.clone();
-                    let expected_original = original.clone();
-                    let image_review = if let Ok(review) =
-                        crate::setup::original_admission::ReviewedOriginalImage::review(
-                            &source,
-                            &self.releases,
-                        ) {
-                        review
-                    } else {
-                        let reason =
-                            crate::setup::strings::t("installer-original-image-unavailable");
-                        self.fail(&reason);
-                        return Err(reason);
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                let (original, source, target, artifact) =
+                    match self.original_preparation_inputs(&device) {
+                        Ok(inputs) => inputs,
+                        Err(reason) => {
+                            self.fail(&reason);
+                            return Err(reason);
+                        }
                     };
-                    self.write_preflight
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    let activity = SourceCheckActivity(self.write_preflight.clone());
-                    self.status_is_error = false;
-                    self.set_status("");
-                    self.dirty = true;
-                    Ok(cx.thread(
-                        move |progress| {
-                            let _activity = activity;
-                            progress.report("installer-original-permission-progress", None, None);
-                            let cancellation = progress.cancellation_signal();
-                            progress
-                                .with_effect(|| {
-                                    Ok(artifact.prepare_original_on_media(
-                                        &image_review,
-                                        &target,
-                                        &original,
-                                        &cancellation,
-                                    ))
-                                })
-                                .map_err(std::io::Error::other)?
-                        },
-                        move |app: &mut Self, result, _cx| {
-                            app.write_preflight
-                                .store(false, std::sync::atomic::Ordering::Release);
-                            app.dirty = true;
-                            let prepared = if let Ok(prepared) = result {
-                                prepared
-                            } else {
-                                let reason =
-                                    crate::setup::strings::t("installer-original-prepare-failed");
-                                app.fail(&reason);
-                                return Err(reason);
-                            };
-                            if app.source.as_ref() != Some(&expected_source)
-                                || !app.target().is_some_and(|actual| {
-                                    Self::same_rescanned_target(&expected_target, actual)
-                                })
-                                || !app.prepared_delivery.has_artifact(&retained)
-                                || !app.original_source.as_ref().is_some_and(|actual| {
-                                    std::sync::Arc::ptr_eq(actual, &expected_original)
-                                })
-                            {
-                                let reason =
-                                    crate::setup::strings::t("installer-media-plan-changed");
-                                app.fail(&reason);
-                                return Err(reason);
-                            }
-                            if let Some(navigation) = &app.preparation_navigation {
-                                navigation.artifact.set(Some(prepared.artifact.clone()));
-                            }
-                            app.prepared_delivery =
-                                crate::setup::journey::prepared_media::Delivery::with_artifact(
-                                    prepared.artifact,
-                                );
-                            app.offline_media_review = Some(prepared.review);
-                            Ok(Effected::value(app.status_value()))
-                        },
-                    ))
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    let _ = device;
-                    Err(crate::setup::strings::t(
-                        "installer-preview-import-unavailable",
-                    ))
-                }
+                let expected_source = source.clone();
+                let expected_target = target.clone();
+                let retained = artifact.clone();
+                let expected_original = original.clone();
+                let image_review = if let Ok(review) =
+                    crate::setup::original_admission::ReviewedOriginalImage::review(
+                        &source,
+                        &self.releases,
+                    ) {
+                    review
+                } else {
+                    let reason = crate::setup::strings::t("installer-original-image-unavailable");
+                    self.fail(&reason);
+                    return Err(reason);
+                };
+                self.write_preflight
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let activity = SourceCheckActivity(self.write_preflight.clone());
+                self.status_is_error = false;
+                self.set_status("");
+                self.dirty = true;
+                Ok(cx.thread(
+                    move |progress| {
+                        let _activity = activity;
+                        progress.report("installer-original-permission-progress", None, None);
+                        let cancellation = progress.cancellation_signal();
+                        progress
+                            .with_effect(|| {
+                                Ok(artifact.prepare_original_on_media(
+                                    &image_review,
+                                    &target,
+                                    &original,
+                                    &cancellation,
+                                ))
+                            })
+                            .map_err(std::io::Error::other)?
+                    },
+                    move |app: &mut Self, result, _cx| {
+                        app.write_preflight
+                            .store(false, std::sync::atomic::Ordering::Release);
+                        app.dirty = true;
+                        let prepared = if let Ok(prepared) = result {
+                            prepared
+                        } else {
+                            let reason =
+                                crate::setup::strings::t("installer-original-prepare-failed");
+                            app.fail(&reason);
+                            return Err(reason);
+                        };
+                        if app.source.as_ref() != Some(&expected_source)
+                            || !app.target().is_some_and(|actual| {
+                                Self::same_rescanned_target(&expected_target, actual)
+                            })
+                            || !app.prepared_delivery.has_artifact(&retained)
+                            || !app.original_source.as_ref().is_some_and(|actual| {
+                                std::sync::Arc::ptr_eq(actual, &expected_original)
+                            })
+                        {
+                            let reason = crate::setup::strings::t("installer-media-plan-changed");
+                            app.fail(&reason);
+                            return Err(reason);
+                        }
+                        if let Some(navigation) = &app.preparation_navigation {
+                            navigation.artifact.set(Some(prepared.artifact.clone()));
+                        }
+                        app.prepared_delivery =
+                            crate::setup::journey::prepared_media::Delivery::with_artifact(
+                                prepared.artifact,
+                            );
+                        app.offline_media_review = Some(prepared.review);
+                        Ok(Effected::value(app.status_value()))
+                    },
+                ))
             }
             ImagerEffect::ReviewChangedPreparedFiles => {
-                #[cfg(target_os = "linux")]
-                {
-                    if self.prepared_delivery.busy()
-                        || !self.prepared_delivery.needs_source_review()
-                    {
-                        return Err(crate::setup::strings::t("installer-preview-wrong-page"));
-                    }
-                    let navigation = self
-                        .preparation_navigation
-                        .as_ref()
-                        .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
-                    let reason = self
-                        .prepared_delivery
-                        .review_reason()
-                        .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
-                    navigation.review_home(reason);
-                    self.dirty = true;
-                    Ok(Effected::done())
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                if self.prepared_delivery.busy() || !self.prepared_delivery.needs_source_review() {
+                    return Err(crate::setup::strings::t("installer-preview-wrong-page"));
                 }
-                #[cfg(not(target_os = "linux"))]
-                Err(crate::setup::strings::t(
-                    "installer-preview-import-unavailable",
-                ))
+                let navigation = self
+                    .preparation_navigation
+                    .as_ref()
+                    .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
+                let reason = self
+                    .prepared_delivery
+                    .review_reason()
+                    .ok_or_else(|| crate::setup::strings::t("installer-preview-wrong-page"))?;
+                navigation.review_home(reason);
+                self.dirty = true;
+                Ok(Effected::done())
             }
             ImagerEffect::RetryPreparedDelivery => {
-                #[cfg(target_os = "linux")]
-                {
-                    if self.step != Step::Done || self.progress.phase != JobPhase::Success {
-                        return Err(crate::setup::strings::t("installer-media-not-written"));
-                    }
-                    self.start_prepared_delivery()
-                        .map_err(crate::setup::strings::t)?;
-                    self.dirty = true;
-                    Ok(Effected::value(self.status_value()))
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                if self.step != Step::Done || self.progress.phase != JobPhase::Success {
+                    return Err(crate::setup::strings::t("installer-media-not-written"));
                 }
-                #[cfg(not(target_os = "linux"))]
-                Err(crate::setup::strings::t(
-                    "installer-preview-import-unavailable",
-                ))
+                self.start_prepared_delivery()
+                    .map_err(crate::setup::strings::t)?;
+                self.dirty = true;
+                Ok(Effected::value(self.status_value()))
             }
             ImagerEffect::ChoosePreparedFilesystem => {
-                #[cfg(target_os = "linux")]
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                if self.step != Step::Done
+                    || self.progress.phase != JobPhase::Success
+                    || !self.prepared_delivery.pending()
+                    || self.prepared_delivery.busy()
                 {
-                    if self.step != Step::Done
-                        || self.progress.phase != JobPhase::Success
-                        || !self.prepared_delivery.pending()
-                        || self.prepared_delivery.busy()
-                    {
-                        return Err(crate::setup::strings::t("installer-media-not-written"));
-                    }
-                    Ok(cx.choose_path(
-                        PickRequest::directory(
-                            &crate::setup::strings::t("installer-media-filesystem-picker"),
-                            &crate::setup::strings::t("installer-media-filesystem-allow"),
-                        ),
-                        |app: &mut Self, path, _| {
-                            let Some(path) = path else {
-                                return Ok(Effected::done());
-                            };
-                            if app.step != Step::Done || app.progress.phase != JobPhase::Success {
-                                return Err(crate::setup::strings::t(
-                                    "installer-media-not-written",
-                                ));
-                            }
-                            app.prepared_delivery
-                                .start(path)
-                                .map_err(crate::setup::strings::t)?;
-                            app.dirty = true;
-                            Ok(Effected::value(app.status_value()))
-                        },
-                    ))
+                    return Err(crate::setup::strings::t("installer-media-not-written"));
                 }
-                #[cfg(not(target_os = "linux"))]
-                Err(crate::setup::strings::t(
-                    "installer-preview-import-unavailable",
+                Ok(cx.choose_path(
+                    PickRequest::directory(
+                        &crate::setup::strings::t("installer-media-filesystem-picker"),
+                        &crate::setup::strings::t("installer-media-filesystem-allow"),
+                    ),
+                    |app: &mut Self, path, _| {
+                        let Some(path) = path else {
+                            return Ok(Effected::done());
+                        };
+                        if app.step != Step::Done || app.progress.phase != JobPhase::Success {
+                            return Err(crate::setup::strings::t("installer-media-not-written"));
+                        }
+                        app.prepared_delivery
+                            .start(path)
+                            .map_err(crate::setup::strings::t)?;
+                        app.dirty = true;
+                        Ok(Effected::value(app.status_value()))
+                    },
                 ))
             }
             ImagerEffect::DeliverPreparedSetup { mounted_root } => {
-                #[cfg(target_os = "linux")]
-                {
-                    if self.step != Step::Done || self.progress.phase != JobPhase::Success {
-                        return Err(crate::setup::strings::t("installer-media-not-written"));
-                    }
-                    self.prepared_delivery
-                        .start(mounted_root.into())
-                        .map_err(crate::setup::strings::t)?;
-                    self.dirty = true;
-                    Ok(Effected::value(self.status_value()))
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                if self.step != Step::Done || self.progress.phase != JobPhase::Success {
+                    return Err(crate::setup::strings::t("installer-media-not-written"));
                 }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    let _ = mounted_root;
-                    Err(crate::setup::strings::t(
-                        "installer-preview-import-unavailable",
-                    ))
-                }
+                self.prepared_delivery
+                    .start(mounted_root.into())
+                    .map_err(crate::setup::strings::t)?;
+                self.dirty = true;
+                Ok(Effected::value(self.status_value()))
             }
             ImagerEffect::CancelPreparedDelivery => {
-                #[cfg(target_os = "linux")]
-                {
-                    self.prepared_delivery
-                        .cancel()
-                        .map_err(crate::setup::strings::t)?;
-                    Ok(Effected::done())
-                }
-                #[cfg(not(target_os = "linux"))]
-                Err(crate::setup::strings::t(
-                    "installer-preview-import-unavailable",
-                ))
+                imager_backend::capture::supported().map_err(|_| {
+                    crate::setup::strings::t("installer-preview-import-unavailable")
+                })?;
+                self.prepared_delivery
+                    .cancel()
+                    .map_err(crate::setup::strings::t)?;
+                Ok(Effected::done())
             }
             ImagerEffect::Write {
                 device,
@@ -2954,7 +2830,6 @@ impl ImagerApp {
             } => {
                 self.choose_for_write(&device);
                 self.write_refusal(&device)?;
-                #[cfg(target_os = "linux")]
                 if let Some(artifact) = self.prepared_delivery.artifact() {
                     let source = self.source.clone();
                     let target = self.target().cloned();
@@ -2971,7 +2846,10 @@ impl ImagerApp {
                                 return Err(std::io::Error::other("Source review cancelled"));
                             }
                             let cancellation = progress.cancellation_signal();
-                            let result = artifact.refreshed_for_transfer(&cancellation);
+                            let result = crate::setup::journey::prepared_media::refresh_for_write(
+                                &artifact,
+                                &cancellation,
+                            );
                             if progress.is_cancelled() {
                                 return Err(std::io::Error::other("Source review cancelled"));
                             }
@@ -2984,18 +2862,21 @@ impl ImagerApp {
                             let refreshed = match result {
                                 Ok(prepared) => prepared,
                                 Err(error) => {
-                                    if let Some(key) =
-                                        crate::setup::portable_home_media::source_review_error(
+                                    if let Some(reason) =
+                                        crate::setup::journey::prepared_media::source_review_reason(
                                             &error,
                                         )
                                     {
-                                        if crate::setup::portable_home_media::source_changed(&error)
-                                        {
-                                            app.prepared_delivery.mark_source_changed();
-                                        } else {
-                                            app.prepared_delivery.mark_source_unavailable();
+                                        use crate::setup::journey::prepared_media::ReturnReason;
+                                        match reason {
+                                            ReturnReason::ReviewedHomeChanged => {
+                                                app.prepared_delivery.mark_source_changed();
+                                            }
+                                            ReturnReason::ReviewedHomeUnavailable => {
+                                                app.prepared_delivery.mark_source_unavailable();
+                                            }
                                         }
-                                        return Err(crate::setup::strings::t(key));
+                                        return Err(crate::setup::strings::t(reason.error_key()));
                                     }
                                     return Err(crate::setup::strings::t(
                                         "installer-media-source-failed",
@@ -3128,7 +3009,6 @@ impl ImagerApp {
     }
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
-        #[cfg(target_os = "linux")]
         if self.original_source.is_none()
             || self.prepared_delivery.artifact().is_none()
             || self.prepared_delivery.busy()
@@ -3363,7 +3243,6 @@ impl ImagerApp {
     }
 }
 impl ImagerApp {
-    #[cfg(target_os = "linux")]
     pub(crate) fn require_stopped_target(target: &TargetDrive) -> Result<(), String> {
         if target
             .stable_id
@@ -3378,7 +3257,6 @@ impl ImagerApp {
         if self.job_control.is_some() {
             return true;
         }
-        #[cfg(target_os = "linux")]
         {
             if self
                 .write_preflight
@@ -3414,7 +3292,6 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
         if let Some(control) = &self.job_control {
             control.cancel();
         }
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.busy() {
             let _ = self.prepared_delivery.cancel();
         }
@@ -3440,11 +3317,9 @@ impl ui::component_lifecycle::ComponentLifecycle for ImagerApp {
                 errors.push(error.to_string());
             }
         }
-        #[cfg(target_os = "linux")]
         if let Err(error) = self.prepared_delivery.finish_close() {
             errors.push(error.to_string());
         }
-        #[cfg(target_os = "linux")]
         for target in self
             .target()
             .into_iter()
@@ -3479,7 +3354,6 @@ impl Widget for ImagerApp {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        #[cfg(target_os = "linux")]
         self.renew_prepared_artifact();
         if !self.seeded {
             // Start genuinely blank. In the live app a real `lsblk` probe
@@ -3512,10 +3386,7 @@ impl Widget for ImagerApp {
             self.status = Self::download_status(&progress);
         }
         self.drain_job();
-        #[cfg(target_os = "linux")]
-        {
-            self.dirty |= self.prepared_delivery.poll();
-        }
+        self.dirty |= self.prepared_delivery.poll();
 
         if self.close_requested && !self.close_work_active() {
             self.close_intent = true;
@@ -3687,7 +3558,6 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress shows and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.busy() {
             return true;
         }
@@ -3702,7 +3572,6 @@ impl Widget for ImagerApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        #[cfg(target_os = "linux")]
         if self.prepared_delivery.busy() {
             return true;
         }
@@ -4258,7 +4127,6 @@ mod tests {
         assert!(app.prepared_delivery.artifact().is_some());
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn media_account_admission_requires_exact_authenticated_release_before_writer() {
         let (mut app, _) = seeded_app();
@@ -4400,7 +4268,6 @@ mod tests {
         assert!(app.prepared_delivery.artifact().is_some());
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn media_home_admission_matches_exact_selected_image_and_preserves_fresh_install() {
         let (mut app, _) = seeded_app();

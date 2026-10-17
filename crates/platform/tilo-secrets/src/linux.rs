@@ -57,6 +57,10 @@ fn session() -> Result<std::sync::MutexGuard<'static, Option<Session>>, SecretEr
 
 fn open_session() -> Result<Session, SecretError> {
     let connection = Connection::session().map_err(unavailable)?;
+    // A process the store cannot examine proves who it is first; one it can
+    // examine does nothing here. A failed proof is not an error of its own:
+    // the store then refuses the calls, as it would have without it.
+    let _proved = crate::device_proof::prove_blocking(&connection);
     let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
         .call("OpenSession", &("plain", Value::from("")))
         .map_err(unavailable)?;
@@ -64,10 +68,12 @@ fn open_session() -> Result<Session, SecretError> {
 }
 
 /// Why one attempt at a call failed: the service no longer knows this
-/// process's session (it restarted since the session was opened), or
-/// anything else.
+/// process's session (it restarted since the session was opened), it
+/// refused a process that identifies itself by proof (a restarted service
+/// has forgotten the proof too), or anything else.
 enum Attempt {
     StaleSession,
+    Refused(SecretError),
     Failed(SecretError),
 }
 
@@ -80,10 +86,15 @@ impl From<SecretError> for Attempt {
 /// [`failed`] for a call that names this process's session: a service that
 /// restarted since the session was opened answers `NoSession`.
 fn session_call_failed(error: zbus::Error) -> Attempt {
-    if let zbus::Error::MethodError(name, _, _) = &error
-        && name.as_str() == "org.freedesktop.Secret.Error.NoSession"
-    {
-        return Attempt::StaleSession;
+    if let zbus::Error::MethodError(name, _, _) = &error {
+        if name.as_str() == "org.freedesktop.Secret.Error.NoSession" {
+            return Attempt::StaleSession;
+        }
+        if name.as_str() == "org.freedesktop.Secret.Error.AccessDenied"
+            && crate::device_proof::in_use()
+        {
+            return Attempt::Refused(failed(error));
+        }
     }
     Attempt::Failed(failed(error))
 }
@@ -91,7 +102,9 @@ fn session_call_failed(error: zbus::Error) -> Attempt {
 /// Run `call` with the process's session. A session the service has
 /// forgotten (it restarted, through D-Bus activation or its unit's
 /// `Restart=`) is reopened and the call made once more, so a long-lived
-/// client's first call after a restart does not fail.
+/// client's first call after a restart does not fail. A process that
+/// proves who it is gets the same second attempt after a refusal, on a
+/// connection that proved again.
 fn with_session<T>(call: impl Fn(&Session) -> Result<T, Attempt>) -> Result<T, SecretError> {
     let mut guard = session()?;
     let result = call_reopening(&mut guard, call);
@@ -111,7 +124,7 @@ fn call_reopening<T>(
         None => Err(Attempt::Failed(SecretError::Denied)),
     };
     let mut result = attempt(current);
-    if matches!(result, Err(Attempt::StaleSession)) {
+    if matches!(result, Err(Attempt::StaleSession | Attempt::Refused(_))) {
         *current = None;
         result = match open_session() {
             Ok(session) => {
@@ -125,7 +138,7 @@ fn call_reopening<T>(
         Attempt::StaleSession => {
             SecretError::Failed("the Secret Service forgot a session it had just opened".into())
         }
-        Attempt::Failed(error) => error,
+        Attempt::Refused(error) | Attempt::Failed(error) => error,
     })
 }
 
@@ -198,10 +211,10 @@ fn unlock(connection: &Connection, objects: Vec<OwnedObjectPath>) -> Result<(), 
 fn items(
     connection: &Connection,
     attributes: &HashMap<&str, &str>,
-) -> Result<Vec<OwnedObjectPath>, SecretError> {
+) -> Result<Vec<OwnedObjectPath>, Attempt> {
     let (mut unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service(connection)?
         .call("SearchItems", &(attributes,))
-        .map_err(failed)?;
+        .map_err(session_call_failed)?;
     if !locked.is_empty() {
         unlock(connection, locked.clone())?;
         unlocked.extend(locked);
@@ -370,30 +383,29 @@ pub(crate) fn read_nextcloud(key: &str) -> Result<Option<Secret>, SecretError> {
             ("server", "Nextcloud"),
             ("type", "plaintext"),
         ]);
-        let mut guard = session()?;
-        let result = (|| {
-            let Session { connection, path } = guard.as_ref().ok_or(SecretError::Denied)?;
+        with_session(|Session { connection, path }| {
             let found = items(connection, &attributes)?;
             if found.is_empty() {
                 return Ok(None);
             }
             if found.len() != 1 {
-                return Err(SecretError::Denied);
+                return Err(SecretError::Denied.into());
             }
             let secrets: HashMap<OwnedObjectPath, WireSecret> = service(connection)?
                 .call("GetSecrets", &(found.clone(), path))
-                .map_err(failed)?;
+                .map_err(session_call_failed)?;
             let item = found.first().ok_or(SecretError::Denied)?;
             let (_, _, value, _) = secrets.get(item).ok_or(SecretError::Denied)?;
             if value.is_empty() || value.len() > 4096 || std::str::from_utf8(value).is_err() {
-                return Err(SecretError::Denied);
+                return Err(SecretError::Denied.into());
             }
             Ok(Some(Secret::new(value.clone())))
-        })();
-        reset_on_disconnect(&mut guard, &result);
-        result
+        })
     })
 }
+
+#[cfg(test)]
+mod nextcloud_tests;
 
 #[cfg(test)]
 mod tests {

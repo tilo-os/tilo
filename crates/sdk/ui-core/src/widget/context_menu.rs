@@ -1056,10 +1056,6 @@ fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
 const ROW_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 /// The air between a control and the menu it opened: the `s1` step.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const ANCHOR_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MENU_WIDTH: f64 = 220.0;
 /// How far, in logical pixels, the pointer may be from where the menu opened
@@ -1069,10 +1065,6 @@ const STILL_POINTER: f64 = 0.5;
 /// The panel's vertical inset around its rows: the `s2` menu inset
 /// (`floating_surface::menu_inset`), so the armed row runs concentric with
 /// the panel at the top and bottom too.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const PADDING: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 /// Distance from the panel's edge to a row's content, on both sides.

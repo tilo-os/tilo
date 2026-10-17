@@ -6,8 +6,8 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_join::delegation::{DelegateScope, Delegation};
 use web_time::{Duration, SystemTime};
 
 use crate::{StatePeer, TransportOrigin};
@@ -61,7 +61,7 @@ fn delegation(
     Delegation::sign(
         person,
         device,
-        tilo_relay_protocol::delegation::Delegate::Agent {
+        tilo_workspace_join::delegation::Delegate::Agent {
             agent_id: "scribe".into(),
         },
         "Scribe",
@@ -289,7 +289,7 @@ fn admit_agent_refuses_a_bot_delegation() {
     let bot = Delegation::sign(
         &person,
         cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Bot {
+        tilo_workspace_join::delegation::Delegate::Bot {
             installation: "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into(),
         },
         "Bridge",

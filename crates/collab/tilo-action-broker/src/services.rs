@@ -26,7 +26,7 @@ pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration
 pub use crate::collab_broker_capnp::{
     AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
-    NativeMediaRequestContext, NativeMediaServices,
+    NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere, PreparingElsewhere,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact
@@ -253,8 +253,8 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture;
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture;
 }
 
 /// Where the view of a launched app opens: next to where the actor that
@@ -798,6 +798,47 @@ pub trait DevicePairingServices: Send + Sync {
         &self,
         request: &DevicePairingRequest<'_>,
     ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
+}
+
+/// One identity-administration step the broker admitted: action `address`
+/// (on [`tilo_actions::remote::identity_admin::RESOURCE`]) for `actor` in
+/// `room`, with `argument` in its slot form.
+pub struct IdentityAdminRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: Option<&'a str>,
+}
+
+/// How an identity-administration step ended.
+pub type IdentityAdminOutcome = DevicePairingOutcome;
+
+/// The person's identities and the devices trusted under them, administered
+/// by the host that keeps the identity store: listing, activating, removing
+/// and protecting an identity, listing and revoking its devices, and
+/// removing a home server. The root secret stays on the host, which signs
+/// every revocation. The broker answers it under
+/// [`tilo_actions::remote::identity_admin::PROVIDER`], only to a caller on
+/// this machine confined to a room, and checks each step against the
+/// caller's policy under [`Self::app_id`] before the host decides whether
+/// the actor may administer the identity at all.
+pub trait IdentityAdminServices: Send + Sync {
+    /// The application whose controls administer identities. It reaches
+    /// the steps as the person using it, as it does its own actions.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once a step that reaches another device ends.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start: the actor does not administer the
+    /// room's identity, or the arguments are malformed.
+    fn start(
+        &self,
+        request: &IdentityAdminRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
 }
 
 pub trait ContinuationServices: Send + Sync {
@@ -1345,6 +1386,9 @@ pub struct HostServices {
     /// Pairing a nearby device, run by the host. Without it no door offers
     /// it.
     pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
+    /// The person's identities and their devices, administered by the
+    /// host. Without it no door offers them.
+    pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
@@ -1378,4 +1422,9 @@ pub struct HostServices {
     /// endpoint when its channel keys changed (`channelKeysChanged`).
     /// Without it endpoints ask the identity service on a timer.
     pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
+    /// Where an admitted invocation of an offloadable action runs: on the
+    /// person's best-placed device when another is
+    /// (`tilo_actions::offload`). Without it every one runs here, through
+    /// the app's own handler.
+    pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
 }

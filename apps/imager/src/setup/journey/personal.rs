@@ -190,7 +190,7 @@ impl Personal {
                             &directory,
                             &name,
                             [128, 128, 128],
-                            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+                            imager_backend::prepared_identity::storage_for_session(),
                         )
                         .map_err(|_| ())?,
                     )
@@ -314,6 +314,8 @@ impl Personal {
         if self.busy() {
             return Err("installer-preview-identity-busy");
         }
+        imager_backend::prepared_identity::require_supported()
+            .map_err(|_| "installer-preview-identity-unavailable")?;
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
         self.state = state;
@@ -337,7 +339,7 @@ impl Personal {
                 &directory,
                 &name,
                 color,
-                tilo_identity_host::provisioning::IdentityStorage::for_session(),
+                imager_backend::prepared_identity::storage_for_session(),
             )
             .map(|prepared| ResultValue::Prepared(Arc::new(prepared)))
             .map_err(|_| ())
@@ -389,7 +391,7 @@ impl Personal {
             .ok_or("installer-preview-identity-not-prepared")?;
         self.start("exporting-setup", move || {
             use super::super::{portable_transfer, prepared_setup};
-            tilo_unlock_protocol::startup_secret::validate(&password, false).map_err(|_| ())?;
+            imager_backend::startup_password::validate(&password).map_err(|_| ())?;
             let parent = super::super::migration::PinnedDirectory::open_absolute(
                 destination.parent().ok_or(())?,
             )
@@ -432,19 +434,13 @@ impl Personal {
                     .map_err(|_| ())?;
             }
             if !manifest.account_ids.is_empty() {
-                let artifact = super::super::account_transfer::PasswordSealedAccounts::read(
+                if super::super::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
                     &root.join(prepared_setup::ACCOUNTS_FILE),
+                    password.as_bytes(),
+                    binding.as_bytes(),
+                    &manifest.account_ids,
                 )
-                .map_err(|_| ())?;
-                let ids: Vec<accounts::AccountId> = manifest
-                    .account_ids
-                    .iter()
-                    .cloned()
-                    .map(accounts::AccountId::new)
-                    .collect();
-                if artifact
-                    .requires_protected_consumer(password.as_bytes(), binding.as_bytes(), &ids)
-                    .map_err(|_| ())?
+                .map_err(|_| ())?
                 {
                     manifest.account_custody_protocol = Some(1);
                 }
@@ -474,7 +470,7 @@ impl Personal {
         binding: String,
     ) -> Result<(), &'static str> {
         self.start("exporting-accounts", move || {
-            tilo_unlock_protocol::startup_secret::validate(&password, false).map_err(|_| ())?;
+            imager_backend::startup_password::validate(&password).map_err(|_| ())?;
             prepared
                 .export_password_sealed(&destination, password.as_bytes(), binding.as_bytes())
                 .map(ResultValue::AccountsExported)
@@ -543,18 +539,7 @@ impl Personal {
     }
 }
 
-pub(in crate::setup) fn preparation_namespace() -> Option<PathBuf> {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|path| !path.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    let state = resolve_state_root(&state).ok()?;
-    Some(state.join("tilo/installer/preparations"))
-}
+pub(in crate::setup) use imager_backend::session::preparation_namespace;
 
 pub(super) fn preparation_directory() -> Option<PathBuf> {
     Some(
@@ -564,51 +549,8 @@ pub(super) fn preparation_directory() -> Option<PathBuf> {
     )
 }
 
-/// Resolve the explicitly chosen state-root alias once, including a missing
-/// `.local/state` suffix. Custody names are appended afterwards and remain
-/// subject to the existing descriptor-relative nofollow/private checks.
-fn resolve_state_root(path: &std::path::Path) -> std::io::Result<PathBuf> {
-    use std::path::Component;
-    if !path.is_absolute()
-        || path.components().any(|component| {
-            !matches!(
-                component,
-                Component::Prefix(_) | Component::RootDir | Component::Normal(_)
-            )
-        })
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Installer state root must be an absolute directory",
-        ));
-    }
-    let mut ancestor = path;
-    let mut missing = Vec::new();
-    loop {
-        match std::fs::symlink_metadata(ancestor) {
-            Ok(_) => {
-                let mut resolved = ancestor.canonicalize()?;
-                if !std::fs::metadata(&resolved)?.is_dir() {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::NotADirectory,
-                        "Installer state root is not a directory",
-                    ));
-                }
-                for name in missing.iter().rev() {
-                    resolved.push(name);
-                }
-                return Ok(resolved);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(ancestor.file_name().ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing state root")
-                })?);
-                ancestor = ancestor.parent().ok_or(error)?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
+#[cfg(test)]
+use imager_backend::session::resolve_state_root;
 
 #[cfg(all(test, unix))]
 mod state_root_tests {
@@ -660,64 +602,14 @@ mod state_root_tests {
     }
 }
 
-pub(super) fn ensure_private_tree(
-    path: &std::path::Path,
-) -> std::io::Result<Arc<super::super::migration::PinnedDirectory>> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => {
-            let pin = super::super::migration::PinnedDirectory::open_absolute(path)?;
-            pin.validate_destination()?;
-            Ok(pin)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path.parent().ok_or(error)?;
-            let parent = ensure_private_tree(parent)?;
-            let child = parent.create_child(path.file_name().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing custody name")
-            })?)?;
-            super::super::migration_durability::sync_directory(&child.file)?;
-            super::super::migration_durability::sync_directory(&parent.file)?;
-            Ok(child)
-        }
-        Err(error) => Err(error),
-    }
-}
+pub(super) use imager_backend::prepared_identity::ensure_private_tree;
 
 /// The explicit selected-file grant is consumed only on the local worker.
 /// Hold a nofollow descriptor throughout admission/read, and refuse in-flight
 /// changes; canonical pixels are then retained so exports never reread it.
 fn normalize_avatar(path: &str) -> std::io::Result<runtime_identity::ProfilePhoto> {
-    use std::io::{self, Read};
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let path = std::path::Path::new(path);
-    if !path.is_absolute() {
-        return Err(io::Error::other(
-            "avatar requires an absolute selected file",
-        ));
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)?;
-    let before = file.metadata()?;
-    const ENCODED_LIMIT: u64 = 16 * 1024 * 1024;
-    if !before.is_file() || before.len() > ENCODED_LIMIT {
-        return Err(io::Error::other("avatar is not a bounded regular file"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(ENCODED_LIMIT + 1)
-        .read_to_end(&mut bytes)?;
-    let after = file.metadata()?;
-    if bytes.len() as u64 > ENCODED_LIMIT
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.ctime() != after.ctime()
-        || before.ctime_nsec() != after.ctime_nsec()
-    {
-        return Err(io::Error::other("avatar changed while reading"));
-    }
+    use std::io;
+    let bytes = imager_backend::prepared_identity::read_avatar(std::path::Path::new(path))?;
     let input = tilo_image_codec::AdmissionLimits::default();
     input
         .admit(&bytes)

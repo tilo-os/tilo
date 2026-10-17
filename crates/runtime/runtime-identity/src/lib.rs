@@ -11,15 +11,6 @@
 //! trusted host; this crate does not discover or authenticate that host.
 //! Unix also retains its inherited-descriptor and host-local lifecycle APIs.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod profile;
 pub use profile::{MAX_PHOTO_BYTES, MAX_PHOTO_DIMENSION, ProfilePhoto};
 
@@ -45,6 +36,23 @@ pub use unix::*;
 #[cfg(not(unix))]
 pub fn load() -> Result<BrokerSigningIdentity, NotAvailable> {
     Err(NotAvailable::ServiceFdMissing)
+}
+
+/// Public avatar from the launcher's authenticated identity broker only.
+///
+/// Never reads a config record, resolves an account name, or unlocks a signing
+/// share. Hosts without an inherited broker return no presentation.
+#[must_use]
+pub fn bound_profile_photo() -> Option<([u8; 32], ProfilePhoto)> {
+    #[cfg(unix)]
+    {
+        let metadata = load_bound_metadata().ok()?;
+        Some((metadata.group_public_key, metadata.profile_photo?))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 pub const IDENTITY_SERVICE: &str = "identity";

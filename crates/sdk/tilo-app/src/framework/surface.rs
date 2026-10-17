@@ -149,9 +149,10 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// held, the next change brings a copy up to date. A copy shares what
     /// the change did not touch — every [`Collection`](tilo_resource::Collection)
     /// item, untouched `Keyed`/`Ordered` fields, the untouched chunks of a
-    /// `Set` or `Grid` — but plain fields (a `Vec`, a `BTreeMap`) are copied
-    /// whole on every change, so a surface keeps the parts it needs rather
-    /// than the `Rc` when the state has large ones.
+    /// `Map`, `Set` or `Grid` — but plain fields (a `Vec`, a `BTreeMap`) are
+    /// copied whole on every change, so a large one belongs in one of those,
+    /// and a surface keeps the parts it needs rather than the `Rc` when the
+    /// state has large plain ones.
     fn present(&mut self, state: &Rc<R::State>);
 
     fn supports_device_shell(&self) -> bool {

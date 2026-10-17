@@ -17,7 +17,7 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
             let picture: Vec<u8> = (0..crate::record_content::PIECE_BYTES * 2 + 5)
                 .map(|index| u8::try_from(index % 253).unwrap())
                 .collect();
-            let hash = crate::record_content::content_hash(&picture);
+            let hash = tilo_content::hash_bytes(&picture);
             app_a.handle.offer_blob(&hash, &picture).await.unwrap();
             assert!(
                 app_a.handle.offer_blob(&hash, b"forged").await.is_err(),

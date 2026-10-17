@@ -44,18 +44,36 @@ const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
 const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
 const label = s => s.entries.find(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip && e.route.tab === s.active.tab)?.label;
 const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
-// Waits for what an input asked for: `read` returns `expected`. Some changes
-// land on the next drawn frame, and headless Chrome may draw only about once
-// a second.
-async function polls(what, read, expected, tries = 150) {
+// Waits for what an input asked for: `read` returns `expected`. A change
+// lands on a drawn frame, and this debug bundle draws in software: in CI a
+// frame takes seconds (ten and more while the runner's CPUs are busy), and
+// headless Chrome draws only about once a second at best. So a step gives
+// up only once its tries are spent *and* the page has presented `frames`
+// more frames without showing the change; a page that stops presenting
+// fails at `STALLED_MS`.
+const STALLED_MS = 240_000;
+async function polls(what, read, expected, tries = 150, frames = 3) {
   progress = what;
+  const started = {at: Date.now(), presented: await presented()};
   let got;
-  for (let i = 0; i < tries; i++) {
+  for (let i = 1; ; i++) {
     got = await read();
-    if (JSON.stringify(got) === JSON.stringify(expected)) return;
+    if (JSON.stringify(got) === JSON.stringify(expected)) {
+      console.log(JSON.stringify({settled: what, ms: Date.now() - started.at, tries: i,
+        presented: [started.presented, await presented()]}));
+      return;
+    }
+    if (i >= tries && ((await presented()).frames - started.presented.frames >= frames
+      || Date.now() - started.at > STALLED_MS)) break;
     await sleep(100);
   }
   if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+  // Whether the page kept presenting frames while it waited (a frame that
+  // never came reads differently from one that came without the change),
+  // and where the last click landed against where its target is now.
+  console.error(JSON.stringify({waited: what, ms: Date.now() - started.at, tries,
+    presented: [started.presented, await presented()],
+    lastClick: lastClick && {...lastClick, now: await bounds(lastClick.name, lastClick.described)}}));
   // What the page said last (a module that did not load, a panic) and the
   // modules it fetched.
   console.error(tab.log.slice(-30).join('\n'));
@@ -65,20 +83,54 @@ async function polls(what, read, expected, tries = 150) {
 }
 // Waits for the navigation snapshot to settle on what an input asked for.
 const settles = async (what, read, expected, tries) => polls(what, async () => read(await snapshot()), expected, tries);
-// The centre of the first semantics node with this accessible name (and,
-// when given, a description starting with `described`), once the desktop
-// shows it.
+// The first semantics node with this accessible name (and, when given, a
+// description starting with `described`) in the tree the page holds now:
+// the host is asked for a fresh tree first, so it is the last laid-out
+// frame's.
+const bounds = (name, described = '') => evaluate(`(async()=>{tiloMount.requestSemantics();
+  await new Promise(done => setTimeout(done, 0));
+  const walk=n=>{if(!n||typeof n!=='object')return null;
+  if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
+  for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
+  return walk(tiloMount.state().semantics)})()`);
+// The frames the page has presented.
+const presented = () => evaluate('(({frames, phase}) => ({frames, phase}))(tiloMount.state())').catch(String);
+let lastClick;
+// Where to press a control the desktop shows, as a person does: point at it
+// and press once it is still under the pointer. A frame lays out where the
+// control is at that moment, and windows ease into place over several
+// frames; in CI those frames come seconds apart, so the place the last
+// frame reported can be one the control is about to leave. Moving the
+// pointer makes the page draw again, and a control that sits in the same
+// place across a presented frame has come to rest.
 async function named(name, described = '') {
-  let bounds;
-  for (let i = 0; i < 150 && !bounds; i++) {
+  let found, at;
+  for (let i = 0; i < 150 && !found; i++) {
     if (i) await sleep(100);
-    bounds = await evaluate(`(()=>{const walk=n=>{if(!n||typeof n!=='object')return null;
-      if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
-      for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
-      return walk(tiloMount.state().semantics)})()`);
+    at = await presented();
+    found = await bounds(name, described);
   }
-  assert.ok(bounds, `the desktop shows "${name}"`);
-  return [(bounds.x0 + bounds.x1) / 2, (bounds.y0 + bounds.y1) / 2];
+  assert.ok(found, `the desktop shows "${name}"`);
+  const centre = b => [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
+  for (const deadline = Date.now() + STALLED_MS; ;) {
+    progress = `pointing at "${name}"`;
+    // Two moves, so the pointer moves even if it was already there.
+    const [x, y] = centre(found);
+    await mouse('mouseMoved', x - 1, y);
+    await mouse('mouseMoved', x, y);
+    let now;
+    do {
+      assert.ok(Date.now() < deadline, `the desktop presents a frame after pointing at "${name}"`);
+      await sleep(100);
+      now = await presented();
+    } while (!(now.frames > at.frames));
+    const again = await bounds(name, described);
+    assert.ok(again, `the desktop still shows "${name}"`);
+    if (JSON.stringify(again) === JSON.stringify(found)) break;
+    [found, at] = [again, now];
+  }
+  lastClick = {name, described, bounds: found, presented: at};
+  return centre(found);
 }
 const mouse = (type, x, y, extra = {}) => tab.send('Input.dispatchMouseEvent', {type, x, y, ...extra});
 async function click(x, y) {

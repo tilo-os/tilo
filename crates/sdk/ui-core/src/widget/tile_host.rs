@@ -199,7 +199,7 @@ struct OwnerTransitionError {
 impl Binding {
     fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
         // This comparison must not commit a local draft or advance any sibling.
-        if let Some((heads, 0)) = self.store.read(&self.live, super::settle_mark)
+        if let Some((heads, 0)) = self.store.read(&self.live, crate::doc::settle_mark)
             && self.settled_frontier.as_ref() == Some(&heads)
         {
             return None;
@@ -210,7 +210,7 @@ impl Binding {
         self.settled_frontier = self
             .store
             .read(&self.live, |doc| {
-                let (heads, pending) = super::settle_mark(doc);
+                let (heads, pending) = crate::doc::settle_mark(doc);
                 (pending == 0).then_some(heads)
             })
             .flatten();
@@ -2119,10 +2119,10 @@ impl Widget for TileHost {
             (Some(id), Some(store)) => {
                 let _ = store.with(&id, |doc| {
                     if let TileContent::App(app) = &mut self.content {
-                        let before = crate::widget::settle_mark(doc);
+                        let before = crate::doc::settle_mark(doc);
                         app.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
                         // What it wrote shows in this same frame.
-                        if crate::widget::settle_mark(doc) != before {
+                        if crate::doc::settle_mark(doc) != before {
                             app.update(doc, &ROOT);
                             app.sync(doc, &ROOT);
                         }

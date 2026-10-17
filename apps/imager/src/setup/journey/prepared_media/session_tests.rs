@@ -1,6 +1,6 @@
 use super::*;
 use crate::setup::account_transfer::{self, SourceRoots};
-use browser_continuity::sessions::Service;
+use imager_backend::browser_selection::Service;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 

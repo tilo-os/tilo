@@ -393,11 +393,8 @@ pub struct BrowserWidget {
     service_list_waker: Option<ui::WakeHandle>,
     service_list_pending: Option<ui::collaboration::browser_service_sessions::Pending>,
     service_observation: Option<serde_json::Value>,
-    #[cfg(target_os = "linux")]
     service_pending: Option<crate::service_sessions::PendingView>,
-    #[cfg(target_os = "linux")]
     service_view: Option<crate::service_sessions::ServiceView>,
-    #[cfg(target_os = "linux")]
     service_forget: Option<crate::service_sessions::PendingForget>,
     browsing_mode: BrowsingMode,
     composed: ui::widget::Composed,
@@ -482,7 +479,6 @@ pub struct BrowserWidget {
     personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
     personal_bookmark_location: crate::personal_bookmark_view::Location,
     person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
-    #[cfg(target_os = "linux")]
     continuity: Option<crate::continuity_handoff::Controller>,
     /// The person's address book, which new tabs fill forms from too.
     address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
@@ -627,7 +623,6 @@ impl BrowserWidget {
     }
 
     pub(crate) fn attach_service_waker(&mut self, waker: ui::WakeHandle) {
-        #[cfg(target_os = "linux")]
         {
             if let Some(view) = self.service_view.as_mut() {
                 view.attach_waker(waker.clone());
@@ -636,10 +631,7 @@ impl BrowserWidget {
                 view.attach_waker(waker);
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = waker;
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn begin_forget_service_session(
         &mut self,
         id: &str,
@@ -647,6 +639,9 @@ impl BrowserWidget {
         reply: ui::framework::EffectReply,
         waker: ui::WakeHandle,
     ) -> Result<(), String> {
+        if !crate::service_profiles::supported() {
+            return Err("Local account forgetting needs the native backend".into());
+        }
         if self.service_forget.is_some()
             || self.service_pending.is_some()
             || self.service_catalog_pending.is_some()
@@ -676,7 +671,6 @@ impl BrowserWidget {
     }
 
     pub(crate) fn request_service_close(&mut self) -> bool {
-        #[cfg(target_os = "linux")]
         {
             if let Some(view) = self.service_pending.as_mut() {
                 return view.request_close();
@@ -688,7 +682,6 @@ impl BrowserWidget {
         true
     }
     pub(crate) fn service_close_complete(&self) -> bool {
-        #[cfg(target_os = "linux")]
         {
             if let Some(view) = self.service_pending.as_ref() {
                 return view.close_complete();
@@ -700,7 +693,6 @@ impl BrowserWidget {
         true
     }
     pub(crate) fn finish_service_close(&mut self) -> Result<(), String> {
-        #[cfg(target_os = "linux")]
         {
             if let Some(view) = self.service_pending.as_mut() {
                 return view.finish_close();
@@ -719,13 +711,15 @@ impl BrowserWidget {
         self.service_client = client;
         self
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn begin_service_session(
         &mut self,
         id: &str,
         person: [u8; 32],
         waker: ui::WakeHandle,
     ) -> Result<(), String> {
+        if !crate::service_profiles::supported() {
+            return Err("Local account opening needs the native backend".into());
+        }
         if self.service_forget.is_some()
             || self.service_pending.is_some()
             || self.service_view.is_some()
@@ -827,7 +821,6 @@ impl BrowserWidget {
             }
         }
     }
-    #[cfg(target_os = "linux")]
     /// Install the pending native credential request selected by the canonical
     /// account action, before the polling pass resolves it into a fresh engine.
     fn install_pending_service(&mut self, pending: crate::service_sessions::PendingView) {
@@ -860,19 +853,20 @@ impl BrowserWidget {
             if self.service_catalog_pending.is_some() {
                 return;
             }
-            #[cfg(target_os = "linux")]
             if self.service_pending.is_some() || self.service_forget.is_some() {
                 return;
             }
-            match self
+            let result = self
                 .service_client
                 .as_ref()
-                .unwrap()
-                .request(Command::List, self.service_list_waker.clone())
-            {
+                .ok_or_else(|| "Account inventory could not be confirmed".to_owned())
+                .and_then(|client| client.request(Command::List, self.service_list_waker.clone()));
+            match result {
                 Ok(pending) => self.service_list_pending = Some(pending),
                 Err(error) => {
-                    self.service_list_reply.take().unwrap().finish(Err(error));
+                    if let Some(reply) = self.service_list_reply.take() {
+                        reply.finish(Err(error));
+                    }
                     return;
                 }
             }
@@ -880,7 +874,7 @@ impl BrowserWidget {
         let Some(result) = self
             .service_list_pending
             .as_mut()
-            .and_then(|pending| pending.poll())
+            .and_then(ui::collaboration::browser_service_sessions::Pending::poll)
         else {
             return;
         };
@@ -893,17 +887,21 @@ impl BrowserWidget {
             }
             _ => Err("Account inventory could not be confirmed".into()),
         });
-        self.service_list_reply.take().unwrap().finish(result);
+        if let Some(reply) = self.service_list_reply.take() {
+            reply.finish(result);
+        }
     }
 
     fn poll_service_admission(&mut self) {
-        #[cfg(target_os = "linux")]
         if self
             .service_forget
             .as_mut()
             .is_some_and(|pending| pending.poll(self.service_view.as_mut()))
         {
-            self.service_observation = self.service_forget.as_ref().map(|pending| pending.report());
+            self.service_observation = self
+                .service_forget
+                .as_ref()
+                .map(crate::service_sessions::PendingForget::report);
             if let Some(report) = &self.service_observation
                 && report["custody_revoked"] == true
             {
@@ -916,7 +914,7 @@ impl BrowserWidget {
         if let Some(reply) = self
             .service_catalog_pending
             .as_mut()
-            .and_then(|pending| pending.poll())
+            .and_then(ui::collaboration::browser_service_sessions::Pending::poll)
         {
             self.service_catalog_pending = None;
             if let Ok(
@@ -930,7 +928,6 @@ impl BrowserWidget {
                 self.accept_service_catalog(Vec::new());
             }
         }
-        #[cfg(target_os = "linux")]
         if let Some(reply) = self
             .service_catalog_pending
             .is_none()
@@ -943,8 +940,10 @@ impl BrowserWidget {
         {
             self.service_observation = self.service_pending.as_ref().map(|pending| {
                 let mut report = pending.report();
-                report["status"] = serde_json::json!("needs-reconnect");
-                report["requires_reconnect"] = serde_json::json!(true);
+                if let Some(object) = report.as_object_mut() {
+                    object.insert("status".into(), serde_json::json!("needs-reconnect"));
+                    object.insert("requires_reconnect".into(), serde_json::json!(true));
+                }
                 report
             });
             self.service_pending = None;
@@ -964,7 +963,7 @@ impl BrowserWidget {
         self.poll_service_list();
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub(crate) fn with_service_view(mut self, view: crate::service_sessions::ServiceView) -> Self {
         self.explicit_navigation_requested = true;
         self.service_view = Some(view);
@@ -1214,11 +1213,8 @@ impl BrowserWidget {
             service_list_waker: None,
             service_list_pending: None,
             service_observation: None,
-            #[cfg(target_os = "linux")]
             service_pending: None,
-            #[cfg(target_os = "linux")]
             service_view: None,
-            #[cfg(target_os = "linux")]
             service_forget: None,
             headless,
             dispatch: None,
@@ -1266,7 +1262,6 @@ impl BrowserWidget {
             personal_open: ui::LocalState::new(std::collections::BTreeMap::new()),
             personal_bookmark_location: crate::personal_bookmark_view::Location::default(),
             person_history: None,
-            #[cfg(target_os = "linux")]
             continuity: None,
             address_book: None,
             history_revision: None,
@@ -2669,11 +2664,9 @@ impl BrowserWidget {
         // first part of the page.
         let on_page = self.show_settings || self.show_library;
         let mut notices: Vec<crate::notice::Notice> = Vec::new();
-        #[cfg(target_os = "linux")]
-        if let Some(pending) = &self.service_pending {
-            notices.push(pending.notice());
+        if self.service_pending.is_some() {
+            notices.push(crate::service_sessions::PendingView::notice());
         }
-        #[cfg(target_os = "linux")]
         if let Some(notice) = self
             .service_view
             .as_ref()
@@ -2891,7 +2884,6 @@ impl BrowserWidget {
             self.download_save_due = None;
         }
         self.poll_download_picker();
-        #[cfg(target_os = "linux")]
         if let Some(view) = self.service_view.as_mut()
             && view.poll_timeout()
         {
@@ -2915,14 +2907,11 @@ impl BrowserWidget {
             };
             match event {
                 WebViewEvent::ServiceSessionResult(reply) => {
-                    #[cfg(target_os = "linux")]
                     if let Some(view) = self.service_view.as_mut()
-                        && view.apply(reply)
+                        && view.apply(&reply)
                     {
                         self.structure_dirty = true;
                     }
-                    #[cfg(not(target_os = "linux"))]
-                    let _ = reply;
                 }
                 WebViewEvent::DevToolsResult {
                     request_id,
@@ -4326,23 +4315,18 @@ impl Widget for BrowserWidget {
     fn has_pending_visual_work(&self) -> bool {
         self.service_catalog_pending.is_some()
             || {
-                #[cfg(target_os = "linux")]
                 {
                     self.service_pending.is_some()
                         || self
                             .service_view
                             .as_ref()
-                            .is_some_and(|view| view.is_preparing())
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    false
+                            .is_some_and(crate::service_sessions::ServiceView::is_preparing)
                 }
             }
             || self
                 .composed
                 .element()
-                .is_some_and(|view| view.has_pending_visual_work())
+                .is_some_and(Widget::has_pending_visual_work)
     }
 
     ui::provides!(
@@ -4351,10 +4335,6 @@ impl Widget for BrowserWidget {
         dyn ui::widget::controls::ActionControls
     );
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Browser's frame-level input routing remains ordered in one place."
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
         self.settle_replies();
@@ -5342,7 +5322,6 @@ impl BrowserWidget {
             )
             .with_action(E::ListServiceSessions.bound()),
         );
-        #[cfg(target_os = "linux")]
         if self.service_view.is_some()
             || self.service_pending.is_some()
             || self.service_forget.is_some()
@@ -5478,18 +5457,16 @@ impl BrowserWidget {
     fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.poll_service_admission();
-        #[cfg(target_os = "linux")]
         if let Some(engine) = self
             .service_view
             .as_mut()
-            .and_then(|view| view.poll_engine())
+            .and_then(crate::service_sessions::ServiceView::poll_engine)
         {
             self.engine = engine;
             self.composed.invalidate();
             self.bootstrap_done = false;
             self.structure_dirty = true;
         }
-        #[cfg(target_os = "linux")]
         if let Some(view) = self.service_view.as_mut()
             && view.poll_open()
         {
@@ -5574,18 +5551,20 @@ impl BrowserWidget {
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
         if matches!(operation, BrowserOperation::ReadServiceSession) {
-            #[cfg(target_os = "linux")]
             if let Some(pending) = &self.service_forget {
                 return Ok(ui::framework::Effected::value(pending.report()));
             }
             if let Some(report) = &self.service_observation {
                 return Ok(ui::framework::Effected::value(report.clone()));
             }
-            #[cfg(target_os = "linux")]
             if let Some(view) = &self.service_view {
                 let mut status = view.report();
-                status["destination_navigation_observed"] =
-                    serde_json::json!(view.destination_navigation_observed(&self.current_uri));
+                if let Some(object) = status.as_object_mut() {
+                    object.insert(
+                        "destination_navigation_observed".into(),
+                        serde_json::json!(view.destination_navigation_observed(&self.current_uri)),
+                    );
+                }
                 return Ok(ui::framework::Effected::value(status));
             }
             if let Some(view) = &self.service_pending {
@@ -5753,7 +5732,6 @@ mod architecture_tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn pending_revocation_and_stale_selection_remain_publicly_readable() {
         let mut widget = BrowserWidget::new_with_mode(BrowsingMode::Normal);
         for status in [

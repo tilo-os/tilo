@@ -1089,7 +1089,15 @@ fi
 # and the checker must pass the shipped policy and fail every weakened copy. A
 # grep for fragments is satisfied by a signed sibling scope while the Tilo
 # scope itself accepts anything.
-image_policy_check="$repo/os/usr/libexec/tilo-image-policy-check"
+# The checker is compiled (crates/system/image-policy-check): build the
+# image's own binary, or use the one TILO_IMAGE_POLICY_CHECK_BIN names.
+image_policy_check="${TILO_IMAGE_POLICY_CHECK_BIN:-}"
+if [ -z "$image_policy_check" ]; then
+  cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-image-policy-check \
+    || bad 'could not build the image signature policy checker'
+  image_policy_check="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-image-policy-check"
+fi
+[ -x "$image_policy_check" ] || bad "no image signature policy checker at $image_policy_check"
 image_policy="$repo/os/etc/containers/policy.json"
 grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
   && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
@@ -1098,10 +1106,9 @@ grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
 if grep -Fq '"type": "sigstoreSigned"' "$audit"; then
   bad 'boot audit still greps policy.json fragments instead of parsing the policy'
 fi
-grep -Fq 'os/usr/libexec/tilo-image-policy-check' "$image_recipe" \
-  || bad 'image signature policy checker is not copied into the OS image'
-[ "$(head -n 1 "$image_policy_check")" = '#!/usr/bin/python3' ] \
-  || bad 'image signature policy checker does not run on the image python3'
+grep -Fq -- '--bin tilo-image-policy-check' "$image_recipe" \
+  && grep -Fq 'to = "/usr/libexec/tilo-image-policy-check", mode = "0755"' "$repo/os/components.toml" \
+  || bad 'image signature policy checker is not built into the OS image'
 
 policy_cases="$(mktemp -d)"
 trap 'rm -rf "$policy_cases"' EXIT
@@ -1161,7 +1168,7 @@ PY
 then
   bad 'could not build weakened image signature policy fixtures'
 fi
-if python3 "$image_policy_check" "$image_policy" >/dev/null; then
+if "$image_policy_check" "$image_policy" >/dev/null; then
   ok 'shipped container policy requires the pinned Tilo image signature'
 else
   bad 'shipped container policy fails the image signature policy check'
@@ -1169,7 +1176,7 @@ fi
 weakened_policies=0
 for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
   weakened_policies=$((weakened_policies + 1))
-  if python3 "$image_policy_check" "$weakened" >/dev/null; then
+  if "$image_policy_check" "$weakened" >/dev/null; then
     bad "image signature policy check accepts weakened policy $(basename "$weakened")"
   fi
 done
@@ -1190,7 +1197,7 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf
 PY
 then
   bad 'could not build the default-reject image signature policy fixture'
-elif python3 "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" >/dev/null; then
+elif "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" >/dev/null; then
   ok 'image signature policy check judges guarded repositories by their effective rule'
 else
   bad 'image signature policy check refuses guarded repositories a default reject already covers'

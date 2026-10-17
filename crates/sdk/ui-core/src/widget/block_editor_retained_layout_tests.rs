@@ -1139,3 +1139,122 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
         assert_eq!(differing, 0, "pixels a culled frame paints differently");
     }
 }
+
+/// The semantic tree's nodes beneath and including `id`.
+fn subtree_len(tree: &crate::a11y_tree::SemanticTree, id: &crate::a11y_tree::SemanticId) -> usize {
+    tree.node(id).map_or(0, |node| {
+        node.children
+            .iter()
+            .map(|child| subtree_len(tree, child))
+            .sum::<usize>()
+            .saturating_add(1)
+    })
+}
+
+/// What a tree that keeps nothing between frames publishes for the editor
+/// now: every node, in reading order.
+fn published_afresh(fixture: &RetainedEditor) -> Vec<crate::a11y_tree::SemanticNode> {
+    let mut tree = crate::a11y_tree::SemanticTree::new();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    tree.iter().cloned().collect()
+}
+
+/// A keystroke builds the accessibility row of the block it typed into, and
+/// the semantic tree builds that row's nodes, the document's and the
+/// window's: every other block hands the tree the very row it had, which the
+/// tree keeps.
+/// The work is the same in a document four times as long, and the tree it
+/// publishes is the one a full rebuild publishes.
+#[test]
+fn a_keystroke_builds_the_accessibility_row_of_its_block_alone() {
+    let mut built = Vec::new();
+    for count in [40, 160] {
+        let blocks = (0..count)
+            .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary line.")))
+            .collect();
+        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+        let mut tree = crate::a11y_tree::SemanticTree::new();
+        tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+        assert!(
+            tree.nodes_built_for_test() > count * 6,
+            "the first refresh builds every row"
+        );
+        let rows = fixture.editor.access_row_builds_for_test();
+
+        fixture.key(Key::Character("x".into()), Modifiers::default());
+        let delta = tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+
+        assert_eq!(
+            fixture.editor.access_row_builds_for_test() - rows,
+            1,
+            "a keystroke into one of {count} blocks builds one row"
+        );
+        let typed = tree
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Paragraph block 1"))
+            .map(|node| node.id.clone())
+            .expect("the typed block's row");
+        assert_eq!(
+            tree.nodes_built_for_test(),
+            subtree_len(&tree, &typed) + 2,
+            "the tree builds the typed row's nodes, the document's and the window's alone, \
+             of {count} blocks"
+        );
+        assert!(
+            delta.added.is_empty() && delta.removed.is_empty() && !delta.updated.is_empty(),
+            "the keystroke updates nodes, adding and removing none: {delta:?}"
+        );
+        assert_eq!(
+            tree.iter().cloned().collect::<Vec<_>>(),
+            published_afresh(&fixture),
+            "the kept rows publish what a full rebuild publishes"
+        );
+        built.push(tree.nodes_built_for_test());
+    }
+    assert_eq!(
+        built[0], built[1],
+        "a keystroke costs the same whatever the document's length"
+    );
+}
+
+/// A row is kept only while everything it is built from is the same: a
+/// caret moved, a block indented or a block moved builds the rows it
+/// changed and publishes what a full rebuild publishes.
+#[test]
+fn kept_accessibility_rows_follow_caret_indent_and_moves() {
+    let blocks = vec![
+        Block::paragraph("First"),
+        Block::bullet(0, "Second"),
+        Block::bullet(0, "Third"),
+        Block::paragraph("Fourth"),
+    ];
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let mut tree = crate::a11y_tree::SemanticTree::new();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    for key in [
+        Key::Named(NamedKey::ArrowRight),
+        Key::Named(NamedKey::ArrowDown),
+        Key::Named(NamedKey::ArrowDown),
+        Key::Named(NamedKey::Tab),
+    ] {
+        fixture.key(key.clone(), Modifiers::default());
+        tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+        assert_eq!(
+            tree.iter().cloned().collect::<Vec<_>>(),
+            published_afresh(&fixture),
+            "after {key:?} the kept rows publish what a full rebuild publishes"
+        );
+    }
+    let moved = fixture.editor.focused_index().expect("a focused block");
+    assert!(fixture.editor.move_block_to(moved, 0), "the block moves up");
+    if fixture.editor.take_structure_dirty() {
+        fixture.rebuild_after_structure_change();
+    }
+    fixture.frame();
+    tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
+    assert_eq!(
+        tree.iter().cloned().collect::<Vec<_>>(),
+        published_afresh(&fixture),
+        "after a move the kept rows publish what a full rebuild publishes"
+    );
+}

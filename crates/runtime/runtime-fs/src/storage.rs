@@ -90,23 +90,57 @@ pub struct EvictionReport {
     pub skipped: Vec<String>,
 }
 
+/// How the daemon caches workspace content on this device: whether it
+/// fetches the files it predicts will be opened next, and how many bytes
+/// of fetched content it keeps.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachePolicy {
+    /// Fetch predicted files ahead of their open. Network, battery and disk
+    /// gates still apply when this is on.
+    pub prefetch: bool,
+    /// Bytes of fetched content to keep; `None` is the daemon's default, a
+    /// share of the disk that holds the cache. Pinned content and content
+    /// only this device holds are kept regardless.
+    pub budget_bytes: Option<u64>,
+}
+
+impl Default for CachePolicy {
+    fn default() -> Self {
+        Self {
+            prefetch: true,
+            budget_bytes: None,
+        }
+    }
+}
+
+/// The smallest cache budget the daemon accepts: below it, opening one
+/// large file would evict the files just prefetched for it.
+pub const MIN_CACHE_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+
+// New variants go last: postcard numbers them in declaration order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageRequest {
     Snapshot,
     Evict {
         selected: Vec<EvictionSelection>,
     },
+    /// The cache policy in force.
+    CachePolicy,
+    /// Replace the cache policy; the daemon answers with the one it applied.
+    SetCachePolicy(CachePolicy),
     /// Switch this same managed daemon connection into private enrollment.
     /// The switch itself supplies no certified role, verifier or source access.
     BindExternalSource,
     BindExternalReadSource,
 }
 
+// New variants go last: postcard numbers them in declaration order.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageResponse {
     Snapshot(SyncStorageSnapshot),
     Evicted(EvictionReport),
     Error(String),
+    CachePolicy(CachePolicy),
     /// Transport switch only. Mutual kernel role and current certification
     /// checks on the same stream still precede every enrollment.
     ExternalSourceBinding,
@@ -142,6 +176,7 @@ impl StorageClient {
             StorageResponse::Snapshot(snapshot) => Ok(snapshot),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
             StorageResponse::Evicted(_)
+            | StorageResponse::CachePolicy(_)
             | StorageResponse::ExternalSourceBinding
             | StorageResponse::ExternalReadSourceBinding { .. } => {
                 Err(std::io::Error::other("unexpected storage response"))
@@ -159,6 +194,41 @@ impl StorageClient {
             StorageResponse::Evicted(report) => Ok(report),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
             StorageResponse::Snapshot(_)
+            | StorageResponse::CachePolicy(_)
+            | StorageResponse::ExternalSourceBinding
+            | StorageResponse::ExternalReadSourceBinding { .. } => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
+        }
+    }
+
+    /// The cache policy in force.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it replies with a
+    /// response other than [`StorageResponse::CachePolicy`].
+    pub fn cache_policy(&mut self) -> std::io::Result<CachePolicy> {
+        self.policy_request(&StorageRequest::CachePolicy)
+    }
+
+    /// Replace the cache policy, returning the one the daemon applied.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::cache_policy`]; the daemon refuses a budget below
+    /// [`MIN_CACHE_BUDGET_BYTES`].
+    pub fn set_cache_policy(&mut self, policy: CachePolicy) -> std::io::Result<CachePolicy> {
+        self.policy_request(&StorageRequest::SetCachePolicy(policy))
+    }
+
+    fn policy_request(&mut self, request: &StorageRequest) -> std::io::Result<CachePolicy> {
+        match self.request(request)? {
+            StorageResponse::CachePolicy(policy) => Ok(policy),
+            StorageResponse::Error(error) => Err(std::io::Error::other(error)),
+            StorageResponse::Snapshot(_)
+            | StorageResponse::Evicted(_)
             | StorageResponse::ExternalSourceBinding
             | StorageResponse::ExternalReadSourceBinding { .. } => {
                 Err(std::io::Error::other("unexpected storage response"))
@@ -177,6 +247,7 @@ impl StorageClient {
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
             StorageResponse::Snapshot(_)
             | StorageResponse::Evicted(_)
+            | StorageResponse::CachePolicy(_)
             | StorageResponse::ExternalReadSourceBinding { .. } => {
                 Err(std::io::Error::other("unexpected storage response"))
             }
@@ -208,6 +279,34 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
+    /// The cache-policy requests' bytes. Appended variants keep the
+    /// existing ones' bytes and take the next numbers, so an older Settings
+    /// and a newer daemon still agree.
+    #[test]
+    fn cache_policy_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 9] = [5, 0, 0, 0, 3, 0, 1, 0x80, 0x08];
+        const RESPONSE: [u8; 7] = [3, 0, 0, 0, 3, 1, 0];
+        let (client_end, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut request = [0_u8; REQUEST.len()];
+            daemon.read_exact(&mut request).unwrap();
+            daemon.write_all(&RESPONSE).unwrap();
+            request
+        });
+        let mut client = StorageClient { stream: client_end };
+        let applied = client
+            .set_cache_policy(CachePolicy {
+                prefetch: false,
+                budget_bytes: Some(1024),
+            })
+            .unwrap();
+        assert_eq!(daemon.join().unwrap(), REQUEST);
+        assert_eq!(applied, CachePolicy::default());
+    }
+
     #[test]
     fn enrollment_switch_appends_wire_tags_and_preserves_exact_stream() {
         let (client_end, mut daemon) = UnixStream::pair().unwrap();
@@ -217,8 +316,8 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut request = [0u8; 5];
             daemon.read_exact(&mut request).unwrap();
-            assert_eq!(request, [1, 0, 0, 0, 2]);
-            daemon.write_all(&[1, 0, 0, 0, 3]).unwrap();
+            assert_eq!(request, [1, 0, 0, 0, 4]);
+            daemon.write_all(&[1, 0, 0, 0, 4]).unwrap();
             // Bytes following the switch belong to the caller's role protocol.
             daemon.write_all(b"role").unwrap();
         });

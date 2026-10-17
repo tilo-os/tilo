@@ -70,6 +70,8 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The owner commit service the native workspace owner implements.
+tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -325,14 +327,15 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
-# The network secret agent cancels a request NetworkManager withdraws.
-tokio-util.workspace = true
 # The session's polkit authentication agent; the shell supplies the sheet it
 # asks in (`polkit_agent`).
 tilo-polkit-agent = { path = "../polkit-agent" }
 # The session's status-notifier tray host; the shell supplies the icon
 # rasteriser for named icons (`tray`).
 tilo-tray-host = { path = "../tray-host" }
+# The session's NetworkManager secret agent; the shell supplies the sheet it
+# asks in, in its own words, and the roaming Wi-Fi store (`network_secrets`).
+tilo-network-secret-agent = { path = "../network-secret-agent" }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto
@@ -353,6 +356,10 @@ registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The clipboard bridge tests speak futures-io over tokio sockets (`compat`).
+tokio-util.workspace = true
+# Drives the secret agent from a stand-in NetworkManager into the sheet.
+tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

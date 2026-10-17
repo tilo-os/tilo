@@ -123,7 +123,7 @@ fn adopt_images(
     images: &mut HashSet<String>,
     seed: &mut Vec<Invoke<Notebook>>,
 ) {
-    for (digest, stored) in &notebook.images {
+    for (digest, stored) in notebook.images.iter() {
         if images.contains(digest) {
             continue;
         }

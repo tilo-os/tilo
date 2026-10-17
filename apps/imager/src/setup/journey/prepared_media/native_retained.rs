@@ -235,7 +235,7 @@ impl Drop for Actor {
 #[test]
 fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     run_owned_actor(
-        "setup::journey::prepared_media::native_retained::actor::shared_files_media_authenticates_original_plan_without_copying_home",
+        "setup::journey::prepared_media_native::native_retained::actor::shared_files_media_authenticates_original_plan_without_copying_home",
     );
 }
 

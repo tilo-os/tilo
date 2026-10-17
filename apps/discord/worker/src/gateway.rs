@@ -389,8 +389,7 @@ impl Gateway {
             "READY" => {
                 self.state.session_id = data["session_id"].as_str().map(str::to_owned);
                 self.state.resume_url = data["resume_gateway_url"].as_str().map(str::to_owned);
-                self.state.session_started_s =
-                    u64::try_from(crate::events::now_ms() / 1000).unwrap_or(0);
+                self.state.session_started_s = tilo_clock::unix_now();
                 data["user"]["id"]
                     .as_str()
                     .unwrap_or_default()
@@ -640,7 +639,7 @@ impl Gateway {
             )
             .await
             .ok()?;
-        let recent = crate::events::now_ms().saturating_sub(15_000);
+        let recent = tilo_clock::unix_now_ms_i64().saturating_sub(15_000);
         answer["audit_log_entries"]
             .as_array()?
             .iter()

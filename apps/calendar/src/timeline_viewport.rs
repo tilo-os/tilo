@@ -14,10 +14,6 @@ use crate::input_context::InputContext;
 /// The shortest an hour row gets: a list row's height, so a half-hour block
 /// still holds its title.
 #[cfg(test)]
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const"
-)]
 pub(super) const TIMELINE_MIN_HOUR_H: f64 = ui::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// The text styles the timeline paints, by what each piece of text is.

@@ -4,7 +4,7 @@
 //! opening. The backend authenticates that frontend, shows an unspoofable
 //! shell sheet, and returns only the approved identifiers.
 
-use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer, ensure};
+use super::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
 use std::collections::{HashMap, HashSet};
 
 #[cfg(target_os = "linux")]
@@ -94,57 +94,47 @@ impl UsbBackend {
                 app_id: auth.caller.app_id,
                 resource: LifecycleResource::Prompt,
             };
-            let registered = self
-                .lifecycle
-                .register_request(connection, &request_path, entry, move |_| {
-                    let _ = dialogs.cancel(&cancel_path);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            let receiver = match self.dialogs.enqueue_usb_devices(UsbDeviceRequest {
-                review: ReviewRequest {
-                    handle: request_path.clone(),
-                    app_id,
-                    title: crate::shell::i18n::t("portal-usb-title"),
-                    reason: crate::shell::i18n::t("portal-usb-reason"),
-                    resource: crate::shell::i18n::t("portal-usb-resource"),
-                    confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
-                },
-                devices: requested
-                    .iter()
-                    .map(|device| UsbDeviceRow {
-                        id: device.id.clone(),
-                        label: device
-                            .label
-                            .clone()
-                            .unwrap_or_else(|| crate::shell::i18n::t("portal-usb-unnamed-device")),
-                        writable: device.writable,
-                    })
-                    .collect(),
-            }) {
-                Ok(receiver) => receiver,
-                Err(_) => {
-                    self.lifecycle
-                        .complete_request_object(connection, &request_path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
-            };
-            let response = match receiver.await {
-                Ok(UsbDeviceDecision {
-                    decision: ReviewDecision::Confirmed,
-                    approved,
-                }) => approved_result(&requested, &approved),
-                Ok(UsbDeviceDecision {
-                    decision: ReviewDecision::Cancelled,
-                    ..
-                })
-                | Err(_) => Err(Ended::Cancelled),
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
             };
             self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            response
+                .with_request(connection, &request_path, entry, cancel, async {
+                    let receiver = self
+                        .dialogs
+                        .enqueue_usb_devices(UsbDeviceRequest {
+                            review: ReviewRequest {
+                                handle: request_path.clone(),
+                                app_id,
+                                title: crate::shell::i18n::t("portal-usb-title"),
+                                reason: crate::shell::i18n::t("portal-usb-reason"),
+                                resource: crate::shell::i18n::t("portal-usb-resource"),
+                                confirm_label: crate::shell::i18n::t("portal-usb-confirm"),
+                            },
+                            devices: requested
+                                .iter()
+                                .map(|device| UsbDeviceRow {
+                                    id: device.id.clone(),
+                                    label: device.label.clone().unwrap_or_else(|| {
+                                        crate::shell::i18n::t("portal-usb-unnamed-device")
+                                    }),
+                                    writable: device.writable,
+                                })
+                                .collect(),
+                        })
+                        .or_fail()?;
+                    match receiver.await {
+                        Ok(UsbDeviceDecision {
+                            decision: ReviewDecision::Confirmed,
+                            approved,
+                        }) => approved_result(&requested, &approved),
+                        Ok(UsbDeviceDecision {
+                            decision: ReviewDecision::Cancelled,
+                            ..
+                        })
+                        | Err(_) => Err(Ended::Cancelled),
+                    }
+                })
+                .await
         })
         .await
     }

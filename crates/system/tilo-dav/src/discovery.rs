@@ -22,12 +22,21 @@ pub struct CalendarCollection {
 /// On unsafe URLs, authentication failure, malformed replies, excessive
 /// redirects, or when the account has no readable calendars.
 pub fn calendars(client: &DavClient, server: &Url) -> Result<Vec<CalendarCollection>, String> {
+    calendars_checked(client, server, &|_| Ok(()))
+}
+
+pub(crate) fn calendars_checked(
+    client: &DavClient,
+    server: &Url,
+    check: &dyn Fn(&Url) -> Result<(), String>,
+) -> Result<Vec<CalendarCollection>, String> {
+    check(server)?;
     if !client.refuses_redirects() {
         return Err("CalDAV discovery requires a client with automatic redirects disabled".into());
     }
     safe_url(server, server.as_str())?;
     let mut budget = 8;
-    let endpoint = home(client, server, &mut budget)?;
+    let endpoint = home(client, server, &mut budget, check)?;
     let (endpoint, listing) = find(
         client,
         server,
@@ -39,6 +48,7 @@ pub fn calendars(client: &DavClient, server: &Url) -> Result<Vec<CalendarCollect
             PropName::dav("current-user-privilege-set"),
         ],
         &mut budget,
+        check,
     )?;
     let mut calendars = Vec::new();
     for response in listing.responses {
@@ -52,6 +62,7 @@ pub fn calendars(client: &DavClient, server: &Url) -> Result<Vec<CalendarCollect
             continue;
         }
         let href = safe_url(&endpoint, &response.href)?;
+        check(&href)?;
         // A depth-one listing cannot nominate an unrelated path as a calendar.
         if href.path() != endpoint.path()
             && !href
@@ -88,7 +99,12 @@ pub fn calendars(client: &DavClient, server: &Url) -> Result<Vec<CalendarCollect
     Ok(calendars)
 }
 
-fn home(client: &DavClient, server: &Url, budget: &mut usize) -> Result<Url, String> {
+fn home(
+    client: &DavClient,
+    server: &Url,
+    budget: &mut usize,
+    check: &dyn Fn(&Url) -> Result<(), String>,
+) -> Result<Url, String> {
     let properties = [
         PropName::dav("current-user-principal"),
         PropName::caldav("calendar-home-set"),
@@ -101,6 +117,7 @@ fn home(client: &DavClient, server: &Url, budget: &mut usize) -> Result<Url, Str
         Depth::Zero,
         &properties,
         budget,
+        check,
     );
     let (mut endpoint, mut listing) = match initial {
         Ok(found) => found,
@@ -120,11 +137,27 @@ fn home(client: &DavClient, server: &Url, budget: &mut usize) -> Result<Url, Str
             .map_err(|_| "invalid server URL")?
             .join(".well-known/caldav")
             .map_err(|_| "invalid discovery URL")?;
-        (endpoint, listing) = find(client, server, well_known, Depth::Zero, &properties, budget)?;
+        (endpoint, listing) = find(
+            client,
+            server,
+            well_known,
+            Depth::Zero,
+            &properties,
+            budget,
+            check,
+        )?;
     }
     if let Some(principal) = property_href(&listing, "current-user-principal") {
         let principal = safe_url(&endpoint, principal)?;
-        (endpoint, listing) = find(client, server, principal, Depth::Zero, &properties, budget)?;
+        (endpoint, listing) = find(
+            client,
+            server,
+            principal,
+            Depth::Zero,
+            &properties,
+            budget,
+            check,
+        )?;
     }
     if let Some(home) = property_href(&listing, "calendar-home-set") {
         endpoint = safe_url(&endpoint, home)?;
@@ -144,7 +177,7 @@ fn property_href<'a>(listing: &'a Multistatus, name: &str) -> Option<&'a str> {
     listing.responses.iter().find_map(|r| r.prop_text(name))
 }
 
-fn safe_url(base: &Url, href: &str) -> Result<Url, String> {
+pub(crate) fn safe_url(base: &Url, href: &str) -> Result<Url, String> {
     if href.len() > 4096 || href.chars().any(char::is_control) || href.contains('\\') {
         return Err("unsafe DAV URL".into());
     }
@@ -176,11 +209,13 @@ fn find(
     depth: Depth,
     props: &[PropName],
     budget: &mut usize,
+    check: &dyn Fn(&Url) -> Result<(), String>,
 ) -> Result<(Url, Multistatus), String> {
     for _ in 0..4 {
         if *budget == 0 {
             return Err("DAV discovery request limit reached".into());
         }
+        check(&url)?;
         *budget = budget.saturating_sub(1);
         let response = client
             .propfind(url.clone(), depth, props)

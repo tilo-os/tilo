@@ -22,11 +22,15 @@ ROLES = {
     'runtime': ('crates/runtime/runtime-dylib', 'runtime_dylib', 'dylib', False),
     'host': ('apps/imager', 'imager', 'bin', False),
     'imager_tests': ('apps/imager', 'imager', 'lib', True),
+    'backend_tests': ('crates/platform/imager-backend', 'imager_backend', 'lib', True),
     'shell': ('crates/session/shell', 'shell', 'bin', False),
     'fs': ('crates/system/fs', 'fs', 'bin', False),
     'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
     'home_seeds': ('crates/session/installer', 'tilo-firstboot-home-seeds', 'bin', False),
+    'staging_handoff': ('crates/system/install-helpers', 'tilo-staging-handoff', 'bin', False),
+    'handoff_copy': ('crates/system/install-helpers', 'tilo-install-handoff-copy', 'bin', False),
+    'firstboot_files': ('crates/system/firstboot-files', 'tilo-firstboot-files', 'bin', False),
     'prepared_extract': ('apps/imager', 'tilo-installer-prepared-setup-extract', 'bin', False),
     'control': ('crates/session/control-cli', 'tilo-control', 'bin', False),
     'launcher': ('crates/packaging/launcher', 'tilo-launcher', 'bin', False),
@@ -62,11 +66,13 @@ def facts(path, maximum=1024 ** 3):
     return {'sha256': digest.hexdigest(), 'bytes': after.st_size}
 
 
-def sources():
+def source_requirements():
     names = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
              'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
              'apps/imager/release-catalog.json',
-             'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
+             'crates/platform/imager-backend/src/setup/home_capture/native_tests/signed_export.rs',
+             'crates/platform/imager-backend/src/imager_model.rs',
+             'crates/platform/imager-backend/Cargo.toml',
              'apps/imager/packaging/qualify-capture-release.py',
              'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py',
              'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
@@ -82,6 +88,11 @@ def sources():
     spec.loader.exec_module(qualifier)
     names.update(qualifier.FIXTURE_FILES)
     names.update(qualifier.PACKAGE_FILES)
+    return names
+
+
+def sources():
+    names = source_requirements()
     listed = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=ROOT)
     for item in listed.split(b'\0'):
         if not item:
@@ -167,9 +178,9 @@ def build(arguments):
             continue
         row, executable = artifact
         # Test-build dependency artifacts are not role candidates.
-        if role == 'imager_tests' and command[1] != 'test':
+        if role in ('imager_tests', 'backend_tests') and command[1] != 'test':
             continue
-        if role != 'imager_tests' and command[1] != 'build':
+        if role not in ('imager_tests', 'backend_tests') and command[1] != 'build':
             continue
         original = facts(executable)
         saved = invocation / (role + '.elf')
@@ -198,7 +209,7 @@ def build(arguments):
 
 def cohort(directory, output, source_only):
     current = sources()
-    required = {'worker', 'runtime', 'host', 'imager_tests'} if source_only else set(ROLES)
+    required = {'worker', 'runtime', 'host', 'imager_tests', 'backend_tests'} if source_only else set(ROLES)
     roles = {}
     for role in sorted(required):
         matches = sorted(directory.glob('cargo-*/role-' + role + '.json'),

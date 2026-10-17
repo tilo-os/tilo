@@ -4,11 +4,12 @@ use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
+use tilo_peer_state::{TransportOrigin, join};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,
@@ -435,7 +436,7 @@ fn bootstrap_candidate(
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
-                peer: view.peer(),
+                peer: view,
                 pinned_governor: view.governor(),
                 pinned_host: view.host().unwrap(),
                 workspace: view.workspace(),
@@ -638,7 +639,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
 
 #[test]
 fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_device() {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let owner = open(tree_at(&path)).unwrap();

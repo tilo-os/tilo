@@ -31,6 +31,15 @@ release signing or current-source acceptance. On an x86 host, select
 `TILO_ACCEL=tcg TILO_MEM=4096 TILO_SMP=2 TILO_DISTROBOX=""` explicitly; ARM
 software emulation can take substantially longer than native installation.
 
+An Apple silicon Mac runs the same ARM scenario natively under Hypervisor.framework
+with Homebrew's `qemu`, `socat`, `tesseract`, `imagemagick` and `util-linux`
+(for `setsid`, which is keg-only, so append `/opt/homebrew/opt/util-linux/bin` to
+`PATH`). Link Homebrew's `edk2-aarch64-code.fd` and `edk2-arm-vars.fd` into one
+directory as `AAVMF_CODE.fd` and `AAVMF_VARS.fd`, then run with
+`TILO_ACCEL=hvf TILO_VM_ARCH=aarch64 TILO_DISTROBOX="" TILO_AAVMF_DIRS=<that directory>`
+and `--graphics software`. The installer, the encrypted install and the target's
+cold boot take minutes, not hours.
+
 On Windows ARM64, use the native `tilo-vm.exe` and the WHPX transport:
 
 ```powershell
@@ -94,7 +103,7 @@ Phases, each timed in the receipt (`target/dev-runs/<id>/run.json`):
 |---|---|
 | `prepare` | `vm.sh init-cycle`; for an alongside layout, a 40 GiB target with a foreign EFI partition and a Linux sentinel filesystem, hashed |
 | `boot-installer` | boot the medium (a throwaway overlay; the medium is never written) with a blank target as `/dev/vdb`; wait for the installer to answer its console |
-| `install` | walk the wizard through the installer's published actions: keyboard, network, disk and method, account, options, review, **begin** (destructive: its confirmation phrase is the target), progress, recovery-key confirmation, **power off** |
+| `install` | walk the wizard through the installer's published actions: keyboard, network, disk and method, account, options, media (the optional extra formats, skipped), review, **begin** (destructive: its confirmation phrase is the target), progress, recovery-key confirmation, **power off** |
 | `power-off` | the installer's own Finish action stops the VM |
 | `verify-alongside` | the preserved extents hash exactly as before |
 | `first-boot` | cold-boot the target, enter the unlock secret twice at most during early boot, then recognize sign-in through its console or identity setup through a screenshot and OCR |

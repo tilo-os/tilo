@@ -3,13 +3,17 @@
 #
 #   RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
 #   RESET='./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk "$TILO_DISK"' \
+#   FAULT=greetd|greeter \
 #     ./os/tests/boot_assessment_rollback.sh STAGE_IMAGE [OUT_DIR]
 #
 # RUNNER runs one shell command line in the booted guest (`vm.sh ssh`, an ssh
 # wrapper, `tilo-vm vm ssh NAME --`). With SUDO_PASS the commands that need root
 # go through `sudo -S`; without it RUNNER must already be root. RESET, if set,
 # power-cycles a guest that stopped answering, since a broken boot may never
-# bring its network up; without it such a boot fails the check.
+# bring its network up; without it such a boot fails the check. UNLOCK, if set,
+# runs on the host every few seconds while a rebooted guest does not answer yet:
+# an installed system's encrypted root waits for its passphrase at every boot
+# (UNLOCK types it once the prompt is on screen, e.g. with `vm.sh type -`).
 #
 # STAGE_IMAGE is what `bootc switch` stages: any bootable image other than the
 # booted one that this machine's policy accepts (an immutable tilo-vm digest on
@@ -24,13 +28,19 @@
 #   2. Staging an update and running the same maintenance, as every update path
 #      does, gives the staged deployment's entry, and only it, a try counter
 #      BEFORE the reboot into it.
-#   3. The staged deployment is made unable to reach the greeter: a greetd
-#      drop-in in /etc that fails only on the staged deployment's composefs
+#   3. The staged deployment is made unable to reach the greeter, by a greetd
+#      drop-in in /etc that acts only on the staged deployment's composefs
 #      identity. /etc is carried into the staged deployment when it is
 #      finalized, so the image itself is untouched and the fault is bounded to
-#      that one deployment. Each of its boots spends a try:
-#      tilo-boot-health.service fails, systemd-bless-boot leaves the counter,
-#      and the boot loader decrements it.
+#      that one deployment. FAULT picks how it breaks:
+#        greetd   (default) greetd itself fails to start.
+#        greeter  greetd starts and stays in service, but its greeter is the
+#                 real one cut off 12 s after it starts, so the screen comes
+#                 and goes while systemd restarts greetd every few seconds: the
+#                 shape of an update that breaks the GPU stack, cage or the
+#                 greeter, and the one a check of `greetd is active` blesses.
+#      Each of its boots spends a try: tilo-boot-health.service fails,
+#      systemd-bless-boot leaves the counter, and the boot loader decrements it.
 #      While a broken boot is up, its own boot-entry pass puts the previous
 #      deployment on trial as well.
 #   4. After exactly as many failed boots as it had tries, the boot loader
@@ -51,14 +61,20 @@ OUT="${2:-${TILO_RUN:-/tmp}/boot-assessment}"
 RUNNER="${RUNNER:-}"
 SUDO_PASS="${SUDO_PASS:-}"
 RESET="${RESET:-}"
+UNLOCK="${UNLOCK:-}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
+# Above tilo-boot-health's own wait for a greeter (180 s, then a 20 s hold), so
+# the verdict on a broken boot is the health check's and not this timeout's.
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-360}"
 SWITCH_TIMEOUT="${SWITCH_TIMEOUT:-2400}"
 DROPIN_DIR=/etc/systemd/system/greetd.service.d
 DROPIN="$DROPIN_DIR/90-boot-assessment-fault.conf"
+FAULT="${FAULT:-greetd}"
+FAULT_CONFIG=/etc/greetd/boot-assessment-fault.toml
 
 [ -n "$RUNNER" ] || { echo "set RUNNER to a command that runs a shell line in the guest" >&2; exit 2; }
 [ -n "$STAGE_IMAGE" ] || { echo "usage: $0 STAGE_IMAGE [OUT_DIR]" >&2; exit 2; }
+case "$FAULT" in greetd|greeter) ;; *) echo "FAULT must be greetd or greeter, not '$FAULT'" >&2; exit 2 ;; esac
 mkdir -p "$OUT"
 
 step() { printf '\n=== %s\n' "$*" >&2; }
@@ -95,7 +111,7 @@ id_of() { sed -E 's/\+[0-9]+(-[0-9]+)?\.conf$/.conf/' <<<"$1"; }
 # is on its options line.
 entry_table() {
   as_root '
-    for d in /boot/loader/entries /boot/efi/loader/entries /boot/loader/entries.staged; do
+    for d in /boot/loader/entries /boot/efi/loader/entries /boot/loader/entries.staged /boot/efi/loader/entries.staged; do
       [ -d "$d" ] || continue
       esp="${d%/loader/*}"
       for f in "$d"/bootc*.conf; do
@@ -124,6 +140,7 @@ wait_reachable() {
   while [ "$(date +%s)" -lt "$deadline" ]; do
     id="$(boot_id)"
     if [ -n "$id" ] && [ "$id" != "$old" ]; then printf '%s\n' "$id"; return 0; fi
+    [ -z "$UNLOCK" ] || bash -c "$UNLOCK" >&2 || true
     sleep 3
   done
   return 1
@@ -174,8 +191,10 @@ wait_blessed() {
 record_boot() {
   local name="$1"
   as_root 'echo "cmdline: $(cat /proc/cmdline)"; echo; bootctl status --no-pager 2>&1 | sed -n "/Current Entry/p;/Default Entry/p"; echo
-           ls -l /boot/loader/entries /boot/loader/entries.staged 2>&1; echo
+           ls -l /boot/loader/entries /boot/loader/entries.staged /boot/efi/loader/entries /boot/efi/loader/entries.staged 2>&1; echo
            systemctl --no-pager status tilo-boot-health.service greetd.service systemd-bless-boot.service tilo-boot-entries.service 2>&1 | head -80; echo
+           echo "greetd restarts: $(systemctl show -p NRestarts --value greetd.service)"
+           cat /run/tilo-greeter/startup-metrics.json 2>&1; echo
            journalctl -b --no-pager -u tilo-boot-health -u tilo-boot-entries -u systemd-bless-boot 2>&1 | tail -60; echo
            systemd-analyze 2>&1 | head -2' > "$OUT/$name.txt" 2>&1
   entry_table >> "$OUT/$name.txt" 2>&1
@@ -213,6 +232,16 @@ A_DIGEST="$(booted_digest)"
 A_ENTRY="$(current_entry)"
 [ -n "$A_ENTRY" ] || fail "the boot loader did not report the booted entry (no LoaderEntrySelected); this check cannot see which deployment boots"
 FLAVOUR="$(guest 'cat /usr/lib/tilo/image-flavour 2>/dev/null' | tr -d '\r\n')"
+# Where the ESP is mounted on this layout: /boot on a sealed or dev disk,
+# /boot/efi beside an installed system's separate /boot. Every boot tool looks
+# only there, so an ESP they cannot find leaves each update without a try
+# counter and each good boot unblessed; that fails here, before anything else.
+as_root 'for m in /boot /boot/efi /efi; do ls "$m" >/dev/null 2>&1 || true
+           findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS --mountpoint "$m" || echo "$m: not a mount point"; done
+         echo; bootctl status --no-pager 2>&1 | head -40' > "$OUT/00-esp.txt" 2>&1
+ESP_PATH="$(as_root 'bootctl --print-esp-path 2>/dev/null' | tr -d '\r\n')"
+[ -n "$ESP_PATH" ] || fail "systemd finds no mounted ESP (bootctl --print-esp-path), so no boot here can be blessed; see $OUT/00-esp.txt"
+ok "the ESP is mounted at $ESP_PATH"
 ok "booted ${A_ENTRY} (composefs ${A_DIGEST:0:16}, image flavour ${FLAVOUR:-sealed})"
 # A boot still on trial is blessed (or not) by its own health check first; the
 # booted entry has to be a settled one before another is staged beside it.
@@ -275,16 +304,50 @@ B_ENTRY="$(id_of "$B_FILE")"
 ok "the staged entry carries a try counter before the reboot: $NEXT/$B_FILE (the running one is $NEXT/$A_NEXT)"
 
 # --- 3. the staged deployment cannot reach the greeter --------------------------------
-step "make only the staged deployment unable to reach the greeter"
-as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
+step "make only the staged deployment unable to reach the greeter ($FAULT)"
+if [ "$FAULT" = greetd ]; then
+  as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: greetd fails on the
 # deployment under test (composefs $B_DIGEST) and nowhere else.
 [Service]
 ExecStartPre=/usr/bin/sh -c '! grep -q \"composefs=$B_DIGEST\" /proc/cmdline'
 EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
+else
+  # greetd's own command line, so the deployment that is not under test runs
+  # exactly what it ran before. The unit may name the program bare
+  # (ExecStart=greetd, which systemd reports as path=greetd and looks up when
+  # it starts it), so a bare name is resolved in the guest the same way.
+  GREETD_EXEC="$(guest 'systemctl show -p ExecStart --value greetd.service' | tr -d '\r' | head -1)"
+  greetd_path="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<<"$GREETD_EXEC")"
+  if [[ -n "$greetd_path" && "$greetd_path" != /* ]]; then
+    greetd_path="$(guest "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin command -v $(printf '%q' "$greetd_path")" | tr -d '\r\n')"
+  fi
+  greetd_args="$(sed -n 's/.*argv\[\]=\([^;]*[^; ]\) *;.*/\1/p' <<<"$GREETD_EXEC" | cut -s -d' ' -f2-)"
+  GREETD_ARGV="$greetd_path${greetd_args:+ $greetd_args}"
+  [[ "$greetd_path" == /* ]] || fail "could not read greetd's ExecStart to wrap it (got '$GREETD_EXEC')"
+  as_root "install -d -m 0755 $DROPIN_DIR && cat > $FAULT_CONFIG <<EOF
+# Written by os/tests/boot_assessment_rollback.sh: the real greeter, cut off
+# 12 s after it starts, for the deployment under test only (see $DROPIN).
+[terminal]
+vt = 1
+
+[default_session]
+command = \"/usr/bin/timeout 12 /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter\"
+user = \"greetd\"
+EOF
+cat > $DROPIN <<EOF
+# Written by os/tests/boot_assessment_rollback.sh: on the deployment under test
+# (composefs $B_DIGEST) greetd runs a greeter that exits 12 s after it starts,
+# so greetd stays in service and systemd restarts it every few seconds.
+[Service]
+ExecStart=
+ExecStart=/usr/bin/sh -c 'if grep -q \"composefs=$B_DIGEST\" /proc/cmdline; then exec $GREETD_ARGV --config $FAULT_CONFIG; fi; exec $GREETD_ARGV'
+EOF
+systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
+fi
 guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the booted deployment after the fault was written; it must only affect the staged one"
-ok "greetd still runs here; it fails on composefs ${B_DIGEST:0:16}"
+ok "greetd still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
 
 # --- 4. each boot of the staged deployment spends a try, then it falls back ----------
 current_boot="$(boot_id)"
@@ -307,6 +370,16 @@ while :; do
     [ "$entry" = "$B_ENTRY" ] || fail "boot $attempt runs composefs ${B_DIGEST:0:16} but the boot loader reports entry $entry, not $B_ENTRY"
     [ "$attempt" -le "$TRIES" ] || fail "boot $attempt chose the broken entry with no tries left"
     [ "$verdict" = failed ] || fail "boot $attempt of the broken deployment was judged '$verdict', not failed; see $OUT/04-boot$attempt.txt"
+    if [ "$FAULT" = greeter ]; then
+      # The fault this mode exists for: greetd never failed, systemd kept
+      # restarting it. A greetd that failed outright proves the other mode.
+      restarts="$(guest 'systemctl show -p NRestarts --value greetd.service' | tr -d '\r\n')"
+      greetd_state="$(guest 'systemctl show -p ActiveState --value greetd.service' | tr -d '\r\n')"
+      [[ "$restarts" =~ ^[0-9]+$ ]] && [ "$restarts" -ge 1 ] \
+        || fail "boot $attempt: greetd was never restarted (NRestarts '$restarts'), so the greeter fault did not happen; see $OUT/04-boot$attempt.txt"
+      [ "$greetd_state" != failed ] || fail "boot $attempt: greetd failed outright, which is the greetd fault, not a crash-looping greeter"
+      ok "boot $attempt: greetd stayed in service ($greetd_state) and was restarted $restarts times, and the boot was still judged failed"
+    fi
     left=$((TRIES - attempt))
     [ "$b_now" = "${B_ENTRY%.conf}+$left-$attempt.conf" ] \
       || fail "after boot $attempt the broken entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+$left-$attempt.conf (blessed, or not decremented)"
@@ -339,6 +412,6 @@ while :; do
 done
 
 as_root '/usr/libexec/tilo-deployment list 2>&1 || true' > "$OUT/05-list.txt" 2>&1
-as_root "rm -f $DROPIN && systemctl daemon-reload" >/dev/null 2>&1 || true
-printf 'PASS staged=%s tries=%s\n' "$B_ENTRY" "$TRIES" > "$OUT/verdict.txt"
-printf '\nPASS: a broken update spent its %s tries and the boot loader went back by itself (evidence in %s)\n' "$TRIES" "$OUT"
+as_root "rm -f $DROPIN $FAULT_CONFIG && systemctl daemon-reload" >/dev/null 2>&1 || true
+printf 'PASS staged=%s tries=%s fault=%s\n' "$B_ENTRY" "$TRIES" "$FAULT" > "$OUT/verdict.txt"
+printf '\nPASS: a broken update (%s fault) spent its %s tries and the boot loader went back by itself (evidence in %s)\n' "$FAULT" "$TRIES" "$OUT"

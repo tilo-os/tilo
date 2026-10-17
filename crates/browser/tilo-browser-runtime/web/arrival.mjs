@@ -133,11 +133,12 @@ export const STEP_NOTES = new Set([
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
 ]);
 
-/** Said in place of the line when a step that waits on the network runs
- * long; the locale file may word them. */
+/** Said in place of the line when a step that waits on the network, or on
+ * the GPU's first frame, runs long; the locale file may word them. */
 export const SLOW_NOTES = {
   fetch: ['arrival-slow-loading', 'Still loading. Your network may be slow.'],
   join: ['arrival-slow-connecting', 'Still connecting. Your network may be slow.'],
+  draw: ['arrival-slow-drawing', 'Still starting graphics. Without a graphics card this takes longer.'],
 };
 
 /**
@@ -149,7 +150,7 @@ export const SLOW_NOTES = {
  * line, note or bar: its status says what went wrong.
  */
 export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000}, slowNotes = {}} = {}) {
+  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000, draw: 10_000}, slowNotes = {}} = {}) {
   let rotation = createRotation(lines, random);
   let line = null;
   let shownAt = null;
@@ -188,6 +189,13 @@ export function lineParts(line, tipLabel = 'Tip') {
 /** Said when the desktop stops drawing; the cause goes to the console. */
 export const STOPPED_DRAWING = 'The desktop stopped working. Try again to start it.';
 
+/** Whether `error` is a host's door turning this visitor away for a while
+ * (`cooling-down`: the address someone removed from the room joined from),
+ * which trying again does not change. */
+export function refusedByHost(error) {
+  return error?.name === 'HostAdmissionError' && error.code === 'cooling-down';
+}
+
 /** Whether `error` is the network failing: a fetch that never answered, a
  * host's door that refused or failed, a connection that dropped. */
 function unreachable(error) {
@@ -209,6 +217,9 @@ export function failureMessage(error, {workspace = null, loaded = true} = {}) {
     return `${workspace || 'The workspace'} is already open in another tab of this browser. Use that tab, or close it and try again.`;
   }
   if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
+  if (refusedByHost(error)) {
+    return `${workspace || 'This workspace'} is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.`;
+  }
   const name = workspace || (loaded ? 'the workspace' : 'Tilo');
   if (unreachable(error)) return `Can’t reach ${name} right now. Check your connection, then try again.`;
   return `Something went wrong opening ${name}. Try again, or come back later.`;

@@ -860,10 +860,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn thumbnail_requests_settle_off_thread_as_ready_or_badge() {
         // Phase `image_file_loads_then_ready_and_second_request_hits`.
         {

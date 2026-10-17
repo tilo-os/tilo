@@ -1,14 +1,21 @@
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
+/// A relay certified only to host rooms: it governs them without stewarding
+/// their channels.
 pub(crate) fn governor() -> (SigningKey, DeviceCert) {
+    governor_with(DeviceCapabilities::host())
+}
+
+/// A relay device of the person's own, certified with `capabilities`.
+fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "home".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities,
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -323,7 +330,6 @@ async fn assert_view_reader_refused(
     );
 }
 
-#[cfg(feature = "agents")]
 async fn admit_view_reader(rooms: &Rooms, room: &str, key: &SigningKey, member: &DeviceCert) {
     let state = rooms.room(room).await.unwrap();
     let mut room = state.lock().await;
@@ -1303,7 +1309,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
         request_id,
         user_public_key: guest,
     };
-    let until = tilo_clock::unix_now_ns() / 1_000_000 + 30 * 60_000;
+    let until = tilo_clock::unix_now_ms() + 30 * 60_000;
     rooms
         .restrict_member(&created.room, &cert, request([1; 32]), until)
         .await
@@ -1495,4 +1501,278 @@ async fn only_a_live_bot_installed_with_personas_shows_other_names() {
     assert!(!rooms.bot_personas(0, personas).await);
     drop(rooms);
     drop(relay);
+}
+
+/// A member device of a room governed by a relay certified with some
+/// capabilities, which has asked the room's governor for one record's
+/// channel key.
+struct AskedForAChannel {
+    /// The relay's state and the member's channel records.
+    state: tempfile::TempDir,
+    relay: crate::daemon::Relay,
+    rooms: Rooms,
+    room: String,
+    governor: collab_types::Ed25519PublicKey,
+    member: collab_types::Ed25519PublicKey,
+    channel: collab_types::ChannelId,
+}
+
+/// Start a relay certified with `capabilities`, create a room on it, admit
+/// a member device of the person, and hand the room that device's MLS
+/// access request for a fresh record channel, as its runtime sends one.
+async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(capabilities);
+    let relay = view_read_relay(&dir.path().join("relay"), &key, &cert).await;
+    let rooms = relay
+        .rooms()
+        .expect("a certified host governs rooms")
+        .clone();
+    let created = rooms.create("Sealed").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&rooms, &created.room, &key, &member).await;
+    let governor = collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key);
+    let device = collab_types::Ed25519PublicKey::from_bytes(member.device_public_key);
+    let channel = collab_types::ChannelId::new();
+    let vault = channel_crypto::VaultKey::new([3; 32]);
+    let member_dir = dir.path().join("member");
+    std::fs::create_dir_all(&member_dir).unwrap();
+    let request =
+        channel_crypto::ChannelMember::open(&member_dir, channel, device, governor, &vault)
+            .unwrap()
+            .access_request(&member_key, 1, &vault)
+            .unwrap()
+            .expect("a member waiting for the channel asks for it");
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        room: created.room.clone(),
+        request: Box::new(request),
+        delivery: 1,
+    })
+    .unwrap();
+    rooms
+        .absorb(&created.room, member.device_public_key, &body)
+        .await
+        .unwrap();
+    let asked = AskedForAChannel {
+        state: dir,
+        relay,
+        rooms,
+        room: created.room,
+        governor,
+        member: device,
+        channel,
+    };
+    // Nothing yielded since: the steward pass `absorb` spawned has not run.
+    assert!(
+        asked.waiting(),
+        "the room queued the member's request for its steward"
+    );
+    asked
+}
+
+impl AskedForAChannel {
+    /// Whether the member's request still waits for the room's steward pass.
+    fn waiting(&self) -> bool {
+        self.rooms
+            .inner
+            .channel_notices
+            .lock()
+            .unwrap()
+            .contains_key(&self.room)
+    }
+
+    /// The room's channel stewards on its governor.
+    async fn stewardship(&self) -> Option<Arc<stewardship::Steward>> {
+        self.rooms
+            .room(&self.room)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .stewardship
+            .clone()
+    }
+
+    /// Where the governor would seal the room's channel state.
+    fn channels_dir(&self) -> PathBuf {
+        self.rooms.inner.dir.join(format!("{}.channels", self.room))
+    }
+
+    /// Shut the relay down, then remove its state.
+    async fn shut_down(self) {
+        let Self {
+            state,
+            relay,
+            rooms,
+            ..
+        } = self;
+        drop(rooms);
+        relay.shutdown().await;
+        drop(state);
+    }
+}
+
+/// security.md, "What a workspace host reads and originates": a host
+/// certified only to host rooms governs them without stewarding their
+/// channels and holds no channel key. A member's request for a record's key
+/// reaches the room's steward pass and finds no steward: no MLS group, no
+/// channel state on disk, nothing to lend.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
+    )
+)]
+async fn a_plain_host_governs_a_room_without_stewarding_its_channels() {
+    let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
+    tilo_test_env::within("the room's steward pass takes the request", async {
+        while asked.waiting() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        asked.stewardship().await.is_none(),
+        "a plain host certificate must never steward a governed room's channels"
+    );
+    assert!(
+        !asked.channels_dir().exists(),
+        "a plain host keeps no channel state for the room"
+    );
+    asked.shut_down().await;
+}
+
+/// The other half of the same claim, so the plain host's test observes its
+/// subject: a node certified to own workspaces stewards the channel of every
+/// record in the rooms it governs, is a member of each group beside the
+/// member devices governance lets read it, and seals its state on disk.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
+    )
+)]
+async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
+    let asked =
+        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
+            .await;
+    let steward = asked
+        .stewardship()
+        .await
+        .expect("a node that may own workspaces stewards its rooms' channels");
+    let members = tilo_test_env::within("the node admits the member to the channel", async {
+        loop {
+            let members = steward.channels.lock().await.members(asked.channel);
+            if let Some(members) = members.filter(|members| members.contains(&asked.member)) {
+                break members;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        members.contains(&asked.governor),
+        "the node is a member of the group it stewards, so it holds the channel's keys"
+    );
+    assert!(asked.channels_dir().exists());
+    drop(steward);
+    asked.shut_down().await;
+}
+
+/// A decision does not wait for room in its workspace owner's queue. With
+/// the owner stalled on the room's first change and more changes behind it
+/// than its queue holds, every decision still settles and answers, and a
+/// pre-admission still takes the room; once the owner moves, every change
+/// is retained, in the order the room published them.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn decisions_settle_while_their_workspace_owner_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let records = rooms.inner.host.records.clone();
+    // The creation's own changes are retained before the owner stalls.
+    records.retained(created.workspace_id).await.unwrap();
+    let root = dir
+        .path()
+        .join("workspaces")
+        .join(created.workspace_id.to_string());
+    let (release, reached) = crate::store::test_barrier::install(&root, "state-persist");
+    // Each name is one governance change: more than the owner queues.
+    for index in 0..48 {
+        tilo_test_env::within(
+            format!("rename {index} while the owner is stalled"),
+            rooms.rename(&created.room, &format!("Public {index}")),
+        )
+        .await
+        .unwrap();
+    }
+    tilo_test_env::within("the owner stalls on the first change", reached)
+        .await
+        .unwrap();
+    tilo_test_env::within(
+        "a pre-admission while the owner is stalled",
+        rooms.pre_admit(
+            &cert,
+            PreAdmitRequest {
+                request_id: [9; 32],
+                grant: signed_pre_admission(&created.room, &[9; 8]),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    drop(release);
+    let retained = tilo_test_env::within(
+        "every change retained once the owner moves",
+        records.retained(created.workspace_id),
+    )
+    .await
+    .unwrap();
+    let published: Vec<Vec<u8>> = {
+        let governed = rooms.room(&created.room).await.unwrap();
+        let governed = governed.lock().await;
+        governed
+            .record
+            .outgoing
+            .iter()
+            .filter(|publication| !publication.checkpoint)
+            .map(|publication| publication.bytes.clone())
+            .collect()
+    };
+    assert!(
+        published.len() >= 48,
+        "{} changes published",
+        published.len()
+    );
+    let host = cert.device_public_key;
+    let mut bodies = retained
+        .iter()
+        .filter(|body| body.author == host)
+        .map(|body| &body.body);
+    for change in &published {
+        assert!(
+            bodies.any(|body| body == change),
+            "a published change is retained, after the ones published before it"
+        );
+    }
+    relay.shutdown().await;
 }

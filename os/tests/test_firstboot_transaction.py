@@ -12,6 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'os/usr/libexec/tilo-firstboot-user'
+FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 HASH = '$6$fixture$' + 'A' * 86
 
 
@@ -116,7 +117,7 @@ else:
             '/var/lib/tilo': str(r / 'state'),
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
-            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{FILES_BINARY}"',
             '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
             'seed_helper=/usr/libexec/tilo-firstboot-home-seeds': f'seed_helper={r}/seeds.py',
         }.items():
@@ -307,7 +308,7 @@ class AtomicFilesTests(unittest.TestCase):
     def setUp(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            'firstboot_files', ROOT / 'os/usr/libexec/tilo-firstboot-files.py')
+            'firstboot_files', ROOT / 'os/tests/oracles/tilo-firstboot-files.py')
         self.helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.helper)
         self.work = tempfile.TemporaryDirectory()
@@ -336,13 +337,13 @@ class AtomicFilesTests(unittest.TestCase):
 
     def test_truncated_intent_input_is_never_published(self):
         path = self.root / 'intent'
-        helper = ROOT / 'os/usr/libexec/tilo-firstboot-files.py'
-        result = subprocess.run(['python3', str(helper), 'intent', str(path)],
+        helper = FILES_BINARY
+        result = subprocess.run([str(helper), 'intent', str(path)],
                                 input=b'fixtureuser:!tilo-firstboot-', capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(path.exists())
         complete = b'fixtureuser:!tilo-firstboot-' + b'a' * 32 + b'\n'
-        result = subprocess.run(['python3', str(helper), 'intent', str(path)],
+        result = subprocess.run([str(helper), 'intent', str(path)],
                                 input=complete, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(path.read_bytes(), complete)
@@ -365,7 +366,7 @@ helper.publish(directory, sys.argv[3], interrupted)
         self.addCleanup(os.close, directory)
         for name in ['intent', 'default']:
             result = subprocess.run(['python3', '-c', code,
-                                     str(ROOT / 'os/usr/libexec/tilo-firstboot-files.py'),
+                                     str(ROOT / 'os/tests/oracles/tilo-firstboot-files.py'),
                                      str(self.root), name], capture_output=True)
             self.assertEqual(result.returncode, -9, result.stderr)
             self.assertFalse((self.root / name).exists())

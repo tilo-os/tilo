@@ -1,18 +1,16 @@
 //! Completion of the local fence/reap/delete barrier precedes canonical revocation.
-use super::*;
+use super::{CATALOG, EngineAdapter, Selection, ServiceView, native, wake_callback};
 use ui::collaboration::browser_service_sessions::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, Client, Pending,
 };
 
-type LocalResult = Result<(), String>;
-type LocalCleanup = std::sync::Arc<std::sync::Mutex<Option<NativeCleanup>>>;
+type LocalForget = native::Forget<EngineAdapter, crate::service_profiles::Profile>;
 
 pub(crate) struct PendingForget {
     selection: Selection,
     client: Client,
-    local: Option<std::sync::mpsc::Receiver<LocalResult>>,
+    local: Option<LocalForget>,
     canonical: Option<Pending>,
-    cleanup: LocalCleanup,
     answer: Option<ui::framework::EffectReply>,
     waker: ui::WakeHandle,
     local_done: bool,
@@ -36,45 +34,28 @@ impl PendingForget {
             Some(view) => Some(view.take_forget_cleanup(&selection.id)?),
             None => None,
         };
-        let cleanup = std::sync::Arc::new(std::sync::Mutex::new(cleanup));
-        let worker_cleanup = cleanup.clone();
-        let (send, receive) = std::sync::mpsc::channel();
         let id = selection.id.clone();
-        let wake = waker.clone();
-        let spawned = std::thread::Builder::new()
-            .name("browser-service-forget".into())
-            .spawn(move || {
-                let mut cleanup = worker_cleanup
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let result = if let Some(cleanup) = cleanup.as_mut() {
-                    // Joining the first attempt may report a retained failure. The
-                    // next finish retries through that same lease, never a new owner.
-                    cleanup.finish().or_else(|_| cleanup.finish())
-                } else {
-                    crate::service_profiles::Profile::forget_closed(person, &id)
-                        .map_err(|_| CATALOG.t("browser-service-forget-retry-failed"))
-                };
-                // Release custody back to the frame before publishing completion.
-                drop(cleanup);
-                let _ = send.send(result);
-                wake.wake();
-            });
-        if spawned.is_err() {
-            if let Some(view) = view {
-                view.cleanup = cleanup
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
+        let local = match LocalForget::start(
+            cleanup,
+            move || {
+                crate::service_profiles::Profile::forget_closed(person, &id)
+                    .map_err(|_| CATALOG.t("browser-service-forget-retry-failed"))
+            },
+            wake_callback(waker.clone()),
+        ) {
+            Ok(local) => local,
+            Err(cleanup) => {
+                if let Some(view) = view {
+                    view.cleanup = cleanup;
+                }
+                return Err(CATALOG.t("browser-service-forget-retry-failed"));
             }
-            return Err(CATALOG.t("browser-service-forget-retry-failed"));
-        }
+        };
         Ok(Self {
             selection,
             client,
-            local: Some(receive),
+            local: Some(local),
             canonical: None,
-            cleanup,
             answer: Some(answer),
             waker,
             local_done: false,
@@ -87,22 +68,16 @@ impl PendingForget {
     pub(crate) fn poll(&mut self, view: Option<&mut ServiceView>) -> bool {
         let mut view = view;
         if let Some(local) = self.local.as_ref() {
-            let result = match local.try_recv() {
-                Ok(result) => result,
-                Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-                Err(_) => Err(CATALOG.t("browser-service-forget-retry-failed")),
+            let Some(result) = local.poll() else {
+                return false;
             };
-            self.local = None;
             if let Some(view) = view
                 .as_deref_mut()
                 .filter(|view| view.selection.id == self.selection.id)
             {
-                view.cleanup = self
-                    .cleanup
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
+                view.cleanup = local.take_cleanup();
             }
+            self.local = None;
             if let Err(error) = result {
                 return self.finish(Err(error));
             }
@@ -169,7 +144,7 @@ mod tests {
     fn terminal_confirmation_requires_selected_identity_and_setup() {
         let selection = Selection {
             id: "selected".into(),
-            service: Service::Slack,
+            service: browser_continuity::sessions::Service::Slack,
             binding: "setup".into(),
         };
         assert!(

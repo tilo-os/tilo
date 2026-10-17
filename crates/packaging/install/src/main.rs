@@ -6,15 +6,6 @@
 //! launcher, the shell and the app host read — with their payload bytes in
 //! the content store and each tree materialised once from it.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fs;
 use std::io::Read;
 use std::os::unix::process::CommandExt;

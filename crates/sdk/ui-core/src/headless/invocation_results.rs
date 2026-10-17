@@ -128,6 +128,7 @@ impl FrameHarness {
     /// Retain outcomes from subsequent explicit scenario invocations. Inputs and
     /// confirmation phrases are excluded; returned data is retained only on request.
     pub fn retain_invocation_results(&mut self) {
+        self.invalidate_local();
         self.invocation_results = Some(InvocationResults::new(self.author.0.clone()));
     }
     /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order.

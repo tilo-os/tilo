@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
     if !native_retained::enter_owned_journey(
-        "setup::journey::prepared_media::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission",
+        "setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission",
     ) {
         return;
     }

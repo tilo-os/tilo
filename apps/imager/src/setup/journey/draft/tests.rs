@@ -239,15 +239,16 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
     let DraftStatus::Ready(initial) = store.review().unwrap() else {
         panic!("missing current draft");
     };
-    let first = Receipt {
-        schema: 1,
-        filename: format!("{}.sealed", uuid::Uuid::new_v4()),
-        sealed_bytes: 256,
-        ciphertext_sha256: [1; 32],
-        binding: pending.pointer.operation,
-        group: prepared.public_key(),
-        accounts: 1,
-    };
+    let first: Receipt = serde_json::from_value(serde_json::json!({
+        "schema": 1,
+        "filename": format!("{}.sealed", uuid::Uuid::new_v4()),
+        "sealed_bytes": 256,
+        "ciphertext_sha256": [1; 32],
+        "binding": pending.pointer.operation,
+        "group": prepared.public_key(),
+        "accounts": 1,
+    }))
+    .unwrap();
     store
         .record_account_checkpoint(&first, initial.account_checkpoint())
         .unwrap();
@@ -255,12 +256,11 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
         panic!("missing account checkpoint");
     };
     assert_eq!(before_update.account_checkpoint(), Some(&first));
-    let newer = Receipt {
-        filename: format!("{}.sealed", uuid::Uuid::new_v4()),
-        ciphertext_sha256: [2; 32],
-        accounts: 0,
-        ..first.clone()
-    };
+    let mut fields = serde_json::to_value(&first).unwrap();
+    fields["filename"] = serde_json::json!(format!("{}.sealed", uuid::Uuid::new_v4()));
+    fields["ciphertext_sha256"] = serde_json::json!([2; 32]);
+    fields["accounts"] = serde_json::json!(0);
+    let newer: Receipt = serde_json::from_value(fields).unwrap();
     store
         .record_account_checkpoint(&newer, before_update.account_checkpoint())
         .unwrap();
@@ -281,11 +281,10 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
         io::ErrorKind::WouldBlock
     );
     assert!(!invoked.get());
-    let stale = Receipt {
-        filename: format!("{}.sealed", uuid::Uuid::new_v4()),
-        ciphertext_sha256: [3; 32],
-        ..first
-    };
+    let mut fields = serde_json::to_value(&first).unwrap();
+    fields["filename"] = serde_json::json!(format!("{}.sealed", uuid::Uuid::new_v4()));
+    fields["ciphertext_sha256"] = serde_json::json!([3; 32]);
+    let stale: Receipt = serde_json::from_value(fields).unwrap();
     assert!(
         store
             .record_account_checkpoint(&stale, before_update.account_checkpoint())
@@ -422,7 +421,7 @@ fn committed_account_exclusion_reopens_same_identity_without_declined_checkpoint
             b"original chosen preparation password",
         )
         .unwrap();
-        assert_eq!(receipt.accounts, 2);
+        assert_eq!(receipt.accounts(), 2);
         let DraftStatus::Ready(inventory_preparation) = store.review().unwrap() else {
             panic!("missing inventory preparation")
         };
@@ -434,7 +433,7 @@ fn committed_account_exclusion_reopens_same_identity_without_declined_checkpoint
         let DraftStatus::Ready(before) = store.review().unwrap() else {
             panic!("missing preparation")
         };
-        let encrypted = fs::read(account_root.join(&receipt.filename)).unwrap();
+        let encrypted = fs::read(account_root.join(receipt.filename())).unwrap();
         let key = identity.public_key();
         let mut declined = choices();
         if fresh {
@@ -483,7 +482,7 @@ fn committed_account_exclusion_reopens_same_identity_without_declined_checkpoint
         assert_eq!(legacy_ready.resume().unwrap().public_key(), key);
         assert_eq!(fs::read(source_vault).unwrap(), original_source);
         assert_eq!(
-            fs::read(account_root.join(&receipt.filename)).unwrap(),
+            fs::read(account_root.join(receipt.filename())).unwrap(),
             encrypted
         );
     }

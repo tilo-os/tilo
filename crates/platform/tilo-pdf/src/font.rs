@@ -530,7 +530,6 @@ fn subset_tag(source: &BundledFace, used: &UsedFont) -> String {
 }
 
 #[allow(
-    clippy::cast_precision_loss,
     clippy::too_many_lines,
     reason = "font metrics are small integers; one pass writing the font's five objects in order"
 )]

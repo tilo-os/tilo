@@ -7,6 +7,7 @@
 //   read  <path>                       read it, print OK/ERR
 //   elf <path>                         read the ELF magic bytes
 //   readdir <path>                     list it, print OK/ERR
+//   rename <from> <to>                 rename(2) it, print RENAMED/ERR
 //   env   <name>                       print the variable's value
 //   envall                             print every variable name it has
 //
@@ -73,6 +74,10 @@ fn main() {
             }
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
         },
+        Some("rename") => match std::fs::rename(&args[1], &args[2]) {
+            Ok(()) => writeln!(out, "RENAMED {} {}", &args[1], &args[2]).unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
         Some("env") => {
             let v = std::env::var(&args[1]).unwrap_or_else(|_| "<unset>".into());
             writeln!(out, "ENV {}={}", &args[1], v).unwrap()
@@ -102,6 +107,7 @@ impl KindStr for std::io::Error {
         match self.raw_os_error() {
             Some(libc_enoent) if libc_enoent == 2 => "ENOENT".into(),
             Some(13) => "EACCES".into(),
+            Some(16) => "EBUSY".into(),
             Some(30) => "EROFS".into(),
             Some(other) => format!("errno{other}"),
             None => format!("{:?}", self.kind()),

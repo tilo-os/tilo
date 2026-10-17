@@ -35,14 +35,24 @@ the host's CPU and memory are read from `/proc` over its whole process tree
 (the relay and the Automerge worker processes it starts, proportional set
 size so shared pages count once), with the busiest thread's share.
 
+Each report also says where the host's time went (`timings`, from the relay's
+`tilo_relay::timing` target, which the bench's host enables): per newcomer the
+wait for a replay slot, its capture, preparation, boundary, catch-up, cleanup
+and how long it held the slot, by arrival tenth; per commit its wait and
+durability; per kind of change (member and host checkpoints and deltas, and
+which channel governance a member's checkpoint carries) its owner turn and
+publication; and per second the room owner's queue, transaction and
+publication time, its replay turns by kind, room lock waits and membership
+reloads. An owner whose turns add up to 1000 ms in a second is saturated.
+
 `tools/perf/room_capacity.py sweep` runs the plan below one run after another
 on one runner, and `summarize` derives the per-guest figures and prices them
-with `[room_node.*]` of `tools/perf/prices.toml`. The **Perf / room host
-capacity** workflow (`.forgejo/workflows/perf-room-capacity.yml`, manual
-dispatch) runs both:
+with `[room_node.*]` of `tools/perf/prices.toml`. The `perf-room-capacity`
+check in `t.toml` (on request only) runs both:
 
 ```sh
-fgj actions workflow run perf-room-capacity.yml -R tilo/tilo -r <branch> -f plan=full
+t dispatch perf-room-capacity --ref <branch> --input plan=full
+t outputs perf-room-capacity
 ```
 
 Every run uses production's allocator setting (`MALLOC_ARENA_MAX=2`, which the

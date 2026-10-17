@@ -1,28 +1,22 @@
 //! Inventory storage derived only from the acknowledged preparation custody.
 use super::draft::{DraftStatus, DraftStore, ReadyDraft};
-use crate::setup::{
-    home_capture::BackingWitness,
-    migration::{PinnedDirectory, changed},
-    migration_durability,
+#[cfg(all(test, feature = "native-capture-qualification"))]
+use crate::setup::migration::PinnedDirectory;
+use imager_backend::{
+    migration::changed,
     migration_review::{InventoryScratch, InventoryScratchCustody},
     prepared_identity::PreparedIdentity,
 };
-use std::{io, os::fd::AsRawFd, sync::Arc};
-
-const RESERVE: u64 = 256 * 1024 * 1024;
+use std::{io, sync::Arc};
 
 struct PreparationCustody {
     prepared: Arc<PreparedIdentity>,
     ready: ReadyDraft,
-    backing: BackingWitness,
-    directory: Arc<PinnedDirectory>,
 }
 impl InventoryScratchCustody for PreparationCustody {
     fn check(&self) -> io::Result<()> {
         let _current = self.ready.acquire_preparation_current()?;
-        self.prepared.metadata()?;
-        self.directory.validate_destination()?;
-        self.backing.validate_directory(&self.directory.file)
+        self.prepared.metadata().map(|_| ())
     }
 }
 
@@ -41,39 +35,10 @@ pub(super) fn review(prepared: Arc<PreparedIdentity>) -> io::Result<Arc<Inventor
     {
         return Err(changed("Inventory preparation custody differs"));
     }
-    let parent = PinnedDirectory::open_absolute(&operation)?;
-    parent.validate_destination()?;
-    crate::setup::destination_security::check_private_file(&parent.file)?;
-    // Fresh exclusive child, held below the already acknowledged operation.
-    // A failed review preserves this private custody rather than deleting data.
-    let parent_readable = migration_durability::readable_directory(&parent.file)?;
-    let parent_backing = BackingWitness::review(&parent_readable)?;
-    parent_backing.validate_directory(&parent.file)?;
-    let name = format!("inventory-{}", uuid::Uuid::new_v4());
-    let directory = parent.create_child(std::ffi::OsStr::new(&name))?;
-    let readable = migration_durability::readable_directory(&directory.file)?;
-    let backing = BackingWitness::review(&readable)?;
-    let mut capacity: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: writes the complete statvfs for this retained directory descriptor.
-    if unsafe { libc::fstatvfs(readable.as_raw_fd(), &raw mut capacity) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let allowance = capacity
-        .f_bavail
-        .checked_mul(capacity.f_frsize)
-        .and_then(|bytes| bytes.checked_sub(RESERVE))
-        .filter(|bytes| *bytes > 0)
-        .ok_or(io::ErrorKind::StorageFull)?;
-    drop(current);
-    InventoryScratch::review_with_custody(
-        directory.clone(),
-        allowance,
-        Arc::new(PreparationCustody {
-            prepared,
-            ready,
-            backing,
-            directory,
-        }),
+    imager_backend::setup::inventory_storage::review(
+        &operation,
+        Arc::new(PreparationCustody { prepared, ready }),
+        current,
     )
 }
 

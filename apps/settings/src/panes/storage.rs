@@ -5,13 +5,16 @@
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
-    DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot,
+    CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient,
+    SyncStorageSnapshot,
 };
+use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Widget};
 
+use crate::effects::effect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Replies, Shared};
@@ -26,6 +29,53 @@ fn category_label(category: StorageCategory) -> String {
         StorageCategory::Cache => "settings-storage-cat-cache",
         StorageCategory::SyncedFiles => "settings-storage-cat-synced",
     })
+}
+
+/// How much space fetched workspace files may keep on this device: the
+/// daemon's default share of the disk, or a fixed size in gigabytes.
+const CACHE_SIZES: &[&str] = &["Automatic", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"];
+
+/// The bytes `size` (one of [`CACHE_SIZES`]) keeps; `Ok(None)` is the
+/// daemon's default.
+fn cache_budget(size: &str) -> Result<Option<u64>, String> {
+    if size == "Automatic" {
+        return Ok(None);
+    }
+    size.strip_suffix(" GB")
+        .filter(|_| CACHE_SIZES.contains(&size))
+        .and_then(|gigabytes| gigabytes.parse::<u64>().ok())
+        .map(|gigabytes| Some(gigabytes.saturating_mul(1_000_000_000)))
+        .ok_or_else(|| {
+            t_args(
+                "settings-storage-cache-size-unknown",
+                &[("size", size.into())],
+            )
+        })
+}
+
+/// The entry of [`CACHE_SIZES`] for `budget`, if it is one of them.
+fn cache_size(budget: Option<u64>) -> Option<&'static str> {
+    CACHE_SIZES
+        .iter()
+        .copied()
+        .find(|size| cache_budget(size).ok() == Some(budget))
+}
+
+fn cache_size_shown(size: &str) -> String {
+    match size.strip_suffix(" GB") {
+        Some(gigabytes) => t_args(
+            "settings-storage-cache-size-gb",
+            &[("size", gigabytes.into())],
+        ),
+        None => t("settings-storage-cache-size-auto"),
+    }
+}
+
+fn cache_size_from_label(label: &str) -> String {
+    CACHE_SIZES
+        .iter()
+        .find(|size| **size == label || cache_size_shown(size) == label)
+        .map_or_else(|| label.to_string(), |size| (*size).to_string())
 }
 
 /// Reclaiming this device's space, and its storage tools.
@@ -44,6 +94,16 @@ pub enum StorageEffect {
     /// Open Backups.
     #[effect(job)]
     OpenBackups,
+    /// Fetch the workspace files you are likely to open next before you
+    /// open them, or only when opened.
+    #[effect(job, idempotent)]
+    SetPrefetch { on: bool },
+    /// Set how much space fetched workspace files may use on this device.
+    #[effect(job, idempotent)]
+    SetCacheSize {
+        #[param("The space to keep", choices = CACHE_SIZES.iter().copied())]
+        size: String,
+    },
 }
 
 /// Answer `effect` on the area's model.
@@ -116,6 +176,10 @@ pub struct StorageModel {
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
     snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
+    /// The daemon's cache policy, once asked; `None` while unknown.
+    cache_policy: Option<CachePolicy>,
+    /// The policy being read, or changed by the effect named.
+    policy_result: Option<PolicyAnswer>,
     replies: Replies,
     changed: bool,
 }
@@ -146,6 +210,8 @@ impl StorageModel {
             sync_busy: false,
             sync_result: None,
             snapshot_result: None,
+            cache_policy: None,
+            policy_result: None,
             replies: Replies::default(),
             changed: false,
         }
@@ -163,6 +229,37 @@ impl StorageModel {
             self.sync_message = Some(t("settings-storage-loading"));
         }
         self.snapshot_result = Some(receiver);
+        if self.policy_result.is_none() {
+            self.change_policy(None, |_| Ok(()));
+        }
+    }
+
+    /// Ask the daemon for its cache policy and, for the effect `effect`,
+    /// replace it with what `change` makes of it.
+    fn change_policy(
+        &mut self,
+        effect: Option<&'static str>,
+        change: impl FnOnce(&mut CachePolicy) -> Result<(), String> + Send + 'static,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let read_only = effect.is_none();
+        std::thread::spawn(move || {
+            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                .and_then(|mut client| {
+                    let mut policy = client.cache_policy()?;
+                    if read_only {
+                        return Ok(Ok(policy));
+                    }
+                    if let Err(error) = change(&mut policy) {
+                        return Ok(Err(error));
+                    }
+                    client.set_cache_policy(policy).map(Ok)
+                })
+                .map_err(|error| error.to_string())
+                .and_then(|changed| changed);
+            let _ = sender.send(result);
+        });
+        self.policy_result = Some(PolicyAnswer { effect, receiver });
     }
 
     /// Start `effect`; `reply` is told how it ends.
@@ -187,6 +284,20 @@ impl StorageModel {
                 self.replies
                     .finish(id, result.map(|()| t("settings-storage-opened-backups")));
             }
+            StorageEffect::SetPrefetch { on } => {
+                let on = *on;
+                self.change_policy(Some(id), move |policy| {
+                    policy.prefetch = on;
+                    Ok(())
+                });
+            }
+            StorageEffect::SetCacheSize { size } => match cache_budget(size) {
+                Ok(budget) => self.change_policy(Some(id), move |policy| {
+                    policy.budget_bytes = budget;
+                    Ok(())
+                }),
+                Err(error) => self.replies.finish(id, Err(error)),
+            },
         }
     }
 
@@ -248,6 +359,7 @@ impl StorageModel {
         crate::widgets::cards(vec![
             self.overview_card(),
             self.synced_card(),
+            self.cache_card(),
             self.apps_card(),
             self.cleanup_card(),
             self.tools_card(),
@@ -360,6 +472,54 @@ impl StorageModel {
                 )]),
             )
         }
+    }
+
+    /// Prediction and the space fetched workspace files may use.
+    fn cache_card(&self) -> SettingsSection {
+        let prefetch_label = t("settings-storage-prefetch");
+        let size_label = t("settings-storage-cache-size");
+        let Some(policy) = self.cache_policy else {
+            let unavailable = t("settings-storage-unavailable");
+            return card(
+                &t("settings-storage-cache-card"),
+                rows(vec![
+                    value_row(&prefetch_label, &unavailable),
+                    value_row(&size_label, &unavailable),
+                ]),
+            );
+        };
+        let size_row = match cache_size(policy.budget_bytes) {
+            Some(size) => self
+                .cx
+                .row(size_label)
+                .id("storage.cache-size")
+                .choice_effect(
+                    CACHE_SIZES.iter().map(|size| cache_size_shown(size)),
+                    &LocalState::new(cache_size_shown(size)),
+                    effect(StorageEffect::SET_CACHE_SIZE)
+                        .map(|shown: String| cache_size_from_label(&shown)),
+                ),
+            // A size set some other way is shown, not rounded to a choice.
+            None => value_row(
+                &size_label,
+                &ui::format::bytes_si(policy.budget_bytes.unwrap_or_default()),
+            ),
+        };
+        card(
+            &t("settings-storage-cache-card"),
+            rows(vec![
+                self.cx
+                    .row(prefetch_label)
+                    .described(t("settings-storage-prefetch-desc"))
+                    .id("storage.prefetch")
+                    .toggle_effect(
+                        &LocalState::new(policy.prefetch),
+                        effect(StorageEffect::SET_PREFETCH),
+                    ),
+                size_row,
+                note(&t("settings-storage-cache-caption")),
+            ]),
+        )
     }
 
     fn apps_card(&self) -> SettingsSection {
@@ -537,8 +697,10 @@ impl PaneModel for StorageModel {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        let policy_changed = self.poll_policy();
         let finished = (waiting.0 && self.snapshot_result.is_none())
-            || (waiting.1 && self.sync_result.is_none());
+            || (waiting.1 && self.sync_result.is_none())
+            || policy_changed;
         std::mem::take(&mut self.changed) || finished
     }
 
@@ -547,7 +709,52 @@ impl PaneModel for StorageModel {
     }
 
     fn busy(&self) -> bool {
-        self.sync_busy || self.snapshot_result.is_some()
+        self.sync_busy || self.snapshot_result.is_some() || self.policy_result.is_some()
+    }
+}
+
+/// The daemon's answer about its cache policy, for the effect that asked.
+struct PolicyAnswer {
+    effect: Option<&'static str>,
+    receiver: std::sync::mpsc::Receiver<Result<CachePolicy, String>>,
+}
+
+impl StorageModel {
+    /// Take in the cache policy's answer, if it came; whether it did.
+    fn poll_policy(&mut self) -> bool {
+        let Some(answer) = &self.policy_result else {
+            return false;
+        };
+        let result = match answer.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(t("settings-storage-service-ended"))
+            }
+        };
+        let effect = answer.effect;
+        self.policy_result = None;
+        match result {
+            Ok(policy) => {
+                self.cache_policy = Some(policy);
+                if let Some(effect) = effect {
+                    self.replies
+                        .finish(effect, Ok(t("settings-storage-cache-saved")));
+                }
+            }
+            Err(error) => {
+                if let Some(effect) = effect {
+                    self.replies.finish(
+                        effect,
+                        Err(t_args(
+                            "settings-storage-cache-failed",
+                            &[("error", error.into())],
+                        )),
+                    );
+                }
+            }
+        }
+        true
     }
 }
 
@@ -614,5 +821,25 @@ mod tests {
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].identity, "clean");
         }
+    }
+
+    /// Every cache size an agent may choose maps to a budget the daemon
+    /// accepts and back, shown or by id; anything else is refused.
+    #[test]
+    fn cache_sizes_round_trip_and_stay_above_the_daemons_minimum() {
+        assert_eq!(cache_budget("Automatic"), Ok(None));
+        assert_eq!(cache_budget("25 GB"), Ok(Some(25_000_000_000)));
+        for size in CACHE_SIZES {
+            let budget = cache_budget(size).unwrap();
+            assert!(
+                budget.is_none_or(|bytes| bytes >= runtime_fs::storage::MIN_CACHE_BUDGET_BYTES)
+            );
+            assert_eq!(cache_size(budget), Some(*size));
+            assert_eq!(cache_size_from_label(&cache_size_shown(size)), *size);
+            assert_eq!(cache_size_from_label(size), *size);
+        }
+        assert!(cache_budget("7 GB").is_err());
+        assert!(cache_budget("lots").is_err());
+        assert_eq!(cache_size(Some(123)), None);
     }
 }

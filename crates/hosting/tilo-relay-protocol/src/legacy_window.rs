@@ -22,6 +22,16 @@
 //! A member that may drive the window sends [`InputRequest`]s on the HTTPS
 //! route [`INPUT_ROUTE`]; the host forwards each event to the session as
 //! `RemoteInput` of its own device, the viewer the session granted.
+//!
+//! A session picks the stream's codec from what its viewers advertised they
+//! decode, and the host is the viewer for every browser member. Each page
+//! says which [`VIDEO_CODECS`] its `WebCodecs` decodes in a [`CodecsRequest`]
+//! on [`CODECS_ROUTE`]; the host advertises to the room's sessions what
+//! every member currently in the live plane decodes, a member that never
+//! said counting as [`H264`] only. So a session that cannot encode H.264
+//! (no hardware encoder, no codec pack) still streams [`VP9`] or [`AV1`]
+//! when every member takes it, and H.264 stays the choice whenever the
+//! session can encode it.
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +68,16 @@ pub const INPUT_ROUTE: &str = "/live/legacy-input";
 pub const MAX_INPUT_EVENTS: usize = 64;
 /// Largest pasted text one event carries.
 pub const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
+/// Largest committed input-method text one event carries: the session's
+/// `MAX_REMOTE_TEXT_BYTES`, so the host never forwards text its input
+/// firewall refuses.
+pub const MAX_TEXT_BYTES: usize = 4096;
+/// Route (below [`crate::web::API_PREFIX`]) a member says what it decodes on.
+pub const CODECS_ROUTE: &str = "/live/legacy-codecs";
+/// Labels one [`CodecsRequest`] may carry.
+pub const MAX_CODEC_LABELS: usize = 8;
+/// Longest label one [`CodecsRequest`] may carry.
+pub const MAX_CODEC_LABEL_BYTES: usize = 32;
 
 /// One input event for a legacy window: the session's remote-input
 /// vocabulary (`RemoteInput::event`), variant for variant and in its order,
@@ -121,6 +141,14 @@ pub enum InputEvent {
     /// The viewer closed the window: the session asks it to close, as a
     /// person's close of its tab does.
     Close,
+    /// Text the viewer's input method committed (a composed character, a
+    /// dictated phrase, an emoji): the session delivers it into the focused
+    /// field the way an input method does, not as key presses. Appended
+    /// after [`Self::Close`] because postcard encodes the variant index.
+    Text {
+        /// Non-empty, at most [`MAX_TEXT_BYTES`].
+        text: String,
+    },
 }
 
 impl InputEvent {
@@ -140,6 +168,7 @@ impl InputEvent {
             Self::PointerMotion { x, y } => x.is_finite() && y.is_finite(),
             Self::PointerAxis { dx, dy } => dx.is_finite() && dy.is_finite(),
             Self::ClipboardText { text } => text.len() <= MAX_CLIPBOARD_BYTES,
+            Self::Text { text } => !text.is_empty() && text.len() <= MAX_TEXT_BYTES,
             _ => true,
         }
     }
@@ -166,6 +195,36 @@ impl InputRequest {
     }
 }
 
+/// What a member sends on [`CODECS_ROUTE`] (postcard): the video codecs its
+/// page decodes, as `SurfaceStreamStart` labels. Labels outside
+/// [`VIDEO_CODECS`] are ignored, so a newer page may name more.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodecsRequest {
+    /// The room's workspace.
+    pub workspace_id: u64,
+    /// The codecs the page decodes.
+    pub decode: Vec<String>,
+}
+
+impl CodecsRequest {
+    /// Whether the request stays within its bounds.
+    pub fn valid(&self) -> bool {
+        self.decode.len() <= MAX_CODEC_LABELS
+            && self
+                .decode
+                .iter()
+                .all(|label| label.len() <= MAX_CODEC_LABEL_BYTES)
+    }
+
+    /// The [`VIDEO_CODECS`] it names, in that order.
+    pub fn video_codecs(&self) -> Vec<&'static str> {
+        VIDEO_CODECS
+            .into_iter()
+            .filter(|codec| self.decode.iter().any(|label| label == codec))
+            .collect()
+    }
+}
+
 /// One legacy window stream, as the index and each group's start name it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,7 +233,7 @@ pub struct Stream {
     pub surface: String,
     /// Desktop app id of the window.
     pub app: String,
-    /// `SurfaceStreamStart` codec label: [`H264`] or [`PAINT`].
+    /// `SurfaceStreamStart` codec label: one of [`VIDEO_CODECS`], or [`PAINT`].
     pub codec: String,
     /// Picture width the session announced, pixels.
     pub width: u32,
@@ -185,7 +244,8 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Whether metadata names the canonical H.264 record with bounded dimensions.
+    /// Whether metadata names the canonical record of a bridged codec with
+    /// bounded dimensions.
     pub fn valid(&self) -> bool {
         self.surface.len() == 16
             && self
@@ -417,8 +477,17 @@ pub fn chunks(
         .collect()
 }
 
-/// H.264 video, decoded by the page.
+/// H.264 video, Annex B access units. Every browser decodes it, and a page
+/// that never said what it decodes is assumed to decode only this.
 pub const H264: &str = "h264";
+/// VP9 video, one frame (or superframe) per encoded frame. Royalty-free and
+/// always encodable in software, so a session without an H.264 encoder
+/// still has a codec browsers decode.
+pub const VP9: &str = "vp9";
+/// AV1 video, one temporal unit of OBUs with size fields per encoded frame.
+pub const AV1: &str = "av1";
+/// The video codecs the host bridges to browser members.
+pub const VIDEO_CODECS: [&str; 3] = [H264, VP9, AV1];
 /// The paint stream (`tilo_paint_stream::wire::CODEC`): a page as a display
 /// list the page draws itself. Each frame is one postcard `Payload`, whose
 /// first byte is its variant; `0` is a whole frame a member can start from.
@@ -426,16 +495,84 @@ pub const PAINT: &str = "tilo-paint";
 
 /// Whether the host re-publishes streams with this codec to browser members.
 pub fn bridged_codec(codec: &str) -> bool {
-    codec == H264 || codec == PAINT
+    codec == PAINT || VIDEO_CODECS.contains(&codec)
 }
 
 /// Whether `frame` of a `codec` stream begins a group a member can start from.
 pub fn keyframe(codec: &str, frame: &[u8]) -> bool {
-    if codec == PAINT {
-        frame.first() == Some(&0)
-    } else {
-        h264_keyframe(frame)
+    match codec {
+        PAINT => frame.first() == Some(&0),
+        VP9 => vp9_keyframe(frame),
+        AV1 => av1_keyframe(frame),
+        _ => h264_keyframe(frame),
     }
+}
+
+/// Whether a VP9 frame is a key frame: its uncompressed header has the frame
+/// marker `0b10`, does not repeat an earlier frame (`show_existing_frame`)
+/// and has `frame_type` 0. A superframe's first frame decides.
+pub fn vp9_keyframe(frame: &[u8]) -> bool {
+    let Some(&first) = frame.first() else {
+        return false;
+    };
+    if first >> 6 != 0b10 {
+        return false;
+    }
+    // Both profile bits set is profile 3, which has a reserved zero bit
+    // before `show_existing_frame`.
+    let (show_existing, frame_type) = if first & 0b0011_0000 == 0b0011_0000 {
+        (0b0100, 0b0010)
+    } else {
+        (0b1000, 0b0100)
+    };
+    first & (show_existing | frame_type) == 0
+}
+
+/// Whether an AV1 temporal unit (OBUs with size fields) carries a sequence
+/// header: encoders send one with every key frame, and a decoder cannot
+/// start without one.
+pub fn av1_keyframe(temporal_unit: &[u8]) -> bool {
+    const OBU_SEQUENCE_HEADER: u8 = 1;
+    let mut at = 0_usize;
+    while let Some(&header) = temporal_unit.get(at) {
+        if (header >> 3) & 0x0f == OBU_SEQUENCE_HEADER {
+            return true;
+        }
+        if (header >> 1) & 1 == 0 {
+            // Without a size field the rest of the unit is this one OBU.
+            return false;
+        }
+        let Some(size_at) = at
+            .checked_add(1)
+            .and_then(|after| after.checked_add(usize::from((header >> 2) & 1)))
+        else {
+            return false;
+        };
+        let Some((size, used)) = temporal_unit.get(size_at..).and_then(leb128) else {
+            return false;
+        };
+        let Some(next) = size_at
+            .checked_add(used)
+            .and_then(|start| start.checked_add(size))
+        else {
+            return false;
+        };
+        at = next;
+    }
+    false
+}
+
+/// An unsigned LEB128 value of at most eight bytes, and the bytes it took.
+fn leb128(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut value = 0_u64;
+    for (index, byte) in bytes.iter().take(8).enumerate() {
+        let shift = u32::try_from(index).ok()?.checked_mul(7)?;
+        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((usize::try_from(value).ok()?, index.checked_add(1)?));
+        }
+    }
+    None
 }
 
 /// Whether an H.264 Annex B access unit holds an IDR slice.
@@ -575,7 +712,7 @@ mod tests {
     /// variants it has share these encodings (`shell::network::streaming`).
     #[test]
     fn input_events_keep_the_sessions_encoding() {
-        let cases: [(InputEvent, &str); 4] = [
+        let cases: [(InputEvent, &str); 6] = [
             (
                 InputEvent::PointerMotion { x: 1.5, y: 2.0 },
                 "00000000000000f83f0000000000000040",
@@ -601,6 +738,14 @@ mod tests {
                     focused: true,
                 },
                 "050701",
+            ),
+            (InputEvent::Close, "08"),
+            // The session's `Text` is its tenth variant, after `Close`.
+            (
+                InputEvent::Text {
+                    text: "日本".into(),
+                },
+                "0906e697a5e69cac",
             ),
         ];
         for (event, bytes) in cases {
@@ -632,6 +777,15 @@ mod tests {
             .valid()
         );
         assert!(
+            request(vec![InputEvent::Text {
+                text: "é".repeat(MAX_TEXT_BYTES / 2)
+            }])
+            .valid()
+        );
+        for text in [String::new(), "x".repeat(MAX_TEXT_BYTES + 1)] {
+            assert!(!request(vec![InputEvent::Text { text }]).valid());
+        }
+        assert!(
             !request(vec![
                 InputEvent::PointerLeave { surface: 1 };
                 MAX_INPUT_EVENTS + 1
@@ -647,13 +801,76 @@ mod tests {
     #[test]
     fn paint_streams_are_bridged_and_key_on_whole_frames() {
         assert!(Stream::new(7, "so.tilo.browser", PAINT, 1280, 720).valid());
-        assert!(!Stream::new(7, "so.tilo.browser", "vp9", 1280, 720).valid());
+        assert!(!Stream::new(7, "so.tilo.browser", "hevc-main10", 1280, 720).valid());
         assert!(keyframe(PAINT, &[0, 1, 2]));
         assert!(!keyframe(PAINT, &[1, 0]));
         assert!(!keyframe(PAINT, &[]));
         // An IDR-looking paint payload is not a keyframe, nor the reverse.
         assert!(!keyframe(PAINT, &[2, 0, 0, 1, 0x65]));
         assert!(keyframe(H264, &[0, 0, 1, 0x65]));
+    }
+
+    /// The first bytes of frames libvpx (profile 0, realtime) and SVT-AV1
+    /// (low delay) encoded from a test pattern: a key frame and the inter
+    /// frame after it.
+    const VP9_KEY: [u8; 16] = [
+        0x82, 0x49, 0x83, 0x42, 0x00, 0x00, 0xf0, 0x00, 0xf6, 0x06, 0x38, 0x24, 0x1c, 0x18, 0x42,
+        0x00,
+    ];
+    const VP9_INTER: [u8; 17] = [
+        0x86, 0x00, 0x40, 0x92, 0x9c, 0x28, 0x49, 0x40, 0x00, 0x03, 0x70, 0x00, 0x00, 0x09, 0xd0,
+        0x28, 0x00,
+    ];
+    const AV1_KEY: [u8; 20] = [
+        0x12, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x04, 0x95, 0x7f, 0xfc, 0x4a, 0xf9, 0x00, 0x40,
+        0x32, 0xfc, 0x09, 0x10, 0x00,
+    ];
+    const AV1_INTER: [u8; 20] = [
+        0x12, 0x00, 0x32, 0x10, 0x30, 0x02, 0x00, 0x00, 0x00, 0x00, 0x23, 0x18, 0x00, 0x00, 0x04,
+        0x7c, 0x02, 0x00, 0x92, 0xd0,
+    ];
+
+    #[test]
+    fn vp9_and_av1_streams_are_bridged_and_key_on_their_key_frames() {
+        for codec in [VP9, AV1] {
+            assert!(bridged_codec(codec));
+            assert!(Stream::new(7, "org.chromium.Chromium", codec, 1280, 720).valid());
+        }
+        assert!(keyframe(VP9, &VP9_KEY));
+        assert!(!keyframe(VP9, &VP9_INTER));
+        assert!(keyframe(AV1, &AV1_KEY));
+        assert!(!keyframe(AV1, &AV1_INTER));
+        // Each codec reads only its own header.
+        assert!(!keyframe(H264, &VP9_KEY));
+        assert!(!keyframe(VP9, &[0, 0, 1, 0x65]));
+        assert!(!keyframe(AV1, &[0, 0, 1, 0x65]));
+        assert!(!keyframe(VP9, &[]));
+        assert!(!keyframe(AV1, &[]));
+        // A repeated frame is no key frame; profile 3's reserved bit shifts
+        // the flags.
+        assert!(!vp9_keyframe(&[0b1000_1000]));
+        assert!(vp9_keyframe(&[0b1011_0000]));
+        assert!(!vp9_keyframe(&[0b1011_0100]));
+        assert!(!vp9_keyframe(&[0b1011_0010]));
+        // An AV1 unit whose sizes run past its end is not one.
+        assert!(!av1_keyframe(&[0x12, 0xff, 0xff]));
+        assert!(!av1_keyframe(&[0x12, 0x05, 0x0a]));
+    }
+
+    #[test]
+    fn codec_requests_are_bounded_and_name_only_bridged_video() {
+        let request = |decode: &[&str]| CodecsRequest {
+            workspace_id: 1,
+            decode: decode.iter().map(|label| (*label).to_owned()).collect(),
+        };
+        assert_eq!(
+            request(&["av1", "hevc", "h264", "vp9", "tilo-paint"]).video_codecs(),
+            [H264, VP9, AV1]
+        );
+        assert!(request(&[]).video_codecs().is_empty());
+        assert!(request(&["h264"; MAX_CODEC_LABELS]).valid());
+        assert!(!request(&["h264"; MAX_CODEC_LABELS + 1]).valid());
+        assert!(!request(&[&"x".repeat(MAX_CODEC_LABEL_BYTES + 1)]).valid());
     }
 
     #[test]

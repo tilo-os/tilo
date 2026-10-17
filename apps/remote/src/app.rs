@@ -964,8 +964,7 @@ impl RemoteApp {
     /// The time "last used" reads against, in milliseconds since the Unix
     /// epoch.
     fn now_ms(&self) -> i64 {
-        self.now_override
-            .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
+        self.now_override.unwrap_or_else(ui::time::unix_now_ms_i64)
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a

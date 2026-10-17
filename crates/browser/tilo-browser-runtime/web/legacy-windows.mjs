@@ -1,7 +1,9 @@
 /**
  * Other members' legacy (non-Tilo) windows on the mounted desktop. A session
  * streams each legacy window it shares with the room's host (a browser, an
- * office suite: anything that is not a Tilo app) as H.264 video; the host
+ * office suite: anything that is not a Tilo app) as video, in a codec every
+ * member's page decodes (H.264, VP9 or AV1: each page tells the host which,
+ * `decodableCodecs`, and a page that never did counts as H.264 only); the host
  * re-publishes those streams on live record tracks in the session device's
  * namespace (`tilo_relay_protocol::legacy_window`). This layer reads every
  * member's legacy-window index, opens a desktop window for each listed
@@ -11,7 +13,12 @@
  *
  * A member the host lets drive the window (it probes once per stream) sends
  * pointer, wheel, keys and pasted text on its canvas to the host, which
- * forwards them to the session; anyone else's canvas takes no input.
+ * forwards them to the session; anyone else's canvas takes no input. The
+ * keyboard of a window it drives is a visually hidden text area beside the
+ * canvas (a canvas is not editable, so no input method composes on it):
+ * plain keys go out as keys, and what an input method, dictation or an emoji
+ * picker commits there goes out once as text, never as the keys that
+ * composed it.
  *
  * A stream whose codec is `tilo-paint` is a page the session's browser
  * shares as a display list (`tilo_paint_stream::wire`): its reassembled
@@ -27,7 +34,29 @@
 export const LEGACY_APP = 'so.tilo.legacy-window';
 /** Codec of a page shared as a display list rather than as video. */
 export const PAINT_CODEC = 'tilo-paint';
-const CODECS = new Set(['h264', PAINT_CODEC]);
+/**
+ * The WebCodecs configuration each video codec of a stream is decoded with
+ * (H.264's profile and level come from the stream's own SPS), and probed
+ * with when the page tells the host what it decodes
+ * (`tilo_relay_protocol::legacy_window::VIDEO_CODECS`).
+ */
+export const VIDEO_DECODER_CONFIGS = Object.freeze({h264: 'avc1.42E01F', vp9: 'vp09.00.10.08', av1: 'av01.0.04M.08'});
+const CODECS = new Set([...Object.keys(VIDEO_DECODER_CONFIGS), PAINT_CODEC]);
+const isVideo = codec => codec !== PAINT_CODEC;
+
+/**
+ * The video codecs this page's WebCodecs decodes, as stream codec labels;
+ * empty without WebCodecs (the page then plays no legacy window at all).
+ */
+export async function decodableCodecs(VideoDecoder = globalThis.VideoDecoder) {
+  if (typeof VideoDecoder?.isConfigSupported !== 'function') return [];
+  const probed = await Promise.all(Object.entries(VIDEO_DECODER_CONFIGS).map(async ([label, codec]) => {
+    try {
+      return (await VideoDecoder.isConfigSupported({codec, optimizeForLatency: true}))?.supported ? label : null;
+    } catch { return null; }
+  }));
+  return probed.filter(Boolean);
+}
 export const INDEX_RECORD = Object.freeze({app: LEGACY_APP, record: '@tilo:legacy-windows'});
 const FRAME_TAG = 0xf1;
 const KIND_INDEX = 1;
@@ -51,6 +80,13 @@ const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 export const INDEX_EXPIRE_MS = 5000;
 /** Decoder backlog past which frames are skipped until the next keyframe. */
 const MAX_DECODE_QUEUE = 6;
+/**
+ * A stream skipping a backlog that then goes quiet this long sends no
+ * keyframe to resume from: a still window. It is subscribed again, and the
+ * group the host replays (its keyframe and every frame since) is decoded
+ * whole, so the window ends on its current picture rather than a stale one.
+ */
+export const RESYNC_QUIET_MS = 500;
 /** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
 const MAX_INPUT_EVENTS = 64;
 // Native input permits 120 offered events per second. A 32-event burst plus
@@ -59,6 +95,9 @@ const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
 const INPUT_EVENTS_PER_SECOND = 80;
 /** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
+/** Committed text one event carries (`legacy_window::MAX_TEXT_BYTES`, the
+ * session's `MAX_REMOTE_TEXT_BYTES`): longer text the session would refuse. */
+export const MAX_TEXT_BYTES = 4096;
 /** Pixels one wheel line scrolls. */
 const LINE_PIXELS = 40;
 const HEX16 = /^[0-9a-f]{16}$/;
@@ -82,7 +121,9 @@ export function decodeFrame(bytes) {
       case KIND_INDEX: {
         const streams = JSON.parse(text.decode(bytes.subarray(2)));
         if (!Array.isArray(streams) || streams.length > MAX_STREAMS) return null;
-        const valid = streams.map(validStream);
+        // A stream in a codec this page does not know (a newer host's) is
+        // left out; the publisher's other windows still show.
+        const valid = streams.filter(stream => !stream || typeof stream !== 'object' || CODECS.has(stream.codec)).map(validStream);
         return valid.every(Boolean) ? {kind: 'index', streams: valid} : null;
       }
       case KIND_START: {
@@ -149,14 +190,28 @@ export function h264CodecString(accessUnit) {
   return 'avc1.42E01F';
 }
 
+/** The WebCodecs codec string a `codec` stream's key frame `data` decodes with. */
+export function decoderCodecString(codec, data) {
+  return codec === 'h264' ? h264CodecString(data) : VIDEO_DECODER_CONFIGS[codec] ?? null;
+}
+
 /**
  * WebCodecs decode of one stream: configured from its first keyframe, frames
  * before a keyframe (or after a backlog) are skipped until the next one.
+ * `catchUp()` decodes the next group whole, however long the queue grows:
+ * a group the host replays (to a new subscription) arrives at once, and only
+ * all of it ends on the window's current picture. `onStall()` is told when
+ * a backlog starts a skip.
+ * `decode(frame, codec)` takes the stream's codec label (H.264 by default);
+ * a stream whose session switched codec reconfigures at its next keyframe.
  */
-export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}}) {
+export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}, onStall = () => {}}) {
   let decoder = null;
   let codec = null;
   let waitKey = true;
+  // false, 'key' (the next keyframe starts the group to catch up on) or
+  // 'group' (decoding that group; the keyframe after it ends it).
+  let catchingUp = false;
   const stats = {decoded: 0, skipped: 0, errors: 0};
   function close() {
     try { if (decoder && decoder.state !== 'closed') decoder.close(); } catch {}
@@ -175,16 +230,23 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
   }
   return {
     stats,
-    decode(frame) {
+    decode(frame, streamCodec = 'h264') {
       if (frame.key) {
-        const next = h264CodecString(frame.data);
+        const next = decoderCodecString(streamCodec, frame.data);
+        if (!next) { stats.skipped++; return false; }
         try {
           if (!decoder || decoder.state === 'closed' || codec !== next) open(next);
         } catch (error) { stats.errors++; onError(error); close(); return false; }
         waitKey = false;
+        catchingUp = catchingUp === 'key' ? 'group' : false;
       }
       if (waitKey || !decoder) { stats.skipped++; return false; }
-      if (decoder.decodeQueueSize > MAX_DECODE_QUEUE) { waitKey = true; stats.skipped++; return false; }
+      if (catchingUp !== 'group' && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+        waitKey = true;
+        stats.skipped++;
+        onStall();
+        return false;
+      }
       try {
         decoder.decode(new EncodedVideoChunk({type: frame.key ? 'key' : 'delta', timestamp: frame.tsUs, data: frame.data}));
         return true;
@@ -196,6 +258,7 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
       }
     },
     reset() { waitKey = true; },
+    catchUp() { catchingUp = 'key'; waitKey = true; },
     close,
   };
 }
@@ -316,7 +379,7 @@ export function createLegacyWindows({
   const streams = new Map(); // `${publisher}:${surface}` -> entry
   const inputSenders = new Map(); // One native rate budget across a publisher's windows.
   const indexed = new Map(); // publisher -> last index time
-  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
+  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0, resyncs: 0};
   let api;
   let unwatch = [];
   let frame;
@@ -346,11 +409,15 @@ export function createLegacyWindows({
     try { entry.unsubscribe(); } catch {}
     entry.decoder?.close();
     entry.canvas?.remove();
+    entry.keyboard?.remove();
   }
   function addStream(publisher, stream) {
     const key = streamKey(publisher, stream);
     const existing = streams.get(key);
-    if (existing) { existing.stream = stream; return; }
+    // A session that switches between video codecs keeps the window; one
+    // that turns video into a painted page (or back) gets a new one.
+    if (existing && isVideo(existing.stream.codec) === isVideo(stream.codec)) { existing.stream = stream; return; }
+    if (existing) removeStream(key);
     const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
     if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
     if (stream.codec === PAINT_CODEC) {
@@ -369,13 +436,26 @@ export function createLegacyWindows({
     canvas.width = stream.width;
     canvas.height = stream.height;
     canvas.style.cssText = 'position:absolute;left:0;top:0;display:none;object-fit:contain;background:#000;transform-origin:0 0;pointer-events:none;outline:none';
-    layer.append(canvas);
-    const entry = {publisher, stream, canvas, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false};
+    // The window's keyboard: where an input method composes for it.
+    const keyboard = doc.createElement('textarea');
+    keyboard.className = 'tilo-legacy-window-keyboard';
+    keyboard.dataset.key = key;
+    keyboard.setAttribute?.('aria-label', windowTitle(stream.app));
+    keyboard.autocomplete = 'off';
+    keyboard.autocapitalize = 'off';
+    keyboard.spellcheck = false;
+    keyboard.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:20px;padding:0;margin:0;border:0;resize:none;overflow:hidden;opacity:0;pointer-events:none;outline:none;transform-origin:0 0';
+    layer.append(canvas, keyboard);
+    const entry = {publisher, stream, canvas, keyboard, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false,
+      stalledAt: undefined, lastChunkAt: now()};
     entry.decoder = createStreamDecoder({
       VideoDecoder, EncodedVideoChunk,
       onFrame: picture => draw(entry, picture),
       onError: report,
+      onStall: () => { entry.stalledAt ??= now(); },
     });
+    // What the host replays to this new subscription arrives at once.
+    entry.decoder.catchUp();
     entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
     bindInput(entry);
     streams.set(key, entry);
@@ -464,18 +544,28 @@ export function createLegacyWindows({
     entry.keys.clear();
     entry.buttons.clear();
     entry.pasteKey = false;
+    entry.composing = false;
+    if (entry.keyboard) entry.keyboard.value = '';
     if (!entry.flushing) void flushInput(entry);
   }
   /** Keys typed on the page go to `entry`'s window. */
   function takeKeyboard(entry) {
-    entry.canvas.focus?.({preventScroll: true});
+    entry.keyboard.focus?.({preventScroll: true});
     if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
   }
+  /** Text an input method committed for the window that holds the keyboard:
+   * one `Text`, refused here when the session would refuse it. */
+  function commitText(entry, text) {
+    if (typeof text !== 'string' || !text || !entry.focused) return;
+    if (new TextEncoder().encode(text).byteLength > MAX_TEXT_BYTES) return;
+    queueInput(entry, {Text: {text}});
+  }
   function bindInput(entry) {
-    const {canvas} = entry;
+    const {canvas, keyboard} = entry;
     entry.input = [];
     entry.focused = false;
     entry.pasteKey = false;
+    entry.composing = false;
     entry.keys = new Set();
     entry.buttons = new Set();
     canvas.tabIndex = -1;
@@ -487,6 +577,7 @@ export function createLegacyWindows({
       return at;
     };
     const on = (type, handler, options) => canvas.addEventListener?.(type, handler, options);
+    const onKeyboard = (type, handler) => keyboard.addEventListener?.(type, handler);
     on('pointerenter', event => { queueInput(entry, {PointerEnter: {surface: target}}); motion(event); });
     on('pointermove', motion);
     on('pointerleave', () => queueInput(entry, {PointerLeave: {surface: target}}));
@@ -547,9 +638,15 @@ export function createLegacyWindows({
       }
     };
     const key = pressed => event => {
+      // An input method's own keystrokes compose; what it commits arrives
+      // once as text (`compositionend`), so they never reach the window.
+      if (entry.composing || event.isComposing || event.keyCode === 229 || event.key === 'Process') return;
       const keysym = evdevKey(event.code, {mac});
       if (!entry.control || keysym === null) return;
       if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      // A release whose press the window never got (the key that ended a
+      // composition) stays here.
+      if (!pressed && !entry.keys.has(keysym) && !MODIFIERS.has(keysym)) return;
       if (!MODIFIERS.has(keysym)) syncModifiers(event);
       // The window repeats a held key only as the browser does: one more
       // press of it. Modifiers do not repeat.
@@ -569,9 +666,27 @@ export function createLegacyWindows({
       if (pressed) entry.keys.add(keysym); else entry.keys.delete(keysym);
       queueInput(entry, {Key: {keysym, pressed, modifiers: 0}});
     };
-    on('keydown', key(true));
-    on('keyup', key(false));
-    on('paste', event => {
+    onKeyboard('keydown', key(true));
+    onKeyboard('keyup', key(false));
+    onKeyboard('compositionstart', () => { if (entry.control) entry.composing = true; });
+    onKeyboard('compositionend', event => {
+      const composed = entry.composing;
+      entry.composing = false;
+      keyboard.value = '';
+      if (composed) commitText(entry, event.data);
+    });
+    // Text committed without a composition (an emoji picker, dictation, a
+    // character no key here maps): plain keys are forwarded and their own
+    // insertion cancelled, so what reaches this is not a key already sent.
+    onKeyboard('beforeinput', event => {
+      if (!entry.control || entry.composing || event.isComposing || event.inputType === 'insertCompositionText') return;
+      event.preventDefault();
+      if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') {
+        commitText(entry, event.data ?? event.dataTransfer?.getData?.('text/plain'));
+      }
+    });
+    onKeyboard('input', () => { if (!entry.composing) keyboard.value = ''; });
+    onKeyboard('paste', event => {
       if (!entry.control) return;
       event.preventDefault();
       const pasted = event.clipboardData?.getData?.('text/plain') ?? '';
@@ -582,7 +697,7 @@ export function createLegacyWindows({
         queueInput(entry, {Key: {keysym: LETTERS.V, pressed: false, modifiers: 0}});
       }
     });
-    on('blur', () => releaseInput(entry));
+    onKeyboard('blur', () => releaseInput(entry));
   }
 
   // ---- Frames -----------------------------------------------------------------
@@ -610,16 +725,17 @@ export function createLegacyWindows({
     stats.frames++;
     if (value.kind === 'start') {
       if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record
-        || value.stream.codec !== entry.stream.codec) return;
+        || isVideo(value.stream.codec) !== isVideo(entry.stream.codec)) return;
       entry.stream = value.stream;
       entry.decoder?.reset();
       entry.reassembler.reset();
     } else if (value.kind === 'chunk') {
+      entry.lastChunkAt = now();
       const encoded = entry.reassembler.push(value);
       if (!encoded) return;
       if (entry.paint) {
         try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
-      } else entry.decoder.decode(encoded);
+      } else if (entry.decoder.decode(encoded, entry.stream.codec) && encoded.key) entry.stalledAt = undefined;
     } else if (value.kind === 'end') {
       entry.decoder?.reset();
       entry.reassembler.reset();
@@ -674,7 +790,7 @@ export function createLegacyWindows({
       const rect = byKey.get(key)?.rect;
       if (!rect) {
         followDesktopFocus(entry, false);
-        if (entry.visible) { releaseInput(entry); entry.canvas.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
+        if (entry.visible) { releaseInput(entry); entry.keyboard.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
       stats.placed++;
@@ -685,6 +801,8 @@ export function createLegacyWindows({
         entry.canvas.style.width = `${(x1 - x0).toFixed(1)}px`;
         entry.canvas.style.height = `${(y1 - y0).toFixed(1)}px`;
         entry.canvas.style.transform = `translate3d(${x0.toFixed(1)}px,${y0.toFixed(1)}px,0)`;
+        // An input method shows its candidates beside the window.
+        entry.keyboard.style.transform = entry.canvas.style.transform;
       }
       const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
@@ -698,7 +816,7 @@ export function createLegacyWindows({
     if (focus === Boolean(entry.desktopFocus)) return;
     entry.desktopFocus = focus;
     if (focus) takeKeyboard(entry);
-    else if (doc.activeElement === entry.canvas) { try { focusDesktop(); } catch (error) { report(error); } }
+    else if (doc.activeElement === entry.keyboard) { try { focusDesktop(); } catch (error) { report(error); } }
   }
   /** Ask the source of each window the person closed to close it. */
   function closeDismissed() {
@@ -722,9 +840,25 @@ export function createLegacyWindows({
       for (const event of events) queueInput(entry, event);
     }
   }
+  /** Subscribe again to each stream whose backlog skip is waiting for a
+   * keyframe that a quiet (still) window will not send (`RESYNC_QUIET_MS`). */
+  function resync() {
+    const t = now();
+    for (const entry of streams.values()) {
+      if (entry.paint || entry.stalledAt === undefined || t - entry.lastChunkAt < RESYNC_QUIET_MS) continue;
+      entry.stalledAt = undefined;
+      entry.reassembler.reset();
+      entry.decoder.catchUp();
+      try { entry.unsubscribe(); } catch {}
+      entry.unsubscribe = api.subscribeMemberRecord(entry.publisher, {app: LEGACY_APP, record: entry.stream.record},
+        bytes => onStreamFrame(entry, bytes));
+      stats.resyncs++;
+    }
+  }
   function tick() {
     frame = undefined;
     if (closed) return;
+    resync();
     closeDismissed();
     forwardPaintInput();
     layout();

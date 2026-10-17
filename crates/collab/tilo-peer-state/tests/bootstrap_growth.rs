@@ -11,11 +11,10 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use tilo_peer_state::{
-    NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room,
-};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 

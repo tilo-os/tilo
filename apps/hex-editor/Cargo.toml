@@ -22,6 +22,7 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true

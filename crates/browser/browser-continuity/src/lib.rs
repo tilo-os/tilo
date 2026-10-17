@@ -6,7 +6,15 @@
 //! The host must bind delivery to its existing identity
 //! and setup authority before interpreting this descriptive plan.
 
+pub mod engine_host;
+pub mod handoff;
+pub mod imported_folders;
+pub mod imports;
+pub mod service_profiles;
+pub mod session_engine;
 pub mod sessions;
+
+pub mod sources;
 
 use std::fmt;
 use std::io::{self, Write};

@@ -24,7 +24,7 @@ class Contracts(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.store = c.Store(self.root, os.getuid())
         paths = [c.HELPER, '/usr/libexec/tilo-firstboot-user',
-                 '/usr/libexec/tilo-firstboot-home-seeds', '/usr/libexec/tilo-firstboot-files.py',
+                 '/usr/libexec/tilo-firstboot-home-seeds', '/usr/libexec/tilo-firstboot-files',
                  '/usr/libexec/tilo-verify-home-consumer-capability',
                  '/usr/libexec/tilo-verify-applications-consumer-capability',
                  '/usr/libexec/tilo-installed-data-consumer.py', '/usr/bin/tar', *c.TOOLS]
@@ -119,6 +119,15 @@ class Contracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.applications(self.store, check=True, runner=self.runner)
             path.write_bytes(data)
+
+    def test_compiled_firstboot_helper_substitution_during_probe_refuses(self):
+        def changed(command):
+            result = self.runner(command)
+            if command[-1] == '--home-consumer-capability':
+                self.store.path('/usr/libexec/tilo-firstboot-files').write_bytes(b'replaced ELF')
+            return result
+        with self.assertRaisesRegex(ValueError, 'Home artifacts changed during probe'):
+            c.home(self.store, check=True, runner=changed)
 
     def test_namespace_redirect_and_mutable_receipt_refuse(self):
         path = self.store.path('/usr/share/tilo/' + c.APPS)

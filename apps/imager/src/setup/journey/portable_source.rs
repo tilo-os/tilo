@@ -3,7 +3,6 @@
 //! for explicit offline continuation; ordinary immutable transfer is unchanged.
 use super::super::{
     flatpak_transfer::{InstalledRef, NativeRunner, portable::PortableFlatpakSource},
-    migration::PinnedDirectory,
     migration_intent::MigrationIntent,
     portable_home_media::HomeSource,
 };
@@ -16,23 +15,11 @@ use std::{
     },
 };
 
-#[cfg(target_os = "linux")]
+#[path = "portable_source/mounted_permission.rs"]
 mod mounted_permission;
 
-#[derive(Clone, Default)]
-pub(super) struct Choices {
-    pub home: bool,
-    pub applications: bool,
-    pub accounts: bool,
-    pub system_refs: Vec<InstalledRef>,
-    pub preparation: Option<Arc<super::super::prepared_identity::PreparedIdentity>>,
-}
-struct SourceGrant {
-    selected: PathBuf,
-    expected: PathBuf,
-    selected_pin: Arc<PinnedDirectory>,
-    expected_pin: Arc<PinnedDirectory>,
-}
+use super::portable_source::Choices;
+use imager_backend::journey_media::SourceGrant;
 #[derive(Clone)]
 struct MountedContext {
     grant: Arc<SourceGrant>,
@@ -49,7 +36,9 @@ struct Reviewed {
 /// Local original-source authority minted only from a completed, matching
 /// directory grant. Neither a document action nor a path creates this token.
 /// Its Copy intent is deliberately separate from Computer's shared-file intent.
-pub(crate) struct OriginalSource {
+use super::portable_source::OriginalSource;
+
+pub(crate) struct NativeOriginalSource {
     grant: Arc<SourceGrant>,
     choices: Choices,
     intent: Mutex<Option<MigrationIntent>>,
@@ -57,34 +46,21 @@ pub(crate) struct OriginalSource {
 impl OriginalSource {
     #[cfg(test)]
     pub(crate) fn granted_folder_fixture(home: &Path) -> Arc<Self> {
-        let (selected_pin, expected_pin) = validate_grant(home, home)
+        let grant = validate_grant(home, home)
             .unwrap_or_else(|_| panic!("fixture requires matching held home pins"));
-        Arc::new(Self {
-            grant: Arc::new(SourceGrant {
-                selected: home.into(),
-                expected: home.into(),
-                selected_pin,
-                expected_pin,
-            }),
+        Arc::new(Self::from_native(NativeOriginalSource {
+            grant,
             choices: Choices {
                 home: true,
                 ..Choices::default()
             },
             intent: std::sync::Mutex::new(None),
-        })
+        }))
     }
     fn validate(&self) -> std::io::Result<()> {
-        self.grant.selected_pin.validate()?;
-        self.grant.expected_pin.validate()?;
-        if !super::super::nofollow::same_directory_identity(
-            &self.grant.selected_pin.identity,
-            &self.grant.expected_pin.identity,
-        ) {
-            return Err(std::io::ErrorKind::PermissionDenied.into());
-        }
-        Ok(())
+        self.grant.validate()
     }
-    pub(crate) fn applications_only(&self) -> bool {
+    fn native_applications_only(&self) -> bool {
         !self.choices.home && self.choices.applications && !self.choices.system_refs.is_empty()
     }
     pub(crate) fn capture_applications_intent(
@@ -162,7 +138,7 @@ impl OriginalSource {
         ];
         #[cfg(test)]
         let result = MigrationIntent::capture_using(
-            &self.grant.selected,
+            self.grant.selected(),
             directory,
             categories,
             self.choices.system_refs.clone(),
@@ -173,7 +149,7 @@ impl OriginalSource {
         let result = {
             let _ = capture;
             MigrationIntent::capture_with_policy(
-                &self.grant.selected,
+                self.grant.selected(),
                 directory,
                 categories,
                 self.choices.system_refs.clone(),
@@ -195,7 +171,6 @@ enum ReviewFailure {
     SourceUnavailable,
     UnsupportedMetadata,
     MountedSource {
-        #[cfg(target_os = "linux")]
         locations: Option<Arc<super::super::migration_review::MountedHomeLocations>>,
     },
     Applications,
@@ -205,7 +180,6 @@ impl ReviewFailure {
     fn home(error: std::io::Error) -> Self {
         if super::super::migration_review::nested_home_mount(&error) {
             return Self::MountedSource {
-                #[cfg(target_os = "linux")]
                 locations: super::super::migration_review::mounted_home_locations(&error),
             };
         }
@@ -231,18 +205,15 @@ impl ReviewFailure {
 }
 
 #[derive(Default)]
-pub(super) struct Selection {
+pub(crate) struct Selection {
     picker: Option<ui::PortalChannel>,
     expected: Option<(PathBuf, Choices)>,
     worker: Option<Receiver<(Result<Reviewed, ReviewFailure>, Option<MountedContext>)>>,
     cancel: Option<Arc<AtomicBool>>,
     reviewed: Option<Reviewed>,
     state: &'static str,
-    #[cfg(target_os = "linux")]
     mounted: Option<Arc<super::super::migration_review::MountedHomeLocations>>,
-    #[cfg(target_os = "linux")]
     mounted_permission: Option<mounted_permission::Controller>,
-    #[cfg(target_os = "linux")]
     retire_mounted_after_exit: bool,
 }
 impl Selection {
@@ -294,7 +265,6 @@ impl Selection {
         let (grant, choices) = if let Some(reviewed) = &self.reviewed {
             (reviewed.grant.clone(), reviewed.choices.clone())
         } else {
-            #[cfg(target_os = "linux")]
             {
                 let context = self
                     .mounted_permission
@@ -303,12 +273,10 @@ impl Selection {
                     .retained_context();
                 (context.grant, context.choices)
             }
-            #[cfg(not(target_os = "linux"))]
-            return Err("installer-portable-source-failed");
         };
         self.start_bound(
-            grant.selected.clone(),
-            grant.expected.clone(),
+            grant.selected().clone(),
+            grant.expected().clone(),
             choices,
             Some(grant),
         )
@@ -328,7 +296,6 @@ impl Selection {
         self.picker = None;
         self.expected = None;
         self.reviewed = None;
-        #[cfg(target_os = "linux")]
         {
             self.mounted = None;
             if let Some(controller) = &mut self.mounted_permission {
@@ -348,34 +315,18 @@ impl Selection {
             let result = (|| {
                 if let Some(previous) = &previous {
                     previous
-                        .selected_pin
-                        .validate()
-                        .map_err(|_| ReviewFailure::SourceChanged)?;
-                    previous
-                        .expected_pin
                         .validate()
                         .map_err(|_| ReviewFailure::SourceChanged)?;
                 }
-                let (selected_pin, expected_pin) = validate_grant(&selected, &expected)?;
+                let admitted = validate_grant(&selected, &expected)?;
                 if let Some(previous) = &previous
-                    && (!super::super::nofollow::same_directory_identity(
-                        &selected_pin.identity,
-                        &previous.selected_pin.identity,
-                    ) || !super::super::nofollow::same_directory_identity(
-                        &expected_pin.identity,
-                        &previous.expected_pin.identity,
-                    ))
+                    && !previous
+                        .matches(&admitted)
+                        .map_err(|_| ReviewFailure::SourceChanged)?
                 {
                     return Err(ReviewFailure::SourceChanged);
                 }
-                let grant = previous.clone().unwrap_or_else(|| {
-                    Arc::new(SourceGrant {
-                        selected: selected.clone(),
-                        expected: expected.clone(),
-                        selected_pin: selected_pin.clone(),
-                        expected_pin: expected_pin.clone(),
-                    })
-                });
+                let grant = previous.clone().unwrap_or(admitted);
                 mounted_context = Some(MountedContext {
                     grant: grant.clone(),
                     choices: choices.clone(),
@@ -426,22 +377,12 @@ impl Selection {
                     } else {
                         None
                     };
-                selected_pin
-                    .validate()
-                    .map_err(|_| ReviewFailure::SourceChanged)?;
-                expected_pin
-                    .validate()
-                    .map_err(|_| ReviewFailure::SourceChanged)?;
+                grant.validate().map_err(|_| ReviewFailure::SourceChanged)?;
                 if cancelled.load(Ordering::SeqCst) {
                     return Err(ReviewFailure::SourceChanged);
                 }
                 if let Some(previous) = &previous {
                     previous
-                        .selected_pin
-                        .validate()
-                        .map_err(|_| ReviewFailure::SourceChanged)?;
-                    previous
-                        .expected_pin
                         .validate()
                         .map_err(|_| ReviewFailure::SourceChanged)?;
                 }
@@ -455,11 +396,11 @@ impl Selection {
                         })
                 })
                 .then(|| {
-                    Arc::new(OriginalSource {
+                    Arc::new(OriginalSource::from_native(NativeOriginalSource {
                         grant: grant.clone(),
                         choices: choices.clone(),
                         intent: Mutex::new(None),
-                    })
+                    }))
                 });
                 Ok(Reviewed {
                     original,
@@ -474,7 +415,6 @@ impl Selection {
         Ok(())
     }
     pub fn poll(&mut self) -> Option<Result<bool, &'static str>> {
-        #[cfg(target_os = "linux")]
         if let Some(controller) = &mut self.mounted_permission
             && let Some(result) = controller.poll()
         {
@@ -541,7 +481,6 @@ impl Selection {
                 Some(Ok(true))
             }
             Err(error) => {
-                #[cfg(target_os = "linux")]
                 if let ReviewFailure::MountedSource { locations } = &error {
                     self.mounted.clone_from(locations);
                     if let (Some(locations), Some(context)) = (locations, mounted_context) {
@@ -580,7 +519,6 @@ impl Selection {
         self.picker = None;
         self.expected = None;
         self.reviewed = None;
-        #[cfg(target_os = "linux")]
         {
             self.mounted = None;
             if let Some(controller) = &mut self.mounted_permission {
@@ -594,30 +532,19 @@ impl Selection {
         self.state = if self.busy() { "cancelling" } else { "idle" };
     }
     fn mounted_busy(&self) -> bool {
-        #[cfg(target_os = "linux")]
         {
             self.mounted_permission
                 .as_ref()
                 .is_some_and(mounted_permission::Controller::busy)
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
     }
     fn mounted_choosing(&self) -> bool {
-        #[cfg(target_os = "linux")]
         {
             self.mounted_permission
                 .as_ref()
                 .is_some_and(mounted_permission::Controller::choosing)
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
     }
-    #[cfg(target_os = "linux")]
     pub fn refresh_mounted(
         &mut self,
         expected: PathBuf,
@@ -632,28 +559,24 @@ impl Selection {
             .ok_or("installer-portable-source-failed")?
             .retained_context()
             .grant;
-        if expected != grant.expected {
+        if &expected != grant.expected() {
             return Err("installer-source-changed");
         }
-        self.start_bound(grant.selected.clone(), expected, choices, Some(grant))
+        self.start_bound(grant.selected().clone(), expected, choices, Some(grant))
     }
-    #[cfg(target_os = "linux")]
     pub fn mounted_permission_active(&self) -> bool {
         self.mounted_permission.is_some()
     }
-    #[cfg(target_os = "linux")]
     pub fn mounted_needs_restart(&self) -> bool {
         self.mounted_permission
             .as_ref()
             .is_some_and(mounted_permission::Controller::needs_restart)
     }
-    #[cfg(target_os = "linux")]
     pub fn mounted_choices(&self) -> Vec<(String, String, bool)> {
         self.mounted_permission
             .as_ref()
             .map_or_else(Vec::new, mounted_permission::Controller::locations)
     }
-    #[cfg(target_os = "linux")]
     pub fn request_mounted(&mut self, location: String) -> Result<(), &'static str> {
         if self.picker.is_some() || self.worker.is_some() {
             return Err("installer-portable-source-busy");
@@ -667,14 +590,12 @@ impl Selection {
                 super::t("installer-mounted-home-grant"),
             )
     }
-    #[cfg(target_os = "linux")]
     pub fn finish_mounted(&mut self) -> Result<(), &'static str> {
         self.mounted_permission
             .as_mut()
             .ok_or("installer-portable-source-failed")?
             .finish()
     }
-    #[cfg(target_os = "linux")]
     pub fn cancel_mounted(&mut self) {
         if let Some(controller) = &mut self.mounted_permission {
             controller.cancel_request();
@@ -682,28 +603,18 @@ impl Selection {
     }
     /// Reviewed relative display names only; these do not authorize mounted reads.
     pub fn mounted_locations(&self) -> Vec<String> {
-        #[cfg(target_os = "linux")]
         {
             self.mounted
                 .as_ref()
                 .map_or_else(Vec::new, |locations| locations.display_names())
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Vec::new()
-        }
     }
     fn mounted_projection(&self) -> serde_json::Value {
-        #[cfg(target_os = "linux")]
         {
             self.mounted_permission.as_ref().map_or(
                 serde_json::Value::Null,
                 mounted_permission::Controller::projection,
             )
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            serde_json::Value::Null
         }
     }
     pub fn projection(&self) -> serde_json::Value {
@@ -725,20 +636,10 @@ impl Drop for Selection {
         self.invalidate();
     }
 }
-fn validate_grant(
-    selected: &Path,
-    expected: &Path,
-) -> Result<(Arc<PinnedDirectory>, Arc<PinnedDirectory>), ReviewFailure> {
-    let selected =
-        PinnedDirectory::open_absolute(selected).map_err(|_| ReviewFailure::Permission)?;
-    let expected =
-        PinnedDirectory::open_absolute(expected).map_err(|_| ReviewFailure::Permission)?;
-    selected.validate().map_err(|_| ReviewFailure::Permission)?;
-    expected.validate().map_err(|_| ReviewFailure::Permission)?;
-    if !super::super::nofollow::same_directory_identity(&selected.identity, &expected.identity) {
-        return Err(ReviewFailure::Permission);
-    }
-    Ok((selected, expected))
+fn validate_grant(selected: &Path, expected: &Path) -> Result<Arc<SourceGrant>, ReviewFailure> {
+    SourceGrant::admit(selected, expected)
+        .map(Arc::new)
+        .map_err(|_| ReviewFailure::Permission)
 }
 
 #[cfg(test)]
@@ -753,22 +654,16 @@ mod tests {
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("document"), b"original document").unwrap();
-        let (selected_pin, expected_pin) =
-            validate_grant(&home, &home).unwrap_or_else(|_| panic!("matching held grant"));
-        let original = OriginalSource {
-            grant: Arc::new(SourceGrant {
-                selected: home.clone(),
-                expected: home.clone(),
-                selected_pin,
-                expected_pin,
-            }),
+        let grant = validate_grant(&home, &home).unwrap_or_else(|_| panic!("matching held grant"));
+        let original = OriginalSource::from_native(NativeOriginalSource {
+            grant,
             choices: Choices {
                 home: true,
                 accounts: true,
                 ..Choices::default()
             },
             intent: Mutex::new(None),
-        };
+        });
         let journal = temp.path().join("journal");
         std::fs::create_dir(&journal).unwrap();
         std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1103,5 +998,93 @@ mod tests {
         assert!(selection.reviewed_handle().is_none());
         assert_eq!(selection.projection()["state"], "cancelled");
         assert_eq!(std::fs::read(home.join("original")).unwrap(), b"unchanged");
+    }
+}
+
+impl OriginalSource {
+    fn from_native(native: NativeOriginalSource) -> Self {
+        Self {
+            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
+            applications_only: Self::native_applications_only,
+        }
+    }
+}
+impl std::ops::Deref for OriginalSource {
+    type Target = NativeOriginalSource;
+    fn deref(&self) -> &Self::Target {
+        self.native_payload
+            .get()
+            .expect("original source retains its native owner")
+    }
+}
+impl super::portable_source::SelectionState for Selection {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn busy(&self) -> bool {
+        Selection::busy(self)
+    }
+    fn choosing(&self) -> bool {
+        Selection::choosing(self)
+    }
+    fn refresh(&mut self) -> Result<(), &'static str> {
+        Selection::refresh(self)
+    }
+    fn poll(&mut self) -> Option<Result<bool, &'static str>> {
+        Selection::poll(self)
+    }
+    fn reviewed_original(&self) -> Option<Arc<OriginalSource>> {
+        Selection::reviewed_original(self)
+    }
+    fn invalidate(&mut self) {
+        Selection::invalidate(self)
+    }
+    fn mounted_permission_active(&self) -> bool {
+        Selection::mounted_permission_active(self)
+    }
+    fn mounted_needs_restart(&self) -> bool {
+        Selection::mounted_needs_restart(self)
+    }
+    fn mounted_choices(&self) -> Vec<(String, String, bool)> {
+        Selection::mounted_choices(self)
+    }
+    fn request_mounted(&mut self, location: String) -> Result<(), &'static str> {
+        Selection::request_mounted(self, location)
+    }
+    fn finish_mounted(&mut self) -> Result<(), &'static str> {
+        Selection::finish_mounted(self)
+    }
+    fn cancel_mounted(&mut self) {
+        Selection::cancel_mounted(self)
+    }
+    fn mounted_locations(&self) -> Vec<String> {
+        Selection::mounted_locations(self)
+    }
+    fn projection(&self) -> serde_json::Value {
+        Selection::projection(self)
+    }
+}
+impl std::ops::Deref for super::portable_source::Selection {
+    type Target = Selection;
+    fn deref(&self) -> &Self::Target {
+        self.native
+            .get()
+            .expect("native adapter installed")
+            .as_any()
+            .downcast_ref()
+            .expect("matching native adapter")
+    }
+}
+impl std::ops::DerefMut for super::portable_source::Selection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.native
+            .get_mut()
+            .expect("native adapter installed")
+            .as_any_mut()
+            .downcast_mut()
+            .expect("matching native adapter")
     }
 }

@@ -79,7 +79,7 @@ pub(super) fn begin(
 
 /// A ticket the loop polls for `answer`, which wakes the loop when it
 /// arrives from the worker.
-fn ticket(answer: Pending<Answer>) -> PendingInvocation {
+pub(super) fn ticket(answer: Pending<Answer>) -> PendingInvocation {
     let answer = RefCell::new(crate::shell::search::invocation_wake::watch(answer));
     Rc::new(move || {
         let waker = crate::shell::search::invocation_wake::waker();
@@ -88,7 +88,7 @@ fn ticket(answer: Pending<Answer>) -> PendingInvocation {
             PendingPoll::Ready(Err(reason)) => Err(ActionError::Refused(reason)),
             PendingPoll::Waiting => Ok(None),
             PendingPoll::Abandoned => Err(ActionError::Refused(
-                "the pairing step stopped without an answer".into(),
+                "the host step stopped without an answer".into(),
             )),
         }
     })

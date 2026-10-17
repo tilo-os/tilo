@@ -719,12 +719,6 @@ mod tests {
     /// after `=` starts fresh while an operator continues, Backspace drops a whole
     /// function name, M+ accumulates, and the error demo yields a renderable Calc
     /// parse error. Fresh model per phase.
-    #[allow(
-        clippy::float_cmp,
-        reason = "2+3 is exactly 5 in f64; an approximate compare would stop \
-                  proving that `=` stores the evaluated value verbatim; 10 + 10 is exact in f64; the point of the test is the exact \
-                  accumulated total"
-    )]
     #[test]
     fn key_entry_and_equals_update_expression_memory_and_history() {
         // phase equals_pushes_history_and_sets_ans

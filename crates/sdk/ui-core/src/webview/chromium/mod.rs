@@ -16,7 +16,7 @@ use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -724,39 +724,7 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
 /// it. Nor does the hardened allocator the launcher preloads into the app:
 /// Chromium brings its own (PartitionAlloc) and frees through glibc's
 /// internals, so a preloaded allocator aborts the host at start.
-fn host_command(host: &Path) -> std::io::Result<Command> {
-    let mut command = Command::new(host);
-    command.env_remove("LD_LIBRARY_PATH");
-    command.env_remove("LD_PRELOAD");
-    #[cfg(target_os = "linux")]
-    exclude_migration_from_engine(
-        &mut command,
-        Path::new(browser_continuity::PROJECTION_DIRECTORY),
-    )?;
-    Ok(command)
-}
-
-#[cfg(target_os = "linux")]
-fn exclude_migration_from_engine(command: &mut Command, projection: &Path) -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
-    match std::fs::symlink_metadata(projection) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(std::io::Error::other(
-                "Invalid browser migration projection",
-            ));
-        }
-    }
-    let policy = sandbox_core::read_exclusion::PreparedReadExclusion::prepare(projection)?;
-    // SAFETY: all policy construction happens above. The callback performs only
-    // integer-only kernel calls; no allocations, locks, paths or shared state.
-    unsafe {
-        command.pre_exec(move || policy.install_before_exec());
-    }
-    Ok(())
-}
+use browser_continuity::engine_host::command as host_command;
 
 #[cfg(all(test, target_os = "linux"))]
 mod engine_exclusion_tests;

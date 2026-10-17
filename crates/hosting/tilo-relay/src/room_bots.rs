@@ -269,7 +269,7 @@ fn chat_door<'a>(
     replica: &'a mut Replica,
     govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
 ) -> ReplicaDoor<'a, chat::Chat> {
-    let now = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX);
+    let now = tilo_clock::unix_now_ms_i64();
     ReplicaDoor::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
 }
 

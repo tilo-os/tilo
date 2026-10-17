@@ -134,7 +134,6 @@ impl Journey {
         }
     }
 
-    #[cfg(unix)]
     pub(super) fn draft_choices(&self) -> super::draft::PublicChoices {
         use super::draft::DestinationChoice;
         super::draft::PublicChoices {
@@ -152,7 +151,6 @@ impl Journey {
         }
     }
 
-    #[cfg(unix)]
     pub(super) fn restore_draft(
         &mut self,
         choices: &super::draft::PublicChoices,
@@ -449,8 +447,8 @@ impl Journey {
         match self.page {
             Page::Profile if self.name.trim().is_empty() => Some("installer-preview-name-required"),
             Page::Password => {
-                use tilo_unlock_protocol::startup_secret::{ValidationError, validate_typed};
-                if let Err(reason) = validate_typed(&self.password, false) {
+                use imager_backend::startup_password::{ValidationError, validate};
+                if let Err(reason) = validate(&self.password) {
                     Some(match reason {
                         ValidationError::SurroundingSpaces => "installer-preview-password-spaces",
                         ValidationError::PassphraseTooShort => "installer-preview-password-short",
@@ -462,12 +460,7 @@ impl Journey {
                         | ValidationError::PassphraseRepeatedPattern => {
                             "installer-preview-password-repetitive"
                         }
-                        // The host currently prepares a passphrase, not a TPM PIN.
-                        // Keep unexpected policy variants actionable without
-                        // presenting a PIN requirement on this password page.
-                        ValidationError::PinTooShort
-                        | ValidationError::PinNotNumeric
-                        | ValidationError::PinPredictable => "installer-preview-password-invalid",
+                        ValidationError::Invalid => "installer-preview-password-invalid",
                     })
                 } else if self.password != self.confirmation {
                     Some("installer-preview-password-mismatch")

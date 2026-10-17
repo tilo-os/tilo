@@ -796,10 +796,6 @@ impl FileHistoryStore {
     ///
     /// Returns an error for invalid versions, missing/disconnected parents,
     /// id collisions, poisoned state, or persistence failure.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans candidate validation, durable replacement, and in-memory publication"
-    )]
     pub fn append_batch(&self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
         self.append_lease()?.append_batch(versions)
     }
@@ -811,10 +807,6 @@ impl FileHistoryStore {
     ///
     /// Returns an error for an invalid/unknown conflict, an id collision,
     /// poisoned state, or persistence failure.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans conflict validation, durable replacement, and in-memory publication"
-    )]
     pub fn record_conflict(&self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
         self.append_lease()?.record_conflict(conflict)
     }
@@ -827,10 +819,6 @@ impl FileHistoryStore {
     ///
     /// Returns an error for unknown or invalid conflict/version state,
     /// mismatched resolution provenance/actor/time, poisoned state, or I/O.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans resolution validation, durable replacement, and in-memory publication"
-    )]
     pub fn resolve(
         &self,
         record_id: FileRecordId,

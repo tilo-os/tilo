@@ -39,7 +39,7 @@ disallowed-methods = [
     { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
     { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
-    { path = "libc::flock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock", allow-invalid = true },
     { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
     # An AutoCommit logs a patch event per applied op even when nothing will
     # read it, and never drops them. Take changes in through tilo_automerge.

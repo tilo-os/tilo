@@ -10,7 +10,8 @@ so t.toml carries both, generated between markers:
     reads through include_str! or a test fixture path runs its checks again;
   * one `suite-<group>` check per suite group;
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
-    filter in the image .config/visual-goldens-image names.
+    filter in the image .config/visual-goldens-image names, and the nightly
+    `nightly-arm64-goldens` check, which runs it there on aarch64.
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
@@ -32,15 +33,21 @@ GOLDENS_IMAGE = ROOT / ".config" / "visual-goldens-image"
 # Every suite group runs in ci-fast, as check.yml's suites job does, with the
 # toolchain's binaries ahead of rustup's proxies (see the hakari check).
 SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-# Groups that need what a t check does not offer yet, with what that is. They
-# stay declared, out of the default set, until t provides it.
-NOT_DEFAULT = {
-    "os": "writes /var/lib and /var/tmp, starts nested bubblewrap sandboxes and reads Git history",
-    "dist": "writes under target/ in the source tree and reads Git history",
-    "vm-acceptance": "writes under target/ in the source tree",
-    "mount-source-cache-keys": "lists files through Git",
-    "browser-compute-web": "runs npm ci in scripts/moq-browser, in the source tree",
-    "browser-runtime-web": "builds the MoQ library with npm in scripts/moq-browser, in the source tree",
+# What some groups need beyond a plain check, and why. A group that writes into
+# its sources gets a private copy-on-write view of them; one that reads Git
+# history gets a .git whose HEAD is the commit under test. A `prepare` command
+# runs before the group's suites.
+GROUP_FIELDS = {
+    "os": {"why": "writes fixtures next to its sources and reads Git history",
+           "writable_sources": True, "git": True},
+    "dist": {"why": "writes under target/ in the source tree and reads Git history",
+             "writable_sources": True, "git": True},
+    "vm-acceptance": {"why": "writes under target/ in the source tree", "writable_sources": True},
+    "mount-source-cache-keys": {"why": "lists files through Git", "git": True},
+    "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser and reads Git", "git": True,
+                            "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
+    "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
+                            "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
 }
 SUITE_PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -65,20 +72,24 @@ def package_inputs(manifest: suites.Manifest) -> str:
 def suite_checks(manifest: suites.Manifest) -> str:
     blocks = []
     for group in manifest.groups:
+        fields = GROUP_FIELDS.get(group.name, {})
         inputs = sorted({glob(path) for path in (*group.inputs, *group.suites)}
-                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/with-test-environment.sh"})
-        reason = NOT_DEFAULT.get(group.name)
+                        | {suites.MANIFEST, "tools/ci/suites.py", "tools/with-test-environment.sh"}
+                        | set(fields.get("prepare", "").split()[1:2]))
+        run = f"python3 tools/ci/suites.py run --jobs 8 --group {group.name}"
+        if "prepare" in fields:
+            run = f"{fields['prepare']} && {run}"
         blocks.append("\n".join([
-            *([f"# Not default: it {reason}; a t check has a read-only root and source tree and no Git."]
-              if reason else []),
+            *([f"# It {fields['why']}."] if fields else []),
             "[[check]]",
             f'name = "suite-{group.name}"',
-            f'run = "python3 tools/ci/suites.py run --jobs 8 --group {group.name}"',
+            f"run = {json.dumps(run)}",
             f"image = {json.dumps(SUITE_IMAGE)}",
             f"env = {{ PATH = {json.dumps(SUITE_PATH)} }}",
             'requires = ["arch=x86_64"]',
+            *(["writable_sources = true"] if fields.get("writable_sources") else []),
+            *(["git = true"] if fields.get("git") else []),
             f"inputs = {array(inputs)}",
-            *(["default = false"] if reason else []),
         ]) + "\n")
     return "\n".join(blocks)
 
@@ -105,11 +116,33 @@ def goldens(image: str) -> str:
     ]) + "\n"
 
 
+def arm64_goldens(image: str) -> str:
+    """The nightly goldens on aarch64, in the same image: the pixels match on both architectures."""
+    sys.path.insert(0, str(ROOT / "tools/ci"))
+    import nextest_filters
+    golden = nextest_filters.filters()["GOLDEN_FILTER"]
+    packages = " ".join(f"-p {name}" for name in sorted(set(re.findall(r"package\(([\w-]+)\)", golden))))
+    return "\n".join([
+        "[[check]]",
+        'name = "nightly-arm64-goldens"',
+        f"image = {json.dumps(image)}",
+        'requires = ["arch=arm64"]',
+        "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
+                              f"--no-tests=pass {packages} -E '{golden}'"),
+        'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
+        "writable_sources = true",
+        'on = ["schedule:0 3 * * *", "dispatch"]',
+        'cost = "heavy"',
+        "default = false",
+    ]) + "\n"
+
+
 def generated(manifest: suites.Manifest) -> dict[str, str]:
     inputs = package_inputs(manifest)
     return {"test-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
-            "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
+            "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
+            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
 
 
 def render(text: str, blocks: dict[str, str]) -> str:

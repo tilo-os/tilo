@@ -31,7 +31,8 @@ enum Flag {
     None,
     /// A secret the host keeps out of logs, history and confirmations.
     Secret,
-    /// Content another action produced, carried as its hash.
+    /// Content another action produced, carried as its hash; on a
+    /// `Vec<String>`, a list of content, each item its hash.
     Content,
     /// A place inside the resource.
     Place,
@@ -158,6 +159,63 @@ struct VariantOptions {
     /// The collection field whose items the effect is offered on, its first
     /// field bound to the item's id.
     item: Option<String>,
+    /// `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
+    /// output_mb = N, gpu)`: a content transform the system may run on the
+    /// invoker's best-placed device as the package's catalogue entrypoint.
+    offload: Option<OffloadOption>,
+}
+
+/// An effect's `offload(...)` option, as written.
+struct OffloadOption {
+    app: String,
+    entrypoint: String,
+    gpu: bool,
+    cpu_ms: u64,
+    memory_mb: u64,
+    output_mb: u64,
+}
+
+/// Parse `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
+/// output_mb = N, gpu)`; every key but `gpu` is required.
+fn offload_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<OffloadOption> {
+    let mut app = None;
+    let mut entrypoint = None;
+    let mut gpu = false;
+    let mut cpu_ms = None;
+    let mut memory_mb = None;
+    let mut output_mb = None;
+    let number = |inner: &syn::meta::ParseNestedMeta<'_>| -> syn::Result<u64> {
+        inner.value()?.parse::<syn::LitInt>()?.base10_parse()
+    };
+    meta.parse_nested_meta(|inner| {
+        if inner.path.is_ident("app") {
+            app = Some(inner.value()?.parse::<syn::LitStr>()?.value());
+        } else if inner.path.is_ident("entrypoint") {
+            entrypoint = Some(inner.value()?.parse::<syn::LitStr>()?.value());
+        } else if inner.path.is_ident("gpu") {
+            gpu = true;
+        } else if inner.path.is_ident("cpu_ms") {
+            cpu_ms = Some(number(&inner)?);
+        } else if inner.path.is_ident("memory_mb") {
+            memory_mb = Some(number(&inner)?);
+        } else if inner.path.is_ident("output_mb") {
+            output_mb = Some(number(&inner)?);
+        } else {
+            return Err(inner.error(
+                "expected `app`, `entrypoint`, `cpu_ms`, `memory_mb`, `output_mb` or `gpu`",
+            ));
+        }
+        Ok(())
+    })?;
+    let missing = |key: &str| meta.error(format!("`offload(...)` needs `{key} = ...`"));
+    Ok(OffloadOption {
+        app: app.ok_or_else(|| missing("app"))?,
+        entrypoint: entrypoint.ok_or_else(|| missing("entrypoint"))?,
+        gpu,
+        cpu_ms: cpu_ms.ok_or_else(|| missing("cpu_ms"))?,
+        memory_mb: memory_mb.ok_or_else(|| missing("memory_mb"))?,
+        output_mb: output_mb.ok_or_else(|| missing("output_mb"))?,
+    })
 }
 
 fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
@@ -218,12 +276,14 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.edit = true;
             } else if meta.path.is_ident("item") {
                 options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
+            } else if meta.path.is_ident("offload") {
+                options.offload = Some(offload_option(&meta)?);
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
                      `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, \
-                     `item = field` or `kind`",
+                     `item = field`, `offload(...)` or `kind`",
                 ));
             }
             Ok(())
@@ -380,7 +440,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 None => declared,
             };
             let declared = if described.flag == Flag::Content {
-                quote!(#declared.as_content())
+                // A list of content (`Vec<String>`) names each item's hash.
+                let list = crate::last_ident(ty).is_some_and(|(name, _)| name == "Vec");
+                if list {
+                    quote!(#declared.as_content_list())
+                } else {
+                    quote!(#declared.as_content())
+                }
             } else {
                 declared
             };
@@ -456,6 +522,39 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             || quote!(::core::option::Option::None),
             |field| quote!(::core::option::Option::Some(#field)),
         );
+        let reads = match options.kind.as_deref() {
+            Some(kind) => kind == "read",
+            None => options.view && !options.edit,
+        };
+        let offload = match &options.offload {
+            None => quote!(::core::option::Option::None),
+            Some(_) if !reads || device_only || !options.content => {
+                return Err(syn::Error::new(
+                    variant.span(),
+                    "an `offload` effect is a content transform any device may run: declare it \
+                     `content` and `kind = \"read\"`, and not `device_only`",
+                ));
+            }
+            Some(OffloadOption {
+                app,
+                entrypoint,
+                gpu,
+                cpu_ms,
+                memory_mb,
+                output_mb,
+            }) => {
+                let mib = |megabytes: u64| megabytes.saturating_mul(1024 * 1024);
+                let (memory_bytes, output_bytes) = (mib(*memory_mb), mib(*output_mb));
+                quote!(::core::option::Option::Some(#krate::effect::EffectOffload {
+                    app: #app,
+                    entrypoint: #entrypoint,
+                    gpu: #gpu,
+                    cpu_time_ms: #cpu_ms,
+                    memory_bytes: #memory_bytes,
+                    output_bytes: #output_bytes,
+                }))
+            }
+        };
         let kind = if options.view || options.edit {
             quote!(View)
         } else {
@@ -492,6 +591,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 participant: #participant,
                 edits: #edits,
                 item: #item,
+                offload: #offload,
             }
         });
 

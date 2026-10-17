@@ -4724,7 +4724,6 @@ mod tests {
 
     #[test]
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::too_many_lines,
         reason = "the cursor fixture keeps both destination-age transactions next to their exact same-staging restoration checks"
     )]

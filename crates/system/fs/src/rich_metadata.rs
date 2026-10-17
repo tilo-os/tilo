@@ -25,7 +25,6 @@ pub fn recognizes(name: &str) -> bool {
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_lossless,
     clippy::indexing_slicing,
     reason = "header offsets are fixed and guarded by format-specific length checks"
 )]

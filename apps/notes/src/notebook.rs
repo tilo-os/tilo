@@ -12,12 +12,12 @@
 //! descendant), its title (renaming relabels the links to it), creating,
 //! deleting and copying notes with everything under them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Model, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -44,7 +44,7 @@ pub struct Notebook {
     /// The pictures the notes show, by the BLAKE3 digest their bodies name
     /// them by. Only placing a picture writes one.
     #[model(readonly)]
-    pub images: BTreeMap<String, Bytes>,
+    pub images: Map<Bytes>,
 }
 
 /// One note.
@@ -712,10 +712,6 @@ impl Notebook {
     /// read. A new note is a new entry of the note collection, keyed by its
     /// id; edits only touch fields of notes that exist, and a new tag is an
     /// entry of the tag collection, which is no note.
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the resource's answer hook: some actions answer nothing"
-    )]
     fn created_page(
         doc: &tilo_resource::Doc,
         action: &str,
@@ -896,7 +892,7 @@ pub fn content() -> tilo_content::ContentStore {
 /// still be on its way from their device; it is absent until it arrives.
 #[must_use]
 pub fn image_snapshot(
-    images: &BTreeMap<String, Bytes>,
+    images: &Map<Bytes>,
     read: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> HashMap<String, Vec<u8>> {
     images

@@ -11,6 +11,41 @@ fn selected() -> SelectedManifest {
         InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json");
     SelectedManifest::from_bytes(&release, bytes).unwrap()
 }
+#[test]
+fn final_component_paths_follow_the_native_cache_support_contract() {
+    isolated("final_component_paths_follow_native_support", || {
+        let selected = selected();
+        assert_eq!(
+            final_component_path(&selected, 2).unwrap_err(),
+            "Invalid cache component"
+        );
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            #[cfg(target_os = "linux")]
+            let base = linux::cache_base().unwrap();
+            #[cfg(windows)]
+            let base = windows::cache_base().unwrap();
+            for index in 0..2 {
+                let component = selected.bundle().component(index).unwrap();
+                assert_eq!(
+                    final_component_path(&selected, index).unwrap(),
+                    base.join("tilo-internal-install")
+                        .join(selected.manifest_sha256())
+                        .join("payload")
+                        .join(component.filename)
+                );
+            }
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        for index in 0..2 {
+            assert_eq!(
+                final_component_path(&selected, index),
+                imager_backend::cache::unsupported()
+            );
+        }
+    });
+}
+
 /// Working namespace, record parser and impossible epochs.
 #[test]
 #[allow(

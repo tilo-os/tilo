@@ -9,7 +9,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT, member_resource,
+    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
+    RECORD_EFFECT_RECEIPT, member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -94,7 +95,12 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
 
     assert_eq!(
         offered(&host, workspace, &caller(&ada)).await,
-        [CLAIM_TOPOLOGY_NAMESPACE, RECORD_EFFECT_RECEIPT].map(str::to_owned)
+        [
+            CLAIM_TOPOLOGY_NAMESPACE,
+            RECORD_EFFECT_RECEIPT,
+            PREPARE_APPLICATION_RECORD
+        ]
+        .map(str::to_owned)
     );
 
     // Ada, an Editor, claims her own namespace; the room signs it.

@@ -497,7 +497,7 @@ fn incompatible(before: &Value, now: &Value) -> Vec<String> {
         .filter_map(|(path, field)| match new.get(path) {
             None => Some(format!("`{path}` is gone")),
             Some(current)
-                if text(current, "type") != text(field, "type")
+                if stored_type(text(current, "type")) != stored_type(text(field, "type"))
                     || text(current, "stored") != text(field, "stored") =>
             {
                 Some(format!(
@@ -511,6 +511,30 @@ fn incompatible(before: &Value, now: &Value) -> Vec<String> {
             Some(_) => None,
         })
         .collect()
+}
+
+/// A field's type as the document stores it: a shared `Map<T>` is stored
+/// as a `BTreeMap<String, T>` is, so moving a field between the two needs
+/// no migration.
+fn stored_type(ty: &str) -> String {
+    let ty = ty
+        .replace("ui::tilo_resource::", "")
+        .replace("tilo_resource::", "")
+        .replace("std::collections::", "");
+    let mut out = String::with_capacity(ty.len());
+    let mut rest = ty.as_str();
+    while let Some(at) = rest.find("Map<") {
+        let (before, after) = rest.split_at(at);
+        out.push_str(before);
+        let named = before
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        out.push_str(if named { "Map<" } else { "BTreeMap<String, " });
+        rest = after.get("Map<".len()..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The history messages `resource` asks of `locales/en-US.ftl`, as history
@@ -900,6 +924,22 @@ mod tests {
         let bumped = report(&[resource(2, "Atom", &["rename"])]);
         let found = findings("so.tilo.notes", &bumped, Some(&before), None, Level::Error);
         assert_eq!(rules(&found), [("surface", Level::Error)]);
+
+        // A plain map moved to a shared one is stored alike: drift only.
+        let map = vec![normalized(&resource(
+            1,
+            "BTreeMap<String, Progress>",
+            &["rename"],
+        ))];
+        let shared = report(&[resource(1, "tilo_resource::Map<Progress>", &["rename"])]);
+        let found = findings("so.tilo.notes", &shared, Some(&map), None, Level::Error);
+        assert_eq!(rules(&found), [("surface", Level::Error)]);
+        let other = report(&[resource(1, "Map<Atom>", &["rename"])]);
+        let found = findings("so.tilo.notes", &other, Some(&map), None, Level::Error);
+        assert_eq!(
+            rules(&found),
+            [("storage", Level::Error), ("surface", Level::Error)]
+        );
 
         let mut unbound = report(&[resource(1, "String", &["rename"])]);
         unbound.unbound.push("a control is bound to `x`".into());

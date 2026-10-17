@@ -353,19 +353,20 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(artifact, text, name)
 
     def test_promotion_runs_only_on_dispatch_and_its_weekly_report(self):
-        text = (ROOT / ".forgejo/workflows/cloud-promotion.yml").read_text()
-        triggers = text.split("\njobs:", 1)[0]
-        self.assertIn("workflow_dispatch:", triggers)
-        self.assertIn("schedule:", triggers)
-        self.assertNotIn("push:", triggers)
-        self.assertNotIn("pull_request", triggers)
-        self.assertIn("tools/release/cloud_promotion.py drift", text)
-        self.assertIn("tools/release/cloud_promotion.py plan", text)
-        self.assertIn("tools/release/cloud_promotion.py propose", text)
-        # The infra token only ever reaches the tool, and only on a dispatch.
-        self.assertEqual(text.count("secrets.INFRA_PROMOTION_TOKEN"), 2)
-        self.assertIn("github.event_name == 'workflow_dispatch'", text)
-
+        import tomllib
+        config = tomllib.loads((ROOT / "t.toml").read_text())
+        checks = {check["name"]: check for check in config["check"]}
+        drift, promotion = checks["cloud-drift"], checks["cloud-promotion"]
+        self.assertEqual(drift["on"], ["schedule:0 7 * * 1"])
+        self.assertIn("tools/release/cloud_promotion.py drift", drift["run"])
+        self.assertNotIn("secrets", drift)
+        self.assertEqual(promotion["on"], ["dispatch"])
+        script = (ROOT / "tools/release/cloud-promotion.sh").read_text()
+        self.assertIn("tools/release/cloud_promotion.py plan", script)
+        self.assertIn("tools/release/cloud_promotion.py propose", script)
+        # The infra token only ever reaches the dispatched promotion.
+        holders = [name for name, check in checks.items() if "INFRA_PROMOTION_TOKEN" in check.get("secrets", [])]
+        self.assertEqual(holders, ["cloud-promotion"])
 
 if __name__ == "__main__":
     unittest.main()

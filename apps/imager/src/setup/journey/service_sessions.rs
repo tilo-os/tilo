@@ -1,10 +1,9 @@
 //! Explicit source/provider decisions, independent of bookmarks/history and files.
-use crate::setup::{
-    account_transfer::Candidate,
-    browser_profiles::service_profiles::{self, CookieProfile, Material, Presence},
-    service_sessions::{PreparedSessions, SelectedSource},
+use crate::setup::{account_transfer::Candidate, service_sessions::PreparedSessions};
+use imager_backend::browser_selection::Service;
+use imager_backend::service_selection::{
+    self as service_profiles, CookieProfile, Material, Presence,
 };
-use browser_continuity::sessions::Service;
 use std::{io, path::Path, sync::Arc};
 use ui::{
     tokens::{Rhythm, TextRole},
@@ -21,18 +20,7 @@ impl SelectedSources {
         identity: [u8; 32],
         binding: String,
     ) -> io::Result<PreparedSessions> {
-        let mut grants = Vec::new();
-        for (source, service) in &self.sources {
-            grants.push(match source.material {
-                Material::Cookies => SelectedSource::Cookies(source.grant()?, *service),
-                Material::DiscordOrigin => SelectedSource::DiscordOrigin(source.origin_grant()?),
-            });
-        }
-        let captured = PreparedSessions::capture_selected(identity, binding, grants)?;
-        for (source, _) in &self.sources {
-            source.validate()?;
-        }
-        Ok(captured)
+        service_profiles::capture_selected(identity, binding, &self.sources)
     }
     pub(super) fn is_empty(&self) -> bool {
         self.sources.is_empty()
@@ -384,6 +372,22 @@ impl Selection {
 }
 
 #[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn empty_selection_cannot_invent_a_source() {
+        let mut selection = Selection::default();
+        assert!(!selection.available());
+        assert_eq!(
+            selection.set("ungranted-source", Service::Discord, true),
+            Err("installer-service-source-changed"),
+        );
+        assert!(selection.selected_for_accounts(true).is_none());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::setup::account_transfer::{self, SourceRoots};
@@ -767,7 +771,10 @@ mod tests {
             .iter()
             .find(|source| &source.id == selected_id)
             .unwrap();
-        assert_eq!(selected.provider, browser_continuity::Provider::Firefox);
+        assert_eq!(
+            selected.provider,
+            imager_backend::browser_selection::Provider::Firefox
+        );
         assert_eq!(selection.included[0].1, Service::Slack);
         let captured = selection
             .selected()
@@ -1477,5 +1484,5 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "native-slack-qualification"))]
+#[cfg(all(test, target_os = "linux", feature = "native-slack-qualification"))]
 mod slack_native;

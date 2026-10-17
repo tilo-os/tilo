@@ -1,4 +1,5 @@
 use super::*;
+use crate::setup::account_transfer::Connector;
 use accounts::SecretVault;
 use std::sync::Mutex;
 
@@ -157,7 +158,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         .unwrap();
     let key = tilo_seal::SymmetricKey::generate().unwrap();
     let selected = prepared
-        .entries
+        .entries()
         .iter()
         .map(|entry| accounts::AccountId::new(&entry.id))
         .collect::<Vec<_>>();
@@ -583,7 +584,7 @@ fn dav_and_nextcloud_guided_public_fields_save_exact_private_credentials_without
         assert_eq!(preview.accounts.projection()["state"], "saved");
         assert!(browser.opened.lock().unwrap().is_empty());
         let prepared = preview.accounts.prepared_handle().unwrap();
-        let id = accounts::AccountId::new(prepared.entries[0].id.clone());
+        let id = accounts::AccountId::new(prepared.entries()[0].id.clone());
         let store = accounts::AccountStore::load_in(&prepared.config_root());
         let account = store.get(&id).unwrap();
         assert_eq!(account.type_id.as_str(), account_type);
@@ -734,7 +735,7 @@ fn nextcloud_browser_uses_canonical_login_flow_and_prepares_secret_only_after_ex
     );
     assert_eq!(cloud.revoked.load(Ordering::SeqCst), 0);
     let handle = accounts.prepared_handle().unwrap();
-    let id = accounts::AccountId::new(handle.entries[0].id.clone());
+    let id = accounts::AccountId::new(handle.entries()[0].id.clone());
     let store = accounts::AccountStore::load_in(&handle.config_root());
     let account = store.get(&id).unwrap();
     assert_eq!(account.type_id.as_str(), accounts::cloud_types::NEXTCLOUD);
@@ -1634,21 +1635,23 @@ fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_remo
         password,
     )
     .unwrap();
-    assert_eq!(receipt.accounts, 2);
+    assert_eq!(receipt.accounts(), 2);
     drop(before);
     assert!(!staged.exists());
-    let bytes = std::fs::read(checkpoint_root.join(&receipt.filename)).unwrap();
+    let bytes = std::fs::read(checkpoint_root.join(receipt.filename())).unwrap();
     assert!(
         !bytes
             .windows(b"private-checkpoint".len())
             .any(|part| part == b"private-checkpoint")
     );
     assert!(checkpoint::restore(&checkpoint_root, &receipt, b"wrong previous password").is_err());
-    let mut foreign = receipt.clone();
-    foreign.group = [8; 32];
+    let mut foreign_fields = serde_json::to_value(&receipt).unwrap();
+    foreign_fields["group"] = serde_json::json!([8; 32]);
+    let mut foreign = serde_json::from_value(foreign_fields).unwrap();
     assert!(checkpoint::restore(&checkpoint_root, &foreign, password).is_err());
-    foreign = receipt.clone();
-    foreign.binding = "another-operation".into();
+    let mut foreign_fields = serde_json::to_value(&receipt).unwrap();
+    foreign_fields["binding"] = serde_json::json!("another-operation");
+    foreign = serde_json::from_value(foreign_fields).unwrap();
     assert!(checkpoint::restore(&checkpoint_root, &foreign, password).is_err());
     let browser = Browser::new(false);
     let mut after = Accounts::default();
@@ -1714,10 +1717,10 @@ fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_remo
             .count(),
         0
     );
-    assert_ne!(empty.filename, receipt.filename);
+    assert_ne!(empty.filename(), receipt.filename());
     let mut corrupt = bytes;
     corrupt[0] ^= 1;
-    std::fs::write(checkpoint_root.join(&receipt.filename), corrupt).unwrap();
+    std::fs::write(checkpoint_root.join(receipt.filename()), corrupt).unwrap();
     assert!(checkpoint::restore(&checkpoint_root, &receipt, password).is_err());
 }
 
@@ -2130,7 +2133,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
         b"chosen password",
     )
     .unwrap();
-    assert_eq!(receipt.accounts, 2);
+    assert_eq!(receipt.accounts(), 2);
     assert!(
         handle
             .validate_artifact_destination(&checkpoint_root.join("ordinary-export.sealed"))

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -39,10 +40,29 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
         row['manifest_path'] = str(PRODUCER.ROOT / 'unrelated/Cargo.toml')
         self.assertIsNone(PRODUCER.select_artifact([row], 'launcher'))
 
+    def test_frontend_and_backend_test_executables_have_distinct_actual_roles(self):
+        for role, package, name in (
+                ('imager_tests', 'apps/imager', 'imager'),
+                ('backend_tests', 'crates/platform/imager-backend', 'imager_backend')):
+            with self.subTest(role=role):
+                target = PRODUCER.ROOT / 'target/release/deps' / (name + '-fixture')
+                row = {'reason': 'compiler-artifact',
+                       'manifest_path': str(PRODUCER.ROOT / package / 'Cargo.toml'),
+                       'target': {'name': name, 'kind': ['lib']},
+                       'profile': {'test': True}, 'executable': str(target)}
+                self.assertEqual(PRODUCER.select_artifact([row], role), (row, target))
+                self.assertEqual(QUALIFIER.PACKAGES[role], package)
+                self.assertEqual(QUALIFIER.TARGETS[role], name)
+                row['profile']['test'] = False
+                self.assertIsNone(PRODUCER.select_artifact([row], role))
+
     def test_native_custody_helpers_require_actual_compiler_roles(self):
         for role, package, name in (
                 ('home_seeds', 'crates/session/installer', 'tilo-firstboot-home-seeds'),
-                ('prepared_extract', 'apps/imager', 'tilo-installer-prepared-setup-extract')):
+                ('prepared_extract', 'apps/imager', 'tilo-installer-prepared-setup-extract'),
+                ('staging_handoff', 'crates/system/install-helpers', 'tilo-staging-handoff'),
+                ('handoff_copy', 'crates/system/install-helpers', 'tilo-install-handoff-copy'),
+                ('firstboot_files', 'crates/system/firstboot-files', 'tilo-firstboot-files')):
             with self.subTest(role=role):
                 target = PRODUCER.ROOT / 'target/release' / name
                 row = {'reason': 'compiler-artifact',
@@ -58,12 +78,35 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                 self.assertNotIn('os/usr/libexec/' + name + '.py', QUALIFIER.FIXTURE_FILES)
 
     def test_actual_source_inventory_covers_full_admission_closure(self):
-        sources = PRODUCER.sources()
         required = set(QUALIFIER.FIXTURE_FILES) | set(QUALIFIER.PACKAGE_FILES)
-        self.assertLessEqual(required, sources.keys())
-        for name in required:
-            with self.subTest(source=name):
-                self.assertEqual(sources[name], PRODUCER.facts(PRODUCER.ROOT / name))
+        # The suite also runs from source archives without .git. Give the real
+        # inventory producer an owned Git checkout of the actual closure bytes;
+        # do not substitute its enumeration or source measurements.
+        original = PRODUCER.ROOT
+        names = PRODUCER.source_requirements() | {
+            'crates/system/install-helpers/src/staging_handoff.rs',
+            'crates/system/firstboot-files/src/lib.rs'}
+        with tempfile.TemporaryDirectory(prefix='tilo-source-inventory-') as directory:
+            root = Path(directory).resolve()
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            for name in names:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(original / name, target)
+            subprocess.run(['git', '-C', str(root), 'add', '--', 'Cargo.toml'], check=True)
+            with mock.patch.object(PRODUCER, 'ROOT', root):
+                sources = PRODUCER.sources()
+            self.assertLessEqual(required | names, sources.keys())
+            for name in names:
+                with self.subTest(source=name):
+                    self.assertEqual(sources[name], PRODUCER.facts(original / name))
+            model = 'crates/platform/imager-backend/src/imager_model.rs'
+            self.assertIn(model, sources)
+            with (root / model).open('a') as output:
+                output.write('// source measurement must observe relocated model changes\\n')
+            with mock.patch.object(PRODUCER, 'ROOT', root):
+                changed = PRODUCER.sources()
+            self.assertNotEqual(changed[model], sources[model])
 
     def test_real_child_source_change_preserves_failure_but_emits_no_roles(self):
         with tempfile.TemporaryDirectory(prefix='tilo-capture-evidence-') as directory:
@@ -72,7 +115,9 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
             names = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
                          'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
                          'apps/imager/release-catalog.json',
-                         'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
+                         'crates/platform/imager-backend/src/setup/home_capture/native_tests/signed_export.rs',
+             'crates/platform/imager-backend/src/imager_model.rs',
+             'crates/platform/imager-backend/Cargo.toml',
                          'apps/imager/packaging/qualify-capture-release.py',
                          'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py',
                          'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',

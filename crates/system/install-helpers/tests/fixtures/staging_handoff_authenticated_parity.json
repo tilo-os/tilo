@@ -1,0 +1,174 @@
+[
+  {
+    "name": "no retained source",
+    "input": "{\"schema\":1}",
+    "plan": null
+  },
+  {
+    "name": "schema boolean",
+    "input": "{\"schema\":true}",
+    "refusal": "authenticated prepared choices fields differ"
+  },
+  {
+    "name": "unknown field",
+    "input": "{\"schema\":1,\"password\":\"forbidden\"}",
+    "refusal": "authenticated prepared choices fields differ"
+  },
+  {
+    "name": "applications boolean",
+    "input": "{\"schema\":1,\"completed_applications_only\":1}",
+    "refusal": "authenticated completed purpose is malformed"
+  },
+  {
+    "name": "applications purpose",
+    "input": "{\"schema\":1,\"completed_applications_only\":true}",
+    "refusal": "authenticated applications purpose differs"
+  },
+  {
+    "name": "completed setup without generation",
+    "input": "{\"schema\":1,\"completed_setup\":{}}",
+    "refusal": "authenticated completed generation is incomplete"
+  },
+  {
+    "name": "completed generation without setup",
+    "input": "{\"schema\":1,\"completed_home\":{}}",
+    "refusal": "authenticated completed generation is incomplete"
+  },
+  {
+    "name": "unexpected computer scope",
+    "input": "{\"schema\":1,\"computer_apps_scope\":{}}",
+    "refusal": "authenticated Computer applications scope is unexpected"
+  },
+  {
+    "name": "applications without generation",
+    "input": "{\"schema\":1,\"completed_applications\":{}}",
+    "refusal": "authenticated applications lack completed generation"
+  },
+  {
+    "name": "malformed pending scope",
+    "input": "{\"schema\":1,\"pending_computer_applications_scope\":{}}",
+    "refusal": "prepared setup transport validation failed"
+  },
+  {
+    "name": "home copy",
+    "input": "{\"schema\":1,\"retained_home\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"copy\"}}",
+    "refusal": "authenticated retained plan lacks shared-files or independent-app consent"
+  },
+  {
+    "name": "home access-read-only",
+    "input": "{\"schema\":1,\"retained_home\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"access-read-only\"}}",
+    "refusal": "authenticated retained plan lacks shared-files or independent-app consent"
+  },
+  {
+    "name": "home access-read-write",
+    "input": "{\"schema\":1,\"retained_home\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"access-read-write\"}}",
+    "plan": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "categories": {
+        "home": true,
+        "flatpak": true,
+        "accounts": true
+      },
+      "home": {
+        "volume": {
+          "disk_guid": "11111111-2222-4333-8444-555555555555",
+          "disk_bytes": 274877906944,
+          "sector_bytes": 512,
+          "partition_guid": "00000000-0000-4000-8000-00000000000b",
+          "first_lba": 206848,
+          "last_lba": 209715199,
+          "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+          "filesystem": "ext4"
+        },
+        "relative": {
+          "platform": "Unix",
+          "units": [
+            104,
+            111,
+            109,
+            101,
+            47,
+            112,
+            101,
+            114,
+            115,
+            111,
+            110
+          ]
+        },
+        "inode": 123,
+        "original_uid": 1000,
+        "subvolume": null
+      },
+      "flatpak_inventory": {
+        "schema": 1,
+        "inventory": {
+          "refs": [],
+          "remotes": []
+        },
+        "selected": [],
+        "installations": []
+      },
+      "home_policy": "access-read-write"
+    }
+  },
+  {
+    "name": "independent applications",
+    "input": "{\"schema\":1,\"retained_home\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":false,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "plan": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "categories": {
+        "home": false,
+        "flatpak": true,
+        "accounts": true
+      },
+      "home": {
+        "volume": {
+          "disk_guid": "11111111-2222-4333-8444-555555555555",
+          "disk_bytes": 274877906944,
+          "sector_bytes": 512,
+          "partition_guid": "00000000-0000-4000-8000-00000000000b",
+          "first_lba": 206848,
+          "last_lba": 209715199,
+          "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+          "filesystem": "ext4"
+        },
+        "relative": {
+          "platform": "Unix",
+          "units": [
+            104,
+            111,
+            109,
+            101,
+            47,
+            112,
+            101,
+            114,
+            115,
+            111,
+            110
+          ]
+        },
+        "inode": 123,
+        "original_uid": 1000,
+        "subvolume": null
+      },
+      "flatpak_inventory": {
+        "schema": 1,
+        "inventory": {
+          "refs": [],
+          "remotes": []
+        },
+        "selected": [],
+        "installations": []
+      }
+    }
+  },
+  {
+    "name": "independent applications missing inventory",
+    "input": "{\"schema\":1,\"retained_home\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":false,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null}}}",
+    "refusal": "authenticated retained plan lacks shared-files or independent-app consent"
+  }
+]

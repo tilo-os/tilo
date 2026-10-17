@@ -66,18 +66,12 @@ pub mod event_id {
 #[must_use]
 pub fn code_sha256(code: &str) -> String {
     use sha2::{Digest as _, Sha256};
-    use std::fmt::Write as _;
     let normal: String = code
         .chars()
         .filter(|c| !c.is_whitespace())
         .map(|c| c.to_ascii_uppercase())
         .collect();
-    Sha256::digest(normal.as_bytes())
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+    hex::encode(Sha256::digest(normal.as_bytes()))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

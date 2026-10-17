@@ -7,11 +7,12 @@ use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_joined_room::testing as internals;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 
 fn edit(
     owner: &NativeWorkspaceOwner,

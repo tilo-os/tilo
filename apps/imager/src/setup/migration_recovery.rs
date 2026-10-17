@@ -7,7 +7,6 @@ mod write_guard;
 pub(crate) use flow::Evidence;
 pub use flow::Flow;
 
-use super::staging::plan::{self, Plan, PlanError, Requirements};
 use super::windows_inventory::{Availability, Inventory};
 use serde::Serialize;
 use std::{
@@ -18,24 +17,7 @@ use std::{
 /// Re-run the real placement checker, including filesystem shrink floors and
 /// retained headroom. A hand-edited geometry or stale size cannot waive it.
 /// This admits only the existing alongside path, never full-disk replacement.
-pub fn admit_retained(plan: &Plan, requirements: Requirements) -> Result<(), PlanError> {
-    let mut expected = plan::compute(&plan.basis, requirements)?;
-    // UUIDs are minted once per review, not placement inputs.
-    expected
-        .staging_esp
-        .partition_guid
-        .clone_from(&plan.staging_esp.partition_guid);
-    expected
-        .staging_root
-        .partition_guid
-        .clone_from(&plan.staging_root.partition_guid);
-    if expected != *plan {
-        return Err(PlanError::Unsupported(
-            "Storage changed after review; review capacity again. The original system has not been removed.".into(),
-        ));
-    }
-    Ok(())
-}
+pub use imager_backend::recovery::admit_retained;
 
 /// Required local recovery space. No remote content-verification API is wired
 /// here: even entries labelled synced remain unverified and retain their source.

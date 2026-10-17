@@ -12,8 +12,9 @@
 //!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
 //!   only, on any workspace they hold there: the person's continuity
 //!   workspace before they hold any room;
-//! - what a member does for themselves (claiming their topology namespace
-//!   and recording their own effect receipt) as provider
+//! - what a member does for themselves (claiming their topology namespace,
+//!   recording their own effect receipt, and having the host create the
+//!   empty record of an app they open there first) as provider
 //!   [`MEMBER_ACTIONS_PROVIDER`], on the room's workspace.
 //!
 //! [`ROOM_ADMIN_ALPN`] is kept only for [`RoomCommand::Remove`], which the
@@ -31,9 +32,8 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::GovernedMember;
-use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::{GovernedMember, MemberRole};
 
 /// The provider a relay answers its host operations under: creating,
 /// listing and entering the rooms it governs. Only the devices of the
@@ -70,6 +70,14 @@ pub const CLAIM_TOPOLOGY_NAMESPACE: &str = "topology-namespace.claim";
 /// and `redacted`, its canonical redacted public receipt as JSON text.
 /// Answers the room's `generation` that carries it.
 pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
+/// Have the host governing the room create the record `record` (`""` for
+/// the app's primary) of `app`, empty and signed by the host: what opening
+/// an app there for the first time asks when the room does not hold its
+/// record. Only for an app the room lets author and a record the caller may
+/// change; no member-supplied bytes cross it, and the app's first state is
+/// then the member's own change. Answers `created` (false when the record
+/// was already there) and the room's `generation`.
+pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
 
 /// The resource a member's own business in `room` is published on.
 #[must_use]

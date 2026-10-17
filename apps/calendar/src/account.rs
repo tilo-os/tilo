@@ -168,7 +168,7 @@ impl CalendarAccount {
         if let Some(secret) = vault.get(&stored.id) {
             #[cfg(feature = "live")]
             {
-                config.password = account_custody::password_credential(&secret).to_string();
+                config.password = tilo_dav::oauth::calendar_password(&secret);
             }
             #[cfg(not(feature = "live"))]
             {

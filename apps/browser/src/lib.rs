@@ -45,10 +45,8 @@ pub mod browser_window;
 pub mod browsing_mode;
 pub mod continuity;
 mod continuity_bookmarks;
-#[cfg(target_os = "linux")]
 mod continuity_handoff;
 mod continuity_library;
-#[cfg(unix)]
 pub mod continuity_sources;
 mod credentials;
 pub mod crx;
@@ -74,7 +72,6 @@ pub mod resource;
 mod rows;
 pub mod search_provider;
 mod service_destinations;
-#[cfg(target_os = "linux")]
 mod service_profiles;
 mod service_sessions;
 pub use service_sessions::service_session_capability;

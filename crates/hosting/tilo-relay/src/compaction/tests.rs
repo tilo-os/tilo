@@ -2,7 +2,7 @@ use super::*;
 use crate::store::WorkspaceStore;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::Signer as _;
-use tilo_peer_state::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 
 const WORKSPACE: u64 = 7;
 
@@ -907,4 +907,383 @@ fn opaque_payloads_are_never_folded_or_gc_selected() {
     assert!(folded.is_none(), "no opaque entry is folded or removed");
     assert!(!signed, "the host signs nothing for opaque entries");
     assert_eq!(opaque.remembered(), 0, "no opaque body counts as verified");
+}
+
+/// The device the host asks to compact a sealed channel.
+const MEMBER: u8 = 2;
+/// A device subscribed to the workspace that the host did not ask.
+const STRANGER: u8 = 3;
+
+fn device(seed: u8) -> [u8; 32] {
+    key(seed).verifying_key().to_bytes()
+}
+
+/// Another record's retention channel in the same workspace.
+fn other_channel() -> [u8; 32] {
+    *blake3::hash(b"app\0so.tilo.notes\0note-2").as_bytes()
+}
+
+/// `frame` re-framed to retain on `to`.
+fn on_channel(frame: &[u8], to: [u8; 32]) -> Vec<u8> {
+    let (author, payload) = crate::store::retained::payload(frame, WORKSPACE).unwrap();
+    let payload = match payload {
+        CoeditPayload::RetainedDelta { body, .. } => {
+            CoeditPayload::RetainedDelta { channel: to, body }
+        }
+        CoeditPayload::Checkpoint { body, .. } => CoeditPayload::Checkpoint { channel: to, body },
+    };
+    crate::transport::encode(&Envelope::Delta {
+        workspace_id: WORKSPACE,
+        author_device_public_key: author,
+        authored_at_ns: 1,
+        delta: payload.encode().unwrap(),
+        signature: [0; 64],
+    })
+    .unwrap()
+}
+
+/// Every retained entry of a channel by author, file digest and body, in a
+/// stable order: two equal values are byte-identical retention.
+type Retained = Vec<([u8; 32], [u8; 32], Vec<u8>)>;
+
+fn retained_entries(store: &WorkspaceStore, channel: &[u8; 32]) -> Retained {
+    let mut entries: Retained = store
+        .channel_entries(channel)
+        .unwrap()
+        .into_iter()
+        .map(|entry| (entry.author, entry.digest, entry.body))
+        .collect();
+    entries.sort();
+    entries
+}
+
+fn entry_ids(store: &WorkspaceStore, channel: &[u8; 32]) -> Vec<[u8; 32]> {
+    store
+        .channel_entries(channel)
+        .unwrap()
+        .iter()
+        .map(|entry| entry_id(&entry.body))
+        .collect()
+}
+
+/// An encoded coverage statement answering `request` for `channel`.
+fn statement(
+    request: [u8; 16],
+    channel: [u8; 32],
+    snapshot: &[[u8; 32]],
+    covered: &[[u8; 32]],
+) -> Vec<u8> {
+    CoverageStatement {
+        workspace_id: WORKSPACE,
+        channel,
+        request,
+        snapshot: snapshot.to_vec(),
+        covered: covered.to_vec(),
+        heads: Vec::new(),
+    }
+    .encode()
+    .unwrap()
+}
+
+/// `seed`'s signature over `statement`, as a member device signs one.
+fn signed(seed: u8, statement: &[u8]) -> [u8; 64] {
+    key(seed)
+        .sign(&tilo_relay_protocol::compaction::signing_bytes(statement))
+        .to_bytes()
+}
+
+/// A subscription's queues, open as a live connection keeps them.
+type Queues = (
+    tokio::sync::mpsc::Receiver<Envelope>,
+    tokio::sync::mpsc::Receiver<()>,
+);
+
+/// A sealed tail one writer retained, the sealed snapshot of it the member
+/// committed, and another record's sealed channel beside it; the host has
+/// asked the member, over its live subscription, to compact the first.
+struct SealedAsk {
+    _tmp: tempfile::TempDir,
+    workspace: SharedWorkspace,
+    compactor: Compactor,
+    request: [u8; 16],
+    /// Entry ids of the writer's sealed tail.
+    tail: Vec<[u8; 32]>,
+    /// Entry ids of the member's sealed snapshot.
+    snapshot: Vec<[u8; 32]>,
+    _queues: Vec<Queues>,
+}
+
+/// Retain the writer's sealed tail on [`channel`] and three sealed entries
+/// on [`other_channel`], then the member's sealed snapshot on [`channel`].
+fn retain_sealed_channels(store: &WorkspaceStore) {
+    let mut seq: u64 = 0;
+    let mut doc = AutoCommit::new();
+    for edit in 0..6_i64 {
+        let before = doc.get_heads();
+        doc.put(ROOT, "k", edit).unwrap();
+        doc.commit();
+        let mutation = DocumentMutation::Incremental(doc.save_after(&before));
+        retain(
+            store,
+            device_frames(1, &mutation, true, seq.saturating_add(1)),
+            &mut seq,
+        );
+    }
+    for edit in 0..3_i64 {
+        let before = doc.get_heads();
+        doc.put(ROOT, "beside", edit).unwrap();
+        doc.commit();
+        let mutation = DocumentMutation::Incremental(doc.save_after(&before));
+        for frame in device_frames(1, &mutation, true, seq.saturating_add(1)) {
+            seq = seq.saturating_add(1);
+            store
+                .retain_delta(&other_channel(), seq, &on_channel(&frame, other_channel()))
+                .unwrap();
+        }
+    }
+    let snapshot = DocumentMutation::Snapshot(doc.save());
+    retain(
+        store,
+        device_frames(MEMBER, &snapshot, true, seq.saturating_add(1)),
+        &mut seq,
+    );
+}
+
+/// Subscribe `seed` to `runtime`, as a live session does.
+fn subscribe(runtime: &mut crate::workspace::WorkspaceRuntime, seed: u8) -> Queues {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let (disconnect, disconnected) = tokio::sync::mpsc::channel(1);
+    runtime.add_subscriber(crate::workspace::Subscriber {
+        device_public_key: device(seed),
+        role: crate::auth::PeerRole::Device,
+        tx,
+        disconnect,
+    });
+    (rx, disconnected)
+}
+
+async fn sealed_ask() -> SealedAsk {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        WORKSPACE,
+        false,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    retain_sealed_channels(&runtime.store);
+    let (mut tail, mut snapshot) = (Vec::new(), Vec::new());
+    for entry in runtime.store.channel_entries(&channel()).unwrap() {
+        let id = entry_id(&entry.body);
+        if entry.author == device(MEMBER) {
+            snapshot.push(id);
+        } else {
+            tail.push(id);
+        }
+    }
+    assert!(!tail.is_empty() && !snapshot.is_empty());
+    assert_eq!(entry_ids(&runtime.store, &other_channel()).len(), 3);
+    let (mut member, stranger) = (
+        subscribe(&mut runtime, MEMBER),
+        subscribe(&mut runtime, STRANGER),
+    );
+    let workspace: SharedWorkspace = Arc::new(tokio::sync::Mutex::new(runtime));
+    let cert = tilo_user_identity::DeviceCert {
+        user_public_key: device(98),
+        device_public_key: device(99),
+        device_label: "host".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::host(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    let compactor = Compactor::new(key(99), cert, crate::payloads::neighbour());
+    compactor.volunteer(WORKSPACE, device(MEMBER));
+    let request = compactor
+        .request(&workspace, WORKSPACE, channel(), &route())
+        .await
+        .expect("the volunteering member is asked");
+    let Ok(Envelope::CompactRequest {
+        request: sent,
+        workspace_id,
+        record,
+        ..
+    }) = member.0.try_recv()
+    else {
+        panic!("the member is sent the request");
+    };
+    assert_eq!(
+        (sent, workspace_id, record),
+        (request, WORKSPACE, route().record_id)
+    );
+    SealedAsk {
+        _tmp: tmp,
+        workspace,
+        compactor,
+        request,
+        tail,
+        snapshot,
+        _queues: vec![member, stranger],
+    }
+}
+
+impl SealedAsk {
+    /// What the asked channel and the channel beside it retain.
+    async fn retained(&self) -> (Retained, Retained) {
+        let runtime = self.workspace.lock().await;
+        (
+            retained_entries(&runtime.store, &channel()),
+            retained_entries(&runtime.store, &other_channel()),
+        )
+    }
+
+    /// Hand the host `statement` from device `from`, signed by `signer`.
+    async fn answer(&self, from: u8, signer: u8, statement: &[u8]) -> Result<usize, String> {
+        self.compactor
+            .compacted(
+                &self.workspace,
+                WORKSPACE,
+                device(from),
+                statement,
+                &signed(signer, statement),
+            )
+            .await
+    }
+
+    /// The member's own answer: its snapshot covers the whole tail.
+    fn whole_answer(&self) -> Vec<u8> {
+        statement(self.request, channel(), &self.snapshot, &self.tail)
+    }
+
+    /// The member answers for real: the tail goes and its snapshot stays,
+    /// so a refusal before it was the statement's, not the fixture's.
+    async fn member_compacts(&self) {
+        let (_, beside) = self.retained().await;
+        assert_eq!(
+            self.answer(MEMBER, MEMBER, &self.whole_answer()).await,
+            Ok(self.tail.len())
+        );
+        let (asked, beside_after) = self.retained().await;
+        let mut kept: Vec<[u8; 32]> = asked.iter().map(|(_, _, body)| entry_id(body)).collect();
+        kept.sort_unstable();
+        let mut snapshot = self.snapshot.clone();
+        snapshot.sort_unstable();
+        assert_eq!(kept, snapshot);
+        assert_eq!(beside_after, beside);
+    }
+}
+
+/// security.md, "What a workspace host reads and originates": sealed
+/// channels are compacted by a member device, and the host removes only the
+/// entries the member's signed statement names. A subscribed device the host
+/// did not ask, or a statement claiming the asked device under another key,
+/// removes nothing and leaves the request open for the member.
+#[tokio::test]
+async fn a_sealed_compaction_statement_from_a_device_not_asked_removes_nothing() {
+    let ask = sealed_ask().await;
+    let before = ask.retained().await;
+    let whole = ask.whole_answer();
+    assert_eq!(
+        ask.answer(STRANGER, STRANGER, &whole).await,
+        Err("statement does not answer this device's request".into()),
+        "a subscribed device the host did not ask cannot answer"
+    );
+    assert_eq!(
+        ask.answer(MEMBER, STRANGER, &whole).await,
+        Err("statement signature does not verify".into()),
+        "a statement for the asked device must carry its signature"
+    );
+    assert_eq!(ask.retained().await, before);
+    ask.member_compacts().await;
+    drop(ask);
+}
+
+/// A device removed from the room loses its subscription at once, while its
+/// session lives until the next access audit: an answer it sends in between
+/// removes nothing.
+#[tokio::test]
+async fn a_device_removed_from_the_room_cannot_answer_for_a_sealed_channel() {
+    let ask = sealed_ask().await;
+    let before = ask.retained().await;
+    ask.workspace
+        .lock()
+        .await
+        .refuse_removed_live_members(&[device(MEMBER)]);
+    assert_eq!(
+        ask.answer(MEMBER, MEMBER, &ask.whole_answer()).await,
+        Err("the statement's device no longer subscribes to the workspace".into())
+    );
+    assert_eq!(ask.retained().await, before);
+    drop(ask);
+}
+
+/// A statement the host never requested, or one naming another channel or
+/// workspace than the request it cites, removes nothing.
+#[tokio::test]
+async fn a_sealed_compaction_statement_the_host_never_requested_removes_nothing() {
+    let ask = sealed_ask().await;
+    let before = ask.retained().await;
+    let unrequested = statement([7; 16], channel(), &ask.snapshot, &ask.tail);
+    assert_eq!(
+        ask.answer(MEMBER, MEMBER, &unrequested).await,
+        Err("no outstanding compaction request".into())
+    );
+    let elsewhere = statement(ask.request, other_channel(), &ask.snapshot, &ask.tail);
+    let mut other_workspace = CoverageStatement::decode(&ask.whole_answer()).unwrap();
+    other_workspace.workspace_id = WORKSPACE + 1;
+    for mismatched in [elsewhere, other_workspace.encode().unwrap()] {
+        assert_eq!(
+            ask.answer(MEMBER, MEMBER, &mismatched).await,
+            Err("statement does not answer this device's request".into())
+        );
+    }
+    assert_eq!(ask.retained().await, before);
+    ask.member_compacts().await;
+    drop(ask);
+}
+
+/// A statement covering more than the channel the host asked about removes
+/// only what it covers there: entries of another channel, unknown ids and
+/// the snapshot's own entries stay byte-identical.
+#[tokio::test]
+async fn a_sealed_compaction_statement_removes_only_its_requested_channels_entries() {
+    let ask = sealed_ask().await;
+    let (asked, beside) = ask.retained().await;
+    let (removed, kept) = ask.tail.split_at(2);
+    let beside_ids = entry_ids(&ask.workspace.lock().await.store, &other_channel());
+    let covered: Vec<[u8; 32]> = removed
+        .iter()
+        .chain(&beside_ids)
+        .chain(&ask.snapshot)
+        .copied()
+        .chain([[9; 32]])
+        .collect();
+    let answer = statement(ask.request, channel(), &ask.snapshot, &covered);
+    assert_eq!(ask.answer(MEMBER, MEMBER, &answer).await, Ok(removed.len()));
+    let (asked_after, beside_after) = ask.retained().await;
+    assert_eq!(beside_after, beside, "another channel is never touched");
+    let expected: Retained = asked
+        .into_iter()
+        .filter(|(_, _, body)| !removed.contains(&entry_id(body)))
+        .collect();
+    assert_eq!(asked_after, expected);
+    assert_eq!(
+        asked_after.len(),
+        kept.len().saturating_add(ask.snapshot.len())
+    );
+    drop(ask);
+}
+
+/// A statement whose snapshot the answering member did not retain itself
+/// (here, the writer's own entries) removes nothing: the host keeps whatever
+/// a member's snapshot does not provably replace.
+#[tokio::test]
+async fn a_sealed_compaction_statement_without_the_members_own_snapshot_removes_nothing() {
+    let ask = sealed_ask().await;
+    let before = ask.retained().await;
+    let (claimed, covered) = ask.tail.split_at(1);
+    let answer = statement(ask.request, channel(), claimed, covered);
+    assert!(ask.answer(MEMBER, MEMBER, &answer).await.is_err());
+    assert_eq!(ask.retained().await, before);
+    drop(ask);
 }

@@ -69,10 +69,6 @@ fn compose(a: Affine, b: Affine) -> Affine {
 /// Offsets a rect by a delta. `Rect`'s `Add<Vec2>` impl is pure `f64` component
 /// addition with no overflow trap, so — like [`compose`] — it cannot panic and
 /// the exemption is centralised here instead of at every call site.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Rect + Vec2 is float component addition and cannot panic"
-)]
 /// One pill's paint state, resolved once per frame by `draw_pill_inner` and
 /// shared by the helpers that paint its body and chips.
 #[allow(

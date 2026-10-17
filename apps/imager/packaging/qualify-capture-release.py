@@ -53,12 +53,9 @@ FIXTURE_FILES = (
     'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/assemble-app-runtime.py',
     'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/bounded_native.py',
     'os/scripts/installer-source-fixture/flatpak-runtime/dependencies/common.py',
-    'apps/imager/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
+    'crates/platform/imager-backend/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app',
     'os/usr/libexec/tilo-firstboot-user',
-    'os/usr/libexec/tilo-firstboot-files.py',
-    'os/usr/libexec/tilo-staging-handoff',
     'os/usr/libexec/tilo-store-volume',
-    'os/usr/libexec/tilo-install-handoff-copy.py',
     'os/scripts/verify-account-consumer-capability.py',
     'os/scripts/service-consumer-capability.py',
     'os/scripts/verify-home-consumer-capability.py',
@@ -81,22 +78,27 @@ PACKAGE_FILES = (
     'os/scripts/stamp-runtime.sh',
 )
 PACKAGES = {'worker': 'apps/imager', 'runtime': 'crates/runtime/runtime-dylib', 'host': 'apps/imager', 'imager_tests': 'apps/imager',
+            'backend_tests': 'crates/platform/imager-backend',
             'shell': 'crates/session/shell', 'fs': 'crates/system/fs',
             'credential_helper': 'crates/system/account-custody',
             'home_seeds': 'crates/session/installer', 'prepared_extract': 'apps/imager',
+            'staging_handoff': 'crates/system/install-helpers',
+            'handoff_copy': 'crates/system/install-helpers',
+            'firstboot_files': 'crates/system/firstboot-files',
             'prepared_helper': 'apps/imager', 'control': 'crates/session/control-cli',
             'launcher': 'crates/packaging/launcher',
             'files': 'apps/file-explorer', 'writer': 'apps/word-processor', 'browser': 'apps/browser',
             'app_package': 'crates/packaging/tilo-app-package-cli',
             'runtime_bundle': 'crates/packaging/runtime-bundle', 'install': 'crates/packaging/install',
             'installer': 'crates/session/installer'}
-TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'shell': 'shell', 'fs': 'fs',
+TARGETS = {'worker': 'tilo-home-export', 'runtime': 'runtime_dylib', 'host': 'imager', 'imager_tests': 'imager', 'backend_tests': 'imager_backend', 'shell': 'shell', 'fs': 'fs',
            'credential_helper': 'tilo-account-credential', 'prepared_helper': 'tilo-prepared-setup',
            'home_seeds': 'tilo-firstboot-home-seeds', 'prepared_extract': 'tilo-installer-prepared-setup-extract',
+           'staging_handoff': 'tilo-staging-handoff', 'handoff_copy': 'tilo-install-handoff-copy',
+           'firstboot_files': 'tilo-firstboot-files',
            'control': 'tilo-control', 'launcher': 'tilo-launcher', 'files': 'file-explorer', 'writer': 'word-processor', 'browser': 'browser',
            'app_package': 'tilo-app-package', 'runtime_bundle': 'tilo-runtime-bundle', 'install': 'tilo-install', 'installer': 'tilo-installer'}
 PLATFORM_SCRIPTS = {
-    'os/usr/libexec/tilo-firstboot-files.py': '/usr/libexec/tilo-firstboot-files.py',
     'os/scripts/verify-home-consumer-capability.py': '/usr/libexec/tilo-verify-home-consumer-capability',
     'os/scripts/verify-applications-consumer-capability.py': '/usr/libexec/tilo-verify-applications-consumer-capability',
     'os/scripts/installed-data-consumer.py': '/usr/libexec/tilo-installed-data-consumer.py',
@@ -105,6 +107,9 @@ PLATFORM_SCRIPTS = {
 BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'credential_helper': '/usr/libexec/tilo-account-credential',
             'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
+            'staging_handoff': '/usr/libexec/tilo-staging-handoff',
+            'handoff_copy': '/usr/libexec/tilo-install-handoff-copy',
+            'firstboot_files': '/usr/libexec/tilo-firstboot-files',
             'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract',
             'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
             'launcher': '/usr/bin/tilo-launcher',
@@ -242,9 +247,9 @@ def validate_role(root, role, row, sources):
             'qualification producer command or role differs')
     command = status['command']
     require(type(command) is list and len(command) >= 2 and command[:1] == ['cargo'] and '--locked' in command
-            and command[1] == ('test' if role == 'imager_tests' else 'build'),
+            and command[1] == ('test' if role in ('imager_tests', 'backend_tests') else 'build'),
             'qualification compiler command differs')
-    if role == 'imager_tests':
+    if role in ('imager_tests', 'backend_tests'):
         require('--lib' in command and '--no-run' in command
                 and 'native-capture-qualification' in ','.join(command),
                 'qualification target was not compiled with native cases')
@@ -255,11 +260,11 @@ def validate_role(root, role, row, sources):
                 for line in read_input(row['compiler'], 32 * 1024 ** 2, True)[1].splitlines() if line.strip()]
     require([m.get('success') for m in messages if m.get('reason') == 'build-finished'] == [True],
             'qualification actual compiler success is absent')
-    kind = 'lib' if role == 'imager_tests' else ('dylib' if role == 'runtime' else 'bin')
+    kind = 'lib' if role in ('imager_tests', 'backend_tests') else ('dylib' if role == 'runtime' else 'bin')
     candidates = [m for m in messages if m.get('reason') == 'compiler-artifact'
                   and m.get('target', {}).get('name') == TARGETS[role]
                   and m['target'].get('kind') == [kind]
-                  and m.get('profile', {}).get('test') is (role == 'imager_tests')
+                  and m.get('profile', {}).get('test') is (role in ('imager_tests', 'backend_tests'))
                   and (m.get('executable') or role == 'runtime')]
     require(len(candidates) == 1, 'qualification actual compiler role is ambiguous')
     artifact = candidates[0]
@@ -283,7 +288,9 @@ def admit_cohort(path, host, full):
     required = {'Cargo.toml', 'Cargo.lock', 'apps/imager/build.rs',
                 'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
                 'apps/imager/release-catalog.json',
-                'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
+                'crates/platform/imager-backend/src/setup/home_capture/native_tests/signed_export.rs',
+             'crates/platform/imager-backend/src/imager_model.rs',
+             'crates/platform/imager-backend/Cargo.toml',
                 'apps/imager/packaging/qualify-capture-release.py', 'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py'}
     if full:
         required.update(FIXTURE_FILES)
@@ -303,7 +310,7 @@ def admit_cohort(path, host, full):
                 'qualification source escapes checkout')
         bound_file(root / name, digest)
     roles = value['roles']
-    required_roles = set(PACKAGES) if full else {'worker', 'runtime', 'host', 'imager_tests'}
+    required_roles = set(PACKAGES) if full else {'worker', 'runtime', 'host', 'imager_tests', 'backend_tests'}
     require(type(roles) is dict and set(roles) == required_roles, 'qualification roles differ')
     for role, row in roles.items():
         validate_role(root, role, row, sources)
@@ -377,7 +384,7 @@ checked(['mount','--make-rprivate','/'],10)
 case=os.environ['TILO_CAPTURE_EXACT_CASE']
 expected=json.loads((candidate/'subjects.json').read_bytes())
 for name,row in expected.items():
- if name in ('worker','runtime','host','imager_tests'):continue
+ if name in ('worker','runtime','host','imager_tests','backend_tests'):continue
  target=row['installed']
  if not target:continue
  incoming=candidate/name
@@ -424,6 +431,7 @@ try:
           XDG_STATE_HOME=str(root/'state'),XDG_CACHE_HOME=str(root/'cache'),
           XDG_RUNTIME_DIR=str(root/'runtime'),**values,
           TILO_CAPTURE_NATIVE_HOST=str(candidate/'host/bin/tilo-imager'),
+          TILO_IMAGER_FRONTEND_TESTS=str(candidate/'imager-tests'),
           TILO_CAPTURE_NATIVE_PINS=str(candidate/'capture-service.json'),
           TILO_CAPTURE_QUALIFIED_CANDIDATE=str(candidate),
           TILO_NATIVE_STORE_VIRTIO_PROVENANCE=str(provenance))
@@ -446,7 +454,7 @@ try:
    qualifier.target_completion(native)
  else:
   assert case in qualifier.SOURCE_CASES
-  code,native=call([str(candidate/'imager-tests'),case,'--exact','--nocapture'],600)
+  code,native=call([str(candidate/'backend-tests'),case,'--exact','--nocapture'],600)
  os.write(1,native)
 finally:
  # This fresh container PID namespace has no unrelated processes. Reap the
@@ -591,6 +599,8 @@ def run_native(args, cohort, output):
         shutil.copyfile(args.pins, stage / 'capture-service.json')
         shutil.copyfile(cohort['roles']['imager_tests']['path'], stage / 'imager-tests')
         (stage / 'imager-tests').chmod(0o755)
+        shutil.copyfile(cohort['roles']['backend_tests']['path'], stage / 'backend-tests')
+        (stage / 'backend-tests').chmod(0o755)
         for filename in ('native-stores.sh', 'native-store-autoclear.py', 'native-store-virtio.py'):
             shutil.copyfile(ROOT / 'tools/ci' / filename, stage / filename)
         driver = stage / 'apps/imager/packaging/qualify-capture-release.py'
@@ -604,7 +614,8 @@ def run_native(args, cohort, output):
                     for role, row in cohort['roles'].items()}
         (stage / 'subjects.json').write_text(json.dumps(subjects, sort_keys=True))
         require(facts(host) == facts(args.host)
-                and facts(stage / 'imager-tests') == facts(cohort['roles']['imager_tests']['path']),
+                and facts(stage / 'imager-tests') == facts(cohort['roles']['imager_tests']['path'])
+                and facts(stage / 'backend-tests') == facts(cohort['roles']['backend_tests']['path']),
                 'qualification staging changed actual ELF bytes')
         for role in BINDINGS:
             if role in cohort['roles']:

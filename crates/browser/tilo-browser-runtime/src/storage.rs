@@ -56,11 +56,12 @@ enum DiskKey {
 /// Refuses an invalid root identity or unencodable storage key.
 #[wasm_bindgen]
 pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
-    let room = collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
+    let person_room =
+        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
     let kind = ui::record::RecordKind::new("tilo.accounts");
     let key = DiskKey::Record {
         package: accounts::person::ACCOUNTS_OWNER.into(),
-        workspace: room.to_string(),
+        workspace: person_room.to_string(),
         record: ui::record::person::record_id(&kind).storage_key(),
     };
     serde_json::to_string(&key).map_err(error)
@@ -83,11 +84,12 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
         ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
     )
     .map_err(error)?;
-    let room = collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
+    let person_room =
+        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
     let kind = ui::record::RecordKind::new("tilo.accounts");
     let id = ui::record::person::record_id(&kind);
     if ui::record::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
-        || ui::record::home(&doc).as_deref() != Some(room.to_string().as_str())
+        || ui::record::home(&doc).as_deref() != Some(person_room.to_string().as_str())
     {
         return Err(error(
             "account document belongs to another identity or record",

@@ -33,8 +33,16 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             source = work / "live"
             target = work / "target" / "etc"
             target.mkdir(parents=True)
+            # The compiled file helper is a build output, not a repository
+            # file; the handoff copies whatever bytes the live image carries.
+            helper_files = source / "usr/libexec/tilo-firstboot-files"
+            helper_files.parent.mkdir(parents=True)
+            files_binary = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY',
+                                ROOT / 'target/debug/tilo-firstboot-files'))
+            self.assertEqual(files_binary.read_bytes()[:4], b'\x7fELF', str(files_binary))
+            shutil.copyfile(files_binary, helper_files)
+            helper_files.chmod(0o755)
             for relative in ("usr/libexec/tilo-firstboot-user",
-                             "usr/libexec/tilo-firstboot-files.py",
                              "usr/libexec/tilo-firstboot-home-seeds",
                              "usr/libexec/tilo-installer-prepared-setup-extract",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
@@ -64,12 +72,14 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertEqual(result.returncode, 0, result.stderr)
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
-            self.assertEqual((target / "tilo/tilo-firstboot-files.py").read_bytes(),
-                             (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
+            files_helper = target / "tilo/tilo-firstboot-files"
+            self.assertEqual(files_helper.read_bytes(),
+                             (source / "usr/libexec/tilo-firstboot-files").read_bytes())
+            # The compiled helper is run directly by the staged firstboot-user.
+            self.assertEqual(files_helper.stat().st_mode & 0o777, 0o755)
+            self.assertIn("/etc/tilo/tilo-firstboot-files", (work / "target/labels").read_text())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
-            files = target / "tilo/tilo-firstboot-files.py"
-            self.assertEqual(files.read_bytes(), (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
-            self.assertIn("/etc/tilo/tilo-firstboot-files.py", (work / "target/labels").read_text())
+            self.assertFalse((target / "tilo/tilo-firstboot-files.py").exists())
             seeds = target / "tilo/firstboot-home-seeds"
             self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds").read_bytes())
             self.assertEqual(seeds.stat().st_mode & 0o777, 0o755)
@@ -162,7 +172,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
         for path in ("os/usr/libexec/tilo-firstboot-user",
-                     "os/usr/libexec/tilo-firstboot-files.py",
+                     "target/release/tilo-firstboot-files",
                      "target/release/tilo-firstboot-home-seeds",
                      "target/release/tilo-installer-prepared-setup-extract",
                      "os/usr/libexec/tilo-firstboot-autologin-cleanup",

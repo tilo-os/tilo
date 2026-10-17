@@ -1,0 +1,89 @@
+[package]
+name = "tilo-install-helpers"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The installer's privileged helpers: the live side of USB-free installation, the signed offline target, the setup handoff copy, dev SSH keys, the VM export cache and install proof."
+
+[lib]
+name = "tilo_install_helpers"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-install-handoff-copy"
+path = "src/bin/handoff_copy.rs"
+
+[[bin]]
+name = "tilo-install-dev-ssh"
+path = "src/bin/dev_ssh.rs"
+
+[[bin]]
+name = "tilo-vm-bootc-copy-cache"
+path = "src/bin/vm_bootc_copy_cache.rs"
+
+[[bin]]
+name = "tilo-installer-offline-target"
+path = "src/bin/offline_target.rs"
+
+[[bin]]
+name = "tilo-staging-handoff"
+path = "src/bin/staging_handoff.rs"
+
+[[bin]]
+name = "tilo-vm-install-proof"
+path = "src/bin/vm_install_proof.rs"
+
+# The loopback proofs (os/tests/staging_helper_loop.sh,
+# os/tests/staging_reclaim_loop.sh) run the staging handoff against fixture
+# firmware variables, a fixture ESP and fixture lsblk output: the seams the
+# shipped tilo-staging-handoff never takes from anywhere.
+[[example]]
+name = "staging-handoff-fixture"
+path = "examples/staging-handoff-fixture.rs"
+
+# Compile the actual native transport for end-to-end helper tests, without
+# linking the graphical Imager application or substituting a mock validator.
+[[bin]]
+name = "staging-handoff-native-extractor"
+path = "../../../apps/imager/src/bin/tilo-installer-prepared-setup-extract/main.rs"
+test = false
+
+# These test drivers compile the shipped firstboot entry points without the
+# graphical installer's dependency graph. Cargo owns their artifact lifetime.
+[[bin]]
+name = "install-test-home-seeds"
+path = "src/bin/test_home_seeds.rs"
+
+[[bin]]
+name = "install-test-firstboot-files"
+path = "../firstboot-files/src/main.rs"
+
+[dependencies]
+account-custody = { path = "../account-custody" }
+tilo-seal = { path = "../tilo-seal" }
+zeroize.workspace = true
+tilo-firstboot-files = { path = "../firstboot-files" }
+libc.workspace = true
+uuid.workspace = true
+bounded-command = { path = "../bounded-command" }
+# Strict base64 of SSH public keys, as base64.b64decode(validate=True).
+base64.workspace = true
+hex.workspace = true
+# No-follow opens of the copied handoff files and the effective user, without
+# FFI.
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+# The staging handoff's JSON, with a repeated field refused.
+staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# The export cache's receipt: a private temporary file renamed into place.
+tempfile.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+accounts = { path = "../accounts" }
+
+[lints]
+workspace = true

@@ -7906,7 +7906,7 @@ fn install_session_peer_sync(
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
-    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
+    crate::network_secrets::roaming_wifi_slot().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
@@ -9058,6 +9058,9 @@ pub fn run() {
     if let Some(reason) = live_settings.degraded() {
         tracing::warn!(%reason, "settings changes may arrive late");
     }
+    // Continuity checks run per fabric message on this loop: from here on
+    // they read this snapshot, never the settings document.
+    crate::shell::continuity_policy::follow(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
@@ -10027,15 +10030,12 @@ pub fn run() {
     // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
     // draws, instead of a connection that silently fails.
     let network_secret_agent: Option<
-        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+        crate::session_runtime::Registration<tilo_network_secret_agent::service::AgentHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "network secret agent",
-            crate::network_secrets::service::serve(
-                crate::shell::portal_dialog::PortalDialogQueue::global(),
-                crate::network_secrets::store::RoamingWifiSlot::global(),
-            ),
+            crate::network_secrets::serve(crate::shell::portal_dialog::PortalDialogQueue::global()),
             |_| tracing::info!("network: secret agent registered with NetworkManager"),
         )
     });
@@ -11452,7 +11452,7 @@ pub fn run() {
                 // older periodic sample.
                 crate::shell::device_fabric_runtime::person_layout::refresh(
                     network,
-                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                    continuity_policy.current(),
                 );
                 if let Some(view) =
                     crate::shell::device_fabric_runtime::person_layout::current(network)
@@ -12283,7 +12283,7 @@ pub fn run() {
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
-            pump_phase!("network-tick", net.tick());
+            pump_phase!("network-tick", net.frame_tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,

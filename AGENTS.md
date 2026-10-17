@@ -105,8 +105,8 @@ Before pushing:
 3. Commit the candidate, then inspect the affected plan with
    `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
    Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
-   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
-   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
+   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source bundle from t's
+   `source-metadata` check (tools/ci/README.md). The launcher validates the committed clean
    source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
    and runs this worktree's selector while forbidding every non-Git subprocess. A stale
    selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.

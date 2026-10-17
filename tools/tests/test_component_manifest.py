@@ -276,8 +276,12 @@ class InstallerTests(unittest.TestCase):
                 installer.install(entries, [out], None, dest, False, lambda _: None)
                 self.assertEqual((dest / "usr/libexec/tilo-cosign").read_bytes(), payload)
                 self.assertEqual((dest / "usr/libexec/tilo-cosign").stat().st_mode & 0o777, 0o755)
-                for name in ("tilo-verified-update", "tilo-image-trust-staged", "tilo-board-successor.py"):
+                for name in ("tilo-verified-update", "tilo-image-trust-staged"):
                     self.assertEqual((dest / "usr/libexec" / name).read_bytes(), (REPO / "os/usr/libexec" / name).read_bytes())
+                # The board-successor verifier is compiled: a build output, not a manifest file.
+                successor = dest / "usr/libexec/tilo-board-successor"
+                self.assertEqual(successor.read_bytes(), (out / "tilo-board-successor").read_bytes())
+                self.assertEqual(successor.stat().st_mode & 0o777, 0o755)
                 original_copy = installer.shutil.copy2
                 def corrupt_copy(source, destination, **kwargs):
                     result = original_copy(source, destination, **kwargs)

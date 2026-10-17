@@ -340,7 +340,7 @@ pub struct NotesApp {
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
-    canonical_asset_manifest: std::collections::BTreeMap<String, ui::tilo_resource::Bytes>,
+    canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
     canonical_assets_waiting: Option<ui::time::Instant>,
@@ -556,7 +556,7 @@ impl NotesApp {
         let snapshot =
             crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
         let waiting = snapshot.len() < workspace.images.len();
-        let manifest = (*workspace.images).clone();
+        let manifest = workspace.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
@@ -684,7 +684,7 @@ impl NotesApp {
             theme: Theme::dark(),
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
-            canonical_asset_manifest: std::collections::BTreeMap::new(),
+            canonical_asset_manifest: ui::tilo_resource::Map::new(),
             canonical_assets_waiting: None,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
@@ -1875,11 +1875,11 @@ impl NotesApp {
     /// and pick up referenced bytes that arrive from a collaborator's device
     /// after the reference did.
     fn refresh_canonical_assets(&mut self) {
-        let manifest = Rc::clone(&self.workspace.images);
+        let manifest = self.workspace.images.clone();
         let retry = self
             .canonical_assets_waiting
             .is_some_and(|since| since.elapsed() >= CANONICAL_ASSETS_RETRY);
-        if *manifest == self.canonical_asset_manifest && !retry {
+        if manifest == self.canonical_asset_manifest && !retry {
             return;
         }
         let content = crate::notebook::content();
@@ -1902,7 +1902,7 @@ impl NotesApp {
                 .keys()
                 .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
         }
-        self.canonical_asset_manifest = (*manifest).clone();
+        self.canonical_asset_manifest = manifest;
         self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived {
             // The image store remembers a failed load, and an image block is

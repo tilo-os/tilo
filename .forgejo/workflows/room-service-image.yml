@@ -11,6 +11,7 @@ on:
       - "crates/hosting/tilo-room-service/**"
       - "crates/hosting/tilo-relay/**"
       - "crates/hosting/tilo-relay-shell/**"
+      - "crates/hosting/tilo-relay-store/**"
       - "crates/hosting/tilo-relay-protocol/**"
       - "crates/browser/tilo-browser-runtime/**"
       - "crates/browser/tilo-web-desktop/**"

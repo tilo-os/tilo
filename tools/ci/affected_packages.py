@@ -3,8 +3,11 @@
 
 The selector works from Cargo metadata rather than a hand-maintained package
 list.  A package is selected when its own files change, or when it transitively
-depends on a changed workspace package.  Root Cargo.toml and Cargo.lock changes
-are attributed to the packages they reach when the difference can be proved;
+depends on a changed workspace package through normal or build dependencies, or
+dev-depends on one of those (a dev-dependency reaches only the dependent's own
+test, example and bench targets, not the library its dependents link).  Root
+Cargo.toml and Cargo.lock changes are attributed to the packages they reach
+when the difference can be proved, lockfile edges by the same kinds;
 other repository-wide build inputs fall back to the complete workspace.
 Ordinary feedback checks the closure on x86 and tests changed packages, their
 direct dependants (within one shard's cost) and contract suites; --full
@@ -32,7 +35,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci.workspace_graph import (
-    cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
+    LockId, _lock_graph, cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
 from ci import runner_labels, qualified_native
@@ -86,7 +89,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
-    "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
     "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
@@ -366,11 +368,14 @@ class ResolvedInput(NamedTuple):
     """A root manifest/lockfile change attributed to specific workspace packages.
 
     ``seeds`` are checked with their reverse dependencies and tested; ``checked``
-    are additionally type-checked.
+    are additionally type-checked. ``dev_only`` are checked and tested but not
+    expanded: the change enters only their own test, example and bench targets
+    (a changed third-party dev-dependency), as `check_closure` treats a dev edge.
     """
     seeds: frozenset[str]
     checked: frozenset[str]
     detail: str
+    dev_only: frozenset[str] = frozenset()
 
 
 # Workspace tables whose semantic difference maps to specific packages. Every
@@ -378,6 +383,15 @@ class ResolvedInput(NamedTuple):
 # resolver, metadata, profile, patch, replace, a root package, ...) keeps the
 # complete workspace.
 ATTRIBUTABLE_WORKSPACE_KEYS = {"members", "dependencies"}
+# The cargo-hakari package (.config/hakari.toml). Every member depends on it so
+# that each shared third-party crate is built with one feature set; it is never
+# named in code. Like a change to its own manifest (it has no path dependants),
+# a locked crate it re-exports to nobody does not reach the members through it.
+HAKARI_PACKAGE = "workspace-hack"
+# Sources whose lockfile record (name, version, checksum, dependencies) is the
+# whole locked input. A git or out-of-workspace path record is not attributed
+# by dependency kind.
+REGISTRY_SOURCES = ("registry+", "sparse+")
 
 
 def resolve_lockfile(before: bytes | None, after: bytes | None, metadata: dict) -> ResolvedInput | None:
@@ -395,10 +409,138 @@ def resolve_lockfile(before: bytes | None, after: bytes | None, metadata: dict) 
     # Attribution relies on every workspace member being a lockfile node.
     if not packages <= locked_local:
         return None
+    by_kind = lockfile_change_by_kind(before, after, metadata)
+    if by_kind is not None:
+        return by_kind
     return ResolvedInput(
         seeds=change.seeds,
         checked=frozenset(change.reached & packages),
         detail=f"Cargo.lock reaches {len(change.seeds)} packages directly",
+    )
+
+
+def _compatible(version: str) -> str:
+    """Cargo's semver-compatibility key: 1.4.2 -> 1, 0.9.3 -> 0.9, 0.0.4 -> 0.0.4."""
+    parts = re.split(r"[-+]", version, maxsplit=1)[0].split(".")
+    for index, part in enumerate(parts):
+        if part != "0":
+            return ".".join(parts[:index + 1])
+    return ".".join(parts)
+
+
+def lockfile_change_by_kind(before: bytes, after: bytes, metadata: dict) -> ResolvedInput | None:
+    """Attribute a Cargo.lock difference using each member's dependency kinds.
+
+    The lockfile records no dependency kinds, but only a member's own edges
+    can be dev edges: Cargo locks the dev-dependencies of workspace members
+    and of no other package, so every third-party edge is a normal or build
+    edge and carries a change into its consumer's library. A member's edge
+    takes its kind from the member's manifest entries for that package
+    (``cargo metadata --no-deps`` records them). The library of every locked
+    package that a changed record reaches through normal/build edges changes:
+    a member among them is seeded and expanded like a changed package. A
+    member that reaches that set only through dev edges is ``dev_only``.
+
+    Edges between members are left to the path-dependency closure, except
+    patched members without a ``path`` entry, which are followed here; edges
+    into HAKARI_PACKAGE do not propagate. A member whose own record changed in
+    a way the changed records do not explain (a version, or an edge gained or
+    lost to an unchanged or member package) is seeded, as is a member edge
+    whose package has no manifest entry.
+
+    ``None`` keeps the kind-blind lockfile attribution, which never narrows
+    past the lockfile graph: when a record that is not a registry release or
+    a member is added or removed (a git revision, a move to or from a git or
+    patched path source), when a changed third-party crate gains or drops an
+    edge to an unchanged package (it may change that package's features for
+    other members, which no lockfile records), or when the graph is unreadable.
+    """
+    try:
+        old_meta, old = _lock_graph(before)
+        new_meta, new = _lock_graph(after)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if old_meta != new_meta:
+        return None
+    manifests = {package["name"]: package.get("dependencies", []) for package in metadata["packages"]}
+    every = old.keys() | new.keys()
+    members = {package_id for package_id in every if not package_id[2] and package_id[0] in manifests}
+    changed = {package_id for package_id in every if old.get(package_id) != new.get(package_id)}
+    external_changes = changed - members
+    # A git revision, or a crate moving to or from a git or patched path
+    # source, adds or removes a record that is not a registry release.
+    if any(not source.startswith(REGISTRY_SOURCES) for _, _, source in (old.keys() ^ new.keys()) - members):
+        return None
+    # A third-party crate that gains or drops an edge to an unchanged package
+    # may enable or disable features on it for every other consumer: the
+    # kind-blind graph attribution, which never narrows past the lockfile,
+    # decides then. Records are compared within one semver-compatible line,
+    # so a new crate or a major move with any such edge falls back.
+    def unchanged_edges(graph: dict, line: tuple[str, str, str]) -> set[LockId]:
+        return {dependency for package_id, (_, deps) in graph.items()
+                if (package_id[0], package_id[2], _compatible(package_id[1])) == line
+                for dependency in deps if dependency not in changed}
+
+    for line in {(name, source, _compatible(version)) for name, version, source in external_changes}:
+        if unchanged_edges(old, line) != unchanged_edges(new, line):
+            return None
+
+    def dependencies(package_id: LockId) -> frozenset[LockId]:
+        return frozenset().union(*(graph[package_id][1] for graph in (old, new) if package_id in graph))
+
+    def edge(consumer: str, dependency: LockId) -> str | None:
+        """The edge's kind: linked, dev, or None when the path closure (or nothing) carries it."""
+        entries = [entry for entry in manifests[consumer] if entry.get("name") == dependency[0]]
+        if dependency in members:
+            if dependency[0] == HAKARI_PACKAGE:
+                return None
+            if entries and all(entry.get("path") for entry in entries):
+                return None
+            entries = [entry for entry in entries if not entry.get("path")]
+        if entries and all(entry.get("kind") == "dev" for entry in entries):
+            return "dev"
+        return "linked"
+
+    start = set(external_changes)
+    unexplained = set()
+    for name in {package_id[0] for package_id in changed & members}:
+        old_ids = [package_id for package_id in old if package_id in members and package_id[0] == name]
+        new_ids = [package_id for package_id in new if package_id in members and package_id[0] == name]
+        if (len(old_ids) != 1 or len(new_ids) != 1 or old[old_ids[0]][0] != new[new_ids[0]][0]
+                or not old[old_ids[0]][1] ^ new[new_ids[0]][1] <= external_changes):
+            unexplained.add(new_ids[0] if len(new_ids) == 1 else old_ids[0])
+    start |= unexplained
+
+    consumers: dict[LockId, set[LockId]] = {}
+    for graph in (old, new):
+        for consumer, (_, deps) in graph.items():
+            for dependency in deps:
+                consumers.setdefault(dependency, set()).add(consumer)
+    affected = set(start)
+    pending = list(start)
+    while pending:
+        dependency = pending.pop()
+        for consumer in consumers.get(dependency, ()):
+            if consumer not in affected and (
+                    consumer not in members or edge(consumer[0], dependency) == "linked"):
+                affected.add(consumer)
+                pending.append(consumer)
+    seeds = {package_id[0] for package_id in unexplained} | {
+        package_id[0] for package_id in members & affected
+        if any(dependency in affected and dependency not in members
+               and edge(package_id[0], dependency) == "linked"
+               for dependency in dependencies(package_id))
+    }
+    checked = {package_id[0] for package_id in members & affected} - seeds
+    dev_only = {
+        package_id[0] for package_id in members - affected
+        if any(dependency in affected and edge(package_id[0], dependency) == "dev"
+               for dependency in dependencies(package_id))
+    } - seeds - checked
+    return ResolvedInput(
+        seeds=frozenset(seeds), checked=frozenset(checked), dev_only=frozenset(dev_only),
+        detail=(f"Cargo.lock reaches {len(seeds)} packages directly and "
+                f"{len(dev_only)} only through dev-dependencies"),
     )
 
 
@@ -492,6 +634,56 @@ def resolve_manifest_inputs(
         if result is not None:
             resolved[path] = result
     return resolved
+
+
+class DependencyEdges(NamedTuple):
+    """Provider -> consumers, split by what the edge carries into the consumer.
+
+    ``linked``: normal and build dependencies (and any kind Cargo may add
+    later). They change the consumer's library, so they propagate further.
+    ``dev``: dev-dependencies. They reach only the consumer's own test,
+    example and bench targets, which no other package compiles.
+    """
+    linked: dict[str, set[str]]
+    dev: dict[str, set[str]]
+
+
+def dependency_edges(packages: dict[str, dict]) -> DependencyEdges:
+    """Workspace path-dependency edges by kind; see `DependencyEdges`.
+
+    Resolves providers exactly like workspace_graph.reverse_dependencies (by
+    manifest path), so the union of both maps is that function's result. It
+    lives here rather than there because release selection fingerprints
+    workspace_graph.py.
+    """
+    manifest_to_name = {
+        str(Path(pkg["manifest_path"]).resolve()): name for name, pkg in packages.items()
+    }
+    linked: dict[str, set[str]] = {name: set() for name in packages}
+    dev: dict[str, set[str]] = {name: set() for name in packages}
+    for consumer, pkg in packages.items():
+        for dependency in pkg.get("dependencies", []):
+            dep_path = dependency.get("path")
+            if not dep_path:
+                continue
+            provider = manifest_to_name.get(str(Path(dep_path).resolve() / "Cargo.toml"))
+            if provider:
+                (dev if dependency.get("kind") == "dev" else linked)[provider].add(consumer)
+    return DependencyEdges(linked, dev)
+
+
+def check_closure(seeds: set[str], edges: DependencyEdges) -> set[str]:
+    """Every package with a compiled target (lib, bin, test, example, bench)
+    that a change to `seeds` reaches.
+
+    A change to A reaches B's library when B depends on A as a normal or build
+    dependency, and so on transitively. When B dev-depends on A, A enters only
+    B's own test/example/bench targets: B is selected, and nothing that links
+    B is, because B's library is unchanged. Each package of the linked closure
+    therefore adds its dev dependants, and those are not expanded further.
+    """
+    linked = closure(seeds, edges.linked)
+    return linked | {consumer for package in linked for consumer in edges.dev.get(package, ())}
 
 
 def package_cost(pkg: dict) -> int:
@@ -721,9 +913,12 @@ def make_plan(
     # Readers reached only through scoped inputs run just the tests that read them.
     whole_readers = {name for name, scope in reader_scopes.items() if scope is None}
     checked: set[str] = set()
+    # Changed in their own test/example/bench targets only: checked and tested, not expanded.
+    dev_only: set[str] = set()
     for resolved in resolved_inputs.values():
         seeds.update(resolved.seeds & packages.keys())
         checked.update(resolved.checked & packages.keys())
+        dev_only.update(resolved.dev_only & packages.keys())
     projected_quality_paths = (
         {EXTERNAL_ASSET_MANIFEST} if builder_only_external_assets else set()
     )
@@ -811,7 +1006,10 @@ def make_plan(
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
-        selected = closure(seeds | checked, reverse)
+        # Normal/build edges propagate; a dev edge adds one dependant whose
+        # own tests change and stops (check_closure). Test selection below
+        # keeps every direct dependant, dev ones included, via `reverse`.
+        selected = check_closure(seeds | checked, dependency_edges(packages)) | dev_only
         reached = selected | readers
         selected.update(ALWAYS_PACKAGES & packages.keys())
         selected.update(readers)
@@ -830,7 +1028,7 @@ def make_plan(
     if full:
         tested = selected
     else:
-        tested = (seeds | whole_readers | ALWAYS_PACKAGES) & selected
+        tested = (seeds | dev_only | whole_readers | ALWAYS_PACKAGES) & selected
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected

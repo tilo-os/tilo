@@ -18,7 +18,7 @@
 //! [`RuntimeMissing::developer_hint`].
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The engine runtime's version: the directory name of its bundle and of its
 /// mount. Bump it whenever the host's protocol or its pinned CEF build
@@ -121,19 +121,9 @@ impl SearchRoots {
         {
             candidates.push(root.join(RUNTIME_VERSION).join(HOST_IN_BUNDLE));
         }
-        if cfg!(target_os = "macos")
-            && let Some(contents) = self
-                .executable
-                .as_deref()
-                .and_then(Path::parent)
-                .and_then(Path::parent)
-        {
-            candidates.push(
-                contents
-                    .join("Frameworks")
-                    .join("Browser Engine.app/Contents/MacOS/tilo-chromium-host"),
-            );
-        }
+        candidates.extend(browser_continuity::engine_host::bundled_host(
+            self.executable.as_deref(),
+        ));
         candidates
     }
 
@@ -171,6 +161,7 @@ pub fn locate() -> Result<PathBuf, RuntimeMissing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn install(root: &Path) -> PathBuf {
         let host = root.join(RUNTIME_VERSION).join(HOST_IN_BUNDLE);

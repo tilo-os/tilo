@@ -127,16 +127,29 @@ jobs:
           }
           printf 'base_image=%s\nbase_source=%s\nbuild_source=%s\n' \
             "$TILO_IMAGE" "$source_revision" "$GITHUB_SHA" > dev-installer-source.txt
+          RPMS_REF=""
+          resolve_rpms() {
+            # The frozen snapshot that carries ukify and the EFI stub for the
+            # boot adapter. Resolved once, only when a UKI may be built.
+            [ -z "$RPMS_REF" ] || return 0
+            ./os/dev/install-cached-cosign.sh
+            # GITHUB_PATH applies to later steps, not this current shell.
+            export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
+            RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
+          }
           if [ -n "$TILO_DEV_TARGET_IMAGE" ]; then
             # Keep the generic live UI and the board target separate, using
-            # the same source cohort. No OS rebuild or signature upload.
+            # the same source cohort. No OS rebuild or signature upload. A
+            # split-kernel target's UKI is built here, on the runner, so the
+            # live installer carries no UKI constructor.
             export TILO_INSTALLER_DEV_TARGET=1
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$TILO_OUTPUT/dev-target"
             mkdir -p "$TILO_OUTPUT"
+            resolve_rpms
             python3 os/dev/prepare-dev-installer-target.py \
               --image "$TILO_DEV_TARGET_IMAGE" --source-revision "$source_revision" \
               --ci-run-id "$TILO_DEV_TARGET_RUN_ID" --hardware-profile "$TILO_DEV_TARGET_PROFILE" \
-              --update-origin "$TILO_DEV_TARGET_ORIGIN" \
+              --update-origin "$TILO_DEV_TARGET_ORIGIN" --rpms-ref "$RPMS_REF" \
               --output "$TILO_INSTALLER_OFFLINE_TARGET_DIR"
             printf 'target_image=%s\ntarget_ci_run_id=%s\ntarget_update_origin=%s\n' \
               "$TILO_DEV_TARGET_IMAGE" "$TILO_DEV_TARGET_RUN_ID" "$TILO_DEV_TARGET_ORIGIN" \
@@ -160,10 +173,7 @@ jobs:
               fi
             ')"
             if [ "$layout" = unsealed ]; then
-              ./os/dev/install-cached-cosign.sh
-              # GITHUB_PATH applies to later steps, not this current shell.
-              export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
-              RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
+              resolve_rpms
               adapted="localhost/tilo-dev-installer-base:$GITHUB_RUN_ID"
               adapter_context="$TILO_OUTPUT/boot-adapter"
               mkdir -p "$adapter_context/os/dev"

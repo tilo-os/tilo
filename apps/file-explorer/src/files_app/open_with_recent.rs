@@ -51,10 +51,11 @@ impl FileExplorerWidget {
     }
 
     pub(super) fn native_selected_discovery(&self) -> bool {
-        self.current_path.starts_with("/run/tilo/retained-home") && self.open_with_route().is_none()
+        tilo_files::native::retained_home::contains(&self.current_path)
+            && self.open_with_route().is_none()
     }
     pub(super) fn retained_selected_open_available(&self) -> bool {
-        self.current_path.starts_with("/run/tilo/retained-home")
+        tilo_files::native::retained_home::contains(&self.current_path)
             && (self
                 .open_with_route()
                 .is_some_and(|route| route.retained_selected_open_available())
@@ -77,7 +78,7 @@ impl FileExplorerWidget {
 
     /// Applications that open `path`, default first; empty with no route.
     pub(super) fn open_with_candidates(&self, path: &Path) -> OpenWithCandidates {
-        if self.native_selected_discovery() && path.starts_with("/run/tilo/retained-home") {
+        if self.native_selected_discovery() && tilo_files::native::retained_home::contains(path) {
             return self.selected_open.discovery.candidates(path);
         }
         let key = type_key(path);
@@ -127,7 +128,7 @@ impl FileExplorerWidget {
             || self
                 .open_with_route()
                 .is_some_and(|route| route.retained_selected_open_available()))
-            && path.starts_with("/run/tilo/retained-home")
+            && tilo_files::native::retained_home::contains(path)
         {
             let Some(_) = self.retained_open_target_access(path, app_id) else {
                 self.status = Some(t("files-open-with-launch-unavailable"));
@@ -541,7 +542,8 @@ impl FileExplorerWidget {
         path: &Path,
     ) -> Option<ui::collaboration::open_selected::v2::SelectedAccess> {
         use ui::collaboration::open_selected::v2::SelectedAccess;
-        if !self.retained_selected_open_available() || !path.starts_with("/run/tilo/retained-home")
+        if !self.retained_selected_open_available()
+            || !tilo_files::native::retained_home::contains(path)
         {
             return None;
         }

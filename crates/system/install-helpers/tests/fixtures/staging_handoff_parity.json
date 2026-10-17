@@ -1,0 +1,1561 @@
+[
+  {
+    "name": "legacy profile",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      }
+    }
+  },
+  {
+    "name": "profile purpose 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":\"computer\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "purpose": "computer"
+      }
+    }
+  },
+  {
+    "name": "profile purpose 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":\"server\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "purpose": "server"
+      }
+    }
+  },
+  {
+    "name": "profile purpose 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":\"\"}}",
+    "refusal": "handoff purpose is malformed"
+  },
+  {
+    "name": "profile purpose 3",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":\"Computer\"}}",
+    "refusal": "handoff purpose is malformed"
+  },
+  {
+    "name": "profile purpose 4",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":null}}",
+    "refusal": "handoff purpose is malformed"
+  },
+  {
+    "name": "profile purpose 5",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"purpose\":true}}",
+    "refusal": "handoff purpose is malformed"
+  },
+  {
+    "name": "profile device_label 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "device_label": ""
+      }
+    }
+  },
+  {
+    "name": "profile device_label 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"Studio\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "device_label": "Studio"
+      }
+    }
+  },
+  {
+    "name": "profile device_label 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"界界界界界界界界界界界界界界界界界界界界界\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "device_label": "界界界界界界界界界界界界界界界界界界界界界"
+      }
+    }
+  },
+  {
+    "name": "profile device_label 3",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"界界界界界界界界界界界界界界界界界界界界界界\"}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile device_label 4",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "device_label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  {
+    "name": "profile device_label 5",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile device_label 6",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\" \"}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile device_label 7",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"\"}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile device_label 8",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":\"a\\nb\"}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile device_label 9",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"device_label\":null}}",
+    "refusal": "handoff device label is malformed"
+  },
+  {
+    "name": "profile full_name 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"full_name\":\"界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "full_name": "界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界"
+      }
+    }
+  },
+  {
+    "name": "profile full_name 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"full_name\":\"界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界\"}}",
+    "refusal": "handoff profile field full_name is not a bounded string"
+  },
+  {
+    "name": "profile full_name 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"full_name\":123}}",
+    "refusal": "handoff profile field full_name is not a bounded string"
+  },
+  {
+    "name": "profile filesystem 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"filesystem\":\"btrfs\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "filesystem": "btrfs"
+      }
+    }
+  },
+  {
+    "name": "profile filesystem 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"filesystem\":\"ext4\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "filesystem": "ext4"
+      }
+    }
+  },
+  {
+    "name": "prepared minimum",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "prepared_setup": {
+          "schema": 1,
+          "sealed_bytes": 48,
+          "ciphertext_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    }
+  },
+  {
+    "name": "prepared schema 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":true,\"sealed_bytes\":48,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared schema 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":2,\"sealed_bytes\":48,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared sealed_bytes 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":47,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared sealed_bytes 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":33570816,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "windows",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin",
+        "prepared_setup": {
+          "schema": 1,
+          "sealed_bytes": 33570816,
+          "ciphertext_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    }
+  },
+  {
+    "name": "prepared sealed_bytes 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":33570817,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared sealed_bytes 3",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":true,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared sealed_bytes 4",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48.0,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared ciphertext_sha256 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared ciphertext_sha256 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared ciphertext_sha256 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared ciphertext_sha256 3",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":null}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared unknown field",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":{\"schema\":1,\"sealed_bytes\":48,\"ciphertext_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"password\":\"forbidden\"}}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "prepared not object",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"windows\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\",\"prepared_setup\":null}}",
+    "refusal": "handoff prepared setup expectation is malformed"
+  },
+  {
+    "name": "migration default copy",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        }
+      }
+    }
+  },
+  {
+    "name": "home policy 0",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"copy\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        },
+        "home_policy": "copy"
+      }
+    }
+  },
+  {
+    "name": "home policy 1",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"access-read-only\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        },
+        "home_policy": "access-read-only"
+      }
+    }
+  },
+  {
+    "name": "home policy 2",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"access-read-write\"}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        },
+        "home_policy": "access-read-write"
+      }
+    }
+  },
+  {
+    "name": "home policy 3",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":\"\"}}",
+    "refusal": "migration home policy is malformed or lacks home consent"
+  },
+  {
+    "name": "home policy 4",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":null}}",
+    "refusal": "migration home policy is malformed or lacks home consent"
+  },
+  {
+    "name": "home policy 5",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]},\"home_policy\":true}}",
+    "refusal": "migration home policy is malformed or lacks home consent"
+  },
+  {
+    "name": "operation mismatch",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"11111111-2222-4333-8444-555555555555\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration plan operation differs from the installation"
+  },
+  {
+    "name": "schema boolean",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":true,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration plan operation differs from the installation"
+  },
+  {
+    "name": "empty categories",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":false,\"flatpak\":false,\"accounts\":false},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration categories are malformed or empty"
+  },
+  {
+    "name": "category integer",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":1,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration categories are malformed or empty"
+  },
+  {
+    "name": "unknown category",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true,\"passwords\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration categories are malformed or empty"
+  },
+  {
+    "name": "uid overflow",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":4294967296,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration source uid exceeds its range"
+  },
+  {
+    "name": "uid boolean",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":true,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "handoff field migration source uid is not a bounded integer"
+  },
+  {
+    "name": "zero inode",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":0,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "handoff field migration home inode is not a bounded integer"
+  },
+  {
+    "name": "inode boolean",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":true,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "handoff field migration home inode is not a bounded integer"
+  },
+  {
+    "name": "locator platform",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Windows\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator must be a native Linux relative path"
+  },
+  {
+    "name": "locator traversal",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,46,46,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator must not traverse outside its filesystem"
+  },
+  {
+    "name": "locator absolute",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[47,104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator must not traverse outside its filesystem"
+  },
+  {
+    "name": "locator empty component",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator must not traverse outside its filesystem"
+  },
+  {
+    "name": "locator zero",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[0]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator bytes are malformed"
+  },
+  {
+    "name": "locator boolean",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[true]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration locator bytes are malformed"
+  },
+  {
+    "name": "locator non UTF8",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,255]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              255
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        }
+      }
+    }
+  },
+  {
+    "name": "volume nil uuid",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"00000000-0000-0000-0000-000000000000\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration volume has a nil identity"
+  },
+  {
+    "name": "volume wrong disk",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"33333333-3333-4333-8333-333333333333\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration volume differs from the retained Linux source"
+  },
+  {
+    "name": "volume wrong size",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":137438953472,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration volume differs from the retained Linux source"
+  },
+  {
+    "name": "volume bad sector",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":1024,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration volume differs from the retained Linux source"
+  },
+  {
+    "name": "volume unsupported fs",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ntfs\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration volume differs from the retained Linux source"
+  },
+  {
+    "name": "volume overlap",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209717248,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration source overlaps installation space"
+  },
+  {
+    "name": "volume staging identity",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration source names a staging partition"
+  },
+  {
+    "name": "unexpected subvolume",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":{\"volume\":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"inode\":123}},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration filesystem has an unexpected subvolume identity"
+  },
+  {
+    "name": "flatpak unknown field",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[],\"password\":\"forbidden\"}}}",
+    "refusal": "Flatpak metadata fields differ from schema 1"
+  },
+  {
+    "name": "flatpak boolean schema",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":true,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak inventory version is unsupported"
+  },
+  {
+    "name": "flatpak without consent",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":false,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak inventory lacks application migration consent"
+  },
+  {
+    "name": "btrfs subvolume inode 123",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"btrfs\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":{\"volume\":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"inode\":123}},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "btrfs"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": {
+            "volume": [
+              3,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "inode": 123
+          }
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        }
+      }
+    },
+    "native_refusal": "migration Btrfs identity differs",
+    "native_reason": "The all-zero subvolume filesystem identity does not match the retained filesystem UUID; native validation must bind both."
+  },
+  {
+    "name": "btrfs subvolume inode 124",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"btrfs\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":{\"volume\":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"inode\":124}},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration Btrfs identity is malformed"
+  },
+  {
+    "name": "btrfs subvolume inode True",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"btrfs\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":{\"volume\":[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"inode\":true}},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "migration Btrfs identity is malformed"
+  },
+  {
+    "name": "btrfs bound subvolume identity",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"btrfs\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":{\"volume\":[3,51,51,51,51,51,51,67,51,131,51,51,51,51,51,51,51,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"inode\":123}},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[]},\"selected\":[],\"installations\":[]}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "btrfs"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": {
+            "volume": [
+              3,
+              51,
+              51,
+              51,
+              51,
+              51,
+              51,
+              67,
+              51,
+              131,
+              51,
+              51,
+              51,
+              51,
+              51,
+              51,
+              51,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "inode": 123
+          }
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": []
+          },
+          "selected": [],
+          "installations": []
+        }
+      }
+    }
+  },
+  {
+    "name": "flatpak remote https://example.org/repo",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[{\"installation\":\"User\",\"name\":\"example\",\"url\":\"https://example.org/repo\",\"options\":\"\"}]},\"selected\":[],\"installations\":[]}}}",
+    "normalized": {
+      "schema": 1,
+      "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "host_os": "linux",
+      "disk_guid": "11111111-2222-4333-8444-555555555555",
+      "disk_size_bytes": 274877906944,
+      "staging_esp": {
+        "first_lba": 343934976,
+        "last_lba": 346032127,
+        "partuuid": "aaaaaaaa-0000-4000-8000-000000000001"
+      },
+      "staging_root": {
+        "first_lba": 346032128,
+        "last_lba": 429918207,
+        "partuuid": "bbbbbbbb-0000-4000-8000-000000000002"
+      },
+      "target_extent": {
+        "first_lba": 209717248,
+        "last_lba": 343934975
+      },
+      "owned_boot_entry": "0104",
+      "original_boot_order": [
+        "0001",
+        "0000"
+      ],
+      "profile": {
+        "schema": 1,
+        "hostname": "studio",
+        "username": "ada",
+        "locale": "en_US.UTF-8",
+        "keyboard": "de",
+        "timezone": "Europe/Berlin"
+      },
+      "migration": {
+        "schema": 1,
+        "operation_id": "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "categories": {
+          "home": true,
+          "flatpak": true,
+          "accounts": true
+        },
+        "home": {
+          "volume": {
+            "disk_guid": "11111111-2222-4333-8444-555555555555",
+            "disk_bytes": 274877906944,
+            "sector_bytes": 512,
+            "partition_guid": "00000000-0000-4000-8000-00000000000b",
+            "first_lba": 206848,
+            "last_lba": 209715199,
+            "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
+            "filesystem": "ext4"
+          },
+          "relative": {
+            "platform": "Unix",
+            "units": [
+              104,
+              111,
+              109,
+              101,
+              47,
+              112,
+              101,
+              114,
+              115,
+              111,
+              110
+            ]
+          },
+          "inode": 123,
+          "original_uid": 1000,
+          "subvolume": null
+        },
+        "flatpak_inventory": {
+          "schema": 1,
+          "inventory": {
+            "refs": [],
+            "remotes": [
+              {
+                "installation": "User",
+                "name": "example",
+                "url": "https://example.org/repo",
+                "options": ""
+              }
+            ]
+          },
+          "selected": [],
+          "installations": []
+        }
+      }
+    }
+  },
+  {
+    "name": "flatpak remote http://example.org/repo",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[{\"installation\":\"User\",\"name\":\"example\",\"url\":\"http://example.org/repo\",\"options\":\"\"}]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak remote contains unsupported trust or account data"
+  },
+  {
+    "name": "flatpak remote https://user:secret@example.org/repo",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[{\"installation\":\"User\",\"name\":\"example\",\"url\":\"https://user:secret@example.org/repo\",\"options\":\"\"}]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak remote contains unsupported trust or account data"
+  },
+  {
+    "name": "flatpak remote https://example.org/repo?token=secret",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[{\"installation\":\"User\",\"name\":\"example\",\"url\":\"https://example.org/repo?token=secret\",\"options\":\"\"}]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak remote contains unsupported trust or account data"
+  },
+  {
+    "name": "flatpak remote https://example.org/repo#fragment",
+    "input": "{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"host_os\":\"linux\",\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":274877906944,\"staging_esp\":{\"partuuid\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"first_lba\":343934976,\"last_lba\":346032127},\"staging_root\":{\"partuuid\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"first_lba\":346032128,\"last_lba\":429918207},\"target_extent\":{\"first_lba\":209717248,\"last_lba\":343934975},\"owned_boot_entry\":\"0104\",\"original_boot_order\":[\"0001\",\"0000\"],\"profile\":{\"schema\":1,\"hostname\":\"studio\",\"username\":\"ada\",\"locale\":\"en_US.UTF-8\",\"keyboard\":\"de\",\"timezone\":\"Europe/Berlin\"},\"migration\":{\"schema\":1,\"operation_id\":\"0f0e0d0c-0b0a-4908-8706-050403020100\",\"categories\":{\"home\":true,\"flatpak\":true,\"accounts\":true},\"home\":{\"volume\":{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_bytes\":274877906944,\"sector_bytes\":512,\"partition_guid\":\"00000000-0000-4000-8000-00000000000b\",\"first_lba\":206848,\"last_lba\":209715199,\"filesystem_uuid\":\"33333333-3333-4333-8333-333333333333\",\"filesystem\":\"ext4\"},\"relative\":{\"platform\":\"Unix\",\"units\":[104,111,109,101,47,112,101,114,115,111,110]},\"inode\":123,\"original_uid\":1000,\"subvolume\":null},\"flatpak_inventory\":{\"schema\":1,\"inventory\":{\"refs\":[],\"remotes\":[{\"installation\":\"User\",\"name\":\"example\",\"url\":\"https://example.org/repo#fragment\",\"options\":\"\"}]},\"selected\":[],\"installations\":[]}}}",
+    "refusal": "Flatpak remote contains unsupported trust or account data"
+  }
+]

@@ -184,8 +184,8 @@ async fn retained_by(hosted: &super::Hosted, workspace: u64, author: [u8; 32]) -
         .into_iter()
         .filter(|body| body.author == author)
         .map(
-            |body| match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body.body) {
-                Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+            |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
+                Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id, envelope, ..
                 }) => format!("{app_id} sealed={}", envelope.encryption.is_some()),
                 Ok(other) => format!("{other:?}").chars().take(48).collect(),
@@ -213,9 +213,9 @@ async fn retained_sealed(
         .unwrap()
         .into_iter()
         .filter(|body| body.author == author)
-        .filter_map(|body| {
-            match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body.body) {
-                Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        .filter_map(
+            |body| match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body) {
+                Ok(neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
                     record_id,
                     envelope,
@@ -227,8 +227,8 @@ async fn retained_sealed(
                         .is_some_and(|metadata| metadata.channel == channel),
                 ),
                 _ => None,
-            }
-        })
+            },
+        )
         .collect();
     (bodies.len(), bodies.iter().all(|sealed| *sealed))
 }

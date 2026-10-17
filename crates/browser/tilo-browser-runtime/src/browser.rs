@@ -48,6 +48,9 @@ thread_local! {
     /// The device and renderer `prepare_gpu` opens before any mount asks for
     /// one; the first `shared_gpu` takes it.
     static PREPARED_GPU: RefCell<Option<PreparedGpu>> = const { RefCell::new(None) };
+    /// What the device's set-up waits on now, for a mount whose first frame
+    /// is late (`watch_first_frame`).
+    static GPU_STEP: Cell<GpuStep> = const { Cell::new(GpuStep::Queued) };
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
@@ -93,6 +96,10 @@ pub(crate) fn refresh_mounts() {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches the page passes in its JSON config"
+)]
 struct Config {
     /// One application to mount on its own; absent (or `desktop`) mounts
     /// the session desktop.
@@ -126,7 +133,7 @@ struct Config {
     /// changing without a focus or structure change.
     #[serde(default)]
     semantics_window_ms: Option<u64>,
-    /// Render within WebKit's GPU memory: a smaller canvas backing store and
+    /// Render within `WebKit`'s GPU memory: a smaller canvas backing store and
     /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
     conservative_gpu: bool,
@@ -165,7 +172,7 @@ struct Request {
 /// The page's one WebGPU device and vello renderer, shared by every mount.
 ///
 /// A device per mount cost every opened workspace a second adapter, device
-/// and full pipeline compilation while the first stayed resident. In WebKit
+/// and full pipeline compilation while the first stayed resident. In `WebKit`
 /// each device holds ~140 MB of its own and compiling vello's pipelines
 /// peaks near 200 MB, under a GPU-process limit (600 MB) that Safari's other
 /// tabs share.
@@ -220,6 +227,7 @@ fn release_gpu(id: u64, gpu: Gpu) {
             }
         });
     }
+    drop(gpu);
 }
 
 struct GpuSetup {
@@ -240,6 +248,10 @@ struct SemanticPresentationTarget {
     action: String,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-mount flags, each read on its own"
+)]
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
@@ -466,7 +478,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
 
 fn admit_runtime() -> Result<(), JsValue> {
     SERVICING
-        .with(|servicing| crate::mount_service_custody::reject_reentry(servicing))
+        .with(crate::mount_service_custody::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
 fn with_mount<R>(
@@ -670,7 +682,7 @@ impl Runner {
                             |event| match event {
                                 DeferredEvent::User(id) => self.user_event(event_loop, id),
                                 DeferredEvent::Window(id, event) => {
-                                    self.window_event(event_loop, id, event)
+                                    self.window_event(event_loop, id, event);
                                 }
                             },
                         )
@@ -1037,12 +1049,14 @@ fn present_desktop(
             about: config.about.clone(),
         },
         Rc::clone(&requests),
-        Rc::clone(&here),
-        shared.clone(),
-        room,
-        Arc::new(move || {
-            let _ = wake.send_event(id);
-        }),
+        crate::shell::ChromeSources {
+            here: Rc::clone(&here),
+            shared: shared.clone(),
+            room,
+            wake: Arc::new(move || {
+                let _ = wake.send_event(id);
+            }),
+        },
     );
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
@@ -1364,7 +1378,117 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
     initialize_gpu(id, 1, window, caps);
+    wasm_bindgen_futures::spawn_local(watch_first_frame(id));
     Ok(())
+}
+
+/// Where graphics start-up stands for a mount that has not drawn yet, as the
+/// page names it (`gpuStep` in the status).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GpuStep {
+    /// Not started: behind the runtime's own work or another mount's set-up.
+    Queued,
+    /// Asking the browser for a WebGPU adapter and device.
+    Device,
+    /// The browser compiling the renderer's pipelines.
+    Pipelines,
+    /// Configuring the canvas on the device.
+    Surface,
+    /// Set up; its first frame not presented yet.
+    FirstFrame,
+}
+
+impl GpuStep {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Device => "device",
+            Self::Pipelines => "pipelines",
+            Self::Surface => "surface",
+            Self::FirstFrame => "first-frame",
+        }
+    }
+
+    const fn waiting_on(self) -> &'static str {
+        match self {
+            Self::Queued => "waiting for graphics set-up to start",
+            Self::Device => "waiting for the WebGPU device",
+            Self::Pipelines => "waiting for the renderer's pipelines to compile",
+            Self::Surface => "waiting to configure the canvas",
+            Self::FirstFrame => "waiting for the first frame to present",
+        }
+    }
+}
+
+/// How long a mount may be visible without presenting its first frame
+/// before it fails, naming the step graphics start-up is stuck on, so the
+/// page says it stopped and offers to try again instead of waiting in
+/// silence. A first frame takes about 2 s on a GPU and 15-35 s under a
+/// software rasteriser (`SwiftShader` in CI).
+const FIRST_FRAME_BOUND_MS: u32 = 60_000;
+/// How often [`watch_first_frame`] looks.
+const FIRST_FRAME_TICK_MS: u32 = 1_000;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(handler: &Function, ms: u32) -> JsValue;
+}
+
+async fn sleep_ms(ms: u32) {
+    let timer = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = set_timeout(&resolve, ms);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(timer).await;
+}
+
+/// Watch mount `id` until its first frame is out: say each step graphics
+/// start-up moves to (`gpuStep`), and fail the mount with that step as its
+/// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] without a
+/// frame. Time hidden (a background tab draws nothing) does not count.
+async fn watch_first_frame(id: u64) {
+    let mut visible_ms: u32 = 0;
+    let mut said = None;
+    loop {
+        sleep_ms(FIRST_FRAME_TICK_MS).await;
+        if !await_runtime_admission().await {
+            return;
+        }
+        let watching = with_mount_quietly(id, |m| {
+            if m.frames > 0 || m.error.is_some() {
+                return Ok(false);
+            }
+            let step = if m.gpu.is_some() {
+                GpuStep::FirstFrame
+            } else {
+                GPU_STEP.get()
+            };
+            if said != Some(step) {
+                said = Some(step);
+                emit(
+                    &m.status,
+                    &serde_json::json!({"phase":"gpu-pending","id":id,"gpuStep":step.name()}),
+                );
+            }
+            if m.hidden || m.viewport.suspended() {
+                return Ok(true);
+            }
+            visible_ms = visible_ms.saturating_add(FIRST_FRAME_TICK_MS);
+            if visible_ms < FIRST_FRAME_BOUND_MS {
+                return Ok(true);
+            }
+            m.error = Some(format!(
+                "WebGPU presented no first frame in {} s, {}",
+                FIRST_FRAME_BOUND_MS / 1000,
+                step.waiting_on()
+            ));
+            m.publish(id);
+            Ok(false)
+        });
+        if !matches!(watching, Ok(true)) {
+            return;
+        }
+    }
 }
 
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCaps) {
@@ -1396,15 +1520,16 @@ enum PreparedGpu {
 }
 
 /// Open the WebGPU device and compile the renderer's pipelines now, while the
-/// page still joins its room and opens the workspace, rather than once the
-/// first mount's canvas exists: the first surface then only configures its
-/// canvas on a device that is ready. Without a mount nothing else happens;
-/// the first mount takes what this opened, and one that comes before it is
-/// done waits for it. Does nothing once a device exists or is being opened.
+/// page opens the workspace, rather than once the first mount's canvas
+/// exists: the first surface then only configures its canvas on a device
+/// that is ready. Without a mount nothing else happens; the first mount
+/// takes what this opened, and one that comes before it is done waits for
+/// it. Does nothing once a device exists or is being opened.
 ///
-/// The page calls this right after the module is instantiated, unless the
-/// browser takes the conservative GPU profile (Safari), whose renderer starts
-/// only once the page's own load settled.
+/// The entry page calls this once a host let it in, never before: the
+/// browser does not cancel the compiles of a page torn down meanwhile, and
+/// the next page's pipelines queue behind them on its compile threads. The conservative GPU profile (Safari)
+/// does not call it; its renderer starts only once the page's load settled.
 #[wasm_bindgen]
 pub fn prepare_gpu() {
     let busy = PREPARED_GPU.with_borrow(Option::is_some)
@@ -1427,8 +1552,10 @@ pub fn prepare_gpu() {
 
 async fn open_gpu() -> Result<(ui::gpu::RenderContext, vello::Renderer), String> {
     let mut cx = ui::gpu::RenderContext::new();
+    GPU_STEP.set(GpuStep::Device);
     let index = cx.device(None).await.ok_or("no WebGPU device")?;
     let handle = cx.devices.get(index).ok_or("WebGPU device missing")?;
+    GPU_STEP.set(GpuStep::Pipelines);
     let renderer = new_renderer(&handle.device).await?;
     Ok((cx, renderer))
 }
@@ -1477,6 +1604,10 @@ async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> 
 
 /// The shared device and renderer, created with the first surface (or taken
 /// from `prepare_gpu`).
+#[expect(
+    clippy::await_holding_refcell_ref,
+    reason = "other mounts only try_borrow the device and skip a frame meanwhile"
+)]
 async fn shared_gpu(
     window: &Arc<Window>,
     size: Viewport,
@@ -1486,6 +1617,7 @@ async fn shared_gpu(
         .with_borrow(Clone::clone)
         .filter(|s| s.try_borrow().is_ok_and(|s| s.failure().is_none()));
     if let Some(shared) = live {
+        GPU_STEP.set(GpuStep::Surface);
         let surface = {
             // Draws of other mounts skip a frame while this is held.
             let mut guard = shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
@@ -1508,6 +1640,12 @@ async fn shared_gpu(
         Some(Ok((cx, renderer))) => (cx, Some(renderer)),
         Some(Err(_)) | None => (ui::gpu::RenderContext::new(), None),
     };
+    // Without a prepared device, the surface's creation opens one.
+    GPU_STEP.set(if prepared.is_some() {
+        GpuStep::Surface
+    } else {
+        GpuStep::Device
+    });
     let surface = cx
         .create_surface(
             Arc::clone(window),
@@ -1525,7 +1663,10 @@ async fn shared_gpu(
         // Prepared on the context's first device, which presents to any
         // canvas on WebGPU.
         Some(renderer) if surface.dev_id == 0 => renderer,
-        _ => new_renderer(&handle.device).await?,
+        _ => {
+            GPU_STEP.set(GpuStep::Pipelines);
+            new_renderer(&handle.device).await?
+        }
     };
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);

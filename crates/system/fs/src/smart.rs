@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 
 use crate::hydration::Hydrator;
 
+pub mod history;
+
 /// Predictive reads are an optimization, not an instruction to fill the disk.
 /// Larger files remain projected until explicitly opened or pinned.
 pub const MAX_PREDICTIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
@@ -85,7 +87,12 @@ fn admit_pending(
 
 pub struct Heuristics {
     pending: Arc<Mutex<HashMap<Hash, u64>>>,
+    /// What the worker obeys: the system's policy, with `enabled` cleared
+    /// while the person has turned prediction off.
     policy: Arc<RwLock<PredictivePolicy>>,
+    /// The latest policy from the network, power and storage monitors, and
+    /// the person's own switch ([`Self::set_prefetch_enabled`]).
+    inputs: Mutex<(PredictivePolicy, bool)>,
     generation: Arc<AtomicU64>,
     cancel: tokio::sync::watch::Sender<u64>,
     queue: mpsc::Sender<PrefetchJob>,
@@ -172,6 +179,7 @@ impl Heuristics {
         Self {
             pending,
             policy,
+            inputs: Mutex::new((PredictivePolicy::default(), true)),
             generation,
             cancel,
             queue,
@@ -191,14 +199,47 @@ impl Heuristics {
         self.activity.notified().await;
     }
 
-    /// Replace the current speculative policy. Tightening any gate invalidates
-    /// every queued/running prediction; reopening policy starts with a fresh
-    /// generation and never resurrects stale hints.
+    /// Replace the system's speculative policy. Tightening any gate
+    /// invalidates every queued/running prediction; reopening policy starts
+    /// with a fresh generation and never resurrects stale hints.
     pub fn set_policy(&self, policy: PredictivePolicy) {
+        let mut inputs = self
+            .inputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inputs.0 = policy;
+        self.apply(*inputs);
+    }
+
+    /// The person's switch for prediction, from Settings: off cancels what
+    /// is queued or running and admits nothing more, whatever the system's
+    /// gates say; on leaves those gates in charge.
+    pub fn set_prefetch_enabled(&self, enabled: bool) {
+        let mut inputs = self
+            .inputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inputs.1 = enabled;
+        self.apply(*inputs);
+    }
+
+    /// Whether the person allows prediction.
+    #[must_use]
+    pub fn prefetch_enabled(&self) -> bool {
+        self.inputs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+    }
+
+    fn apply(&self, (system, enabled): (PredictivePolicy, bool)) {
         *self
             .policy
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = PredictivePolicy {
+            enabled: system.enabled && enabled,
+            ..system
+        };
         let generation = self
             .generation
             .fetch_add(1, Ordering::AcqRel)
@@ -332,6 +373,43 @@ mod tests {
             assert!(admit_pending(&mut pending, second, 4, policy));
             assert_eq!(pending.values().copied().sum::<u64>(), 10);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_persons_switch_overrides_the_system_gates() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let heuristics = Heuristics::new(hydrator);
+        let candidate = vec![(Hash::from([3; 32]), 10)];
+
+        heuristics.set_prefetch_enabled(false);
+        // A later sample from the monitors must not turn prediction back on.
+        heuristics.set_policy(PredictivePolicy::default());
+        assert!(!heuristics.prefetch_enabled());
+        assert!(!heuristics.policy().enabled);
+        heuristics.on_open(1, candidate.clone());
+        assert_eq!(heuristics.pending_work(), (0, 0), "nothing is admitted");
+
+        heuristics.set_prefetch_enabled(true);
+        assert!(heuristics.policy().enabled);
+        heuristics.set_policy(PredictivePolicy {
+            network_allows: false,
+            ..PredictivePolicy::default()
+        });
+        assert!(
+            heuristics.prefetch_enabled() && !heuristics.policy().network_allows,
+            "the switch leaves the system's gates in charge"
+        );
+        drop(heuristics);
+        endpoint.close().await;
     }
 
     /// #4224. The policy monitor sleeps until a file is opened: the first

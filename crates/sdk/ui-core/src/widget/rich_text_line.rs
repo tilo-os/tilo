@@ -483,6 +483,12 @@ impl RichTextLine {
         &self.marks
     }
 
+    /// What the line's accessibility node is built from besides its text:
+    /// [`TextInput::accessibility_state`].
+    pub(crate) fn accessibility_state(&self) -> crate::widget::text_input::TextAccessibilityState {
+        self.inner.accessibility_state()
+    }
+
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
         marks.sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;
@@ -1040,10 +1046,6 @@ impl Widget for RichTextLine {
             } else {
                 0.0
             };
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
-            )]
             // The image stands on the editor's content edge, inside the
             // line's text inset on both sides, at its native aspect, and
             // never taller than its share of the visible height: a capped

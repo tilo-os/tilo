@@ -62,14 +62,19 @@ class AdmissionTests(unittest.TestCase):
         # CI's shallow PR checkout may omit this separately published immutable
         # assembly branch. Fetch only missing reviewed objects; the admission
         # validator still refuses unavailable or mismatched objects and bytes.
+        # A checkout without an `origin` (t's) fetches from the public repository.
         repository = Path(__file__).resolve().parents[2]
+        remote = 'origin'
+        if subprocess.run(['git', '-C', str(repository), 'remote', 'get-url', 'origin'],
+                          capture_output=True).returncode:
+            remote = 'https://code.tilo.so/tilo/tilo.git'
         revisions = {*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR}
         for revision in sorted(revisions):
             result = subprocess.run(['git', '-C', str(repository), 'cat-file', '-e',
                                      revision + '^{commit}'], capture_output=True)
             if result.returncode:
                 subprocess.run(['git', '-C', str(repository), 'fetch', '--no-tags',
-                                '--depth=1', 'origin', revision],
+                                '--depth=1', remote, revision],
                                capture_output=True, check=True, timeout=60)
 
     def test_execute_never_trusts_development_receipt_without_fresh_admission(self):

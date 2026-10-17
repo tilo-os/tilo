@@ -14,6 +14,8 @@ pub mod discovery;
 pub mod multistatus;
 #[cfg(feature = "net")]
 pub mod net;
+#[cfg(feature = "oauth")]
+pub mod oauth;
 #[cfg(any(feature = "client", feature = "net"))]
 mod request;
 

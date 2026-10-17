@@ -26,16 +26,15 @@ impl FileRecentsStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
 
-    /// Replace the file: directory `0700`, file `0600`, written atomically.
-    fn write(&self, recents: &Recents) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(recents).map_err(std::io::Error::other)?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)
+/// Replace the file: directory `0700`, file `0600`, written atomically.
+fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     }
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 impl tilo_desktop::emoji_picker::RecentsStore for FileRecentsStore {
@@ -47,9 +46,19 @@ impl tilo_desktop::emoji_picker::RecentsStore for FileRecentsStore {
             .unwrap_or_default()
     }
 
+    /// A pick runs on the compositor's loop, so the write goes to the state
+    /// writer: its fsyncs can take seconds under I/O pressure. A newer save
+    /// that has not started replaces this one; a failed write is logged.
     fn save(&self, recents: &Recents) -> Result<(), String> {
-        self.write(recents)
-            .map_err(|error| format!("{}: {error}", self.path.display()))
+        let bytes = serde_json::to_vec(recents)
+            .map_err(|error| format!("{}: {error}", self.path.display()))?;
+        let path = self.path.clone();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = write(&path, &bytes) {
+                tracing::warn!(%error, path = %path.display(), "could not save emoji recents");
+            }
+        });
+        Ok(())
     }
 }
 
@@ -66,6 +75,7 @@ mod tests {
         recents.record("👍");
         recents.record("🎉");
         store.save(&recents).expect("saved");
+        crate::shell::durable_writer::global().flush();
         let mode = std::fs::metadata(store.path())
             .expect("saved")
             .permissions()
@@ -75,5 +85,22 @@ mod tests {
             FileRecentsStore::at(store.path()).load().items(),
             ["🎉".to_string(), "👍".to_string()]
         );
+    }
+
+    /// Picking an emoji runs on the compositor's loop; saving the recents
+    /// must not wait for the disk there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saving_a_pick_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = FileRecentsStore::at(dir.path().join("state/tilo/emoji-recents.json"));
+        let saving = store.clone();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(move || {
+            let mut recents = Recents::default();
+            recents.record("🦀");
+            saving.save(&recents).expect("queued");
+        });
+        crate::shell::durable_writer::global().flush();
+        assert_eq!(store.load().items(), ["🦀".to_string()]);
     }
 }

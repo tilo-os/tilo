@@ -248,6 +248,9 @@ fn retained_history_is_restored_after_a_restart() {
     );
     first.borrow_mut().flush_notification_history();
     drop(first);
+    // The loop hands the write to the state writer; a restart reads what
+    // it wrote.
+    shell::shell::durable_writer::global().flush();
 
     {
         use std::os::unix::fs::PermissionsExt;

@@ -71,6 +71,58 @@ pub fn service_session_from_secret(
     Ok(envelope.session)
 }
 
+/// Exercise the protected codec without opening a vault or publishing credentials.
+///
+/// Checks exact selection, person and setup bindings and redacted diagnostics.
+/// # Errors
+/// Rejects malformed sessions or a failed codec/binding contract.
+pub fn verify_service_session_codec(session: &SessionCookies) -> Result<(), CustodyError> {
+    let secret = service_session_secret(session)?;
+    let id = AccountId::new(&session.session_id);
+    let restored = service_session_from_secret(
+        &secret,
+        &id,
+        session.identity_public_key,
+        &session.setup_binding,
+    )?;
+    let debug = format!("{secret:?}");
+    let leaks_credentials = session
+        .cookies
+        .iter()
+        .any(|cookie| !cookie.value.is_empty() && debug.contains(&cookie.value))
+        || session
+            .origin_storage
+            .iter()
+            .any(|entry| !entry.value.is_empty() && debug.contains(&entry.value));
+    if restored != *session
+        || leaks_credentials
+        || service_session_from_secret(
+            &secret,
+            &id,
+            session.identity_public_key.map(|byte| byte ^ 1),
+            &session.setup_binding,
+        )
+        .is_ok()
+        || service_session_from_secret(
+            &secret,
+            &id,
+            session.identity_public_key,
+            &format!("{}.foreign", session.setup_binding),
+        )
+        .is_ok()
+        || service_session_from_secret(
+            &secret,
+            &AccountId::new(format!("{}.foreign", session.session_id)),
+            session.identity_public_key,
+            &session.setup_binding,
+        )
+        .is_ok()
+    {
+        return Err(CustodyError::NeedsAuthentication);
+    }
+    Ok(())
+}
+
 /// Encrypted, credential-free receipt retained in the original vault. It binds
 /// retries to the person and selection even after account metadata is removed.
 #[derive(Serialize, Deserialize)]
@@ -594,6 +646,15 @@ mod tests {
         assert!(!format!("{secret:?}").contains("private-origin-marker"));
         assert!(crate::password_credential(&secret).is_empty());
     }
+    #[test]
+    fn codec_probe_checks_custody_contract_and_refuses_malformed_selection() {
+        let session = selected();
+        verify_service_session_codec(&session).unwrap();
+        let mut foreign = session;
+        foreign.cookies[0].host = "foreign.example".into();
+        assert!(verify_service_session_codec(&foreign).is_err());
+    }
+
     #[test]
     fn malformed_selected_session_refuses_before_secret_publication() {
         let mut session = selected();

@@ -51,7 +51,8 @@ want, not only for the value you hold.
 | `Counter` | Automerge counter | increments add up |
 | `Set<T>` | map keyed by the value | adds and removes merge per element |
 | `Vec<T>` | list, by position | for short lists that are replaced whole |
-| `BTreeMap<String, T>` | map | per key |
+| `BTreeMap<String, T>` | map | per key; copied whole when a view holds the state, so for small maps |
+| `Map<T>` | map, as `BTreeMap<String, T>` | per key; a change copies only its chunk of a held state |
 | `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity |
 | `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |

@@ -284,7 +284,9 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         let loader = interpreter(Path::new("/usr/bin/bash")).unwrap().unwrap();
         let canonical = loader.canonicalize().unwrap();
-        let fixture = tempfile::tempdir().unwrap();
+        // The uid-only child must traverse every ancestor of the fixture,
+        // and $TMPDIR may sit under a root-only directory; /tmp never does.
+        let fixture = tempfile::tempdir_in("/tmp").unwrap();
         std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         materialize_test_loader(fixture.path());
         let _mount = mount_immutable_fixture(fixture.path());

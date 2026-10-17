@@ -364,7 +364,9 @@ pub fn input_command(event: &InputEvent) -> Option<Value> {
             let op = if *pressed { "key_down" } else { "key_up" };
             json!({"op": op, "key": key})
         }
-        InputEvent::ClipboardText { text } => json!({"op": "type", "text": text}),
+        InputEvent::ClipboardText { text } | InputEvent::Text { text } => {
+            json!({"op": "type", "text": text})
+        }
         _ => return None,
     })
 }
@@ -589,6 +591,12 @@ mod tests {
                 modifiers: 0
             }),
             Some(json!({"op": "key_up", "key": "Enter"}))
+        );
+        assert_eq!(
+            input_command(&InputEvent::Text {
+                text: "日本".into()
+            }),
+            Some(json!({"op": "type", "text": "日本"}))
         );
         assert_eq!(evdev_key_name(12).as_deref(), Some("-"));
         assert_eq!(evdev_key_name(999), None);

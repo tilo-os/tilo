@@ -29,15 +29,6 @@
 //! Missing env var / missing file / bad JSON all surface as
 //! [`NotAvailable`] — never a panic.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
@@ -180,16 +171,39 @@ pub struct SecretReference {
 }
 
 /// Non-secret information Settings may show for an identity record. The
-/// private signing share is absent and `Debug` is safe.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// private signing share is absent and `Debug` is safe. It is what the
+/// host's identity actions answer, with the public key in hex.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentitySummary {
     pub id: String,
     pub display_name: String,
+    #[serde(with = "public_key_hex")]
     pub public_key: [u8; 32],
     pub threshold: u16,
     pub total_shares: u16,
     pub active: bool,
     pub protection: KeyProtection,
+}
+
+/// A 32-byte public key as 64 lowercase hex characters.
+mod public_key_hex {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        key: &[u8; 32],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&hex::encode(key))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let mut key = [0; 32];
+        hex::decode_to_slice(text, &mut key).map_err(serde::de::Error::custom)?;
+        Ok(key)
+    }
 }
 
 /// Public fields from an identity record. Reading these never unlocks or

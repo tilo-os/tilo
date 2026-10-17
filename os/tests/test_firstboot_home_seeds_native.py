@@ -100,7 +100,7 @@ class NativeSeeds(unittest.TestCase):
         native.chmod(0o755)
         oracle = self.root / 'tilo-firstboot-home-seeds.py'
         shutil.copyfile(ROOT / 'os/tests/oracles/tilo-firstboot-home-seeds.py', oracle)
-        shutil.copyfile(ROOT / 'os/usr/libexec/tilo-firstboot-files.py', self.root / 'tilo-firstboot-files.py')
+        shutil.copyfile(ROOT / 'os/tests/oracles/tilo-firstboot-files.py', self.root / 'tilo-firstboot-files.py')
         # /run is private to this namespace and avoids private TMPDIR ancestors.
         self.mount(self.root, '/run')
         def demote():

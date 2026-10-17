@@ -110,6 +110,8 @@ TILO_SMP="${TILO_SMP:-4}"
 # device, and otherwise falls back to QEMU's multithreaded software emulator.
 # The fallback is intentionally slower, but lets the release gate run inside a
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
+# `hvf` is Apple's Hypervisor.framework: a Homebrew QEMU on an Apple silicon Mac
+# running an aarch64 guest (set TILO_AAVMF_DIRS to its edk2 firmware).
 TILO_ACCEL="${TILO_ACCEL:-auto}"
 TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-90}"
 TILO_QEMU_START_ATTEMPTS="${TILO_QEMU_START_ATTEMPTS:-100}"
@@ -279,7 +281,8 @@ qemu_accel_args() {
       ;;
     kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
-    *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
+    hvf) echo "-accel hvf -cpu host" ;;
+    *) die "TILO_ACCEL must be auto, kvm, tcg or hvf (got $TILO_ACCEL)" ;;
   esac
 }
 

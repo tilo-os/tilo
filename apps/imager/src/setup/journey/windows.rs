@@ -9,7 +9,7 @@ enum Discovery {
     Granted {
         selected: Vec<SelectedRoot>,
         belongings: belongings::Belongings,
-        hints: Vec<account_custody::hints::AccountHint>,
+        hints: Vec<imager_backend::windows_preparation::AccountHint>,
         hints_unavailable: bool,
     },
 }
@@ -18,7 +18,7 @@ pub(super) struct Preparation {
     pub enabled: bool,
     selected: Vec<SelectedRoot>,
     suggestions: Vec<crate::setup::windows_inventory::RootSuggestion>,
-    hints: Vec<account_custody::hints::AccountHint>,
+    hints: Vec<imager_backend::windows_preparation::AccountHint>,
     password: ui::LocalState<String>,
     exclusion_reason: ui::LocalState<String>,
     hints_unavailable: bool,
@@ -106,7 +106,7 @@ impl InstallerPreview {
         };
         serde_json::json!(inventory.roots.iter().enumerate().map(|(index, root)| {
             serde_json::json!({"source_id":root.source_id, "source_path":root.path,
-                "categories":root.review_categories(index),
+                "categories":super::super::windows_inventory::review_categories(root, index),
                 "gaps":root.gaps.iter().map(|gap| root.path.join(&gap.relative)).collect::<Vec<_>>()})
         }).collect::<Vec<_>>())
     }
@@ -573,7 +573,7 @@ impl InstallerPreview {
                 if root.entries.is_empty() && root.gaps.is_empty() {
                     content = content.push(Box::new(Text::new(&t("installer-windows-empty"))));
                 }
-                for group in root.review_categories(index) {
+                for group in super::super::windows_inventory::review_categories(root, index) {
                     let category_id = category_id(group.category);
                     let mut items: Vec<Box<dyn Widget>> = Vec::new();
                     let decision_id = match group.decision {
@@ -799,72 +799,8 @@ fn role_id(role: RootRole) -> &'static str {
     }
 }
 
-fn export(
-    inventory: &Inventory,
-    hints: &[account_custody::hints::AccountHint],
-    password: &[u8],
-    destination: &Path,
-) -> Result<crate::windows_media::WindowsMedia, String> {
-    use crate::setup::migration::PinnedDirectory;
-    use std::io::Write;
-    let parent = PinnedDirectory::open_absolute(destination).map_err(|e| e.to_string())?;
-    inventory.validate_export_destination(&parent)?;
-    let name = format!("tilo-windows-{}", uuid::Uuid::new_v4());
-    let output = parent
-        .create_child(std::ffi::OsStr::new(&name))
-        .map_err(|e| e.to_string())?;
-    let binding = uuid::Uuid::new_v4().to_string();
-    let sealed = account_custody::hints::seal_password(password, &binding, hints)
-        .map_err(|e| e.to_string())?;
-    let dir = cap_std::fs::Dir::from_std_file(output.file.try_clone().map_err(|e| e.to_string())?);
-    let mut options = cap_std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = dir
-        .open_with("account-hints.sealed", &options)
-        .map_err(|e| e.to_string())?;
-    file.write_all(sealed.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    let mut verified_bytes = 0_u64;
-    let mut verified_files = 0_usize;
-    for (index, root) in inventory.roots.iter().enumerate() {
-        if !root.has_copy_selection() {
-            continue;
-        }
-        let report = inventory.copy_selected(
-            &root.source_id,
-            &destination.join(&name).join(format!("source-{index}")),
-            &std::sync::atomic::AtomicBool::new(false),
-        )?;
-        if !report.complete() {
-            return Err("Selected data was not completely copied; verified output retained".into());
-        }
-        verified_bytes = verified_bytes.saturating_add(report.verified_bytes);
-        verified_files = verified_files.saturating_add(report.verified_files.len());
-    }
-    // No source environment, account identity, source path or filename inventory
-    // is written to the public receipt. It never authorizes replacement.
-    let receipt = serde_json::to_vec(&serde_json::json!({"schema":1,"hint_binding":binding,
-        "budget":inventory.budget(), "verified_bytes":verified_bytes, "verified_files":verified_files,
-        "replacement_authorized":false}))
-    .map_err(|e| e.to_string())?;
-    let mut file = dir
-        .open_with("review.json", &options)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&receipt)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    output.validate_destination().map_err(|e| e.to_string())?;
-    crate::setup::migration_durability::sync_directory(&output.file).map_err(|e| e.to_string())?;
-    crate::setup::migration_durability::sync_directory(&parent.file).map_err(|e| e.to_string())?;
-    let prepared =
-        account_custody::hints::media::Prepared::seal(password, &binding, hints, &receipt)
-            .map_err(|e| e.to_string())?;
-    crate::windows_media::WindowsMedia::new(prepared, destination.join(name).join("review.json"))
-        .map_err(|e| e.to_string())
-}
-
 use InstallerPreviewEffect::{ExportWindowsPreparation, SelectWindowsRoot};
+use imager_backend::windows_preparation::export;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

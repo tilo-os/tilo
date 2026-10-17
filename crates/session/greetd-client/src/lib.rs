@@ -27,15 +27,6 @@
 //! loop already handles an arbitrary sequence of auth messages and reports
 //! each prompt to the caller via the `on_prompt` callback.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 

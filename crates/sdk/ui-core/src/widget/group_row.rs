@@ -3389,10 +3389,6 @@ impl Widget for GroupRow {
         any
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
-    )]
     fn composition_follows_allocation(&self) -> bool {
         true
     }

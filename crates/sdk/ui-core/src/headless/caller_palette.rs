@@ -35,10 +35,12 @@ impl FrameHarness {
     /// Whether the command chord opens the caller palette. A root that
     /// answers the chord with its own search (the web desktop) turns it off.
     pub fn set_caller_palette_enabled(&mut self, enabled: bool) {
+        self.invalidate_local();
         self.caller_palette.disabled = !enabled;
     }
 
     pub fn set_caller_actions(&mut self, resources: Vec<tilo_actions::Resource>) {
+        self.invalidate_local();
         self.caller_palette.resources = resources;
         let resources = self.caller_resources();
         if let Some(palette) = &mut self.caller_palette.palette {
@@ -52,6 +54,7 @@ impl FrameHarness {
     /// recovery; this frame never acknowledges an effect or mutates its document.
     /// Browser-owned command search opens the same authoritative palette.
     pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
+        self.invalidate_local();
         if self.global_search_query().is_some()
             || self.global_search_pending()
             || self.root.modal_capture().is_some()
@@ -69,6 +72,7 @@ impl FrameHarness {
         Ok(())
     }
     pub fn take_caller_operation(&mut self) -> Option<PendingOperation> {
+        self.invalidate_local();
         self.caller_palette.pending.take()
     }
 

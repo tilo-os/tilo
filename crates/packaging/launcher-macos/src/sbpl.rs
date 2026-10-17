@@ -19,6 +19,10 @@
 //! from the payload and the runtime directory only, and writes there are
 //! denied last so that no user grant can re-open them (in SBPL the last
 //! matching rule wins).
+//!
+//! Tilo's private stores are denied the same way, after every grant: no
+//! access at all to the store, and no write to any directory or symlink on
+//! its way ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -35,6 +39,11 @@ pub const READ_PARAM_PREFIX: &str = "READ_";
 /// path (App Sandbox's user-selected read-write).
 pub const USER_SELECTED_EXTENSION: &str = "com.apple.app-sandbox.read-write";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
+/// A private store: denied outright ([`SeatbeltPolicy::hidden`]).
+pub const HIDDEN_PARAM_PREFIX: &str = "HIDDEN_";
+/// A path a private store resolves through: never written
+/// ([`SeatbeltPolicy::pinned`]).
+pub const PINNED_PARAM_PREFIX: &str = "PINNED_";
 
 /// Mach services an `AppKit` window needs beyond `system.sb`: `WindowServer`
 /// and the window manager, Dock (activation, fullscreen), `LaunchServices`,
@@ -156,6 +165,10 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
     }
     out.network(&policy.network);
 
+    // After every grant, so that none — a home folder, a picked path — can
+    // reach Tilo's private stores or move them aside.
+    out.private_stores(policy);
+
     // Last, so it overrides any grant above that happens to contain them.
     let mut deny = format!("(deny file-write*\n  (subpath (param \"{payload}\"))");
     if let Some(runtime) = &runtime {
@@ -223,6 +236,32 @@ impl Builder {
         self.text.push_str(")\n");
     }
 
+    /// Deny every access to the [`SeatbeltPolicy::hidden`] stores, and every
+    /// write — rename, removal, a new symlink target — to the
+    /// [`SeatbeltPolicy::pinned`] paths themselves. A `literal` matches the
+    /// path alone, so files may still be created and changed inside a
+    /// pinned directory as its grant allows.
+    fn private_stores(&mut self, policy: &SeatbeltPolicy) {
+        if !policy.hidden.is_empty() {
+            let mut rule = String::from("(deny file-read* file-write*");
+            for (index, path) in policy.hidden.iter().enumerate() {
+                let name = self.param(format!("{HIDDEN_PARAM_PREFIX}{index}"), path);
+                let _ = write!(rule, "\n  (subpath (param \"{name}\"))");
+            }
+            rule.push(')');
+            self.rule(&rule);
+        }
+        if !policy.pinned.is_empty() {
+            let mut rule = String::from("(deny file-write*");
+            for (index, path) in policy.pinned.iter().enumerate() {
+                let name = self.param(format!("{PINNED_PARAM_PREFIX}{index}"), path);
+                let _ = write!(rule, "\n  (literal (param \"{name}\"))");
+            }
+            rule.push(')');
+            self.rule(&rule);
+        }
+    }
+
     fn network(&mut self, network: &SeatbeltNetwork) {
         match network {
             SeatbeltNetwork::Denied => {}
@@ -281,6 +320,12 @@ mod tests {
             read_only: vec![PathBuf::from("/Users/u/Music")],
             read_write: vec![PathBuf::from("/Users/u/Documents/\"quoted\" (dir)")],
             network,
+            hidden: vec![PathBuf::from("/Users/u/.config/tilo")],
+            pinned: vec![
+                PathBuf::from("/Users"),
+                PathBuf::from("/Users/u"),
+                PathBuf::from("/Users/u/.config"),
+            ],
             not_enforced: Vec::new(),
         }
     }
@@ -306,7 +351,11 @@ mod tests {
                 "CONTAINER_DIR",
                 "DARWIN_CACHE_DIR",
                 "READ_0",
-                "WRITE_0"
+                "WRITE_0",
+                "HIDDEN_0",
+                "PINNED_0",
+                "PINNED_1",
+                "PINNED_2"
             ]
         );
     }
@@ -377,6 +426,53 @@ mod tests {
             !tail.contains("(allow"),
             "the write denial must be the last rule"
         );
+    }
+
+    #[test]
+    fn private_stores_are_denied_after_every_grant() {
+        for network in [
+            SeatbeltNetwork::Denied,
+            SeatbeltNetwork::Gate(9050),
+            SeatbeltNetwork::Unrestricted,
+        ] {
+            let p = policy(network);
+            let profile = render(&p);
+            let hidden = profile
+                .text
+                .find("(deny file-read* file-write*\n  (subpath (param \"HIDDEN_0\")))")
+                .expect("the store is denied outright");
+            let pinned = profile
+                .text
+                .find(
+                    "(deny file-write*\n  (literal (param \"PINNED_0\"))\n  \
+                     (literal (param \"PINNED_1\"))\n  (literal (param \"PINNED_2\")))",
+                )
+                .expect("every directory on the way is pinned");
+            // In SBPL the last matching rule wins: no allow may follow.
+            assert!(
+                !profile
+                    .text
+                    .get(hidden.min(pinned)..)
+                    .unwrap()
+                    .contains("(allow"),
+                "a grant follows the private store denial:\n{}",
+                profile.text
+            );
+            assert_eq!(param(&profile, "HIDDEN_0"), "/Users/u/.config/tilo");
+            assert_eq!(param(&profile, "PINNED_2"), "/Users/u/.config");
+            // Path ancestors of a store are not made stat-able for it.
+            assert!(
+                !profile
+                    .text
+                    .contains("(path-ancestors (param \"HIDDEN_0\"))")
+            );
+        }
+
+        let mut none = policy(SeatbeltNetwork::Denied);
+        none.hidden.clear();
+        none.pinned.clear();
+        let profile = render(&none);
+        assert!(!profile.text.contains("HIDDEN_") && !profile.text.contains("PINNED_"));
     }
 
     #[test]

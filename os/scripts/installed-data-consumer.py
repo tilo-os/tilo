@@ -205,9 +205,9 @@ def home_facts(store):
 def home(store, check=False, runner=invoke):
     dependencies = ('/usr/libexec/tilo-verify-home-consumer-capability',
                     '/usr/libexec/tilo-installed-data-consumer.py',
-                    '/usr/libexec/tilo-firstboot-files.py')
-    # Firstboot publication still uses the installed Python implementation.
-    infrastructure = {name: store.digest(name, 1 << 20) for name in dependencies}
+                    '/usr/libexec/tilo-firstboot-files')
+    # Bind the probe to the installed compiled publication helper, never its test oracle.
+    infrastructure = {name: store.digest(name, 64 << 20) for name in dependencies}
     before = home_facts(store)
     actual = shape(decode(runner([str(store.path(HELPER)), '--home-consumer-capability']), 4096),
                    HOME_KEYS, {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1})
@@ -215,7 +215,7 @@ def home(store, check=False, runner=invoke):
     seed = decode(runner([str(store.path('/usr/libexec/tilo-firstboot-home-seeds')), '--capabilities']), 4096)
     shape(seed, {'schema', 'seed_protocol'}, {'schema': 1, 'seed_protocol': 1})
     require(home_facts(store) == before
-            and {name: store.digest(name, 1 << 20) for name in dependencies} == infrastructure,
+            and {name: store.digest(name, 64 << 20) for name in dependencies} == infrastructure,
             'Home artifacts changed during probe')
     if check:
         require(shape(store.receipt(HOME, 4096), HOME_KEYS,

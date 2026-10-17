@@ -60,6 +60,7 @@ pub struct Handoff {
     pub owned_boot_entry: String,
     pub original_boot_order: Vec<String>,
     /// Secret-free fields accepted by the installer's media profile.
+    #[serde(deserialize_with = "deserialize_profile")]
     pub profile: serde_json::Map<String, serde_json::Value>,
     /// Optional secret-free retained-source hint; never source access authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,8 +136,8 @@ fn is_boot_id(value: &str) -> bool {
 
 impl Handoff {
     /// The handoff's own consistency. It deliberately says nothing about the
-    /// disk, which only the installer can see, nor about the profile, whose
-    /// fields each side checks against the media profile rules.
+    /// disk, which only the installer can see. Profile metadata is shape-checked;
+    /// the installer independently validates individual setup choices.
     ///
     /// # Errors
     ///
@@ -148,7 +149,7 @@ impl Handoff {
         if !is_guid(&self.operation_id) || !is_guid(&self.disk_guid) {
             return Err("staged installation identity is malformed".into());
         }
-        if self.disk_size_bytes == 0 {
+        if self.disk_size_bytes == 0 || self.disk_size_bytes >= MAX_LBA {
             return Err("staged installation has no disk size".into());
         }
         for staged in [&self.staging_esp, &self.staging_root] {
@@ -184,8 +185,9 @@ impl Handoff {
         {
             return Err("staged firmware state is malformed".into());
         }
+        validate_profile(&self.profile)?;
         if let Some(migration) = &self.migration {
-            migration.validate(self)?;
+            migration.validate_in_handoff(self)?;
         }
         Ok(())
     }
@@ -215,6 +217,84 @@ impl Handoff {
         self.validate()?;
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreparedSetupExpectation {
+    schema: u32,
+    sealed_bytes: u64,
+    ciphertext_sha256: String,
+}
+
+fn deserialize_profile<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<serde_json::Map<String, serde_json::Value>, D::Error> {
+    struct ProfileVisitor;
+    impl<'de> serde::de::Visitor<'de> for ProfileVisitor {
+        type Value = serde_json::Map<String, serde_json::Value>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a secret-free installation profile")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut profile = serde_json::Map::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if profile.contains_key(&key) {
+                    return Err(serde::de::Error::custom("duplicate profile field"));
+                }
+                let value = if key == "prepared_setup" {
+                    serde_json::to_value(map.next_value::<PreparedSetupExpectation>()?)
+                        .map_err(serde::de::Error::custom)?
+                } else {
+                    map.next_value()?
+                };
+                profile.insert(key, value);
+            }
+            validate_profile(&profile).map_err(serde::de::Error::custom)?;
+            Ok(profile)
+        }
+    }
+    deserializer.deserialize_map(ProfileVisitor)
+}
+
+/// Validate the closed, secret-free installer profile shared by both sides.
+///
+/// # Errors
+/// Unknown fields or malformed values.
+pub fn validate_profile(
+    profile: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    for (key, value) in profile {
+        let valid = match key.as_str() {
+            "schema" => value.is_i64() || value.is_u64(),
+            "hostname" | "username" | "full_name" | "locale" | "keyboard" | "timezone"
+            | "filesystem" => value.as_str().is_some_and(|s| s.chars().count() <= 256),
+            "purpose" => value
+                .as_str()
+                .is_some_and(|s| matches!(s, "computer" | "server")),
+            "device_label" => value.as_str().is_some_and(|s| {
+                s.len() <= 64
+                    && (s.is_empty() || !s.trim().is_empty())
+                    && !s.chars().any(char::is_control)
+            }),
+            "prepared_setup" => serde_json::from_value::<PreparedSetupExpectation>(value.clone())
+                .is_ok_and(|p| {
+                    p.schema == 1
+                        && (48..=32 * 1024 * 1024 + 16384).contains(&p.sealed_bytes)
+                        && migration::lower_hex_digest(&p.ciphertext_sha256)
+                }),
+            _ => false,
+        };
+        if !valid {
+            return Err(format!(
+                "staged installation profile field {key} is malformed"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `json` followed by ASCII spaces to exactly `len` bytes.
@@ -267,10 +347,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn retained_source_is_typed_lossless_and_checked_against_staging() {
-        let mut handoff = handoff();
-        let migration = serde_json::json!({
+    fn migration(handoff: &Handoff) -> serde_json::Value {
+        serde_json::json!({
             "schema": 1, "operation_id": handoff.operation_id,
             "categories": {"home": true, "flatpak": false, "accounts": false},
             "home": {
@@ -283,13 +361,111 @@ mod tests {
                 "relative": {"platform": "Unix", "units": b"home/person"},
                 "inode": 1234, "original_uid": 1000, "subvolume": null
             }
+        })
+    }
+
+    #[test]
+    fn retained_source_is_typed_lossless_and_checked_against_staging() {
+        let mut handoff = handoff();
+        let migration = migration(&handoff);
+        let standalone: Migration = serde_json::from_value(migration.clone()).unwrap();
+        standalone.validate_standalone().unwrap();
+        let mut different_disk = handoff.clone();
+        different_disk.disk_guid = "44444444-4444-4444-8444-444444444444".into();
+        assert!(standalone.validate_in_handoff(&different_disk).is_err());
+        for (pointer, value) in [
+            ("/operation_id", serde_json::json!("not-an-operation")),
+            ("/home/relative/units", serde_json::json!(b"../person")),
+            ("/home/inode", serde_json::json!(1u64 << 62)),
+        ] {
+            let mut bad = migration.clone();
+            *bad.pointer_mut(pointer).unwrap() = value;
+            let bad: Migration = serde_json::from_value(bad).unwrap();
+            assert!(bad.validate_standalone().is_err(), "{pointer}");
+        }
+        handoff.migration = Some(standalone);
+        check_retained_handoff(&handoff, &migration);
+    }
+
+    #[test]
+    fn pending_computer_applications_require_matching_consent() {
+        let handoff = handoff();
+        let mut pending = migration(&handoff);
+        pending["home_policy"] = serde_json::json!("access-read-write");
+        pending["pending_computer_applications_scope"] = serde_json::json!({
+            "schema": 1, "source_operation": handoff.operation_id,
+            "applications_operation": "44444444-4444-4444-8444-444444444444",
+            "staging_operation": "55555555-5555-4555-8555-555555555555",
+            "staging_plan_sha256": "a".repeat(64), "setup_binding": "setup",
+            "identity_public_key": vec![7u8; 32]
         });
-        handoff.migration = Some(serde_json::from_value(migration.clone()).unwrap());
+        let pending_plan: Migration = serde_json::from_value(pending).unwrap();
+        pending_plan.validate_standalone().unwrap();
+        let mut pending = serde_json::to_value(pending_plan).unwrap();
+        pending["categories"]["flatpak"] = true.into();
+        assert!(
+            serde_json::from_value::<Migration>(pending)
+                .unwrap()
+                .validate_standalone()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn flatpak_inventory_requires_reviewed_and_bound_metadata() {
+        let migration = migration(&handoff());
+        let mut flatpak = migration.clone();
+        flatpak["categories"]["flatpak"] = true.into();
+        let app = serde_json::json!({"reference": "app/org.example.App/x86_64/stable",
+            "origin": "example", "installation": "User", "name": "Example"});
+        let remote = serde_json::json!({"installation": "User", "name": "example",
+            "url": "https://example.org/repository", "options": ""});
+        flatpak["flatpak_inventory"] = serde_json::json!({
+            "schema": 2, "inventory": {"refs": [app], "remotes": [remote]},
+            "selected": [app], "installations": [{
+                "installation": "User", "source_plan": serde_json::to_vec(&migration).unwrap(),
+                "repositories": [{"remote": remote, "definition_sha256": vec![1u8; 32]}],
+                "deployments": [{"reference": "app/org.example.App/x86_64/stable",
+                    "commit": "a".repeat(64), "deploy_sha256": vec![2u8; 32]}],
+                "config_sha256": vec![3u8; 32]
+            }]
+        });
+        serde_json::from_value::<Migration>(flatpak.clone())
+            .unwrap()
+            .validate_standalone()
+            .unwrap();
+        for (pointer, value) in [
+            (
+                "/flatpak_inventory/inventory/remotes/0/url",
+                serde_json::json!("https://person:secret@example.org/repository"),
+            ),
+            (
+                "/flatpak_inventory/selected/0/name",
+                serde_json::json!("unreviewed"),
+            ),
+            (
+                "/flatpak_inventory/installations/0/deployments/0/commit",
+                serde_json::json!("A".repeat(64)),
+            ),
+        ] {
+            let mut bad = flatpak.clone();
+            *bad.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                serde_json::from_value::<Migration>(bad)
+                    .unwrap()
+                    .validate_standalone()
+                    .is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    fn check_retained_handoff(handoff: &Handoff, migration: &serde_json::Value) {
         let bytes = handoff.to_padded(4096).unwrap();
         let parsed = Handoff::parse(&bytes).unwrap();
-        assert_eq!(parsed, handoff);
+        assert_eq!(&parsed, handoff);
         let document = serde_json::to_value(parsed).unwrap();
-        assert_eq!(document["migration"], migration);
+        assert_eq!(&document["migration"], migration);
         for (pointer, value) in [
             ("/host_os", serde_json::json!("windows")),
             ("/migration/operation_id", serde_json::json!("different")),
@@ -333,6 +509,60 @@ mod tests {
         let duplicate = json.replacen("\"inode\":1234", "\"inode\":1234,\"inode\":1234", 1);
         assert_ne!(json, duplicate);
         assert!(Handoff::parse(duplicate.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn profile_metadata_is_closed_bounded_and_duplicate_free() {
+        let mut valid = handoff();
+        valid.profile = serde_json::from_value(serde_json::json!({
+            "schema": 1, "hostname": "desktop", "device_label": "My computer",
+            "purpose": "computer", "prepared_setup": {
+                "schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "a".repeat(64)
+            }
+        }))
+        .unwrap();
+        let bytes = valid.to_padded(4096).unwrap();
+        assert_eq!(Handoff::parse(&bytes).unwrap(), valid);
+        for (key, value) in [
+            ("password", serde_json::json!("secret")),
+            ("purpose", serde_json::json!("other")),
+            ("device_label", serde_json::json!(" ")),
+            ("device_label", serde_json::json!("é".repeat(33))),
+            ("device_label", serde_json::json!("bad\u{0080}")),
+            ("hostname", serde_json::json!("a".repeat(257))),
+            ("prepared_setup", serde_json::json!(null)),
+            (
+                "prepared_setup",
+                serde_json::json!({"schema": 1, "sealed_bytes": 47, "ciphertext_sha256": "a".repeat(64)}),
+            ),
+            (
+                "prepared_setup",
+                serde_json::json!({"schema": 1, "sealed_bytes": 48, "ciphertext_sha256": "A".repeat(64)}),
+            ),
+        ] {
+            let mut bad = valid.clone();
+            bad.profile.insert(key.into(), value);
+            assert!(bad.validate().is_err(), "{key}");
+            assert!(
+                Handoff::parse(&serde_json::to_vec(&bad).unwrap()).is_err(),
+                "{key}"
+            );
+        }
+        let json = serde_json::to_string(&valid).unwrap();
+        for (from, to) in [
+            (
+                "\"sealed_bytes\":48",
+                "\"sealed_bytes\":48,\"sealed_bytes\":48",
+            ),
+            (
+                "\"purpose\":\"computer\"",
+                "\"purpose\":\"computer\",\"purpose\":\"server\"",
+            ),
+        ] {
+            let bad = json.replacen(from, to, 1);
+            assert_ne!(json, bad);
+            assert!(Handoff::parse(bad.as_bytes()).is_err());
+        }
     }
 
     #[test]

@@ -121,6 +121,17 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary["derived"], {})
         self.assertIn("| plain-g300 | 300/300 |", room_capacity.markdown(summary))
 
+    def test_a_runs_phase_timings_and_commits_are_reported(self):
+        body = report(300, 700, 1.5)
+        body["committed"], body["chat_tx"] = 18, 316
+        body["timings"] = {"join.ticket_wait": "n=300 total_ms=900 p99_ms=12.0 last_size=0 ms_by_tenth=1,2",
+                           "owner.replay.persist": "n=900 total_ms=4000 max_ms=80.0 busy_ms_by_s=0,950"}
+        text = room_capacity.markdown(room_capacity.summarize([run("plain-g300", "plain", body)], self.prices))
+        self.assertIn("| 18/316 |", text)
+        self.assertIn("plain-g300 phase timings:", text)
+        self.assertIn("- `join.ticket_wait`: n=300 total_ms=900", text)
+        self.assertIn("- `owner.replay.persist`: n=900 total_ms=4000 max_ms=80.0 busy_ms_by_s=0,950", text)
+
 
 if __name__ == "__main__":
     unittest.main()

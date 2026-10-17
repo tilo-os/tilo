@@ -1,11 +1,11 @@
 //! Count complete writes at the production writer boundary, not QUIC timing.
 use super::*;
 use collab_types::{PeerPresence, PeerPresencePayload};
+use neighbour_wire::NeighbourMsg;
 use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tilo_peer_state::NeighbourMsg;
 use tokio::io::AsyncWrite;
 
 #[derive(Default)]

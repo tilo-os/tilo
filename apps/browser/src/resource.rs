@@ -378,7 +378,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             {
                 self.attach_history(history);
             }
-            #[cfg(target_os = "linux")]
             if !cx.is_private()
                 && let Some(person) = cx.me()
             {
@@ -407,7 +406,7 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
     /// Every effect acts on the window's page; one that waits (a page
     /// loading, the engine answering) is answered once it settles.
     fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
-        if let BrowserEffect::ListServiceSessions = &effect {
+        if matches!(&effect, BrowserEffect::ListServiceSessions) {
             let waker = self
                 .service_cx
                 .as_ref()
@@ -416,7 +415,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             self.page_mut().begin_service_list(cx.reply(), waker)?;
             return Ok(Effected::Pending);
         }
-        #[cfg(target_os = "linux")]
         if let BrowserEffect::OpenServiceSession { session_id } = &effect {
             let source = self
                 .service_cx
@@ -436,7 +434,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
         if let BrowserEffect::RetryForgetServiceSession { session_id }
         | BrowserEffect::ForgetServiceSession { session_id } = &effect
         {
-            #[cfg(target_os = "linux")]
             {
                 let source = self
                     .service_cx
@@ -451,11 +448,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
                 self.page_mut()
                     .begin_forget_service_session(session_id, person, reply, waker)?;
                 return Ok(Effected::Pending);
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                let _ = session_id;
-                return Err("Local account forgetting needs the native backend".into());
             }
         }
         let invocation = cx.invocation().unwrap_or_default();

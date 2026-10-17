@@ -1,50 +1,12 @@
 //! Explicit portal/semantic grant, followed by private source-bound preparation.
-use super::super::{
-    flatpak_transfer::InstalledRef, migration::PinnedDirectory, migration_intent::MigrationIntent,
-};
+use super::super::{flatpak_transfer::InstalledRef, migration_intent::MigrationIntent};
+use imager_backend::setup::live_selection::ReviewFailure;
+#[cfg(all(test, target_os = "linux"))]
+use imager_backend::setup::live_selection::native::{reattest_grant, validate_home_grant};
 use std::{
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        mpsc::{self, Receiver},
-    },
+    sync::mpsc::{self, Receiver},
 };
-
-#[derive(Debug)]
-enum ReviewFailure {
-    Grant,
-    ChangedSource,
-    UnsupportedSource,
-    PrivateState,
-    Capacity,
-    Unavailable,
-}
-impl ReviewFailure {
-    fn private_state(error: std::io::Error) -> Self {
-        if error.kind() == std::io::ErrorKind::StorageFull {
-            Self::Capacity
-        } else {
-            Self::PrivateState
-        }
-    }
-    fn capture(error: std::io::Error) -> Self {
-        match error.kind() {
-            std::io::ErrorKind::Unsupported => Self::UnsupportedSource,
-            std::io::ErrorKind::StorageFull => Self::Capacity,
-            _ => Self::Unavailable,
-        }
-    }
-    fn key(&self) -> &'static str {
-        match self {
-            Self::Grant => "installer-migration-grant-failed",
-            Self::ChangedSource => "installer-migration-source-replaced",
-            Self::UnsupportedSource => "installer-migration-source-unsupported",
-            Self::PrivateState => "installer-migration-state-unavailable",
-            Self::Capacity => "installer-migration-state-full",
-            Self::Unavailable => "installer-migration-prepare-failed",
-        }
-    }
-}
 
 #[derive(Default)]
 pub(super) struct Selection {
@@ -101,69 +63,13 @@ impl Selection {
         let (sender, receiver) = mpsc::channel();
         self.worker = Some(receiver);
         std::thread::spawn(move || {
-            let result = (|| {
-                let (selected_pin, expected_pin) = validate_home_grant(&selected, &home)?;
-                let root = state_root().ok_or(ReviewFailure::PrivateState)?;
-                let parent = ensure_private_tree(&root).map_err(ReviewFailure::private_state)?;
-                let name = uuid::Uuid::new_v4().to_string();
-                let child = parent
-                    .create_child(std::ffi::OsStr::new(&name))
-                    .map_err(ReviewFailure::private_state)?;
-                child
-                    .validate_destination()
-                    .map_err(ReviewFailure::private_state)?;
-                let directory = root.join(name);
-                super::super::migration_durability::sync_directory(&parent.file)
-                    .map_err(ReviewFailure::private_state)?;
-                let policy = if categories[0] {
-                    super::super::migration_handoff::HomePolicy::AccessReadWrite
-                } else {
-                    super::super::migration_handoff::HomePolicy::Copy
-                };
-                #[cfg(all(not(test), target_os = "linux"))]
-                let intent = if categories[0] && categories[1] {
-                    MigrationIntent::capture_computer_applications(
-                        &selected, &directory, categories, refs,
-                    )
-                } else {
-                    MigrationIntent::capture_with_policy(
-                        &selected, &directory, categories, refs, policy,
-                    )
-                };
-                #[cfg(all(not(test), not(target_os = "linux")))]
-                let intent = MigrationIntent::capture_with_policy(
-                    &selected, &directory, categories, refs, policy,
-                );
-                #[cfg(all(test, target_os = "linux"))]
-                let intent = if let Some(capture) = capture {
-                    MigrationIntent::capture_using(
-                        &selected, &directory, categories, refs, policy, capture,
-                    )
-                } else if categories[0] && categories[1] {
-                    MigrationIntent::capture_computer_applications(
-                        &selected, &directory, categories, refs,
-                    )
-                } else {
-                    MigrationIntent::capture_with_policy(
-                        &selected, &directory, categories, refs, policy,
-                    )
-                };
-                #[cfg(all(test, not(target_os = "linux")))]
-                let intent = if let Some(capture) = capture {
-                    MigrationIntent::capture_using(
-                        &selected, &directory, categories, refs, policy, capture,
-                    )
-                } else {
-                    MigrationIntent::capture_with_policy(
-                        &selected, &directory, categories, refs, policy,
-                    )
-                };
-                // Independently observed grant substitution takes precedence even
-                // when capture failed; arbitrary InvalidData never implies it.
-                reattest_grant(&selected_pin, &expected_pin)?;
-                let intent = intent.map_err(ReviewFailure::capture)?;
-                Ok(intent)
-            })();
+            #[cfg(test)]
+            let result = imager_backend::setup::live_selection::review_using(
+                &selected, &home, categories, refs, capture,
+            );
+            #[cfg(not(test))]
+            let result =
+                imager_backend::setup::live_selection::review(&selected, &home, categories, refs);
             let _ = sender.send(result);
         });
     }
@@ -250,61 +156,7 @@ pub(super) fn home_permission_request(home: &Path) -> ui::PickRequest {
     )
     .initial_directory(home)
 }
-fn validate_home_grant(
-    selected: &Path,
-    expected: &Path,
-) -> Result<(Arc<PinnedDirectory>, Arc<PinnedDirectory>), ReviewFailure> {
-    let selected = PinnedDirectory::open_absolute(selected).map_err(|_| ReviewFailure::Grant)?;
-    let expected = PinnedDirectory::open_absolute(expected).map_err(|_| ReviewFailure::Grant)?;
-    selected.validate().map_err(|_| ReviewFailure::Grant)?;
-    expected.validate().map_err(|_| ReviewFailure::Grant)?;
-    if !super::super::nofollow::same_directory_identity(&selected.identity, &expected.identity) {
-        return Err(ReviewFailure::Grant);
-    }
-    Ok((selected, expected))
-}
-fn reattest_grant(
-    selected: &Arc<PinnedDirectory>,
-    expected: &Arc<PinnedDirectory>,
-) -> Result<(), ReviewFailure> {
-    selected
-        .validate()
-        .map_err(|_| ReviewFailure::ChangedSource)?;
-    expected
-        .validate()
-        .map_err(|_| ReviewFailure::ChangedSource)?;
-    Ok(())
-}
-fn state_root() -> Option<PathBuf> {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    state
-        .is_absolute()
-        .then(|| state.join("tilo/installer/migrations"))
-}
-fn ensure_private_tree(path: &Path) -> std::io::Result<Arc<PinnedDirectory>> {
-    match PinnedDirectory::open_absolute(path) {
-        Ok(pin) => {
-            pin.validate_destination()?;
-            super::super::destination_security::check_private_file(&pin.file)?;
-            Ok(pin)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = ensure_private_tree(path.parent().ok_or(error)?)?;
-            let child = parent.create_child(
-                path.file_name()
-                    .ok_or_else(|| std::io::Error::other("Missing state name"))?,
-            )?;
-            super::super::migration_durability::sync_directory(&parent.file)?;
-            Ok(child)
-        }
-        Err(error) => Err(error),
-    }
-}
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     #[test]
     fn wrong_selected_home_worker_reports_grant_failure_without_private_state_writes() {

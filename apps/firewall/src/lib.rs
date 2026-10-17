@@ -18,21 +18,8 @@
 // because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod app;
 pub mod backend;
 pub mod locales;

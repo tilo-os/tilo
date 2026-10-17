@@ -246,6 +246,13 @@ decorator_trait! {
         fn accessibility_hidden(&self) -> bool {
             Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
         }
+
+        /// Not forwarded: a decorator may change what its inner widget
+        /// reports through `accessibility`, so by default the tree reads
+        /// that. One that shares its children overrides both.
+        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+            None
+        }
     }
 
     /// Every decorator is a widget: each method is the decorator's own, which
@@ -301,6 +308,10 @@ decorator_trait! {
 
         fn accessibility_hidden(&self) -> bool {
             Decorator::accessibility_hidden(self)
+        }
+
+        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+            Decorator::accessibility_shared(self)
         }
     }
 

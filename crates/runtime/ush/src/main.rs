@@ -11,15 +11,6 @@
 //! confinement, and because `pkg` inside a guest and the supervisor outside it
 //! are two halves of one protocol — splitting them would let the halves drift.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

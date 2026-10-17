@@ -513,13 +513,10 @@ fn sync_collection_body(token: &str) -> String {
 /// talks HTTP to a configured server; there is no synthesised data here.
 #[cfg(feature = "live")]
 mod live {
-    use std::collections::HashMap;
-    use std::time::Duration;
-
     use chrono::NaiveDate;
-    use tilo_dav::net::{
-        Credentials, DavClient, Depth, Error as DavError, Precondition, StatusCode,
-    };
+    use std::collections::HashMap;
+    use tilo_dav::net::{Depth, Error as DavError, Precondition, StatusCode};
+    use tilo_dav::oauth::{AuthorisedClient, Service};
 
     use super::{RemoteCalendar, SyncOutcome, SyncResult};
     use crate::account::CalDavConfig;
@@ -527,59 +524,41 @@ mod live {
 
     const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
 
-    /// Reuses the transport, never an OAuth bearer: every request resolves
-    /// current canonical custody, including fallback REPORTs and token probes.
+    /// Resolves canonical custody afresh for every request and fallback.
     pub(crate) struct CalDavClient {
-        dav: DavClient,
-        custodian: account_custody::Custodian,
+        service: Service,
     }
 
     impl CalDavClient {
-        pub(crate) fn new(custodian: account_custody::Custodian) -> Result<Self, DavError> {
-            Ok(Self {
-                dav: transport()?,
-                custodian,
-            })
+        pub(crate) fn new(service: Service) -> Self {
+            Self { service }
         }
     }
 
-    fn client() -> Result<CalDavClient, DavError> {
-        CalDavClient::new(account_custody::Custodian::live())
-    }
-
-    /// Cross-origin browser requests use the host's fetch proxy when available.
-    fn transport() -> Result<DavClient, DavError> {
-        DavClient::with_fetch_proxy(
-            &tilo_dav::net::Options {
-                user_agent: Some("Tilo-Calendar/0.1"),
-                timeout: Duration::from_secs(20),
-                redirects: tilo_dav::net::Redirects::Refuse,
-                ..tilo_dav::net::Options::default()
-            },
-            tilo_net::proxy::ProxyUse::CrossOrigin,
-        )
+    fn client() -> CalDavClient {
+        CalDavClient::new(Service::live())
     }
 
     async fn authenticated(
         client: &CalDavClient,
         config: &CalDavConfig,
         target: &str,
-    ) -> Result<DavClient, String> {
-        let base =
-            url::Url::parse(&config.server_url).map_err(|_| "invalid calendar server URL")?;
-        crate::setup::same_origin_url(&base, target)?;
-        let credentials = if let Some(id) = &config.oauth_account_id {
-            let id = accounts::AccountId::from(id.clone());
-            let config = config.clone();
-            let custodian = client.custodian.clone();
-            ui::rt::app()
-                .spawn_blocking(move || crate::setup::credentials(&custodian, &id, &config, true))
-                .await
-                .map_err(|_| "calendar credential task failed")??
-        } else {
-            Credentials::new(config.username.clone(), config.password.clone())
-        };
-        Ok(client.dav.with_credentials(credentials))
+    ) -> Result<AuthorisedClient, String> {
+        let service = client.service.clone();
+        let config = config.clone();
+        let target = target.to_owned();
+        ui::rt::app()
+            .spawn_blocking(move || {
+                service.authorised(
+                    config.oauth_account_id.as_deref(),
+                    &config.server_url,
+                    &config.username,
+                    &config.password,
+                    &target,
+                )
+            })
+            .await
+            .map_err(|_| "calendar credential task failed")?
     }
 
     fn dav_error_message(error: &DavError) -> String {
@@ -595,10 +574,7 @@ mod live {
         today: NaiveDate,
         checkpoints: &[(String, String)],
     ) -> (SyncResult, SyncOutcome) {
-        let client = match client() {
-            Ok(c) => c,
-            Err(e) => return (SyncResult::default(), SyncOutcome::Failed(e.to_string())),
-        };
+        let client = client();
 
         client.sync_all(accounts, today, checkpoints).await
     }
@@ -676,8 +652,7 @@ mod live {
         let mut response = authenticated(client, config, &url)
             .await?
             .report(url.as_str(), Depth::One, body)
-            .await
-            .map_err(|error| dav_error_message(&error))?;
+            .await?;
 
         // RFC 6578 uses 403 with a valid-sync-token precondition (some servers
         // use 409). Reconcile from a bounded full listing before accepting a
@@ -692,8 +667,7 @@ mod live {
             response = authenticated(client, config, &url)
                 .await?
                 .report(url.as_str(), Depth::One, query)
-                .await
-                .map_err(|error| dav_error_message(&error))?;
+                .await?;
         }
         if !response.status().is_success() {
             return Err(format!("calendar server returned {}", response.status()));
@@ -756,11 +730,13 @@ mod live {
         Ok(result)
     }
 
-    async fn discover_sync_token(client: &DavClient, url: &str) -> Result<Option<String>, String> {
+    async fn discover_sync_token(
+        client: &AuthorisedClient,
+        url: &str,
+    ) -> Result<Option<String>, String> {
         let response = client
             .propfind(url, Depth::Zero, &[tilo_dav::props::SYNC_TOKEN])
-            .await
-            .map_err(|error| dav_error_message(&error))?;
+            .await?;
         if !response.status().is_success() {
             return Ok(None);
         }
@@ -792,10 +768,7 @@ mod live {
     }
 
     pub async fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
-        let Ok(client) = client() else {
-            return super::MutationResult::default();
-        };
-        client.push(jobs).await
+        client().push(jobs).await
     }
 
     impl CalDavClient {
@@ -855,7 +828,7 @@ mod live {
                         job.event.id,
                         format!("server returned {}", response.status()),
                     )),
-                    Err(error) => result.failures.push((job.event.id, error.to_string())),
+                    Err(error) => result.failures.push((job.event.id, error)),
                 }
             }
             result
@@ -863,10 +836,7 @@ mod live {
     }
 
     pub async fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
-        let Ok(client) = client() else {
-            return super::MutationResult::default();
-        };
-        client.remove(jobs).await
+        client().remove(jobs).await
     }
 
     impl CalDavClient {
@@ -913,7 +883,7 @@ mod live {
                     Ok(response) => result
                         .failures
                         .push((job.id, format!("server returned {}", response.status()))),
-                    Err(error) => result.failures.push((job.id, error.to_string())),
+                    Err(error) => result.failures.push((job.id, error)),
                 }
             }
             result
@@ -1011,14 +981,9 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 let server =
                     Responder::start(vec![Reply::status(207).body(multistatus("token-2"))]);
                 let config = config(server.url());
-                let result = pull_calendar_live(
-                    &client().unwrap(),
-                    &config,
-                    &calendar(),
-                    today(),
-                    Some("token-1"),
-                )
-                .expect("incremental sync");
+                let result =
+                    pull_calendar_live(&client(), &config, &calendar(), today(), Some("token-1"))
+                        .expect("incremental sync");
                 let request = server.next_request();
                 assert_eq!(request.method, "REPORT");
                 assert_eq!(request.target, "/cal/");
@@ -1043,7 +1008,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                     Reply::status(207).body(multistatus("replacement")),
                 ]);
                 let result = pull_calendar_live(
-                    &client().unwrap(),
+                    &client(),
                     &config(server.url()),
                     &calendar(),
                     today(),
@@ -1066,7 +1031,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                     Reply::status(207).body(discovery),
                 ]);
                 let result = pull_calendar_live(
-                    &client().unwrap(),
+                    &client(),
                     &config(server.url()),
                     &calendar(),
                     today(),
@@ -1085,7 +1050,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
             {
                 let server = Responder::start(vec![Reply::status(200).body("<html>portal</html>")]);
                 let error = pull_calendar_live(
-                    &client().unwrap(),
+                    &client(),
                     &config(server.url()),
                     &calendar(),
                     today(),
@@ -1102,7 +1067,7 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                         .without_content_length(),
                 ]);
                 let error = pull_calendar_live(
-                    &client().unwrap(),
+                    &client(),
                     &config(server.url()),
                     &calendar(),
                     today(),
@@ -1342,10 +1307,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn write_requests_target_one_resource_and_stay_inert_without_live() {
         // Case `build_put_request_targets_collection_and_carries_event_ics`.
         {

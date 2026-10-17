@@ -3,7 +3,7 @@ use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_user_identity::DeviceCert;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

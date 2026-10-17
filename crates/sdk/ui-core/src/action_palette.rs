@@ -489,12 +489,6 @@ impl ActionPalette {
     /// action becomes an **Actions** row; rebuilds the result set + index.
     pub fn load_open_resources(&mut self, resources: &[Resource]) {
         self.resources = resources.to_vec();
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -573,12 +567,6 @@ impl ActionPalette {
             });
         self.picked_filters
             .retain(|filter| self.facets.iter().any(|facet| facet.key == filter.key));
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -2106,13 +2094,6 @@ impl ActionPalette {
 
     /// Position the palette at `origin` with `width`. Called each frame
     /// before `draw`.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "width and the field height are UI layout dimensions in logical \
-                  pixels, always tiny compared to f32's range; narrowing \
-                  for taffy's f32-based layout loses no visually \
-                  meaningful precision"
-    )]
     #[allow(
         clippy::expect_used,
         reason = "private palette ownership mismatch is an invariant violation"

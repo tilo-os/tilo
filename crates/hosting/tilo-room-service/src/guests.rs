@@ -1,6 +1,7 @@
 //! Which keyed address hash each guest joined from (7 days) and which
 //! hashes are cooling down after a removal (24 hours), kept on the
-//! persistent volume so a restart does not lift a cooldown.
+//! persistent volume so a restart lifts neither a cooldown nor an address's
+//! guest join windows.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,17 @@ impl GuestLedger {
             .insert(joined.ip_hash, now_ms.saturating_add(COOLDOWN_MS));
         self.save()?;
         Ok(true)
+    }
+
+    /// Every join since `since_ms`, as `(address hash, when)`: what the
+    /// per-address join windows held before a restart. A guest who joined
+    /// again counts once, at their latest join.
+    pub fn joins_since(&self, since_ms: u64) -> impl Iterator<Item = (&str, u64)> {
+        self.stored
+            .joins
+            .values()
+            .filter(move |joined| joined.at_ms >= since_ms)
+            .map(|joined| (joined.ip_hash.as_str(), joined.at_ms))
     }
 
     pub fn cooling_down(&self, ip_hash: &str, now_ms: u64) -> bool {

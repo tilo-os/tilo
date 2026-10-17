@@ -100,11 +100,7 @@ pub struct KeyId(pub [u8; KEY_ID_LEN]);
 
 impl std::fmt::Debug for KeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "KeyId(")?;
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        write!(f, ")")
+        write!(f, "KeyId({})", hex::encode(self.0))
     }
 }
 
@@ -142,11 +138,7 @@ impl PublicKey {
 
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PublicKey(")?;
-        for byte in self.0.iter().take(4) {
-            write!(f, "{byte:02x}")?;
-        }
-        write!(f, "..)")
+        write!(f, "PublicKey({}..)", hex::encode(&self.0[..4]))
     }
 }
 

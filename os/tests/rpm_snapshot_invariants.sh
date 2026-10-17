@@ -157,8 +157,8 @@ aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/e
     "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
     cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
 rm -rf -- "$oidc_fixture"
-[ "$aws_config" = 'Using Forgejo OIDC subject: test-subject
-Forgejo OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing
+[ "$aws_config" = 'Using OIDC subject: test-subject
+OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing
 eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:e30.eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOiJ0aWxvLXJlbGVhc2Utc2lnbmluZyIsInN1YiI6InRlc3Qtc3ViamVjdCJ9.signature' ] \
   && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
   || bad 'AWS KMS setup does not configure Forgejo web identity safely'
@@ -177,7 +177,7 @@ oidc_identity() {
 }
 # {"iss":"https://forge.example/api/actions","aud":["tilo-release-signing"],"sub":"test-subject"}
 if identity="$(oidc_identity eyJpc3MiOiJodHRwczovL2ZvcmdlLmV4YW1wbGUvYXBpL2FjdGlvbnMiLCJhdWQiOlsidGlsby1yZWxlYXNlLXNpZ25pbmciXSwic3ViIjoidGVzdC1zdWJqZWN0In0)" \
-   && printf '%s\n' "$identity" | grep -Fxq 'Forgejo OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing'; then
+   && printf '%s\n' "$identity" | grep -Fxq 'OIDC issuer: https://forge.example/api/actions audience: tilo-release-signing'; then
   ok 'AWS KMS setup names the issuer and list-form audience STS validates'
 else
   bad 'AWS KMS setup does not name the issuer and list-form audience STS validates'

@@ -1,8 +1,7 @@
 //! Retained guided inputs, handed to the canonical gated Full-OS surface.
 use super::{Destination, Imager, InstallerPreview, InstallerPreviewEffect, Page};
-use crate::setup::{
-    migration_intent::MigrationIntent, prepared_setup::PublicInstallProfile, staging,
-};
+use crate::setup::{migration_intent::MigrationIntent, staging};
+use imager_backend::prepared_setup::PublicInstallProfile;
 use std::sync::Arc;
 use ui::framework::SurfaceCx;
 use ui::widget::{ButtonRole, Row};
@@ -34,7 +33,7 @@ impl Default for Direct {
 pub(super) struct Snapshot {
     facts: staging::probe::HostFacts,
     plan: staging::plan::Plan,
-    profile: crate::model::InstallProfile,
+    profile: imager_backend::imager_model::InstallProfile,
     migration: Option<MigrationIntent>,
 }
 
@@ -100,35 +99,15 @@ impl InstallerPreview {
         } else {
             None
         };
-        #[cfg(target_os = "linux")]
         if self.journey.migrate == Some(true)
             && self.journey.categories[0]
             && self.selected_applications()
         {
-            let apps = migration
+            migration
                 .as_ref()
                 .ok_or("installer-preview-import-unavailable")?
-                .computer_applications()
-                .map_err(|_| "installer-preview-import-unavailable")?
-                .ok_or("installer-preview-import-unavailable")?;
-            let inventory = apps
-                .for_media()
-                .map_err(|_| "installer-preview-import-unavailable")?
-                .flatpak_inventory
-                .ok_or("installer-preview-import-unavailable")?;
-            let inventory = super::super::flatpak_transfer::HandoffInventory::parse(
-                &serde_json::to_vec(&inventory)
-                    .map_err(|_| "installer-preview-import-unavailable")?,
-            )
-            .map_err(|_| "installer-preview-import-unavailable")?;
-            let selected = self.selected_portable_apps();
-            if selected.len() != inventory.selected().len()
-                || selected
-                    .iter()
-                    .any(|reference| !inventory.selected().contains(reference))
-            {
-                return Err("installer-preview-import-unavailable");
-            }
+                .validate_computer_applications_selection(&self.selected_portable_apps())
+                .map_err(|_| "installer-preview-import-unavailable")?;
         }
         let accounts = if self.journey.migrate == Some(true)
             && self.journey.categories[2]
@@ -166,6 +145,7 @@ impl InstallerPreview {
             .prepared_handle()
             .ok_or("installer-preview-identity-not-prepared")?;
         let (migration, accounts) = self.reviewed_belongings()?;
+        let install_profile = self.public_install_profile()?;
         self.media_preparation.start_with_selections(
             identity,
             accounts,
@@ -186,7 +166,7 @@ impl InstallerPreview {
                 .filter(|selected| !selected.profiles().is_empty()),
             },
             zeroize::Zeroizing::new(self.journey.password.clone()),
-            Some(self.public_install_profile()?),
+            Some(install_profile),
         )?;
         self.direct.prepared_belongings = None;
         self.direct.belongings_pending = true;

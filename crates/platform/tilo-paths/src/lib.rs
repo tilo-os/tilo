@@ -43,15 +43,6 @@
 //! [`UserDir`] and its shorthands ([`document_dir`], [`download_dir`], …)
 //! resolve the user's content folders, localized through `user-dirs.dirs`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 

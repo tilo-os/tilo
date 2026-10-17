@@ -4,6 +4,7 @@ use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{
     path::PathBuf,
     sync::{
@@ -12,14 +13,16 @@ use std::{
     },
     time::SystemTime,
 };
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{
-    NeighbourMsg, TransportOrigin,
-    owner_commit::{CommitOperation, OwnerCommitRequest},
+    TransportOrigin,
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
 #[path = "changes_read_tests.rs"]
 mod changes_read;
+#[path = "member_initialization_tests.rs"]
+mod member_initialization;
 
 struct Enrolled {
     _directory: tempfile::TempDir,
@@ -1108,7 +1111,7 @@ fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<
 /// cleartext snapshot stays a checkpoint the member never releases.
 #[test]
 fn native_sealed_checkpoint_is_classified_like_browser() {
-    use tilo_peer_state::transport::{Retention, retention};
+    use neighbour_wire::{Retention, retention};
     let joined = enrolled();
     let (keys, _) = rotated_channel();
     let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);

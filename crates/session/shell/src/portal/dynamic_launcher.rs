@@ -49,15 +49,6 @@ impl DynamicLauncherBackend {
     }
 }
 #[cfg(target_os = "linux")]
-fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
-}
-#[cfg(target_os = "linux")]
 fn launcher_type(options: &HashMap<String, OwnedValue>) -> u32 {
     crate::portal::option::<u32>(options, "launcher_type").unwrap_or(1)
 }
@@ -146,7 +137,7 @@ impl DynamicLauncherBackend {
             if kind != 1 && kind != 2 {
                 return Err(Ended::Failed);
             }
-            let target = str_opt(&options, "target");
+            let target = crate::portal::text_option(&options, "target", 4096);
             if kind == 2 && !target.as_deref().is_some_and(safe_web_target) {
                 return Err(Ended::Failed);
             }
@@ -167,103 +158,88 @@ impl DynamicLauncherBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(&self.connection, &path, entry, move |_| {
-                        let _ = dialogs.cancel(&cancel_path);
-                    })
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let Ok(review) = self.dialogs.enqueue_launcher_review(LauncherReviewRequest {
-                review: ReviewRequest {
-                    handle: path.clone(),
-                    app_id: auth.caller.app_id.clone(),
-                    title: crate::shell::i18n::t(if kind == 2 {
-                        "portal-launcher-web-app-title"
-                    } else {
-                        "portal-launcher-title"
-                    }),
-                    reason: crate::shell::i18n::t("portal-launcher-reason"),
-                    resource,
-                    confirm_label: crate::shell::i18n::t("portal-launcher-confirm"),
-                },
-                name: name.clone(),
-                editable_name,
-                editable_icon,
-                icon_choices: if editable_icon {
-                    vec![
-                        crate::shell::i18n::t("portal-launcher-icon-supplied"),
-                        crate::shell::i18n::t("portal-launcher-icon-monogram"),
-                        crate::shell::i18n::t("portal-launcher-icon-compass"),
-                    ]
-                } else {
-                    vec![crate::shell::i18n::t("portal-launcher-icon-supplied")]
-                },
-            }) else {
-                self.lifecycle
-                    .complete_request_object(&self.connection, &path)
-                    .await;
-                return Err(Ended::Failed);
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
             };
-            let Ok(decision) = review.await else {
-                self.lifecycle
-                    .complete_request_object(&self.connection, &path)
-                    .await;
-                return Err(Ended::Cancelled);
-            };
-            if decision.decision != ReviewDecision::Confirmed
-                || decision.name.trim().is_empty()
-                || decision.name.len() > 255
-                || decision.name.trim() != decision.name
-                || decision.name.chars().any(char::is_control)
-            {
-                self.lifecycle
-                    .complete_request_object(&self.connection, &path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-            let selected_icon = if editable_icon && decision.icon_choice > 0 {
-                tilo_icon(decision.icon_choice)
-            } else {
-                icon_v
-            };
-            let selected_icon_bytes = if editable_icon && decision.icon_choice > 0 {
-                None
-            } else {
-                // `valid_icon` above already proved this is a bounded GBytesIcon.
-                // Persist its byte payload, never a caller-supplied path/FD.
-                icon_bytes(&selected_icon)
-            };
-            let result = self.ctx.desktop_services.dynamic_launcher.prepare_install(
-                &LauncherInstallRequest {
-                    app_id: auth.caller.app_id,
-                    name: decision.name.clone(),
-                    launcher_type: kind,
-                    target,
-                    editable_name,
-                    editable_icon,
-                    icon_kind: match decision.icon_choice {
-                        1 if editable_icon => "tilo-monogram".into(),
-                        2 if editable_icon => "tilo-web".into(),
-                        _ => "supplied".into(),
-                    },
-                    icon_bytes: selected_icon_bytes,
-                },
-            );
             self.lifecycle
-                .complete_request_object(&self.connection, &path)
-                .await;
-            let choice = result.into_result()?;
-            let mut out = Results::new();
-            out.insert(
-                "name".into(),
-                OwnedValue::from(zbus::zvariant::Str::from(choice.name)),
-            );
-            out.insert("icon".into(), selected_icon);
-            Ok(out)
+                .with_request(&self.connection, &path, entry, cancel, async {
+                    let Ok(review) = self.dialogs.enqueue_launcher_review(LauncherReviewRequest {
+                        review: ReviewRequest {
+                            handle: path.clone(),
+                            app_id: auth.caller.app_id.clone(),
+                            title: crate::shell::i18n::t(if kind == 2 {
+                                "portal-launcher-web-app-title"
+                            } else {
+                                "portal-launcher-title"
+                            }),
+                            reason: crate::shell::i18n::t("portal-launcher-reason"),
+                            resource,
+                            confirm_label: crate::shell::i18n::t("portal-launcher-confirm"),
+                        },
+                        name: name.clone(),
+                        editable_name,
+                        editable_icon,
+                        icon_choices: if editable_icon {
+                            vec![
+                                crate::shell::i18n::t("portal-launcher-icon-supplied"),
+                                crate::shell::i18n::t("portal-launcher-icon-monogram"),
+                                crate::shell::i18n::t("portal-launcher-icon-compass"),
+                            ]
+                        } else {
+                            vec![crate::shell::i18n::t("portal-launcher-icon-supplied")]
+                        },
+                    }) else {
+                        return Err(Ended::Failed);
+                    };
+                    let Ok(decision) = review.await else {
+                        return Err(Ended::Cancelled);
+                    };
+                    if decision.decision != ReviewDecision::Confirmed
+                        || decision.name.trim().is_empty()
+                        || decision.name.len() > 255
+                        || decision.name.trim() != decision.name
+                        || decision.name.chars().any(char::is_control)
+                    {
+                        return Err(Ended::Cancelled);
+                    }
+                    let selected_icon = if editable_icon && decision.icon_choice > 0 {
+                        tilo_icon(decision.icon_choice)
+                    } else {
+                        icon_v
+                    };
+                    let selected_icon_bytes = if editable_icon && decision.icon_choice > 0 {
+                        None
+                    } else {
+                        // `valid_icon` above already proved this is a bounded GBytesIcon.
+                        // Persist its byte payload, never a caller-supplied path/FD.
+                        icon_bytes(&selected_icon)
+                    };
+                    let result = self.ctx.desktop_services.dynamic_launcher.prepare_install(
+                        &LauncherInstallRequest {
+                            app_id: auth.caller.app_id,
+                            name: decision.name.clone(),
+                            launcher_type: kind,
+                            target,
+                            editable_name,
+                            editable_icon,
+                            icon_kind: match decision.icon_choice {
+                                1 if editable_icon => "tilo-monogram".into(),
+                                2 if editable_icon => "tilo-web".into(),
+                                _ => "supplied".into(),
+                            },
+                            icon_bytes: selected_icon_bytes,
+                        },
+                    );
+                    let choice = result.into_result()?;
+                    let mut out = Results::new();
+                    out.insert(
+                        "name".into(),
+                        OwnedValue::from(zbus::zvariant::Str::from(choice.name)),
+                    );
+                    out.insert("icon".into(), selected_icon);
+                    Ok(out)
+                })
+                .await
         })
         .await
     }

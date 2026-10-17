@@ -28,7 +28,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-use launcher::capabilities::CapabilityPlan;
+use launcher::capabilities::{CapabilityPlan, private_store_roots};
 use launcher::netgate::{EgressDecision, GateError, LoopbackGate, proxy_env};
 
 use crate::classify::{CodeSignature, MacLaunchMode, TrustRequirement, decide};
@@ -266,6 +266,7 @@ fn start_seatbelted(
             source,
         })?;
     let darwin_cache = darwin_cache(request);
+    let private_stores = private_store_roots();
     let policy = SeatbeltPolicy::resolve(&PolicyInputs {
         payload_dir: &request.payload_dir,
         runtime_dylib_dir: request.runtime_dylib_dir.as_deref(),
@@ -274,6 +275,7 @@ fn start_seatbelted(
         egress: &request.egress,
         gate_port: gate.as_ref().map(|gate| gate.local_addr().port()),
         darwin_cache: darwin_cache.as_ref().map(|cache| cache.dir.as_path()),
+        private_stores: &private_stores,
     })?;
     for gap in &policy.not_enforced {
         tracing::warn!(
@@ -653,6 +655,8 @@ mod tests {
                 read_only: vec![dir("ro")],
                 read_write: vec![dir("rw with \"quotes\" (and parens)")],
                 network,
+                hidden: vec![dir("store")],
+                pinned: vec![tmp.path().join("missing"), dir("pin")],
                 not_enforced: Vec::new(),
             };
             let profile = sbpl::render(&policy);

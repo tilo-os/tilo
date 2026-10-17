@@ -84,8 +84,11 @@ fn bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch() {
         .enqueue_pending(&[2; 32], 2000, &frame(2, 2048, 2000))
         .unwrap();
     let mut snapshot = snapshot(&store);
-    fs::remove_file(retained.join("0000000000000000.delta")).unwrap();
+    // Its preparation pins what the capture listed (until then retention
+    // collects nothing: `retention_collects_what_a_capture_listed_only_once_
+    // it_is_pinned`); from then on the replay needs no source.
     assert_eq!(prepare(&store, &mut snapshot).total_frames, 301);
+    fs::remove_file(retained.join("0000000000000000.delta")).unwrap();
     assert_eq!(snapshot.stats().hydration_reads, 0);
     let budget = ReplayBudget::new(256 * 1024 * 1024);
     let batch = store
@@ -496,26 +499,26 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
     for i in 0..260 {
         fs::write(retained.join(format!("{i:016x}.delta")), [0]).unwrap();
     }
-    let mut build = store
-        .start_replay_capture(ReplayId([7; 16]), [2; 32])
-        .unwrap();
+    // The capture lists the retained frames; its preparation pins them and
+    // orders them, spilling past one run.
+    let mut capture = snapshot(&store);
     for _ in 0..100 {
-        if build.stats().unwrap().peak_metadata_entries >= 128 {
+        if capture.sorter.as_ref().unwrap().stats.peak_metadata_entries >= 128 {
             break;
         }
         assert!(matches!(
             store
-                .capture_replay_step(&mut build, WorkLimit::default())
+                .prepare_replay_step(&mut capture, WorkLimit::default())
                 .unwrap(),
             Step::More
         ));
     }
-    let root = build.root.clone();
+    let root = capture.root.clone();
     assert!(
         root.join("sort/0000000000000000-0000000000000000.run")
             .exists()
     );
-    let mut discard = build.into_discard().unwrap();
+    let mut discard = capture.into_discard().unwrap();
     while matches!(discard.step(one_entry()).unwrap(), Step::More) {}
     assert!(!root.exists());
     assert_eq!(fs::read_dir(&retained).unwrap().count(), 260);
@@ -551,6 +554,93 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
     }
     assert_eq!(previous, 0);
     assert!(obsolete.join("unknown/keep").exists());
+}
+
+/// A newcomer's capture runs in its workspace owner's turn, which must not
+/// grow with the room: it lists the retained frames, and pins none. Its
+/// preparation, off the owner, pins every one of them.
+#[test]
+fn a_capture_lists_the_rooms_frames_and_its_preparation_pins_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    for author in 0..64 {
+        let generation = raw_generation(&store, author, 9);
+        fs::write(
+            generation.join("0000000000000000.delta"),
+            frame(author, 8, 1),
+        )
+        .unwrap();
+    }
+    let pins =
+        |snapshot: &ReplaySnapshot| fs::read_dir(snapshot.root.join("pins")).unwrap().count();
+    let mut captured = snapshot(&store);
+    assert_eq!(
+        pins(&captured),
+        0,
+        "the owner's turn pinned retained frames"
+    );
+    assert_eq!(prepare(&store, &mut captured).total_frames, 64);
+    assert_eq!(pins(&captured), 64);
+}
+
+/// What a capture listed stays where it was listed until it is pinned:
+/// retention replacing a lineage meanwhile leaves the replaced generation
+/// for later, collects it once the capture pinned it, and the capture
+/// replays what it listed.
+#[test]
+fn retention_collects_what_a_capture_listed_only_once_it_is_pinned() {
+    use automerge::transaction::Transactable;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let checkpoint = |body| {
+        transport::encode(&Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [1; 32],
+            authored_at_ns: 0,
+            signature: [0; 64],
+            delta: CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body,
+            }
+            .encode()
+            .unwrap(),
+        })
+        .unwrap()
+    };
+    let mut document = automerge::AutoCommit::new();
+    document.put(automerge::ROOT, "first", 1).unwrap();
+    let old = checkpoint(document.save());
+    store.retain_checkpoint(&[9; 32], &old).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let listed = retained::current(&lineage).unwrap().unwrap();
+    let mut captured = snapshot(&store);
+    document.put(automerge::ROOT, "second", 2).unwrap();
+    store
+        .retain_checkpoint(&[9; 32], &checkpoint(document.save()))
+        .unwrap();
+    assert_ne!(retained::current(&lineage).unwrap().unwrap(), listed);
+    assert!(
+        listed.exists(),
+        "a listed generation was collected before it was pinned"
+    );
+    assert!(store.deferred_collections().is_empty());
+    assert_eq!(prepare(&store, &mut captured).total_frames, 1);
+    let batch = store
+        .read_replay_batch(
+            &mut captured,
+            ReplayLimits::default(),
+            &ReplayBudget::new(DEFAULT_OUTPUT_BYTES),
+        )
+        .unwrap();
+    assert_eq!(transport::encode(&batch.frames[0]).unwrap(), old);
+    assert_eq!(store.deferred_collections(), vec![lineage.clone()]);
+    let mut gc = retained::GenerationGc::new(lineage).unwrap();
+    while matches!(gc.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(!listed.exists());
 }
 
 #[cfg(unix)]
@@ -841,7 +931,7 @@ fn disposable_reclamation_finishes_when_selected_child_and_root_disappear() {
 fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(temp.path(), 7, false).unwrap();
-    let bytes = super::super::retained::tests::wrapper_suffix(&frame(1, 10, 1), false);
+    let bytes = super::super::test_support::wrapper_suffix(&frame(1, 10, 1), false);
     store.retain_delta(&[9; 32], 1, &bytes).unwrap();
     let pending = store.enqueue_pending(&[2; 32], 1, &bytes).unwrap();
     let mut snapshot = snapshot(&store);

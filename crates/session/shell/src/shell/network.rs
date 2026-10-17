@@ -17,6 +17,9 @@ mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
+mod native_admission;
+#[cfg(test)]
+mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
@@ -27,6 +30,7 @@ mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod agent_question_tests;
@@ -936,6 +940,15 @@ struct RoomPush {
 /// until the next frame instead of losing ordering or data.
 const MAX_NET_EVENTS_PER_TICK: usize = 8;
 
+/// Where a tick admits signed relay input.
+#[derive(Clone, Copy)]
+enum Admission {
+    /// On the ticking thread, which may wait for the state file.
+    InPlace,
+    /// On the admission worker: the compositor's frame loop.
+    OffLoop,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct PendingInvitation {
     pub id: [u8; 32],
@@ -1132,6 +1145,92 @@ impl KnownContents {
     }
 }
 
+/// What may happen only once a continuity value is on disk, such as
+/// acknowledging the owner claims it carries.
+///
+/// The value is written on the state writer, never on the compositor's loop
+/// (a backup and a primary, four fsyncs that take seconds under I/O
+/// pressure). Each value handed to the writer gets the next sequence number;
+/// a successful write marks its number durable. An obligation waits for the
+/// value it was registered behind, or any later one: a newer value replaces
+/// a queued older one, and holds at least as much. It runs on the thread
+/// that next calls [`Self::settle`] (the loop's sync round, or the collab
+/// broker reading owner views), never on the writer, which a flush waits on.
+#[derive(Clone, Default)]
+struct ContinuityDurability(Arc<Mutex<DurabilityLedger>>);
+
+/// How many obligations wait for the disk at most.
+const MAX_CONTINUITY_OBLIGATIONS: usize = 64;
+
+type ContinuityObligation = Box<dyn FnOnce() + Send>;
+
+#[derive(Default)]
+struct DurabilityLedger {
+    /// The newest value handed to the writer.
+    submitted: u64,
+    /// Every value up to this one is on disk.
+    durable: u64,
+    pending: Vec<(u64, ContinuityObligation)>,
+}
+
+impl ContinuityDurability {
+    /// Number the next value handed to the writer.
+    fn submit(&self) -> u64 {
+        let Ok(mut ledger) = self.0.lock() else {
+            return 0;
+        };
+        ledger.submitted = ledger.submitted.saturating_add(1);
+        ledger.submitted
+    }
+
+    /// The writer put value `sequence` (and so everything it replaced) on
+    /// disk.
+    fn written(&self, sequence: u64) {
+        if let Ok(mut ledger) = self.0.lock() {
+            ledger.durable = ledger.durable.max(sequence);
+        }
+    }
+
+    /// Run `obligation` once the newest value handed to the writer is on
+    /// disk.
+    ///
+    /// While writes keep failing (a full disk), every sync round adds one, so
+    /// only the newest [`MAX_CONTINUITY_OBLIGATIONS`] wait. Dropping an older
+    /// one is what a failed write always meant: its claims stay
+    /// unacknowledged, and its closed tabs stay recorded, until a later
+    /// round's value covers them.
+    fn after_newest(&self, obligation: impl FnOnce() + Send + 'static) {
+        if let Ok(mut ledger) = self.0.lock() {
+            let sequence = ledger.submitted;
+            if ledger.pending.len() >= MAX_CONTINUITY_OBLIGATIONS {
+                drop(ledger.pending.remove(0));
+            }
+            ledger.pending.push((sequence, Box::new(obligation)));
+        }
+    }
+
+    /// Run, here, every obligation whose value is on disk.
+    fn settle(&self) {
+        let ready: Vec<ContinuityObligation> = {
+            let Ok(mut ledger) = self.0.lock() else {
+                return;
+            };
+            let durable = ledger.durable;
+            let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut ledger.pending)
+                .into_iter()
+                .partition(|(sequence, _)| *sequence <= durable);
+            ledger.pending = waiting;
+            ready
+                .into_iter()
+                .map(|(_, obligation)| obligation)
+                .collect()
+        };
+        for obligation in ready {
+            obligation();
+        }
+    }
+}
+
 fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
     for (index, candidate) in [path.to_path_buf(), personal_continuity_backup_path(path)]
         .into_iter()
@@ -1178,7 +1277,7 @@ fn write_personal_continuity(path: &Path, bytes: &[u8]) -> bool {
     let current = std::fs::read(path).ok();
     // A quiet tree asks to persist the same state on every sync round. The
     // primary already holds it, and rewriting it costs four fsyncs (file and
-    // directory, for backup and primary) on the compositor thread.
+    // directory, for backup and primary).
     if current.as_deref() == Some(bytes) {
         return true;
     }
@@ -1214,10 +1313,33 @@ fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
     })
 }
 
+/// Hand the pending invitations to the state writer. Issuing, resending,
+/// cancelling, redeeming and pruning them all run on the compositor's loop,
+/// and the write's fsyncs can take seconds under I/O pressure. The rows are
+/// encoded now, while the caller holds them; a newer copy that has not been
+/// written yet replaces this one.
 fn persist_pending_invitations(
     path: &Path,
     invitations: &std::collections::HashMap<[u8; 32], PendingInvitation>,
 ) {
+    let Some(bytes) = encode_pending_invitations(invitations) else {
+        return;
+    };
+    let path = path.to_path_buf();
+    crate::shell::durable_writer::global().submit(path.clone(), move || {
+        write_pending_invitations(&path, &bytes);
+    });
+}
+
+fn encode_pending_invitations(
+    invitations: &std::collections::HashMap<[u8; 32], PendingInvitation>,
+) -> Option<Vec<u8>> {
+    let mut rows: Vec<_> = invitations.values().cloned().collect();
+    rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
+    serde_json::to_vec_pretty(&rows).ok()
+}
+
+fn write_pending_invitations(path: &Path, bytes: &[u8]) {
     let Some(parent) = path.parent() else {
         return;
     };
@@ -1225,12 +1347,7 @@ fn persist_pending_invitations(
         tracing::warn!(%error, path = %path.display(), "could not create pending invitation directory");
         return;
     }
-    let mut rows: Vec<_> = invitations.values().cloned().collect();
-    rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
-    let Ok(bytes) = serde_json::to_vec_pretty(&rows) else {
-        return;
-    };
-    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
+    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
 }
@@ -1240,6 +1357,7 @@ fn persist_pending_invitations(
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
+    native_admission: native_admission::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
@@ -1339,6 +1457,9 @@ pub struct ShellNetwork {
     personal_continuity_path: Option<PathBuf>,
     /// What `personal_continuity_path` was last asked to hold.
     personal_continuity_store: KnownContents,
+    /// Owner-claim acknowledgements and closed-tab bookkeeping waiting for
+    /// the continuity value they describe to reach the disk.
+    personal_continuity_durability: ContinuityDurability,
     /// What the exported room list (`personal-rooms.json`) was last asked to
     /// hold.
     personal_rooms_export: KnownContents,
@@ -1871,7 +1992,7 @@ impl ShellNetwork {
         let pending_invitations_path = pending_invites_path(state_dir);
         let personal_continuity_path = personal_continuity_path(state_dir);
         let app_continuations_permitted =
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
         let personal_continuity_store = KnownContents::default();
         let persisted_continuity = if app_continuations_permitted {
@@ -1953,6 +2074,7 @@ impl ShellNetwork {
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
             personal_continuity_store,
+            personal_continuity_durability: ContinuityDurability::default(),
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
@@ -1971,6 +2093,7 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            native_admission: native_admission::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
@@ -4566,14 +4689,14 @@ impl ShellNetwork {
 
     #[allow(
         clippy::unused_self,
-        reason = "tests inject a per-network policy snapshot while production loads the device-local store"
+        reason = "tests inject a per-network policy snapshot while production reads the session's followed device-local policy"
     )]
     fn continuity_policy(&self) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
         #[cfg(test)]
         if let Some(policy) = self.continuity_policy_override {
             return policy;
         }
-        crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
     }
 
     fn permits_continuity(
@@ -4728,16 +4851,31 @@ impl ShellNetwork {
         if !self.enforce_app_continuations_policy() {
             return None;
         }
-        let durable = self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
-        if durable && !pending_closed_tabs.is_empty() {
-            let mut tree = tree_handle.write();
-            for (tab, room) in pending_closed_tabs {
+        if self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision()) {
+            self.forget_closed_tabs_once_on_disk(tree_handle, pending_closed_tabs);
+        }
+        Some(bytes)
+    }
+
+    /// The tabs `closed` were recorded as closed in the continuity value just
+    /// handed to the writer; the tree forgets them once that value is on disk.
+    fn forget_closed_tabs_once_on_disk(
+        &self,
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        closed: std::collections::HashMap<crate::shell::state::TabId, RoomId>,
+    ) {
+        if closed.is_empty() {
+            return;
+        }
+        self.personal_continuity_durability.after_newest(move || {
+            let mut tree = tree.write();
+            for (tab, room) in closed {
                 if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
                     tree.continuation_closed_tabs.remove(&tab);
                 }
             }
-        }
-        Some(bytes)
+        });
+        self.personal_continuity_durability.settle();
     }
 
     fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
@@ -4748,66 +4886,74 @@ impl ShellNetwork {
         self.persist_personal_continuity_with_claims(None)
     }
 
+    /// Hand the continuity value to the state writer and, with `claims`, the
+    /// acknowledgement of the owner claims up to that revision, to run once
+    /// the value is on disk. Whether a write was queued or was not needed.
+    ///
+    /// Every sync round asks for this from the compositor's loop, so it never
+    /// writes itself: the write (a backup and a primary, four fsyncs) can
+    /// take seconds under I/O pressure. The writer keeps the newest value per
+    /// file, and a quiet round asks for what the store already holds and
+    /// queues nothing.
     fn persist_personal_continuity_with_claims(&self, claims: Option<u64>) -> bool {
+        // Acknowledge what earlier rounds' writes have since put on disk.
+        self.personal_continuity_durability.settle();
         if !self.enforce_app_continuations_policy() {
             return false;
         }
         let Some(path) = self.personal_continuity_path.as_deref() else {
             return false;
         };
-        let (Ok(counter), Ok(continuity)) = (
-            self.personal_continuity_counter.lock(),
-            self.personal_continuity.lock(),
-        ) else {
-            return false;
-        };
-        let value = PersistedPersonalContinuity {
-            counter: *counter,
-            continuity: continuity.clone(),
+        // The value is captured under the ledger/counter locks; whatever is
+        // written and acknowledged below is exactly this capture.
+        let value = {
+            let (Ok(counter), Ok(continuity)) = (
+                self.personal_continuity_counter.lock(),
+                self.personal_continuity.lock(),
+            ) else {
+                return false;
+            };
+            PersistedPersonalContinuity {
+                counter: *counter,
+                continuity: continuity.clone(),
+            }
         };
         let Ok(bytes) = postcard::to_allocvec(&value) else {
             return false;
         };
-        let durable = if claims.is_some() {
-            // The acknowledgement below says this exact value is on disk.
-            let written = write_personal_continuity(path, &bytes);
-            if written {
-                self.personal_continuity_store.changes(path, Some(&bytes));
-            } else {
-                self.personal_continuity_store.forget();
-            }
-            written
-        } else {
-            // Every sync round asks for this, from the compositor's loop; the
-            // write (a backup and a primary, four fsyncs) goes to the state
-            // writer, which keeps the newest per file. A quiet round asks for
-            // what the store already holds and queues nothing. Nothing here
-            // reads the result as proof of durability.
-            if self.personal_continuity_store.changes(path, Some(&bytes)) {
-                let target = path.to_path_buf();
-                let known = self.personal_continuity_store.clone();
-                crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                    if !write_personal_continuity(&target, &bytes) {
-                        known.forget();
-                    }
-                });
-            }
-            true
-        };
-        // The acknowledgement refers to the exact value durably written
-        // while these ledger/counter locks remain held, never a later capture.
-        if durable
-            && let Some(revision) = claims
+        if self.personal_continuity_store.changes(path, Some(&bytes)) {
+            let sequence = self.personal_continuity_durability.submit();
+            let target = path.to_path_buf();
+            let known = self.personal_continuity_store.clone();
+            let durability = self.personal_continuity_durability.clone();
+            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
+                if write_personal_continuity(&target, &bytes) {
+                    durability.written(sequence);
+                } else {
+                    known.forget();
+                }
+            });
+        }
+        // The acknowledgement refers to the captured value, never a later
+        // capture, and runs only once that value (or a newer one) is on disk.
+        if let Some(revision) = claims
             && let Some(snapshot) = self
                 .personal_continuity_device
                 .as_ref()
-                .and_then(|device| continuity.snapshot_for(device))
-            && let Ok(mut registry) =
-                crate::shell::personal_continuity_registry::global_registry().lock()
+                .and_then(|device| value.continuity.snapshot_for(device))
+                .cloned()
         {
-            registry.acknowledge_owner_claims(revision, snapshot);
+            self.personal_continuity_durability.after_newest(move || {
+                if let Ok(mut registry) =
+                    crate::shell::personal_continuity_registry::global_registry().lock()
+                {
+                    registry.acknowledge_owner_claims(revision, &snapshot);
+                }
+            });
         }
-        durable
+        // A value the disk already held is acknowledged at once.
+        self.personal_continuity_durability.settle();
+        true
     }
 
     /// What chrome needs to offer continuing another device's focused tab:
@@ -4850,6 +4996,9 @@ impl ShellNetwork {
         ui::collaboration::owner_view::OwnerView,
         Option<AuthenticatedPersonalRoute>,
     )> {
+        // Owner claims whose continuity value has reached the disk since the
+        // last round are acknowledged before the views are read.
+        self.personal_continuity_durability.settle();
         let permitted = self.enforce_app_continuations_policy();
         let enrolled: std::collections::HashSet<_> = self
             .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
@@ -5150,11 +5299,6 @@ impl ShellNetwork {
     /// is still current. Holding the route registry through command enqueue
     /// gives departure a defined ordering: either enqueue wins, or departure
     /// removes authority first and this call fails without sending.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the route registry guard is held through enqueue on purpose: it orders this \
-                  send against departure, which must remove authority before or after it"
-    )]
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
@@ -5450,12 +5594,33 @@ impl ShellNetwork {
         input_declines::load(&path, user)
     }
 
+    #[cfg(test)]
     pub(crate) fn save_display_input_declines(
         &self,
         devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::save(&path, user, devices)
+    }
+
+    /// [`Self::save_display_input_declines`] on the state writer: granting or
+    /// revoking input control runs on the compositor's loop, and the write's
+    /// fsyncs can take seconds under I/O pressure. A newer save that has not
+    /// started replaces this one; `failed` runs on the writer when the write
+    /// fails.
+    pub(crate) fn save_display_input_declines_in_background(
+        &self,
+        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        failed: impl FnOnce(String) + Send + 'static,
+    ) -> Result<(), String> {
+        let (path, user) = self.display_input_declines_path()?;
+        let devices = devices.clone();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = input_declines::save(&path, user, &devices) {
+                failed(error);
+            }
+        });
+        Ok(())
     }
 
     /// The person whose devices form this device's personal fabric.
@@ -6222,7 +6387,23 @@ impl ShellNetwork {
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Transport polling never blocks; durable
     /// native admission yields after one event so replay cannot monopolize a turn.
+    ///
+    /// Signed relay input is admitted in place, which publishes the state
+    /// file: for a thread that may wait for the disk. The compositor's loop
+    /// ticks with [`Self::frame_tick`].
     pub fn tick(&self) {
+        self.tick_with(Admission::InPlace);
+    }
+
+    /// [`Self::tick`] for the compositor's frame loop, which must never wait
+    /// for the state file: signed relay input is admitted on a worker
+    /// ([`native_admission`]), and no later event is handled until that
+    /// admission's remainder ran here.
+    pub fn frame_tick(&self) {
+        self.tick_with(Admission::OffLoop);
+    }
+
+    fn tick_with(&self, admission: Admission) {
         self.remote_action_replies.expire(std::time::Instant::now());
         self.note_session_reachability(false);
         // Local room changes go out the tick they land; the periodic pull
@@ -6241,16 +6422,40 @@ impl ShellNetwork {
         let Ok(mut event_rx) = self.event_rx.lock() else {
             return;
         };
+        // An admission handed off the loop completes before any later event.
+        match self.take_native_admission() {
+            native_admission::Lane::Busy => return,
+            native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
+            native_admission::Lane::Idle => {}
+        }
+        // Inbound events read the room's governance from the native owner.
+        // While it opens (off this thread: binding its writer and publishing
+        // its generation can take seconds) they stay queued, in order, and
+        // the open wakes the loop once it ends.
+        if !event_rx.is_empty()
+            && matches!(
+                self.native_owner_status(),
+                native_enrollment::NativeOwnerStatus::Opening
+            )
+        {
+            return;
+        }
         for _ in 0..MAX_NET_EVENTS_PER_TICK {
             let Ok(event) = event_rx.try_recv() else {
                 break;
             };
-            let native_admission = matches!(&event, NetEvent::NativeInput(_));
-            self.dispatch_net_event(event);
+            let admits = matches!(&event, NetEvent::NativeInput(_));
+            match (admission, event) {
+                (Admission::OffLoop, NetEvent::NativeInput(input)) => {
+                    self.dispatch_native_input_off_loop(input);
+                }
+                (_, event) => self.dispatch_net_event(event),
+            }
             // Signed replay may cross a durable writer and publish app state.
             // Leave the remaining FIFO queued until the next UI turn, where
-            // control requests can progress between actual admissions.
-            if native_admission {
+            // control requests can progress between actual admissions; an
+            // admission off the loop holds them until it is back.
+            if admits {
                 break;
             }
         }
@@ -6265,7 +6470,7 @@ impl ShellNetwork {
     )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
-            NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
+            NetEvent::NativeInput(input) => self.dispatch_native_input(input),
             NetEvent::Live { ws, from, frame } => self.handle_live_frame(ws, from, &frame),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
@@ -7571,10 +7776,6 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
-    )]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
@@ -7950,6 +8151,7 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
         personal_continuity_store: KnownContents::default(),
+        personal_continuity_durability: ContinuityDurability::default(),
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
@@ -7986,6 +8188,7 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        native_admission: native_admission::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),
@@ -8834,6 +9037,115 @@ mod tests {
         assert!(net.persist_personal_continuity());
         crate::shell::persist::wait_for_saves();
         assert!(store.exists(), "the store is written once allowed again");
+    }
+
+    /// Every sync round captures and persists the personal continuity from
+    /// the compositor's loop. With owner claims to acknowledge, the store
+    /// was written there (four fsyncs) and froze the desktop under I/O
+    /// pressure; now the state writer writes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capturing_personal_continuity_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (mut net, _commands) = personal_continuity_network_for_test([0x45; 32]);
+        let store = dir.path().join("personal-continuity.postcard");
+        net.personal_continuity_path = Some(store.clone());
+        assert!(net.join_default_workspace());
+        crate::shell::persist::wait_for_saves();
+        let checkpoint = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            net.local_continuity_snapshot_bytes()
+        })
+        .expect("the round captures a checkpoint without a disk sync");
+        crate::shell::durable_writer::global().flush();
+        let stored = load_personal_continuity(&store);
+        assert_eq!(
+            postcard::to_allocvec(&stored.continuity).unwrap(),
+            checkpoint,
+            "the state writer stored exactly the captured checkpoint"
+        );
+    }
+
+    /// Each of the person's devices restates its fabric checkpoint, and the
+    /// merge reaches the compositor's loop through `net.tick`. The merged
+    /// fabric and its backup (four fsyncs) are written by the state writer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn merging_a_peer_fabric_checkpoint_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(path.clone());
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
+        let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
+        crate::shell::durable_writer::global().flush();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                peer_device.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                payload,
+            );
+        });
+        assert!(net.device_fabric().snapshots().contains_key(&owner));
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            load_device_fabric(&path).snapshots().contains_key(&owner),
+            "the state writer stored the merged fabric"
+        );
+    }
+
+    #[test]
+    fn continuity_obligations_wait_for_the_write_of_their_value() {
+        let durability = ContinuityDurability::default();
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let first = durability.submit();
+        let record = |label: &'static str| {
+            let ran = Arc::clone(&ran);
+            move || ran.lock().unwrap().push(label)
+        };
+        durability.after_newest(record("first"));
+        let second = durability.submit();
+        durability.after_newest(record("second"));
+        durability.settle();
+        assert!(ran.lock().unwrap().is_empty(), "nothing is on disk yet");
+        durability.written(first);
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first"]);
+        // A later value written stands for every earlier one, even one the
+        // writer replaced before it started.
+        durability.written(second);
+        durability.written(first);
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
+        durability.after_newest(record("already durable"));
+        durability.settle();
+        assert_eq!(*ran.lock().unwrap(), ["first", "second", "already durable"]);
+
+        // Writes that keep failing leave a bounded backlog.
+        ran.lock().unwrap().clear();
+        let failing = durability.submit();
+        for _ in 0..MAX_CONTINUITY_OBLIGATIONS + 10 {
+            durability.after_newest(record("waiting"));
+        }
+        durability.written(failing);
+        durability.settle();
+        assert_eq!(ran.lock().unwrap().len(), MAX_CONTINUITY_OBLIGATIONS);
     }
 
     #[test]
@@ -11463,6 +11775,8 @@ mod tests {
         drop(tree);
         drop(replica);
 
+        // The checkpoint is written on the state writer.
+        crate::shell::durable_writer::global().flush();
         let restarted = load_personal_continuity(&continuity_path);
         assert!(
             restarted.counter >= closed_source.stamp.counter,
@@ -11828,6 +12142,7 @@ mod tests {
                 (second.id, second.clone()),
             ]);
             persist_pending_invitations(&path, &persisted);
+            crate::shell::durable_writer::global().flush();
             assert_eq!(load_pending_invitations(&path).len(), 2);
             #[cfg(unix)]
             {
@@ -11842,9 +12157,17 @@ mod tests {
             net.pending_invitations_path = Some(path.clone());
             *net.pending_identity_admissions.lock().unwrap() = persisted;
             assert_eq!(net.resend_invitation(&first.id).unwrap(), "signed-one");
+            // Cancelling runs on the compositor's loop, which must not wait
+            // for the disk: the store is written on the state writer.
+            #[cfg(target_os = "linux")]
+            assert!(crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(
+                || net.cancel_invitation(&first.id)
+            ));
+            #[cfg(not(target_os = "linux"))]
             assert!(net.cancel_invitation(&first.id));
             assert!(net.resend_invitation(&first.id).is_err());
             assert_eq!(net.resend_invitation(&second.id).unwrap(), "signed-two");
+            crate::shell::durable_writer::global().flush();
             let restored = load_pending_invitations(&path);
             assert_eq!(restored, vec![second]);
         }
@@ -12075,10 +12398,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn redeemed_invites_grant_exactly_their_signed_role_and_name() {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one invite is redeemed, exercised and revoked end to end"
-        )]
         /// Whether the author `net` authenticated for `envelope` may make
         /// the change it carries, decided the way the broker decides it.
         fn document_allowed(
@@ -13514,7 +13833,8 @@ mod tests {
     /// on a room topic, whichever room the window showing it is in.
     #[test]
     fn a_person_records_content_travels_only_between_the_persons_devices() {
-        use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+        use tilo_action_broker::record_content::PIECE_BYTES;
+        use tilo_content::hash_bytes;
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
         let user = root.verifying_key().to_bytes();
@@ -13537,7 +13857,7 @@ mod tests {
         let poster: Vec<u8> = (0..PIECE_BYTES + 9)
             .map(|index| u8::try_from(index % 239).unwrap())
             .collect();
-        let hash = content_hash(&poster);
+        let hash = hash_bytes(&poster);
         laptop_content.offer(&route, &hash, &poster).unwrap();
         let mut arrivals = phone_content.subscribe(&route);
 

@@ -907,8 +907,8 @@ impl Rooms {
                 let minutes = args
                     .integer("minutes")?
                     .unwrap_or(DEFAULT_RESTRICTION_MINUTES);
-                let until_ms = (tilo_clock::unix_now_ns() / 1_000_000)
-                    .saturating_add(minutes.saturating_mul(MINUTE_MS));
+                let until_ms =
+                    tilo_clock::unix_now_ms().saturating_add(minutes.saturating_mul(MINUTE_MS));
                 let person = member(args.required_key("person")?);
                 generation(self.restrict_member(room, device, person, until_ms).await)
             }

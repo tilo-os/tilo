@@ -611,7 +611,7 @@ fn discovered(finished: &Finished) -> Result<Candidate, String> {
 
 /// A child's diagnostic, safe to show a person, or `fallback` when it said
 /// nothing.
-fn command_error(stderr: &[u8], fallback: &str) -> String {
+pub(crate) fn command_error(stderr: &[u8], fallback: &str) -> String {
     let detail = String::from_utf8_lossy(stderr);
     let detail: String = detail
         .trim()
@@ -628,7 +628,7 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
 
 /// Run `command` under the bounded-command policy, polling for `stop`;
 /// dropping the child when stopped cancels its process group.
-fn run_bounded(command: &HostCommand, stop: &AtomicBool) -> Result<Finished, String> {
+pub(crate) fn run_bounded(command: &HostCommand, stop: &AtomicBool) -> Result<Finished, String> {
     let mut prepared = std::process::Command::new(&command.program);
     prepared.args(&command.args);
     let mut child = bounded_command::spawn_prepared(prepared, None, OUTPUT_LIMIT, command.timeout)
@@ -664,31 +664,7 @@ impl BrokerDoor {
     /// Refuse unless `person` administers `room`'s identity: they may grant
     /// in the workspace, and it has an identity selected.
     fn authorize(&self, room: &str, person: &str) -> Result<(), String> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or("the workspace authority is unavailable")?;
-        let may_administer = tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .ok_or("the workspace is no longer hosted here")?
-            .may_govern_at(
-                person,
-                tilo_action_policy::roles::governance::GRANT,
-                tilo_clock::unix_now(),
-            );
-        if !may_administer {
-            return Err(format!(
-                "{person} may not administer devices for this workspace's identity"
-            ));
-        }
-        crate::identity_registry::selected_identity_profile(room)
-            .map_err(|error| error.to_string())?
-            .ok_or("no identity selected")?;
-        Ok(())
+        crate::shell::identity_admin::authorize(&self.tree, room, person).map(drop)
     }
 }
 

@@ -4,6 +4,12 @@
 Only the disposable installer VM admits this route. The OCI image and installed
 composefs tree remain unchanged; the ESP entry and origin boot representation
 use installed root discovery, retaining bootc's SHA256(kernel + initrd) identity.
+
+A split-kernel target arrives with a UKI the CI runner built from its exact
+kernel, initramfs and pinned DTB (os/dev/dev-target-uki.py), carried beside the
+OCI layout. The live medium has no UKI constructor: it checks that UKI's payload
+against the selected image and writes only the installed command line into the
+command-line room the runner reserved.
 """
 import argparse
 import configparser
@@ -28,6 +34,11 @@ MOUNT = 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec'
 PROFILE_TOOLS = Path('/usr/lib/tilo')
 UKI_TOOL = Path('/usr/libexec/tilo-uki-cmdline')
 HEX = re.compile(r'[0-9a-f]{128}\Z')
+# os/dev/dev-target-uki.py reserves the command-line section with this one
+# token; the installer replaces it with the installed command line.
+TRANSPORT_UKI = Path('/var/lib/tilo-installer/target-oci/target-uki.efi')
+CMDLINE_ROOM = 'tilo.dev-target-cmdline-room'
+KERNEL_CMDLINE_MAX = 2047
 
 
 def require(ok, message):
@@ -100,7 +111,9 @@ def image_inputs(root):
     require(len(ukis) <= 1, 'development target has ambiguous UKIs')
     require(not kernel_directory.startswith('kernel/') or len(ukis) == 1,
             'split development target requires one nonempty sealed UKI')
-    if not ukis:
+    transported = transported_uki(kernel, initrd, dtb)
+    require(not (ukis and transported), 'development target has both a sealed and a transported UKI')
+    if not ukis and transported is None:
         require(shutil.which('ukify') is not None,
                 'split-kernel target requires the runtime ukify constructor before installation')
     if ukis:
@@ -111,6 +124,37 @@ def image_inputs(root):
                 or (dtb is not None and actual.get('.dtb') == dtb.read_bytes()),
                 'CI development UKI differs from its pinned hardware DTB')
     return version, kernel, initrd, dtb
+
+
+def transported_uki(kernel, initrd, dtb):
+    """The runner-built UKI beside the OCI layout, checked against the image."""
+    if not TRANSPORT_UKI.exists() and not TRANSPORT_UKI.is_symlink():
+        return None
+    require(TRANSPORT_UKI.is_file() and not TRANSPORT_UKI.is_symlink()
+            and TRANSPORT_UKI.stat().st_size > 0, 'transported development UKI is unsafe')
+    actual = sections(TRANSPORT_UKI)
+    require(actual.get('.linux') == kernel.read_bytes() and actual.get('.initrd') == initrd.read_bytes(),
+            'transported development UKI differs from the selected split kernel payload')
+    require((dtb is None and '.dtb' not in actual)
+            or (dtb is not None and actual.get('.dtb') == dtb.read_bytes()),
+            'transported development UKI differs from its pinned hardware DTB')
+    reserved = actual.get('.cmdline', b'').rstrip(b'\0\n').decode('ascii', 'replace').split()
+    require(len(reserved) == 1 and reserved[0].startswith(CMDLINE_ROOM + '='),
+            'transported development UKI has no reserved command-line room')
+    return TRANSPORT_UKI
+
+
+def write_cmdline(path, cmdline):
+    """Replace a reserved .cmdline in place; no other PE section moves."""
+    tool = load_module(UKI_TOOL, 'dev_target_room')
+    encoded = cmdline.encode()
+    data = bytearray(path.read_bytes())
+    header, raw, raw_size, _, room = tool.find_cmdline_room(data)
+    require(0 < len(encoded) <= min(room, KERNEL_CMDLINE_MAX),
+            f'installed command line needs {len(encoded)} bytes; the transported UKI reserved {room}')
+    data[raw:raw + raw_size] = encoded + b'\0' * (raw_size - len(encoded))
+    data[header + 8:header + 12] = len(encoded).to_bytes(4, 'little')
+    path.write_bytes(bytes(data))
 
 
 def fields(raw):
@@ -124,6 +168,27 @@ def fields(raw):
     require(all(key in values for key in ('linux', 'initrd', 'options'))
             and not {'efi', 'uki'} & values.keys(), 'expected one split-kernel BLS entry')
     return values
+
+
+def without_install_disk_identity(words):
+    """Drop the words `bootc install` adds to name this disk's filesystems.
+
+    A split-kernel install leaves a BLS entry whose options start with
+    `root=UUID=<fs> rootflags=... rw boot=UUID=<boot>` and the matching
+    `systemd.mount-extra=UUID=<boot>:/boot:auto:ro`, ahead of the image's own
+    kargs. The installed UKI finds its root and /boot the way every Tilo UKI
+    does (root=tilo-auto and the TILO_BOOT mount), so only those words go;
+    any other root or /boot mount still fails the identity checks.
+    """
+    roots = [word for word in words if word.startswith('root=UUID=')]
+    boots = [word for word in words if word.startswith('boot=UUID=')]
+    require(len(roots) <= 1 and len(boots) <= 1, 'installed boot entry has ambiguous bootc disk identities')
+    dropped = set(roots + boots)
+    if boots:
+        dropped.add('systemd.mount-extra=' + boots[0].removeprefix('boot=') + ':/boot:auto:ro')
+    if roots:
+        dropped |= {word for word in words if word == 'rw' or word.startswith('rootflags=')}
+    return [word for word in words if word not in dropped]
 
 
 def sections(path):
@@ -143,6 +208,7 @@ def sections(path):
 
 def promote(image_root, target_root, esp, selected):
     version, kernel, initrd, dtb = image_inputs(image_root)
+    transported = transported_uki(kernel, initrd, dtb)
     deployments = list((target_root / 'state/deploy').glob('*/etc'))
     require(len(deployments) == 1 and HEX.fullmatch(deployments[0].parent.name),
             'development target requires one installed composefs deployment')
@@ -168,7 +234,7 @@ def promote(image_root, target_root, esp, selected):
         installed_initrd = regular(esp, bls['initrd'].lstrip('/'))
         require(installed_kernel.read_bytes() == kernel_bytes and installed_initrd.read_bytes() == initrd_bytes,
                 'installed boot payload differs from the selected CI development image')
-        words = bls['options'].split()
+        words = without_install_disk_identity(bls['options'].split())
         require(not destination.exists() and not destination.is_symlink(), 'target UKI already exists')
     else:
         installed = sections(regular(esp, relative))
@@ -219,6 +285,11 @@ def promote(image_root, target_root, esp, selected):
                 tool.remove_cmdline(output, 'tilo.install')
             if not boot_mounts:
                 tool.append_cmdline(output, MOUNT)
+        elif transported is not None:
+            # The runner built this UKI from the same verified payload; only
+            # the installed command line is written into its reserved room.
+            shutil.copyfile(transported, output)
+            write_cmdline(output, cmdline)
         else:
             arguments = ['ukify', 'build', '--linux', installed_kernel, '--initrd', installed_initrd,
                          '--stub', regular(image_root, 'usr/lib/systemd/boot/efi/linuxaa64.efi.stub'),

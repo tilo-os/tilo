@@ -17,7 +17,7 @@ path = "src/main.rs"
 accounts = { path = "../../system/accounts" }
 account-custody = { path = "../../system/account-custody" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = ["live"] }
-tilo-dav = { path = "../../system/tilo-dav", features = ["client"] }
+tilo-dav = { path = "../../system/tilo-dav", features = ["oauth"] }
 tilo-seal = { path = "../../system/tilo-seal" }
 # Mirrors the dep set used by the `ui`-based system apps (greeter /
 # file-explorer): the toolkit plus the trait crates its `Widget` impls

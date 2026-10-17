@@ -38,15 +38,6 @@ impl AccountBackend {
     }
 }
 
-fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-}
-
 #[interface(name = "org.freedesktop.impl.portal.Account")]
 #[cfg(target_os = "linux")]
 impl AccountBackend {
@@ -63,87 +54,77 @@ impl AccountBackend {
             let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&window))
                 .await
                 .or_fail()?;
-            let reason = option_string(&options, "reason");
+            let reason =
+                crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty());
             let path = handle.to_string();
             let dialogs = self.dialogs.clone();
             let cancel_path = path.clone();
-            if !matches!(
-                self.lifecycle
-                    .register_request(
-                        connection,
-                        &path,
-                        LifecycleEntry {
-                            owner: auth.owner.to_string(),
-                            app_id: auth.caller.app_id.clone(),
-                            resource: LifecycleResource::Prompt,
-                        },
-                        move |_| {
-                            let _ = dialogs.cancel(&cancel_path);
-                        },
-                    )
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let review = match self.dialogs.enqueue_review(ReviewRequest {
-                handle: path.clone(),
-                app_id: auth.caller.app_id.clone(),
-                title: crate::shell::i18n::t("portal-account-title"),
-                reason: reason
-                    .clone()
-                    .unwrap_or_else(|| crate::shell::i18n::t("portal-account-reason")),
-                resource: crate::shell::i18n::t("portal-account-resource"),
-                confirm_label: crate::shell::i18n::t("portal-account-confirm"),
-            }) {
-                Ok(review) => review,
-                Err(_) => {
-                    self.lifecycle
-                        .complete_request_object(connection, &path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
-            };
-            if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-            let outcome = match self
-                .ctx
-                .desktop_services
-                .account
-                .get(&auth.caller.app_id, reason.as_deref())
-                .into_result()
-            {
-                Ok(info) => {
-                    let mut result = Results::new();
-                    result.insert(
-                        "id".into(),
-                        OwnedValue::from(zbus::zvariant::Str::from(info.id)),
-                    );
-                    result.insert(
-                        "name".into(),
-                        OwnedValue::from(zbus::zvariant::Str::from(info.name)),
-                    );
-                    if let Some(image) = info.image_uri {
-                        result.insert(
-                            "image".into(),
-                            OwnedValue::from(zbus::zvariant::Str::from(image)),
-                        );
-                    }
-                    Ok(result)
-                }
-                Err(ended) => {
-                    tracing::debug!(?ended, "Account.GetUserInformation did not complete");
-                    Err(ended)
-                }
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
             };
             self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            outcome
+                .with_request(
+                    connection,
+                    &path,
+                    LifecycleEntry {
+                        owner: auth.owner.to_string(),
+                        app_id: auth.caller.app_id.clone(),
+                        resource: LifecycleResource::Prompt,
+                    },
+                    cancel,
+                    async {
+                        let review = self
+                            .dialogs
+                            .enqueue_review(ReviewRequest {
+                                handle: path.clone(),
+                                app_id: auth.caller.app_id.clone(),
+                                title: crate::shell::i18n::t("portal-account-title"),
+                                reason: reason.clone().unwrap_or_else(|| {
+                                    crate::shell::i18n::t("portal-account-reason")
+                                }),
+                                resource: crate::shell::i18n::t("portal-account-resource"),
+                                confirm_label: crate::shell::i18n::t("portal-account-confirm"),
+                            })
+                            .or_fail()?;
+                        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+                            return Err(Ended::Cancelled);
+                        }
+                        match self
+                            .ctx
+                            .desktop_services
+                            .account
+                            .get(&auth.caller.app_id, reason.as_deref())
+                            .into_result()
+                        {
+                            Ok(info) => {
+                                let mut result = Results::new();
+                                result.insert(
+                                    "id".into(),
+                                    OwnedValue::from(zbus::zvariant::Str::from(info.id)),
+                                );
+                                result.insert(
+                                    "name".into(),
+                                    OwnedValue::from(zbus::zvariant::Str::from(info.name)),
+                                );
+                                if let Some(image) = info.image_uri {
+                                    result.insert(
+                                        "image".into(),
+                                        OwnedValue::from(zbus::zvariant::Str::from(image)),
+                                    );
+                                }
+                                Ok(result)
+                            }
+                            Err(ended) => {
+                                tracing::debug!(
+                                    ?ended,
+                                    "Account.GetUserInformation did not complete"
+                                );
+                                Err(ended)
+                            }
+                        }
+                    },
+                )
+                .await
         })
         .await
     }
@@ -159,6 +140,9 @@ mod tests {
             "reason".into(),
             OwnedValue::from(zbus::zvariant::Str::from("line\nbreak")),
         );
-        assert_eq!(option_string(&options, "reason"), None);
+        assert_eq!(
+            crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty()),
+            None
+        );
     }
 }

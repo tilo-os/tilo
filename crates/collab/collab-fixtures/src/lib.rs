@@ -9,15 +9,6 @@
 //! asserts rather than breaking the build — hence one copy, here,
 //! dev-dependency only.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::{

@@ -434,10 +434,6 @@ impl IsaLevel {
 
 /// x86-64 microarchitecture feature levels per the `SysV` psABI x86-64
 /// supplement. Each level is a strict superset of the previous.
-#[allow(
-    non_camel_case_types,
-    reason = "x86_64 is the canonical architecture spelling used in signed manifests"
-)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum X86_64Level {

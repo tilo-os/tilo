@@ -114,9 +114,114 @@ before sending, the relay while forwarding, the asker on receipt. A refusal
 carries a stable code, so a job whose input its requester cannot produce
 fails promptly as `input_unavailable` (`input_integrity`, `input_too_large`
 and `input_timeout` likewise) rather than hanging. The requester has to be
-online while its job hydrates; a job whose inputs already live on the worker
-still travels from the requester, which is the price of never widening what
-a worker reads.
+online while its job hydrates.
+
+An input the worker already holds does not travel. Before fetching one, the
+worker sends a fresh random challenge through the relay
+(`StreamOpen::ComputeContentProof`, under the same input rule), and the
+requester answers `blake3::keyed_hash(nonce, bytes)` over its own copy, plus
+a locator hint (for workspace content, the file version's manifest hash).
+The worker stages its own copy only when that copy hashes to the digest and
+reproduces the proof; otherwise it fetches as above. Possession is the
+requester's permission (it reads its content under its own access), so a
+job still runs only on bytes its invoker can produce: knowing a digest, or a
+worker happening to hold the bytes, grants nothing. The requester still reads
+its copy to prove it; the upload is what is saved. The worker's sources are
+`HeldContent`: its retained outputs (a job chained on an earlier output runs
+without the requester sending it back) and, where the worker keeps a replica
+of the workspace, that replica's file versions (`WorkspaceContent`). On an
+always-on device the replica is the home peer's (`fs replica`, the stores the
+home-peer bundle names): the relay daemon hands its worker each bundle
+workspace's cache directory for the relay workspaces it backs, and a job in
+one of those workspaces may run on the replica's file versions
+(`ReplicaContent`; a job in any other workspace never reaches it). The
+replica process keeps its stores open, so the worker reads a version's file
+beside it without opening the store, found by the requester's locator and
+used only when the bytes hash to the digest and match the proof; a partly
+hydrated or replaced file is fetched instead. Versions of 1 MiB or less are
+loose blobs inside the store's database, so the worker asks the replica for
+them: each workspace's replica serves its own store, read-only and
+owner-only, on `replica-content.sock` in that workspace's cache directory
+(`fs::replica_content`). It answers only versions wholly on the device,
+checked against their manifest and at most 1 MiB, a few reads at a time; the
+worker trusts the answer no further than for a file it read itself (digest
+and proof), and a replica that is not serving means those inputs are
+fetched, as before.
+`InputTransfer` reports fetched and held inputs separately; the
+`offloadable_action` and `compute_content` relay tests print both timings.
+On a shared CI runner (requester, relay and worker on one host), offloading
+the 12-photo thumbnail batch (129 MB) took 5.9–9.3 s with its inputs fetched
+from the requester (3.1–5.0 s of staging) and 3.3–5.3 s to a worker whose
+replica already held them (0.55–1.2 s of staging, no input bytes sent). A
+1 MiB input staged in 42–54 ms fetched against 17–34 ms proven; a 15 MiB one
+in 879 ms against 185 ms.
+
+Placement weighs only what a worker would receive. `compute.place` takes the
+job's inputs as `inputs: [{digest, bytes}]` (at most `MAX_COMPUTE_INPUTS`),
+which `Offloader` sends. The relay notes, per live job, which inputs the
+requester proved and which it forwarded; when the job completes, an input
+proven and never forwarded is one the worker held, and a forwarded one is
+not. It remembers up to `MAX_KNOWN_HOLDINGS` such digests per requester and
+worker, plus the share of the last completed job's inputs the worker held,
+which is what an input not seen yet is expected to be (a replica keeping the
+originals holds the next photo too); a reattaching worker starts unknown.
+Moving only the rest, plus the round trip, is weighed against the
+requester's own run, so a worker expected to receive nothing costs only the
+round trip: a home server holding a phone's photos takes the thumbnail batch
+however slow the uplink. None of this is the worker's word or grants anything: every job
+still proves possession or fetches, and a hint gone wrong (an evicted copy)
+costs one fetched run, which unlearns it.
+
+### Offloadable actions
+
+An action whose contract declares `offload` (`tilo_actions::Offload`: a signed
+package, its catalogue entrypoint, GPU need and CPU, memory and output
+ceilings) is a pure content transform: files in, content out, the same bytes
+whichever device computes them. Invoking one goes through
+`tilo_relay::offload::Offloader::invoke`, the same path for a person, a script
+or an agent, after the action door admitted the invocation:
+
+- The inputs are workspace files, named by the manifest hash the invoker's own
+  view resolved. `WorkspaceContent` reads each from this device's content
+  store, checks it against its manifest and hashes the bytes; only digests it
+  bound this way are servable to a worker, so the fs's manifest addressing and
+  compute's byte digests meet without either being guessed from the other.
+- It asks the workspace's relay `compute.place` (`RelayPlacement`). When
+  another device is better placed it binds a job to that worker (no
+  arguments, the declared ceilings, the inputs by digest) on its long-lived
+  compute session, serves exactly those inputs, follows the result and fetches
+  the outputs back, storing each as a file version.
+- No better device, an unreachable relay, a package not installed here, or any
+  remote failure runs the same transform locally. An action that fails on its
+  own inputs fails identically either way.
+
+The output is the outputs as content resources, in order, identical wherever
+the action ran; where it ran and how long it took are reported beside it
+(`OffloadRun::ran_on`, `Offloader::wall_times`). Thumbnailing a batch of images
+(`thumbnail::batch`, entrypoint `thumbnail-batch` of `so.tilo.thumbnails`) is
+the first offloadable transform.
+
+An app declares one with `#[effect(content, kind = "read", offload(app = "…",
+entrypoint = "…", cpu_ms = N, memory_mb = N, output_mb = N))]`; its inputs are
+its content parameters (`#[param(content)]`, a list of content for
+`Vec<String>`), and its handler is the local run. Photos publishes
+`make-thumbnails` this way. The action door admits an invocation of it like any
+other, then asks the device's route (`HostServices::action_offload`,
+`tilo_actions::offload::ActionOffload`) where it runs:
+
+- `tilo_relay::offload::OffloadRoute` runs it through `Offloader::offload`
+  when every input is document media the invoking room reaches on this device
+  (`DocumentMedia::contains`), bound by its blob hash
+  (`WorkspaceContent::bind_blob`), and keeps the outputs as that room's media,
+  so the door answers with exactly the `tilo.content` addresses the app's
+  handler returns.
+- Otherwise — a room this device places no compute for, an input not here, no
+  better device, any remote failure — the door hands the app the invocation
+  and its own handler answers it; the route hears how long that took
+  (`ActionOffload::ran_here`, `Offloader::record_local`), which placement
+  weighs next time.
+
+Content named twice is one input on both paths, as a worker stages it.
 
 ## Integration seams
 

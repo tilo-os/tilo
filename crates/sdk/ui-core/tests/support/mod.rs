@@ -188,6 +188,30 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 refuse_workspace_control(&mut inboxes, &from, session_id);
             }
+            CollabRequest::SelectedDiscovery { request_id, .. } => {
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::SelectedDiscoveryResult {
+                        request_id,
+                        result: Err("memory relay has no selected-file discovery".into()),
+                    });
+                }
+            }
+            CollabRequest::OpenSelectedV2 { request_id, .. } => {
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::OpenSelectedV2Result {
+                        request_id,
+                        result: Err("memory relay has no selected-file authority".into()),
+                    });
+                }
+            }
+            CollabRequest::OpenSelected { request_id, .. } => {
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::OpenSelectedResult {
+                        request_id,
+                        result: Err("memory relay has no selected-file authority".into()),
+                    });
+                }
+            }
             CollabRequest::LocalFileClipboard { request_id, .. } => {
                 refuse_file_clipboard(&mut inboxes, &from, request_id);
             }

@@ -86,14 +86,16 @@ class UploadTransport(unittest.TestCase):
             run.assert_not_called()
 
 
-class WorkflowCredentialContract(unittest.TestCase):
-    def test_publication_uses_existing_package_scoped_credential(self):
-        workflow = (Path(__file__).resolve().parents[2]
-                    / ".forgejo/workflows/release-local-model-catalog.yml").read_text()
-        publish_job = workflow.split("\n  publish:\n", 1)[1]
-        self.assertIn("PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish_job)
-        self.assertNotIn("secrets.RELEASE_TOKEN", publish_job)
-
+class CheckCredentialContract(unittest.TestCase):
+    def test_only_the_publishing_check_holds_the_package_credential(self):
+        import tomllib
+        config = tomllib.loads((Path(__file__).resolve().parents[2] / "t.toml").read_text())
+        checks = {check["name"]: check for check in config["check"]}
+        self.assertEqual(checks["publish-model-catalog"]["secrets"], ["REGISTRY_TOKEN"])
+        self.assertEqual(checks["sign-model-catalog"]["secrets"], ["TILO_MODEL_CATALOG_SIGNING_KEY"])
+        self.assertNotIn("secrets", checks["model-catalog-compiler"])
+        for name in ("sign-model-catalog", "publish-model-catalog", "review-speech-catalog"):
+            self.assertEqual(checks[name]["on"], ["dispatch"], name)
 
 if __name__ == "__main__":
     unittest.main()

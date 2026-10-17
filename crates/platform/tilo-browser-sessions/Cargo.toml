@@ -1,0 +1,14 @@
+[package]
+name = "tilo-browser-sessions"
+version = "0.1.0"
+description = "Native website-session custody codec qualification with public selection metadata"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+account-custody = { path = "../../system/account-custody" }
+browser-continuity = { path = "../../browser/browser-continuity" }
+
+[lints]
+workspace = true

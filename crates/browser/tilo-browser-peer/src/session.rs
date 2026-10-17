@@ -76,6 +76,13 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
+    /// This page only watches the rooms it joins: a public room's
+    /// spectator. It writes nothing: no document, live frame, action,
+    /// compaction or presence of its own, no live join, and no channel
+    /// governance, so it never asks a channel for access. It takes the
+    /// content keys of the records it opens from the room's steward over
+    /// HTTPS instead ([`crate::carrier::channel_keys`]).
+    pub watching: bool,
 }
 
 /// Transport phase, in `SessionHealth` v1 vocabulary.
@@ -302,10 +309,20 @@ enum Command {
         tilo_relay_protocol::legacy_window::InputRequest,
         InputCompletion,
     ),
+    LegacyCodecs(
+        tilo_relay_protocol::legacy_window::CodecsRequest,
+        InputCompletion,
+    ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
+    /// What the room's steward answered a watching page asking for a
+    /// record's keys.
+    WatchedKeys(
+        DocumentRoute,
+        Result<channel_crypto::ChannelContentKeys, String>,
+    ),
     Reconnect,
     Refresh,
     Close,
@@ -484,6 +501,8 @@ impl PeerHandle {
         }
         channels.restore_requests(saved.requests);
         let task = Task {
+            commands: commands.downgrade(),
+            watched: crate::watching::WatchedKeys::default(),
             config,
             signer,
             store,
@@ -807,6 +826,21 @@ impl PeerHandle {
         self.send(Command::LegacyInput(request, done))
     }
 
+    /// Tell the host which video codecs this page decodes
+    /// ([`crate::carrier::legacy_codecs`]) over the current HTTPS session;
+    /// `done` receives whether the host took the advert.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn legacy_codecs_then(
+        &self,
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LegacyCodecs(request, done))
+    }
+
     /// Post this person's own recent actions ([`crate::carrier::here`]) over
     /// the current HTTPS session; `done` receives who is here.
     ///
@@ -1014,6 +1048,11 @@ enum Exit {
 type HeldFrame = (Vec<u8>, [u8; 32]);
 
 struct Task {
+    /// This session's own command queue, for answers it waits on in the
+    /// background; weak, so the session still ends with its last handle.
+    commands: mpsc::WeakUnboundedSender<Command>,
+    /// The records a watching page asks the steward for keys of.
+    watched: crate::watching::WatchedKeys,
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
@@ -1090,6 +1129,10 @@ impl Task {
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
     fn announce(&self, client: &Link, workspace_id: u64) -> bool {
+        if self.config.watching {
+            // Its hello and volunteering would be writes the room refuses.
+            return true;
+        }
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
             && client.send(hello).is_err()
         {
@@ -1545,20 +1588,11 @@ impl Task {
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
+        let Some(command) = self.unless_watching(command) else {
+            return true;
+        };
         match command {
-            Command::Join(workspace_id) => {
-                self.rooms.insert(workspace_id);
-                if client.is_some() {
-                    self.admission_since
-                        .get_or_insert_with(tilo_clock::unix_now_ms);
-                }
-                self.update(|status| {
-                    status.rooms.entry(workspace_id).or_insert(false);
-                });
-                self.received.clear();
-                client
-                    .is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
-            }
+            Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
                 client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
@@ -1630,6 +1664,9 @@ impl Task {
             Command::LegacyInput(request, done) => {
                 Self::request_legacy_input(request, done, client)
             }
+            Command::LegacyCodecs(request, done) => {
+                Self::request_legacy_codecs(request, done, client)
+            }
             Command::Here(request, done) => Self::request_here(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
@@ -1643,9 +1680,68 @@ impl Task {
                 Self::request_node(done, client);
                 true
             }
-            // Handled by the caller's loop.
-            Command::Reconnect | Command::Refresh | Command::Close => true,
+            // Handled by the caller's loop, and keys by `unless_watching`.
+            Command::Reconnect | Command::Refresh | Command::Close | Command::WatchedKeys(..) => {
+                true
+            }
         }
+    }
+
+    /// Subscribe to `workspace_id`, now or once connected.
+    fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+        self.rooms.insert(workspace_id);
+        if client.is_some() {
+            self.admission_since
+                .get_or_insert_with(tilo_clock::unix_now_ms);
+        }
+        self.update(|status| {
+            status.rooms.entry(workspace_id).or_insert(false);
+        });
+        self.received.clear();
+        client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
+    }
+
+    /// `command`, unless this page only watches and it would write: then
+    /// it is answered here, sending nothing, and `None` is returned. A
+    /// watching page joins no live plane, publishes, compacts and acts on
+    /// nothing, is not listed as here, and opens a record by asking its
+    /// steward for the record's keys.
+    fn unless_watching(&mut self, command: Command) -> Option<Command> {
+        if let Command::WatchedKeys(route, answer) = command {
+            self.watched
+                .answered(&route, answer.is_ok(), tilo_clock::unix_now_ms());
+            // Refused: the room keeps the record from those who watch, and
+            // its documents stay held, awaiting keys.
+            if let Ok(keys) = answer {
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
+            }
+            return None;
+        }
+        if !self.config.watching {
+            return Some(command);
+        }
+        match command {
+            Command::LiveJoin(_)
+            | Command::Live(..)
+            | Command::Publish(..)
+            | Command::Compact(..) => {}
+            Command::RemoteAction(workspace_id, to, _) => {
+                self.emit(&PeerEvent::RemoteActionUndeliverable {
+                    workspace_id,
+                    to,
+                    reason: "a page that only watches acts on nothing".into(),
+                });
+            }
+            Command::Here(_, done) => {
+                done(Err("a page that only watches is not listed as here".into()));
+            }
+            Command::OpenRoute(route) => self.watched.want(route),
+            command => return Some(command),
+        }
+        None
     }
 
     /// Restore this session's rooms, pending commits and call participations.
@@ -1768,6 +1864,62 @@ impl Task {
             }
             #[cfg(feature = "iroh")]
             Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    /// Ask the room's steward for the keys of every record this watching
+    /// page waits on and is not asking for already; each answer comes back
+    /// as [`Command::WatchedKeys`].
+    fn ask_watched_keys(&mut self, client: Option<&Link>) {
+        let Some(Link::Https(link)) = client else {
+            return;
+        };
+        let seated = lock(&self.shared).status.rooms.clone();
+        let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
+            route
+                .workspace_id()
+                .is_ok_and(|room| seated.get(&room) == Some(&true))
+        });
+        for route in due {
+            let http = link.client().clone();
+            let session = link.session().to_owned();
+            let commands = self.commands.clone();
+            n0_future::task::spawn(async move {
+                let request = tilo_relay_protocol::web::ChannelKeysRequest {
+                    app_id: route.app_id.clone(),
+                    room: route.cluster_id.clone(),
+                    record: route.record.clone(),
+                };
+                let keys = crate::carrier::channel_keys(http.as_ref(), &session, &request)
+                    .await
+                    .map_err(|error| error.to_string());
+                if let Some(commands) = commands.upgrade() {
+                    let _ = commands.send(Command::WatchedKeys(route, keys));
+                }
+            });
+        }
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_legacy_codecs(
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let taken =
+                        crate::carrier::legacy_codecs(http.as_ref(), &session, &request).await;
+                    done(taken.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("codec adverts are sent over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
         true
@@ -2239,14 +2391,19 @@ impl Task {
                 {
                     return;
                 }
-                let changes = self.channels.open(&route, now);
-                self.absorb(changes);
+                if !self.config.watching {
+                    let changes = self.channels.open(&route, now);
+                    self.absorb(changes);
+                }
                 let awaiting_keys = envelope.encryption.is_some_and(|metadata| {
                     self.ciphers
                         .get(&route)
                         .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
                 });
                 if awaiting_keys {
+                    if self.config.watching {
+                        self.watched.want(route.clone());
+                    }
                     let held = self.held_inbound.entry(route.clone()).or_default();
                     if held.len() >= MAX_HELD_DOCUMENTS {
                         held.pop_front();
@@ -2333,6 +2490,9 @@ impl Task {
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
+        if self.config.watching {
+            self.ask_watched_keys(client);
+        }
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
@@ -2387,6 +2547,11 @@ impl Task {
                 self.release_barriers();
             }
             for outgoing in changes.outgoing {
+                if self.config.watching {
+                    // A watching page is no channel member: it asks nothing
+                    // over the channel and acknowledges nothing there.
+                    continue;
+                }
                 let Some(client) = client else {
                     // Offline: overdue requests are sent again after the
                     // reconnect; acknowledgements go with the next frame.

@@ -21,15 +21,6 @@
 //! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
 //! expected to fall back to a local-only mode.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod agent_transport;
 pub mod local_socket;
 pub mod pending_connection;

@@ -20,7 +20,6 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     clippy::indexing_slicing,
-    clippy::similar_names,
     clippy::many_single_char_names,
     clippy::float_cmp,
     clippy::too_many_lines,

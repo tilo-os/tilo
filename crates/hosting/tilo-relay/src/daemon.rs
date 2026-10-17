@@ -5,8 +5,8 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -287,9 +287,22 @@ impl HandshakeTrust {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             next.clone(),
         );
-        if previous != next {
+        if narrows(&previous, &next) {
             crate::authority_epoch::bump();
         }
+    }
+}
+
+/// Whether `next` trusts less than `previous` did: a user root it no longer
+/// lists. One that only adds roots, as each person a public room admits
+/// does, ends nobody's session and announces nothing.
+fn narrows(previous: &TrustPolicy, next: &TrustPolicy) -> bool {
+    match (previous, next) {
+        (TrustPolicy::AllowList { users: before }, TrustPolicy::AllowList { users: after }) => {
+            let after: HashSet<&String> = after.iter().collect();
+            before.iter().any(|user| !after.contains(user))
+        }
+        _ => previous != next,
     }
 }
 
@@ -553,10 +566,6 @@ impl Relay {
     /// # Errors
     ///
     /// The same as [`Relay::start`].
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
-    )]
     pub async fn start_with_app_serving(
         cfg: RelayConfig,
         identity: RelayIdentity,
@@ -921,7 +930,6 @@ impl Relay {
                             .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
                         #[cfg(feature = "agents")]
                         trust_policy: handler.trust_policy.clone(),
-                        #[cfg(feature = "agents")]
                         agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),
@@ -1015,6 +1023,12 @@ impl Relay {
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
                 environments,
+                // Running jobs on the replica's copies only saves transfers;
+                // without them every input is fetched.
+                replicas: home_peer_replicas(&cfg.home_peer_bundle).unwrap_or_else(|error| {
+                    tracing::warn!(%error, "compute worker runs without the home-peer replica");
+                    BTreeMap::new()
+                }),
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
@@ -1281,6 +1295,35 @@ impl Relay {
             .await
     }
 
+    /// Let visitors watch `workspace_id` read-only as `spectators`: every
+    /// device the spectator root certified reads the room's state and
+    /// writes nothing, up to `spectators.seats` subscribed at once (see
+    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// room, which is also what lets its devices through the handshake.
+    ///
+    /// # Errors
+    ///
+    /// The room is not open on this relay.
+    pub async fn admit_spectators(
+        &self,
+        workspace_id: u64,
+        spectators: crate::room_access::Spectators,
+    ) -> Result<(), RelayError> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| {
+                RelayError::GovernedAccess(format!("room {workspace_id} is not open here"))
+            })?;
+        workspace.lock().await.spectators = Some(spectators);
+        // Live subscriptions are audited again: fewer seats end the extra.
+        crate::authority_epoch::bump();
+        Ok(())
+    }
+
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -1343,6 +1386,49 @@ impl Relay {
     }
 }
 
+/// A home-peer workspace's filesystem ticket and the relay workspaces it
+/// backs.
+fn home_peer_relay_workspaces(
+    workspace: &fs::full_replica::HomePeerBundle,
+) -> Result<(fs::Ticket, Vec<u64>), RelayError> {
+    let ticket = fs::Ticket::decode(&workspace.ticket)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
+    let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+        // Bundles exported before room bindings existed have one stable
+        // fallback shard. New enrollment always writes explicit ids.
+        vec![
+            crate::room_workspace_id(&ticket.workspace_id().to_string())
+                .map_err(|error| RelayError::Identity(format!("invalid workspace id: {error}")))?,
+        ]
+    } else {
+        workspace.relay_workspace_ids.clone()
+    };
+    Ok((ticket, relay_workspace_ids))
+}
+
+/// The filesystem replica stores the home peer on this device keeps, by the
+/// relay workspace each backs: content this device's compute worker may run
+/// a job on once the job's requester proves it holds the same bytes.
+fn home_peer_replicas(bundle_path: &Path) -> Result<BTreeMap<u64, Vec<PathBuf>>, RelayError> {
+    let mut replicas = BTreeMap::<u64, Vec<PathBuf>>::new();
+    if !bundle_path.exists() {
+        return Ok(replicas);
+    }
+    let text = std::fs::read_to_string(bundle_path)?;
+    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    for workspace in &bundle.workspaces {
+        let (_, relay_workspace_ids) = home_peer_relay_workspaces(workspace)?;
+        for id in relay_workspace_ids {
+            let dirs = replicas.entry(id).or_default();
+            if !dirs.contains(&workspace.cache_dir) {
+                dirs.push(workspace.cache_dir.clone());
+            }
+        }
+    }
+    Ok(replicas)
+}
+
 /// Import full-workspace residency from the same bundle the filesystem worker
 /// consumes. The operator cannot accidentally advertise a relay-only binding
 /// for a workspace whose NAS worker is configured to retain complete content.
@@ -1363,19 +1449,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     let mut collaborators = Vec::new();
     let now = unix_now();
     for workspace in bundle.workspaces {
-        let ticket = fs::Ticket::decode(&workspace.ticket)
-            .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
-        let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
-            // Bundles exported before room bindings existed have one stable
-            // fallback shard. New enrollment always writes explicit ids.
-            vec![
-                crate::room_workspace_id(&ticket.workspace_id().to_string()).map_err(|error| {
-                    RelayError::Identity(format!("invalid workspace id: {error}"))
-                })?,
-            ]
-        } else {
-            workspace.relay_workspace_ids.clone()
-        };
+        let (ticket, relay_workspace_ids) = home_peer_relay_workspaces(&workspace)?;
         // An FS authority is deliberately *not* a relay-room membership
         // list.  In particular, an FsPath grant lets a collaborator read a
         // path in the global Files namespace; it must never silently give
@@ -1625,7 +1699,11 @@ fn open_bound_workspace(
         )?
     };
     if let Some(authority) = &binding.shell_authority {
-        rt.store.bind_shell_authority(authority.clone())?;
+        // The configured authority is typed at the config edge; the store's
+        // shell adapter reads its serialised form.
+        let authority = serde_json::to_value(authority)
+            .map_err(|error| crate::store::StoreError::Json(error.to_string()))?;
+        rt.store.bind_shell(&authority)?;
     }
     rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
     rt.admission = rt.admission.rebind(
@@ -3077,6 +3155,20 @@ mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
 
+    /// Only a trust policy that drops a root, or changes kind, narrows who
+    /// may stay connected.
+    #[test]
+    fn only_a_policy_that_drops_a_root_narrows() {
+        let list = |users: &[&str]| TrustPolicy::AllowList {
+            users: users.iter().map(|user| (*user).to_owned()).collect(),
+        };
+        assert!(!narrows(&list(&["a"]), &list(&["a", "b"])));
+        assert!(!narrows(&list(&["a", "b"]), &list(&["b", "a"])));
+        assert!(narrows(&list(&["a", "b"]), &list(&["b", "c"])));
+        assert!(narrows(&TrustPolicy::AllowAny, &list(&["a"])));
+        assert!(!narrows(&TrustPolicy::AllowAny, &TrustPolicy::AllowAny));
+    }
+
     fn test_handshake_trust(
         live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
         own_user: [u8; 32],
@@ -3154,6 +3246,17 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+            // The compute worker beside the replica holds its store for the
+            // shard's jobs, and only that shard's.
+            assert_eq!(
+                home_peer_replicas(&bundle_path).unwrap(),
+                BTreeMap::from([(42, vec![temp.path().join("cache")])])
+            );
+            assert!(
+                home_peer_replicas(&temp.path().join("absent.toml"))
+                    .unwrap()
+                    .is_empty()
+            );
             let mut config = RelayConfig {
                 home_peer_bundle: bundle_path,
                 full_replica_status: status,

@@ -39,7 +39,10 @@ pub(crate) fn reviewing() -> (tempfile::TempDir, AccountsController) {
     let mut account = new_account("nextcloud");
     account.config = serde_json::json!({"server_url": "https://cloud.example", "username": "person", "use_files": true});
     controller.pending = Some(Verified {
-        entries: vec![(account, Secret::password("app-password"))],
+        entries: vec![(
+            account,
+            PendingCredential::Existing(Secret::password("app-password")),
+        )],
         calendar: Some(CalendarReview {
             entry: 0,
             config,

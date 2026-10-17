@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::HttpsLink;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::custody::HostIdentity;
@@ -36,7 +37,6 @@ use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
 use tilo_joined_room::voice::{Channel, Participation};
 use tilo_moq::client::{Client, Status};
-use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::workspace_join::WorkspaceJoinClient;

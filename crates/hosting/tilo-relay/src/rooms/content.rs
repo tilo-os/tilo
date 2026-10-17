@@ -11,7 +11,8 @@
 
 use std::sync::{Arc, PoisonError, RwLock};
 
-use tilo_peer_state::{NeighbourMsg, peer_handle};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::peer_handle;
 
 use super::Rooms;
 
@@ -40,10 +41,6 @@ impl ContentSlot {
     }
 }
 
-fn valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 impl Rooms {
     /// Answer members' requests for content from `content`.
     pub fn serve_content(&self, content: Arc<dyn RoomContent>) {
@@ -69,7 +66,7 @@ impl Rooms {
             return Vec::new();
         };
         let hash = hash.to_ascii_lowercase();
-        if cluster_id != room || !valid_hash(&hash) {
+        if cluster_id != room || !tilo_content::valid_hash(&hash) {
             return Vec::new();
         }
         let Some(bytes) = self

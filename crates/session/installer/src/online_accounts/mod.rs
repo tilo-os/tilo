@@ -46,7 +46,7 @@ impl std::fmt::Display for AccountsError {
 impl std::error::Error for AccountsError {}
 
 struct Verified {
-    entries: Vec<(Account, Secret)>,
+    entries: Vec<(Account, PendingCredential)>,
     calendar: Option<CalendarReview>,
 }
 
@@ -60,9 +60,11 @@ struct CalendarReview {
 impl Drop for Verified {
     fn drop(&mut self) {
         for (_, secret) in &mut self.entries {
-            secret.password.zeroize();
-            if let Some(token) = &mut secret.token {
-                token.zeroize();
+            if let PendingCredential::Existing(secret) = secret {
+                secret.password.zeroize();
+                if let Some(token) = &mut secret.token {
+                    token.zeroize();
+                }
             }
         }
     }
@@ -75,6 +77,64 @@ impl Drop for PrivateTokens {
         self.0.access_token.zeroize();
         self.0.refresh_token.zeroize();
     }
+}
+
+// Calendar discovery owns its combined grant; only selected service operations
+// and private custody staging are available to the installer.
+enum PendingGrant {
+    Existing(PrivateTokens),
+    GoogleCalendar(Arc<tilo_dav::oauth::PendingGoogleCalendar>),
+}
+
+impl PendingGrant {
+    fn resolve_storage(
+        &self,
+        custody: &Custodian,
+        cloud: OAuthCloud,
+    ) -> Result<serde_json::Value, AccountsError> {
+        match self {
+            Self::Existing(tokens) => custody
+                .resolve_storage(cloud, &tokens.0)
+                .map_err(|_| AccountsError::Unavailable),
+            Self::GoogleCalendar(pending) => pending
+                .resolve_storage(custody)
+                .map_err(|_| AccountsError::Unavailable),
+        }
+    }
+
+    fn mail_identity(
+        &self,
+        custody: &Custodian,
+        issuer: OAuthIssuer,
+    ) -> Result<String, AccountsError> {
+        match self {
+            Self::Existing(tokens) => {
+                let result = if issuer == OAuthIssuer::Microsoft {
+                    custody.microsoft_mail_identity(&tokens.0)
+                } else {
+                    custody.gmail_identity(&tokens.0)
+                };
+                result.map_err(|_| AccountsError::Unavailable)
+            }
+            Self::GoogleCalendar(pending) => pending
+                .mail_identity(custody)
+                .map_err(|_| AccountsError::Unavailable),
+        }
+    }
+
+    fn staging_credential(&self) -> PendingCredential {
+        match self {
+            Self::Existing(tokens) => {
+                PendingCredential::Existing(account_custody::oauth_secret(&tokens.0))
+            }
+            Self::GoogleCalendar(pending) => PendingCredential::GoogleCalendar(Arc::clone(pending)),
+        }
+    }
+}
+
+enum PendingCredential {
+    Existing(Secret),
+    GoogleCalendar(Arc<tilo_dav::oauth::PendingGoogleCalendar>),
 }
 
 #[derive(Default)]
@@ -321,7 +381,12 @@ impl AccountsController {
             return Err(AccountsError::Storage);
         }
         for (account, secret) in &verified.entries {
-            vault.put(&account.id, secret);
+            match secret {
+                PendingCredential::Existing(secret) => vault.put(&account.id, secret),
+                PendingCredential::GoogleCalendar(pending) => {
+                    pending.stage(&account.id, &mut vault);
+                }
+            }
             store.upsert(account.clone());
         }
         vault.try_save().map_err(|_| AccountsError::Storage)?;
@@ -561,29 +626,35 @@ fn authorize(
     let authorization = custody
         .begin_sign_in_for_capabilities(issuer, &capabilities, hint)
         .map_err(|_| AccountsError::Unavailable)?;
-    let private_tokens = complete_authorization(authorization, opener, cancellation)?;
-    let tokens = &private_tokens.0;
+    let (private_tokens, pending_calendar) = if request.calendar {
+        launch_authorization(&authorization, opener, cancellation)?;
+        let pending = tilo_dav::oauth::PendingGoogleCalendar::complete(authorization)
+            .map_err(|_| AccountsError::Unavailable)?;
+        let discovered = pending.discover().map_err(|_| AccountsError::Unavailable)?;
+        (
+            PendingGrant::GoogleCalendar(Arc::new(pending)),
+            Some(discovered),
+        )
+    } else {
+        (
+            PendingGrant::Existing(complete_authorization(authorization, opener, cancellation)?),
+            None,
+        )
+    };
     let mut verified = Verified {
         entries: Vec::new(),
         calendar: None,
     };
     if request.files {
-        let mount = custody
-            .resolve_storage(cloud, tokens)
-            .map_err(|_| AccountsError::Unavailable)?;
+        let mount = private_tokens.resolve_storage(custody, cloud)?;
         let mut account = new_account(cloud.type_id());
         account.config = serde_json::json!({"provider": cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY: mount});
         verified
             .entries
-            .push((account, account_custody::oauth_secret(tokens)));
+            .push((account, private_tokens.staging_credential()));
     }
     if request.mail {
-        let email = if issuer == OAuthIssuer::Microsoft {
-            custody.microsoft_mail_identity(tokens)
-        } else {
-            custody.gmail_identity(tokens)
-        }
-        .map_err(|_| AccountsError::Unavailable)?;
+        let email = private_tokens.mail_identity(custody, issuer)?;
         if email.len() > 2048 || hint.is_some_and(|hint| !hint.eq_ignore_ascii_case(&email)) {
             return Err(AccountsError::Unavailable);
         }
@@ -595,9 +666,8 @@ fn authorize(
         } else {
             None
         };
-        let mail_tokens = mail_tokens.as_ref().map_or(tokens, |tokens| &tokens.0);
-        if issuer == OAuthIssuer::Microsoft
-            && mail_tokens.scope.as_deref().is_some_and(|scopes| {
+        if let Some(mail_tokens) = &mail_tokens
+            && mail_tokens.0.scope.as_deref().is_some_and(|scopes| {
                 !scopes.split_whitespace().any(|scope| {
                     scope.eq_ignore_ascii_case("https://outlook.office.com/IMAP.AccessAsUser.All")
                 }) || !scopes
@@ -612,18 +682,18 @@ fn authorize(
             .ok_or(AccountsError::Unavailable)?;
         let mut account = new_account("email");
         account.set_config(&config);
-        verified
-            .entries
-            .push((account, account_custody::oauth_secret(mail_tokens)));
+        verified.entries.push((
+            account,
+            mail_tokens.as_ref().map_or_else(
+                || private_tokens.staging_credential(),
+                |tokens| PendingCredential::Existing(account_custody::oauth_secret(&tokens.0)),
+            ),
+        ));
     }
-    if request.calendar {
-        let config = google_calendar_config(tokens)?;
+    if let Some(pending) = pending_calendar {
+        let (config, discovered) = calendar_model(pending);
         let mut account = new_account("caldav");
         account.config = serde_json::json!({});
-        let discovered = discover(
-            &config,
-            tilo_dav::Credentials::bearer(tokens.access_token.clone()),
-        )?;
         verified.calendar = Some(CalendarReview {
             entry: verified.entries.len(),
             config,
@@ -632,7 +702,7 @@ fn authorize(
         });
         verified
             .entries
-            .push((account, account_custody::oauth_secret(tokens)));
+            .push((account, private_tokens.staging_credential()));
     }
     bind_confirmed_identity(&mut verified);
     Ok(verified)
@@ -696,6 +766,17 @@ fn complete_authorization(
     opener: &dyn BrowserOpener,
     cancellation: &Mutex<Cancellation>,
 ) -> Result<PrivateTokens, AccountsError> {
+    launch_authorization(&authorization, opener, cancellation)?;
+    Ok(PrivateTokens(
+        Custodian::finish_sign_in(authorization).map_err(|_| AccountsError::Unavailable)?,
+    ))
+}
+
+fn launch_authorization(
+    authorization: &account_custody::Authorization,
+    opener: &dyn BrowserOpener,
+    cancellation: &Mutex<Cancellation>,
+) -> Result<(), AccountsError> {
     if authorization.needs_pasted_code() {
         return Err(AccountsError::Unavailable);
     }
@@ -714,62 +795,19 @@ fn complete_authorization(
             .map_err(|_| AccountsError::Unavailable)?;
         drop(cancel);
     }
-    Ok(PrivateTokens(
-        Custodian::finish_sign_in(authorization).map_err(|_| AccountsError::Unavailable)?,
-    ))
+    Ok(())
 }
 
-fn google_calendar_config(
-    tokens: &account_custody::TokenSet,
-) -> Result<calendar::CalDavConfig, AccountsError> {
-    // Resolve the authenticated primary calendar through Google's API rather
-    // than treating a login hint (or the REST-only `primary` alias) as a DAV ID.
-    let client = tilo_dav::DavClient::new(&tilo_dav::Options {
-        redirects: tilo_dav::Redirects::Refuse,
+fn calendar_model(
+    pending: tilo_dav::oauth::PendingCalendars,
+) -> (calendar::CalDavConfig, Vec<calendar::RemoteCalendar>) {
+    let config = calendar::CalDavConfig {
+        server_url: pending.server_url,
+        username: pending.username,
         ..Default::default()
-    })
-    .map_err(|_| AccountsError::Unavailable)?
-    .with_credentials(tilo_dav::Credentials::bearer(tokens.access_token.clone()));
-    let response = client
-        .get("https://www.googleapis.com/calendar/v3/calendars/primary")
-        .map_err(|_| AccountsError::Unavailable)?;
-    if !response.status().is_success() {
-        return Err(AccountsError::Unavailable);
-    }
-    let body = response
-        .read_bounded(64 * 1024)
-        .map_err(|_| AccountsError::Unavailable)?;
-    let calendar: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|_| AccountsError::Unavailable)?;
-    let id = calendar
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| {
-            !id.is_empty()
-                && id.len() <= 2048
-                && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
-        })
-        .ok_or(AccountsError::Unavailable)?;
-    Ok(calendar::setup::google_config(id))
-}
-
-fn discover(
-    config: &calendar::CalDavConfig,
-    credentials: tilo_dav::Credentials,
-) -> Result<Vec<calendar::RemoteCalendar>, AccountsError> {
-    let server = url::Url::parse(&config.server_url).map_err(|_| AccountsError::Unavailable)?;
-    let client = tilo_dav::DavClient::new(&tilo_dav::Options {
-        redirects: tilo_dav::Redirects::Refuse,
-        ..Default::default()
-    })
-    .map_err(|_| AccountsError::Unavailable)?
-    .with_credentials(credentials);
-    let collections =
-        tilo_dav::discovery::calendars(&client, &server).map_err(|_| AccountsError::Unavailable)?;
-    if collections.is_empty() {
-        return Err(AccountsError::Unavailable);
-    }
-    Ok(collections
+    };
+    let discovered = pending
+        .collections
         .into_iter()
         .zip((0_u8..8).cycle())
         .map(|(collection, color)| calendar::RemoteCalendar {
@@ -779,7 +817,8 @@ fn discover(
             visible: true,
             read_only: collection.read_only,
         })
-        .collect())
+        .collect();
+    (config, discovered)
 }
 
 fn new_account(kind: &str) -> Account {
@@ -822,20 +861,14 @@ fn authorize_nextcloud(
     });
     account.config = serde_json::json!({"server_url": login.server, "username": login.login_name, "app_password": true, "use_files": request.files});
     let calendar = if request.calendar {
-        let mut server = url::Url::parse(&login.server).map_err(|_| AccountsError::Unavailable)?;
-        server.set_path(&format!(
-            "{}/remote.php/dav/",
-            server.path().trim_end_matches('/')
-        ));
-        let config = calendar::CalDavConfig {
-            server_url: server.into(),
-            username: login.login_name.clone(),
-            ..Default::default()
-        };
-        let discovered = discover(
-            &config,
-            tilo_dav::Credentials::new(login.login_name.clone(), login.app_password.to_string()),
-        )?;
+        let pending = tilo_dav::oauth::PendingNextcloudCalendar::new(
+            &login.server,
+            &login.login_name,
+            login.app_password.as_str(),
+        )
+        .map_err(|_| AccountsError::Unavailable)?;
+        let discovered = pending.discover().map_err(|_| AccountsError::Unavailable)?;
+        let (config, discovered) = calendar_model(discovered);
         Some(CalendarReview {
             entry: 0,
             config,
@@ -846,7 +879,10 @@ fn authorize_nextcloud(
         None
     };
     Ok(Verified {
-        entries: vec![(account, Secret::password(login.app_password.as_str()))],
+        entries: vec![(
+            account,
+            PendingCredential::Existing(Secret::password(login.app_password.as_str())),
+        )],
         calendar,
     })
 }

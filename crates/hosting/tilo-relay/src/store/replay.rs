@@ -19,16 +19,131 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+pub(super) use tilo_relay_store::frames::{equal_files, frame_bytes};
 
 pub(crate) const DEFAULT_BATCH_FRAMES: usize = 64;
 pub(crate) const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
+/// Names one replay's work directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplayId(pub [u8; 16]);
+pub struct ReplayId(pub [u8; 16]);
+
+/// A capture lists the retained frames it replays in its owner turn and
+/// pins them (one hard link each) when it is prepared, off the owner: the
+/// pins were the bulk of a newcomer's turn, and the frames to pin grow with
+/// the room. In between, the listed frames must stay where they were
+/// listed. Only collection removes a retained frame, so collection waits
+/// while any capture of the store is leased: a lineage collected then is
+/// remembered, and collected once no capture is leased
+/// ([`WorkspaceStore::deferred_collections`]).
+///
+/// Leases are taken in the owner's turn, and collection is decided there,
+/// so no collection that a lease should stop can have begun before it.
+#[derive(Default)]
+pub(crate) struct CaptureLeases {
+    held: AtomicUsize,
+    deferred: std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+    /// The store's owner, woken when the last lease ends so what waited is
+    /// collected without waiting for its next job.
+    wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+}
+impl CaptureLeases {
+    /// The leases of the store at `root`, shared by every handle on it.
+    pub(crate) fn for_root(root: &Path) -> Arc<Self> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock, PoisonError, Weak};
+        static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<CaptureLeases>>>> = OnceLock::new();
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let mut registry = REGISTRY
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        registry.retain(|_, leases| leases.strong_count() > 0);
+        if let Some(leases) = registry.get(&root).and_then(Weak::upgrade) {
+            return leases;
+        }
+        let leases = Arc::new(Self::default());
+        registry.insert(root, Arc::downgrade(&leases));
+        leases
+    }
+    fn deferred(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<PathBuf>> {
+        self.deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+/// One capture's hold on its store's collection, until its frames are
+/// pinned or it is given up.
+pub(crate) struct CaptureLease(Arc<CaptureLeases>);
+impl Drop for CaptureLease {
+    fn drop(&mut self) {
+        if self.0.held.fetch_sub(1, Ordering::SeqCst) == 1
+            && !self.0.deferred().is_empty()
+            && let Some(wake) = self
+                .0
+                .wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+        {
+            wake.notify_one();
+        }
+    }
+}
+impl WorkspaceStore {
+    /// Wake `owner` when the last capture lease ends with collections
+    /// waiting for it.
+    pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
+        *self
+            .capture_leases
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner);
+    }
+    fn lease_capture(&self) -> CaptureLease {
+        self.capture_leases.held.fetch_add(1, Ordering::SeqCst);
+        CaptureLease(Arc::clone(&self.capture_leases))
+    }
+    /// The collection of `lineage`'s replaced generations, or `None` while
+    /// a capture is leased: the lineage is collected later then.
+    /// `after_commit` as [`retained::GenerationGc::after_commit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lineage cannot be listed.
+    pub(crate) fn collect_or_defer(
+        &self,
+        lineage: PathBuf,
+        after_commit: bool,
+    ) -> Result<Option<retained::GenerationGc>, StoreError> {
+        if self.capture_leases.held.load(Ordering::SeqCst) != 0 {
+            self.capture_leases.deferred().insert(lineage);
+            return Ok(None);
+        }
+        if after_commit {
+            retained::GenerationGc::after_commit(lineage).map(Some)
+        } else {
+            retained::GenerationGc::new(lineage).map(Some)
+        }
+    }
+    /// The lineages whose collection waited for a capture, once none is
+    /// leased; none while one is.
+    pub(crate) fn deferred_collections(&self) -> Vec<PathBuf> {
+        if self.capture_leases.held.load(Ordering::SeqCst) != 0 {
+            return Vec::new();
+        }
+        std::mem::take(&mut *self.capture_leases.deferred())
+            .into_iter()
+            .collect()
+    }
+}
+/// The most one replay batch carries.
 #[derive(Clone, Copy)]
-pub(crate) struct ReplayLimits {
+pub struct ReplayLimits {
+    /// Frames per batch.
     pub max_frames: usize,
+    /// Frame bytes per batch.
     pub max_bytes: usize,
 }
 impl Default for ReplayLimits {
@@ -40,13 +155,13 @@ impl Default for ReplayLimits {
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReplaySummary {
+pub struct ReplaySummary {
     pub total_frames: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
 #[derive(Clone)]
-pub(crate) struct ReplayBudget {
+pub struct ReplayBudget {
     inner: Arc<Budget>,
 }
 struct Budget {
@@ -54,7 +169,9 @@ struct Budget {
     used: AtomicUsize,
 }
 impl ReplayBudget {
-    pub(crate) fn new(capacity: usize) -> Self {
+    /// A budget of `capacity` bytes of replayed frames held at once.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Budget {
                 capacity,
@@ -62,7 +179,8 @@ impl ReplayBudget {
             }),
         }
     }
-    pub(crate) fn used(&self) -> usize {
+    /// Bytes currently held against the budget.
+    pub fn used(&self) -> usize {
         self.inner.used.load(Ordering::Relaxed)
     }
     fn acquire(&self, bytes: usize) -> Result<ReplayAllocation, StoreError> {
@@ -88,7 +206,7 @@ impl Drop for ReplayAllocation {
         self.inner.used.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
-pub(crate) struct ReplayBatch {
+pub struct ReplayBatch {
     pub number: u64,
     frames: VecDeque<Envelope>,
     pub eof: bool,
@@ -98,10 +216,12 @@ pub(crate) struct ReplayBatch {
 }
 
 impl ReplayBatch {
-    pub(crate) fn front(&self) -> Option<&Envelope> {
+    /// The next frame to write.
+    pub fn front(&self) -> Option<&Envelope> {
         self.frames.front()
     }
-    pub(crate) fn pop_written(&mut self) {
+    /// Drop the frame [`Self::front`] returned, now written.
+    pub fn pop_written(&mut self) {
         self.frames.pop_front();
     }
     pub(crate) fn len(&self) -> usize {
@@ -119,30 +239,6 @@ fn frame_payload(bytes: &[u8]) -> &[u8] {
     bytes.get(4..).unwrap_or_default()
 }
 
-/// Only reads complete legal transport frames. Invalid data remains untouched.
-/// Prefix and file length are checked before any payload-sized allocation.
-pub(super) fn frame_bytes(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
-    let mut file = File::open(path)?;
-    let len = file.metadata()?.len();
-    if !(4..=(transport::MAX_FRAME_BYTES as u64).saturating_add(4)).contains(&len) {
-        return Ok(None);
-    }
-    let mut prefix = [0; 4];
-    file.read_exact(&mut prefix)?;
-    if u64::from(u32::from_le_bytes(prefix)) != len.saturating_sub(4) {
-        return Ok(None);
-    }
-    let mut bytes = vec![0; usize::try_from(len).map_err(|_| invalid("oversized frame"))?];
-    // The range check above guarantees at least the four prefix bytes.
-    let (head, body) = bytes.split_at_mut(4);
-    head.copy_from_slice(&prefix);
-    file.read_exact(body)?;
-    let mut extra = [0];
-    if file.read(&mut extra)? != 0 {
-        return Err(invalid("frame changed during read"));
-    }
-    Ok(Some(bytes))
-}
 fn heap_bytes(envelope: &Envelope) -> usize {
     match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
@@ -261,7 +357,7 @@ fn capture_continuity(
     Ok(())
 }
 
-pub(crate) struct ReplayBuild {
+pub struct ReplayBuild {
     root: PathBuf,
     workspace: PathBuf,
     device: [u8; 32],
@@ -276,10 +372,16 @@ pub(crate) struct ReplayBuild {
     sorter: Option<Sorter>,
     next_pin: u64,
     continuity: Option<File>,
-    selection: Option<super::shell_selection::Selection>,
+    selection: Option<Box<dyn super::shell_selection::ShellSelection>>,
     selected: Option<File>,
     shell_selected: bool,
     skip: Option<ResumeSkip>,
+    /// The frames listed to pin when the capture is prepared
+    /// (`capture.manifest`): the retained frames, with the lease that keeps
+    /// them in place until then ([`CaptureLeases`]), or a final cut's held
+    /// commits, which nothing changes once the cut is taken. The device's
+    /// own queue is pinned at once.
+    listed: Option<(File, Option<CaptureLease>)>,
 }
 /// Retained frames a resuming device already holds, by
 /// [`super::resume::frame_digest`]; a replay for it leaves them out.
@@ -295,7 +397,12 @@ impl ReplayBuild {
     pub(crate) fn stats(&self) -> Option<&WorkStats> {
         self.sorter.as_ref().map(|s| &s.stats)
     }
-    pub(crate) fn into_discard(self) -> Result<WorkDiscard, StoreError> {
+    /// Discard this build's work directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be listed.
+    pub fn into_discard(self) -> Result<WorkDiscard, StoreError> {
         WorkDiscard::new(self.root)
     }
 }
@@ -308,7 +415,18 @@ struct Candidate {
     /// Held by the resuming device: indexed for coverage, not replayed.
     held: bool,
 }
-pub(crate) struct ReplaySnapshot {
+/// The retained frames a capture listed and its preparation pins first.
+struct Link {
+    /// `capture.manifest`: one entry per listed frame, its pin assigned.
+    listed: File,
+    /// `continuity.manifest`, which a pinned frame's receipt joins.
+    continuity: File,
+    _lease: Option<CaptureLease>,
+}
+/// A captured replay: pinned retained frames, ready to prepare and read.
+pub struct ReplaySnapshot {
+    /// Retained frames listed in the owner's turn, not pinned yet.
+    link: Option<Link>,
     root: PathBuf,
     workspace: PathBuf,
     workspace_id: u64,
@@ -337,7 +455,12 @@ impl ReplaySnapshot {
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.stats
     }
-    pub(crate) fn into_discard(self) -> Result<WorkDiscard, StoreError> {
+    /// Discard this snapshot's work directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be listed.
+    pub fn into_discard(self) -> Result<WorkDiscard, StoreError> {
         WorkDiscard::new(self.root)
     }
     fn pin(&self, pin: u64) -> PathBuf {
@@ -523,11 +646,17 @@ impl ReplaySnapshot {
 }
 impl WorkspaceStore {
     pub(crate) fn replay_capture_has_basis(&self) -> Result<bool, StoreError> {
-        Ok(self.shell_authority().is_none()
+        Ok(self.shell_binding().is_none()
             || retained::current(&self.root.join(super::shell_selection::DIRECTORY))?.is_some())
     }
 
-    pub(crate) fn start_replay_capture(
+    /// Begin capturing a replay for `device`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capture's work directory cannot be made
+    /// or the shell selection it starts with cannot be opened.
+    pub fn start_replay_capture(
         &self,
         id: ReplayId,
         device: [u8; 32],
@@ -564,20 +693,18 @@ impl WorkspaceStore {
         let selection = if pending_only {
             None
         } else {
-            self.shell_authority()
-                .map(|_| super::shell_selection::Selection::new(self, root.clone(), None))
-                .transpose()?
+            self.shell_selection(root.clone(), None)?
         };
         Ok(ReplayBuild {
             selection,
-            selected: if !pending_only && self.shell_authority().is_none() {
+            selected: if !pending_only && self.shell_binding().is_none() {
                 retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
                     .map(|p| File::open(p.join("basis.manifest")))
                     .transpose()?
             } else {
                 None
             },
-            shell_selected: !pending_only && self.shell_authority().is_some(),
+            shell_selected: !pending_only && self.shell_binding().is_some(),
             root: root.clone(),
             workspace: self.root.clone(),
             device,
@@ -590,15 +717,25 @@ impl WorkspaceStore {
             next_pin: 0,
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
+            listed: Some((
+                File::create(root.join("capture.manifest"))?,
+                (!pending_only).then(|| self.lease_capture()),
+            )),
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
-    /// interleave before every selected source has its immutable hardlink.
+    /// interleave before every selected source has its immutable hardlink,
+    /// or, for a retained frame, is listed under the capture's lease (it is
+    /// pinned when the snapshot is prepared: [`CaptureLeases`]).
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
     )]
-    pub(crate) fn capture_replay_step(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when retained history cannot be read or pinned.
+    pub fn capture_replay_step(
         &self,
         build: &mut ReplayBuild,
         limit: WorkLimit,
@@ -649,10 +786,29 @@ impl WorkspaceStore {
             sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
             if build.phase == 4 {
                 build.phase = 5;
-                drop(build.continuity.take());
+                // Retained frames still to pin keep the continuity manifest
+                // open for theirs; it is read once they are pinned.
+                let link = match build.listed.take() {
+                    Some((listed, lease)) => {
+                        drop(listed);
+                        Some(Link {
+                            listed: File::open(build.root.join("capture.manifest"))?,
+                            continuity: build.continuity.take().invariant("continuity missing")?,
+                            _lease: lease,
+                        })
+                    }
+                    None => None,
+                };
+                let continuity_input = if link.is_none() {
+                    drop(build.continuity.take());
+                    Some(File::open(build.root.join("continuity.manifest"))?)
+                } else {
+                    None
+                };
                 let output = File::create(build.root.join("replay.manifest"))?;
                 let cleanup = File::create(build.root.join("cleanup.manifest"))?;
                 return Ok(Step::Done(ReplaySnapshot {
+                    link,
                     root: build.root.clone(),
                     workspace: self.root.clone(),
                     workspace_id: self.workspace_id,
@@ -669,7 +825,7 @@ impl WorkspaceStore {
                     sorter: build.sorter.take(),
                     ordered: None,
                     continuity_sorter: None,
-                    continuity_input: Some(File::open(build.root.join("continuity.manifest"))?),
+                    continuity_input,
                     continuity_ordered: None,
                     continuity_previous: None,
                     candidate: None,
@@ -794,6 +950,27 @@ impl WorkspaceStore {
             if let Some((source, key)) = selected {
                 let pin = build.next_pin;
                 increment(&mut build.next_pin)?;
+                // Retained frames, and a final cut's held commits, are pinned
+                // when the capture is prepared, off the owner.
+                let held = build.phase == 3 && build.held.is_some() && !build.held_listed;
+                if (build.phase == 2 || held)
+                    && let Some((listed, _)) = build.listed.as_mut()
+                {
+                    write_meta(
+                        listed,
+                        &Meta {
+                            key,
+                            source: source
+                                .strip_prefix(&self.root)
+                                .map_err(|_| invalid("invalid capture path"))?
+                                .into(),
+                            pin,
+                            len: 0,
+                            pending: held,
+                        },
+                    )?;
+                    continue;
+                }
                 let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
                 fs::hard_link(&source, &target)?;
                 capture_continuity(
@@ -823,11 +1000,68 @@ impl WorkspaceStore {
         }
         Ok(Step::More)
     }
+    /// One quantum of pinning the retained frames a capture listed, as the
+    /// capture pinned the rest: a hard link, its continuity receipt, and
+    /// its place in the order. Once every listed frame is pinned the lease
+    /// ends, and retention may collect what it replaced meanwhile.
+    fn pin_listed_step(
+        &self,
+        snapshot: &mut ReplaySnapshot,
+        limit: WorkLimit,
+    ) -> Result<Step<ReplaySummary>, StoreError> {
+        let link = snapshot.link.as_mut().invariant("listed frames missing")?;
+        let sorter = snapshot
+            .sorter
+            .as_mut()
+            .invariant("listed frames without their order")?;
+        sorter.stats.last_step_work = 0;
+        if sorter.spilling() {
+            sorter.spill_step(limit)?;
+            snapshot.stats.last_step_work = sorter.stats.last_step_work;
+            return Ok(Step::More);
+        }
+        for _ in 0..limit.record_entries() {
+            sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
+            let Some(meta) = read_meta(&mut link.listed)? else {
+                snapshot.link = None;
+                snapshot.continuity_input =
+                    Some(File::open(snapshot.root.join("continuity.manifest"))?);
+                break;
+            };
+            let source = self.root.join(&meta.source);
+            let target = snapshot
+                .root
+                .join("pins")
+                .join(format!("{:016x}.frame", meta.pin));
+            fs::hard_link(&source, &target)?;
+            capture_continuity(
+                self,
+                &source,
+                &target,
+                meta.pin,
+                &mut link.continuity,
+                &mut sorter.stats,
+            )?;
+            let len = fs::metadata(&target)?.len();
+            sorter.push(Meta { len, ..meta })?;
+            sorter.stats.peak_open_files = sorter.stats.peak_open_files.max(4);
+            if sorter.spilling() {
+                break;
+            }
+        }
+        snapshot.stats.last_step_work = sorter.stats.last_step_work;
+        Ok(Step::More)
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
     )]
-    pub(crate) fn prepare_replay_step(
+    /// One quantum of ordering a captured snapshot's frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot cannot be read or sorted.
+    pub fn prepare_replay_step(
         &self,
         snapshot: &mut ReplaySnapshot,
         limit: WorkLimit,
@@ -844,6 +1078,9 @@ impl WorkspaceStore {
             }));
         }
         snapshot.stats.last_step_work = 0;
+        if snapshot.link.is_some() {
+            return self.pin_listed_step(snapshot, limit);
+        }
         if let Some(sorter) = &mut snapshot.sorter {
             let result = sorter.step(limit)?;
             snapshot.stats = sorter.stats.clone();
@@ -972,7 +1209,13 @@ impl WorkspaceStore {
         }
         Ok(Step::More)
     }
-    pub(crate) fn read_replay_batch(
+    /// The next batch of a prepared snapshot's frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is not ready for this store or a
+    /// frame cannot be read.
+    pub fn read_replay_batch(
         &self,
         snapshot: &mut ReplaySnapshot,
         limits: ReplayLimits,
@@ -1099,28 +1342,6 @@ impl WorkspaceStore {
         Ok(Step::More)
     }
 }
-pub(super) fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
-    let mut a = File::open(a)?;
-    let mut b = File::open(b)?;
-    if a.metadata()?.len() != b.metadata()?.len() {
-        return Ok(false);
-    }
-    let mut left = [0; 16 * 1024];
-    let mut right = [0; 16 * 1024];
-    loop {
-        let n = a.read(&mut left)?;
-        if n == 0 {
-            return Ok(true);
-        }
-        let (Some(read), Some(expected)) = (left.get(..n), right.get_mut(..n)) else {
-            return Ok(false);
-        };
-        b.read_exact(expected)?;
-        if read != expected {
-            return Ok(false);
-        }
-    }
-}
 pub(super) fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
     let a = match fs::symlink_metadata(a) {
         Ok(m) => m,
@@ -1143,7 +1364,7 @@ pub(super) fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
 }
 
 /// Snapshot/staging-only reclamation. Never execute abandoned cleanup manifests.
-pub(crate) struct WorkDiscard {
+pub struct WorkDiscard {
     root: PathBuf,
     outer: Option<DirectoryCursor>,
     child: Option<(PathBuf, DirectoryCursor)>,
@@ -1168,7 +1389,12 @@ impl WorkDiscard {
             done: false,
         })
     }
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
+    /// One quantum of removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an entry cannot be listed or removed.
+    pub fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         if self.done || self.outer.is_none() {
             return Ok(Step::Done(()));
@@ -1214,6 +1440,7 @@ impl WorkDiscard {
                             && [
                                 "replay.manifest",
                                 "cleanup.manifest",
+                                "capture.manifest",
                                 "continuity.manifest",
                                 "room.manifest",
                                 "extras.manifest",
@@ -1326,12 +1553,17 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
 }
 /// Startup-only cursor. Finish before admitting any new work: it treats all
 /// recognized old snapshots as abandoned, never as live cleanup authority.
-pub(crate) struct WorkReclaimer {
+pub struct WorkReclaimer {
     entries: Option<DirectoryCursor>,
     current: Option<WorkDiscard>,
 }
 impl WorkspaceStore {
-    pub(crate) fn start_work_reclamation(&self) -> Result<WorkReclaimer, StoreError> {
+    /// Reclaim every abandoned work directory, before admitting new work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the work directory cannot be listed.
+    pub fn start_work_reclamation(&self) -> Result<WorkReclaimer, StoreError> {
         Ok(WorkReclaimer {
             entries: match DirectoryCursor::open(&self.root.join("store-work-v1")) {
                 Ok(cursor) => Some(cursor),
@@ -1343,7 +1575,12 @@ impl WorkspaceStore {
     }
 }
 impl WorkReclaimer {
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
+    /// One quantum of reclamation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an entry cannot be listed or removed.
+    pub fn step(&mut self, limit: WorkLimit) -> Result<Step<()>, StoreError> {
         let limit = limit.checked()?;
         if let Some(current) = &mut self.current {
             if current.step(limit)? == Step::Done(()) {
@@ -1378,19 +1615,28 @@ mod tests;
 /// One selected publication frame, sharing the normal process output budget.
 /// The owner holds its ordered completion across this cursor; queued deliveries
 /// own the batch/permit, so subsequent GC cannot invalidate their bytes.
-pub(crate) struct PublicationCursor {
+pub struct PublicationCursor {
     workspace: PathBuf,
     input: File,
     recovery: bool,
 }
 impl PublicationCursor {
-    pub(crate) fn open(generation: &Path) -> Result<Self, StoreError> {
+    /// The live publication of the selected `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its manifest cannot be opened.
+    pub fn open(generation: &Path) -> Result<Self, StoreError> {
         Self::open_manifest(generation, false)
     }
     /// The serialized workspace owner must retain its queue position through
     /// the cursor's completion; it excludes generation GC while paths are read.
     /// Delivered batches then own their bytes/permits independently of GC.
-    pub(crate) fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its manifest cannot be opened.
+    pub fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
         Self::open_manifest(generation, true)
     }
     fn open_manifest(generation: &Path, recovery: bool) -> Result<Self, StoreError> {
@@ -1413,10 +1659,12 @@ impl PublicationCursor {
             recovery,
         })
     }
-    pub(crate) fn step(
-        &mut self,
-        budget: &ReplayBudget,
-    ) -> Result<Step<Option<ReplayBatch>>, StoreError> {
+    /// The next frame of the publication, within `budget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a frame cannot be read or exceeds `budget`.
+    pub fn step(&mut self, budget: &ReplayBudget) -> Result<Step<Option<ReplayBatch>>, StoreError> {
         let offset = self.input.stream_position()?;
         #[cfg(test)]
         if self.recovery && offset > 0 {

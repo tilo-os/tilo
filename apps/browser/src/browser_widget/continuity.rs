@@ -2,7 +2,6 @@
 use super::{BrowserOperation, BrowserWidget};
 use ui::tilo_resource::Effect as _;
 
-#[cfg(target_os = "linux")]
 const CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../../locales/en-US.ftl"))],
@@ -10,7 +9,7 @@ const CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
 .with_system_locale();
 
 impl BrowserWidget {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
     pub(crate) fn continuity_grant_for_test(
         &mut self,
         root: std::fs::File,
@@ -22,13 +21,15 @@ impl BrowserWidget {
             .load_granted(root, state);
         self.structure_dirty = true;
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn attach_continuity(
         &mut self,
         person: &str,
         files: ui::storage::AppFiles,
         waker: ui::WakeHandle,
     ) {
+        if !crate::continuity_handoff::supported() {
+            return;
+        }
         let Ok(identity) = blake3::Hash::from_hex(person) else {
             return;
         };
@@ -45,7 +46,6 @@ impl BrowserWidget {
         ));
     }
     pub(super) fn poll_continuity(&mut self) {
-        #[cfg(target_os = "linux")]
         if let (Some(controller), Some(bookmarks), Some(history)) = (
             &mut self.continuity,
             &self.person_bookmarks,
@@ -64,8 +64,10 @@ impl BrowserWidget {
         ) {
             return None;
         }
-        #[cfg(target_os = "linux")]
         let result = (|| {
+            if !crate::continuity_handoff::supported() {
+                return Err("Browser migration is unavailable on this host".into());
+            }
             let controller = self
                 .continuity
                 .as_mut()
@@ -80,12 +82,9 @@ impl BrowserWidget {
                 },
             ))
         })();
-        #[cfg(not(target_os = "linux"))]
-        let result = Err("Browser migration is unavailable on this host".into());
         Some(result)
     }
     pub(super) fn continuity_notice(&self) -> Option<ui::widget::Element> {
-        #[cfg(target_os = "linux")]
         {
             if self.browsing_mode.is_private()
                 || self.person_bookmarks.is_none()
@@ -102,18 +101,15 @@ impl BrowserWidget {
                 Some(binding) => button.on_action(binding),
                 None => button.with_enabled(false),
             };
-            return Some(Box::new(
+            Some(Box::new(
                 ui::widget::Banner::error(CATALOG.t("browser-continuity-failed"))
                     .with_id("browser.continuity.failure")
                     .with_action(button),
-            ));
+            ))
         }
-        #[cfg(not(target_os = "linux"))]
-        None
     }
 
     pub(super) fn continuity_resource(&self) -> Option<ui::tilo_actions::Resource> {
-        #[cfg(target_os = "linux")]
         if let Some(controller) = &self.continuity {
             use crate::continuity_handoff::Status;
             if controller.status() == Status::Absent {

@@ -158,7 +158,7 @@ def native(args):
     qualifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(qualifier)
     if args.mode == 'list':
-        command = ['/qualified/imager-tests', '--list']
+        command = ['/qualified/backend-tests', '--list']
     elif args.mode == 'observe':
         command = ['/usr/bin/python3', '-I', '/qualified/native-store-virtio.py', 'observe',
                    str(stores), str(args.native_store_provenance)]

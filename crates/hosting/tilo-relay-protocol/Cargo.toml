@@ -32,6 +32,8 @@ thiserror.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # Live frames are sealed with their record's channel content keys.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# Agent and bot delegations and room shard ids, re-exported unchanged.
+tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

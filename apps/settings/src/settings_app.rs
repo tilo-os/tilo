@@ -157,6 +157,10 @@ impl SettingsApp {
         // A detached app reaches no device, so it probes for no installed
         // software either: what a host reaches is read when it attaches.
         let software = panes::accessibility::Software::for_host(&cx);
+        // The areas that act through the host share one client for the
+        // action door, which the window's connection carries.
+        let device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
+        let users = panes::users::UsersArea::new(&cx, device_mesh.remote());
         Self {
             notifications: panes::notifications::NotificationsArea::new(&cx),
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
@@ -169,11 +173,11 @@ impl SettingsApp {
             storage: panes::storage::StorageArea::new(&cx),
             disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
-            users: panes::users::UsersArea::new(&cx),
+            users,
             bluetooth: panes::bluetooth::BluetoothArea::new(&cx),
             speakers: panes::speakers::SpeakersArea::new(&cx),
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
-            device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
+            device_mesh,
             audio: panes::audio::AudioArea::new(&cx),
             accounts: panes::accounts::AccountsArea::new(&cx)
                 .with_account_root(account_root.clone()),
@@ -397,11 +401,11 @@ impl SettingsApp {
         self.storage = panes::storage::StorageArea::new(&cx);
         self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
-        self.users = panes::users::UsersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
         self.speakers = panes::speakers::SpeakersArea::new(&cx);
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
+        self.users = panes::users::UsersArea::new(&cx, self.device_mesh.remote());
         self.audio = panes::audio::AudioArea::new(&cx);
         self.accounts =
             panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
@@ -707,7 +711,8 @@ impl SettingsApp {
     }
 }
 
-// Account setup and nearby device pairing share the app's collaboration connection.
+// Account setup, nearby pairing and identity administration share the app's
+// collaboration connection through their host-action clients.
 impl ui::widget::Collaborative for SettingsApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         let mut requests = self.accounts.remote.take_collab_requests();
@@ -826,6 +831,7 @@ impl Widget for SettingsApp {
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
+        self.users.poll();
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();

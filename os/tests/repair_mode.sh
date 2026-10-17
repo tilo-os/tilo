@@ -171,6 +171,21 @@ else
       does not ship $b): blessing a good boot fails with EROFS, so a working
       deployment spends a try on every boot and the boot loader abandons it."
 fi
+# greetd has Restart=, so it is active between the restarts of a greeter that
+# cannot draw. The verdict has to rest on the greeter presenting and holding,
+# or an update that breaks the GPU stack is blessed on its first boot and never
+# rolled back. os/tests/boot_health_greeter.sh exercises the behaviour.
+hs="$OS/usr/libexec/tilo-boot-health"
+if grep -Fq 'systemctl show -p NRestarts' "$hs" \
+   && grep -Fq '"first-frame-presented"' "$hs" \
+   && grep -Fq '/run/tilo-greeter/startup-metrics.json' "$hs" \
+   && grep -Fq 'SETTLE=' "$hs" \
+   && grep -Fq '/run/tilo-greeter' "$OS/usr/libexec/tilo-cage-session"; then
+  ok "the health check requires a greeter that presented a frame and holds without greetd restarting"
+else
+  bad "tilo-boot-health no longer checks greetd's restarts and the greeter's presented
+      frame: a greeter that crash-loops while greetd stays active would bless the boot."
+fi
 if grep -q 'ConditionKernelCommandLine=!tilo.mode=repair' "$h"; then
   ok "the health check does not run in repair mode"
 else

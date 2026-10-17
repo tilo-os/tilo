@@ -11,6 +11,8 @@ use crate::actions::{RegionKind, SearchTarget};
 use tilo_actions::{ActionInvoker, ParticipantId, Resource};
 use tilo_automerge::ApplyIncoming as _;
 use ui::widget::Edits;
+use winit::event::ElementState;
+use winit::keyboard::{Key, NamedKey};
 
 fn pid(name: &str) -> ParticipantId {
     ParticipantId::new(name).unwrap()

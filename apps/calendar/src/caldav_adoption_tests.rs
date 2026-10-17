@@ -129,7 +129,8 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
     endpoints.token_endpoint = format!("{}/token", tokens.url());
     let custodian = Custodian::for_root(Some(destination.path().to_owned()))
         .with_issuer_endpoints(OAuthIssuer::Google, endpoints);
-    let client = CalDavClient::new(custodian.clone()).unwrap();
+    let service = Service::for_test_origin(custodian.clone(), &server.url()).unwrap();
+    let client = CalDavClient::new(service);
     let (pulled, outcome) = run(client.sync_all(
         &[(adopted.config.clone(), adopted.calendars.clone())],
         NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(),

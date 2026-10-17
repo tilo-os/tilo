@@ -9,12 +9,14 @@ import struct
 
 SCHEMA = 'tilo.installer-code-refresh.v1'
 LIMIT = 2 * 1024 * 1024
+# Text helpers only. The compiled helpers (tilo-install-handoff-copy,
+# tilo-install-dev-ssh, tilo-vm-bootc-copy-cache, tilo-installer-offline-target,
+# tilo-staging-handoff, tilo-vm-install-proof) come from the base image's
+# install-helpers component in os/components.toml; a checkout holds no file to
+# send for them.
 ALLOWLIST = frozenset({
     'usr/libexec/tilo-install',
-    'usr/libexec/tilo-installer-offline-target.py',
     'usr/libexec/tilo-installer-dev-target-uki.py',
-    'usr/libexec/tilo-install-dev-ssh.py',
-    'usr/libexec/tilo-install-handoff-copy.py',
     'usr/libexec/tilo-boot-mount-contract',
     'usr/lib/tilo/hardware_profile.py',
 })

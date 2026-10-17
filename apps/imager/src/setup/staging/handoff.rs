@@ -238,15 +238,8 @@ mod tests {
     /// Run the parser that detects and publishes the live handoff, rather
     /// than a reimplementation of its field rules.
     #[cfg(target_os = "linux")]
-    fn parse_live(bytes: &[u8]) -> std::process::Output {
-        use std::io::Write;
-        let mut input = tempfile::NamedTempFile::new().unwrap();
-        input.write_all(bytes).unwrap();
-        let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../os/usr/libexec/tilo-staging-handoff");
-        std::process::Command::new("python3").arg("-c")
-            .arg("import runpy,sys,json; m=runpy.run_path(sys.argv[1]); print(json.dumps(m['load_handoff_file'](sys.argv[2])))")
-            .arg(helper).arg(input.path()).output().unwrap()
+    fn parse_live(bytes: &[u8]) -> Result<serde_json::Value, String> {
+        imager_backend::test_support::parse_live_handoff(bytes)
     }
 
     #[cfg(target_os = "linux")]
@@ -287,16 +280,7 @@ mod tests {
         )
         .unwrap();
 
-        let live = parse_live(&bytes);
-        assert!(
-            live.status.success(),
-            "{}",
-            String::from_utf8_lossy(&live.stderr)
-        );
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&live.stdout).unwrap(),
-            decoded
-        );
+        assert_eq!(parse_live(&bytes).unwrap(), decoded);
 
         for pointer in [
             "/unexpected",
@@ -319,7 +303,7 @@ mod tests {
                 staging_handoff_model::Handoff::parse(&invalid).is_err(),
                 "{pointer}"
             );
-            assert!(!parse_live(&invalid).status.success(), "{pointer}");
+            assert!(parse_live(&invalid).is_err(), "{pointer}");
         }
         for (pointer, value) in [
             ("/host_os", serde_json::json!("windows")),
@@ -349,7 +333,7 @@ mod tests {
                 staging_handoff_model::Handoff::parse(&invalid).is_err(),
                 "{pointer}"
             );
-            assert!(!parse_live(&invalid).status.success(), "{pointer}");
+            assert!(parse_live(&invalid).is_err(), "{pointer}");
         }
     }
 
