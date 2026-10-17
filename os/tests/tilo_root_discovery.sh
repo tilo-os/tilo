@@ -281,7 +281,10 @@ d = json.load(open(p))
 d["pcrs"] = [7]
 json.dump(d, open(p, "w"))
 PY
-if TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
+# TILO_PREFLIGHT_ROOT keeps ESP discovery from refusing first: the refusal
+# must come from the prediction itself.
+if TILO_PREFLIGHT_ROOT="$work/preflight" \
+  TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
   TILO_PREFLIGHT_CRYPTO="$crypto" \
   TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check" \
   "$repo/os/usr/libexec/tilo-verified-boot-install-preflight" \
@@ -289,6 +292,33 @@ if TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
   echo 'PCR7-only release policy passed exact prediction preflight' >&2; exit 1
 fi
 echo 'ok: PCR7-only prediction is rejected rather than weakening release authorization'
+
+# The generation is inside the signed message: a policy signed for generation 7
+# relabelled as 8 fails, as does a sidecar whose fields are not strict base64.
+edited_preflight() {
+  python3 - "$prediction" "$work/edited.json" "$2" <<'PY'
+import json, sys
+p, out, edit = sys.argv[1:]
+d = json.load(open(p))
+d["pcrs"] = [11]
+exec(edit)
+json.dump(d, open(out, "w"))
+PY
+  cp "$prediction.uki.sig" "$work/edited.json.uki.sig"
+  TILO_PREFLIGHT_ROOT="$work/preflight" TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
+    TILO_PREFLIGHT_CRYPTO="$crypto" \
+    TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check" \
+    "$repo/os/usr/libexec/tilo-verified-boot-install-preflight" \
+      --uki "$work/preflight/tilo-target.efi" --prediction "$work/edited.json" --generation "$1"
+}
+edited_preflight 7 pass >/dev/null
+if edited_preflight 8 'd["generation"] = 8'; then
+  echo 'prediction relabelled to another generation passed preflight' >&2; exit 1
+fi
+if edited_preflight 7 'd["signature"] += "!"'; then
+  echo 'prediction with a non-base64 signature passed preflight' >&2; exit 1
+fi
+echo 'ok: relabelled or malformed predictions are rejected'
 
 grep -Fq 'arch: x86_64' "$repo/.forgejo/workflows/release-imager.yml"
 grep -Fq 'arch: aarch64' "$repo/.forgejo/workflows/release-imager.yml"
