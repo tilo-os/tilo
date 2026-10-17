@@ -44,7 +44,7 @@ pub trait LocalIdentitySource: Send + Sync {
 pub(crate) fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
     let source = SOURCE
         .read()
-        .unwrap_or_else(PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     match source {
         Some(source) => photo_from(source.as_ref(), identity),
