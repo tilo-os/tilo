@@ -4091,7 +4091,29 @@ mod local_document_action_transport_tests {
     fn closed_report_is_bounded_and_debug_does_not_disclose_payload() {
         let mut value = report();
         let json: serde_json::Value = serde_json::from_slice(&value.encode().unwrap()).unwrap();
-        assert_eq!(json.as_object().unwrap().len(), 12);
+        let mut fields = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec![
+                "action",
+                "argument",
+                "context",
+                "encoded",
+                "group",
+                "invocation",
+                "mutation_hashes",
+                "original_heads",
+                "resource",
+                "revision",
+                "version",
+            ]
+        );
         for forbidden in ["actor", "app", "record", "peer", "target"] {
             assert!(json.get(forbidden).is_none());
         }
