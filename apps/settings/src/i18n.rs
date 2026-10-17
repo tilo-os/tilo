@@ -7,8 +7,19 @@
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
+/// The pages' and settings' names, shared with the desktop palette
+/// ([`settings_store::index`]).
+static INDEX: ui::i18n::EmbeddedCatalog = {
+    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", settings_store::index::CATALOGUES)
+        .with_system_locale();
+    #[cfg(test)]
+    let catalog = catalog.with_pinned_locale("en-US");
+    catalog
+};
+
 /// Native Settings copy takes precedence; shared provider copy fills missing keys.
 pub fn t(key: &str) -> String {
+    INDEX.ensure();
     let local = CATALOG.t(key);
     if local == key {
         provider_settings_ui::i18n::t(key)
@@ -18,6 +29,7 @@ pub fn t(key: &str) -> String {
 }
 
 pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    INDEX.ensure();
     let local = CATALOG.t_args(key, args);
     if local == key {
         provider_settings_ui::i18n::t_args(key, args)

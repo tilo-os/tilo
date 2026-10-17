@@ -102,6 +102,8 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 #[cfg(test)]
 mod cpu_profile;
 #[cfg(test)]
+mod reveal_tests;
+#[cfg(test)]
 mod scroll_tests;
 #[cfg(test)]
 mod ui_thread_tests;

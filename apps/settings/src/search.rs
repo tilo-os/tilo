@@ -23,7 +23,7 @@ pub fn pane_entries() -> Vec<SearchEntry> {
         .iter()
         .copied()
         .map(|category| {
-            SearchEntry::new(category.label(), category.keywords().join(" "))
+            SearchEntry::new(category.label(), category.search_words().join(" "))
                 .anchored(crate::effects::pane_row_id(category))
                 .grouped(SETTINGS_KIND)
                 .subtitled(category.subtitle())

@@ -560,10 +560,18 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
         .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
-/// Read capabilities only from the active compositor's leased snapshot.
-fn read_outputs() -> Vec<DisplayOutput> {
-    DisplayHardwareSnapshot::load()
-        .map_or_else(Vec::new, |snapshot| outputs_from_snapshot(&snapshot))
+/// Read capabilities only from the active compositor's leased snapshot;
+/// `None` when there is no snapshot to read (the compositor has not
+/// published one, or it is gone), which is not the same as no displays.
+fn read_outputs() -> Option<Vec<DisplayOutput>> {
+    let outputs = DisplayHardwareSnapshot::load().map(|snapshot| outputs_from_snapshot(&snapshot));
+    if outputs.is_none() {
+        tracing::warn!(
+            path = ?settings_store::hardware::display_snapshot_path(),
+            "the compositor's display snapshot is missing or not live"
+        );
+    }
+    outputs
 }
 
 fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
@@ -770,6 +778,10 @@ pub struct DisplayModel {
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
+    /// Whether the compositor's display snapshot could be read: without
+    /// it the pane cannot tell what is connected, which it must not show
+    /// as "no displays".
+    outputs_read: bool,
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
     shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
@@ -946,7 +958,9 @@ impl DisplayModel {
             }),
         )
         .ok();
-        let outputs = read_outputs();
+        let read = read_outputs();
+        let outputs_read = read.is_some();
+        let outputs = read.unwrap_or_default();
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
         let levels_landed = Arc::new(AtomicBool::new(false));
@@ -964,6 +978,7 @@ impl DisplayModel {
             of_device: true,
             brightness_control: control,
             outputs,
+            outputs_read,
             ambient_sensor_available: false,
             brightness: 0.5,
             output_config,
@@ -1049,6 +1064,7 @@ impl DisplayModel {
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
             outputs: Vec::new(),
+            outputs_read: true,
             ambient_sensor_available: true,
             brightness: 0.62,
             output_config: DisplayConfig::default(),
@@ -1160,6 +1176,7 @@ impl DisplayModel {
             self.settle(transaction);
         }
         self.outputs = outputs_from_snapshot(&reply.observed);
+        self.outputs_read = true;
         self.output_config = reply.committed.clone();
         self.host_state = Some(reply);
         self.changed = true;
@@ -1926,7 +1943,9 @@ impl DisplayModel {
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
-            self.outputs = read_outputs();
+            let read = read_outputs();
+            self.outputs_read = read.is_some();
+            self.outputs = read.unwrap_or_default();
             self.output_config = self.host_state.as_ref().map_or_else(
                 || DisplayConfig::load_for(&self.display_set()),
                 |state| state.committed.clone(),
@@ -2109,7 +2128,11 @@ impl DisplayModel {
         if connected.is_empty() {
             return card(
                 &t("display-card-title"),
-                rows(vec![note(&t("display-none"))]),
+                rows(vec![note(&t(if self.outputs_read {
+                    "display-none"
+                } else {
+                    "display-unreadable"
+                }))]),
             );
         }
         let disconnected = self.outputs.len() - connected.len();

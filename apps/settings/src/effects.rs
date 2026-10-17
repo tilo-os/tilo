@@ -551,6 +551,10 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
         .collect()
 }
 
+/// How a search hit or an agent's `open` names a setting:
+/// `settings.setting:<id>`, an id of [`settings_store::index::SETTINGS`].
+pub const SETTING_ANCHOR: &str = "settings.setting:";
+
 /// Moving between the panes of Settings.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
@@ -560,6 +564,13 @@ pub enum NavigationEffect {
     OpenPane {
         #[param("The pane: its id, such as `appearance` or `network`")]
         pane: String,
+    },
+    /// Open the pane a setting is on, scrolled to it, with the keyboard on
+    /// its control.
+    #[effect(view, label = "Show a setting")]
+    ShowSetting {
+        #[param("The setting: its id, such as `keyboard.layout` or `appearance.style`")]
+        setting: String,
     },
 }
 
@@ -573,6 +584,10 @@ fn answer_navigation(
             let category = Category::from_slug(&pane)
                 .ok_or_else(|| format!("Settings has no pane `{pane}`"))?;
             app.request_pane(category);
+            Ok(ui::framework::Effected::done())
+        }
+        NavigationEffect::ShowSetting { setting } => {
+            app.request_setting(&setting)?;
             Ok(ui::framework::Effected::done())
         }
     }

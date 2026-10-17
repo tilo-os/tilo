@@ -5,7 +5,7 @@
 
 use ui::LocalState;
 use ui::tilo_resource::{Binds, Model, Path, Settable};
-use ui::widget::{Button, Dropdown, Slider, Toggle};
+use ui::widget::{Button, Dropdown, Segment, Slider, Toggle, ToggleGroup};
 
 use crate::effects::SettingsEffect;
 use crate::host::{PaneCx, Section};
@@ -123,6 +123,18 @@ impl Row<'_> {
         T: Section,
         V: Model + Settable + 'static,
     {
+        let options: Vec<String> = options.into_iter().map(Into::into).collect();
+        if let Some(segments) = self.segments(&options, current) {
+            let control = self
+                .cx
+                .bind_field_with(segments, field, move |index: usize| {
+                    let option = options
+                        .get(index)
+                        .ok_or_else(|| format!("no choice {index}"))?;
+                    value(option.clone())
+                });
+            return self.control(Box::new(control));
+        }
         let chooser = self
             .cx
             .bind_field_with(self.chooser(options, current), field, value);
@@ -137,6 +149,17 @@ impl Row<'_> {
         current: &LocalState<String>,
         verb: impl Binds<T, String>,
     ) -> Item {
+        let options: Vec<String> = options.into_iter().map(Into::into).collect();
+        if let Some(segments) = self.segments(&options, current) {
+            let control = self.cx.bind_verb(
+                segments,
+                Indexed {
+                    inner: verb,
+                    options,
+                },
+            );
+            return self.control(Box::new(control));
+        }
         let chooser = self.cx.bind_verb(self.chooser(options, current), verb);
         self.control(Box::new(chooser))
     }
@@ -149,6 +172,17 @@ impl Row<'_> {
         current: &LocalState<String>,
         effect: impl Binds<SettingsEffect, String>,
     ) -> Item {
+        let options: Vec<String> = options.into_iter().map(Into::into).collect();
+        if let Some(segments) = self.segments(&options, current) {
+            let control = self.cx.bind(
+                segments,
+                Indexed {
+                    inner: effect,
+                    options,
+                },
+            );
+            return self.control(Box::new(control));
+        }
         let chooser = self.cx.bind(self.chooser(options, current), effect);
         self.control(Box::new(chooser))
     }
@@ -253,6 +287,27 @@ impl Row<'_> {
         }
     }
 
+    /// A few short options as segments, every one in sight and one press
+    /// away; `None` where a menu reads better (many options, long names).
+    fn segments(&self, options: &[String], current: &LocalState<String>) -> Option<ToggleGroup> {
+        let letters: usize = options.iter().map(|option| option.chars().count()).sum();
+        if !(2..=MAX_SEGMENTS).contains(&options.len()) || letters > MAX_SEGMENT_LETTERS {
+            return None;
+        }
+        let group = ToggleGroup::from_state(
+            options
+                .iter()
+                .map(|option| (option.clone(), Segment::new(option.clone())))
+                .collect(),
+            current,
+        )
+        .with_accessible_name(self.label.clone());
+        Some(match &self.id {
+            Some(id) => group.with_id(id),
+            None => group,
+        })
+    }
+
     fn slider_widget(&self, value: &LocalState<f64>) -> Slider {
         let mut slider = Slider::from_state(value);
         if let Some(id) = &self.id {
@@ -262,5 +317,52 @@ impl Row<'_> {
             Some(name) => slider.with_accessible_name(name),
             None => slider,
         }
+    }
+}
+
+/// The most options a row shows as segments rather than a menu.
+const MAX_SEGMENTS: usize = 4;
+/// The most letters, all options together, that fit as segments beside a
+/// row's label.
+const MAX_SEGMENT_LETTERS: usize = 32;
+
+/// A binding taking an option's text, bound to the segment index that
+/// shows it.
+struct Indexed<B> {
+    inner: B,
+    options: Vec<String>,
+}
+
+impl<R, B: Binds<R, String>> Binds<R, usize> for Indexed<B> {
+    fn action_id(&self) -> &'static str {
+        self.inner.action_id()
+    }
+
+    fn arguments(
+        &self,
+        input: usize,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let option = self
+            .options
+            .get(input)
+            .ok_or_else(|| format!("no choice {input}"))?;
+        self.inner.arguments(option.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_few_short_options_are_segments_and_many_are_a_menu() {
+        let cx = PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
+        let current = LocalState::new("Dark".to_owned());
+        let few = ["Light", "Dark", "Automatic"].map(String::from);
+        assert!(cx.row("Style").segments(&few, &current).is_some());
+        let many = ["90%", "100%", "110%", "125%", "150%"].map(String::from);
+        assert!(cx.row("Scale").segments(&many, &current).is_none());
+        let long = ["Bottom-right corner", "Two-finger press"].map(String::from);
+        assert!(cx.row("Click").segments(&long, &current).is_none());
     }
 }

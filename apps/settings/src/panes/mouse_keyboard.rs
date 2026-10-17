@@ -2819,6 +2819,20 @@ mod tests {
     pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
         crate::effects::show_pane(app, crate::categories::Category::Keyboard);
         app.settle();
+        // The page is read off the UI thread; it is built once the read has
+        // landed, and the chooser is used only then.
+        let reading = crate::i18n::t("settings-pane-reading");
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| !frame.contains(&reading))),
+            "the Keyboard page is built"
+        );
+        for _ in 0..5 {
+            app.settle();
+            let _ = app.harness().poll_frame();
+        }
         for _ in 0..30 {
             app.settle();
             let rect = app

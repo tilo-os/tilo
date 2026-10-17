@@ -768,9 +768,10 @@ impl MouseKeyboardPane {
             .collect()
     }
 
-    /// The Keyboard page, top to bottom: what the keyboard types (a preview
-    /// of the layout in use, with a warning when the keyboard types
-    /// something else), the layouts, and the typing options.
+    /// The Keyboard page, top to bottom: the layouts (what people come here
+    /// to change), with a warning above them when the keyboard types
+    /// something else; the typing options; and the selected layout drawn as
+    /// its keycaps, for looking up where a symbol is.
     pub(super) fn keyboard_page(&self) -> Vec<SettingsSection> {
         let profile = self.editor_profile();
         let shown = self.selected_source();
@@ -787,11 +788,11 @@ impl MouseKeyboardPane {
         {
             page.push(self.layout_mismatch_section(&profile));
         }
-        page.push(self.layout_preview_section(&shown, &profile, map));
         page.push(self.layouts_section(&profile));
         if !osk {
             page.push(self.keyboard_options_section(&shown));
         }
+        page.push(self.layout_preview_section(&shown, &profile, map));
         page
     }
 

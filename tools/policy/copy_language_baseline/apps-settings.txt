@@ -31,7 +31,6 @@ en-US perm-enforcement-caption narration
 en-US perm-no-grants-body narration
 en-US perm-secrets-detail chain
 en-US perm-unavailable-body narration
-en-US settings-personal-apps-empty narration
 en-US settings-printers-discover-empty narration
 en-US settings-users-identity-detail chain
 en-US settings-users-uid-line chain
