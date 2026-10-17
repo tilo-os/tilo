@@ -1,10 +1,10 @@
 use super::*;
 use crate::setup::{
     account_transfer::{self, SourceRoots},
-    browser_profiles,
     journey::{browser::SelectedSources, prepared_media::MediaSelections},
     prepared_identity::PreparedIdentity,
 };
+use imager_backend::setup::browser_profiles;
 use std::{fs, os::unix::fs::PermissionsExt};
 use zeroize::Zeroizing;
 fn fixture(root: &Path) -> Arc<PreparedMedia> {

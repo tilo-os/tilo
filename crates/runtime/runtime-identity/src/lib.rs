@@ -227,6 +227,7 @@ mod presentation_wire_tests {
         let legacy = Handshake {
             workspace_id: "room".into(),
             app_id: "app".into(),
+            surface: None,
         };
         let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
         let compatibility = PresentationHandshake {

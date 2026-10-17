@@ -58,7 +58,7 @@ struct Rows {
     cursor: u64,
     sequence: u64,
     base: u64,
-    rows: Vec<Result<(u64, FileType, OsString), i32>>,
+    entries: Vec<Result<(u64, FileType, OsString), i32>>,
     high_water: u64,
     done: bool,
 }
@@ -92,8 +92,11 @@ fn reply_errno(failure: io::Error) -> fuser::Errno {
     // Transport/authority errors remain I/O failure, never successful access.
     fuser::Errno::EIO
 }
-fn kind(raw: u32) -> FileType {
-    match raw {
+/// The FUSE type of a native `S_IFMT` value. `DirectoryClient` already
+/// refuses any other value; one that still arrives is an I/O failure, never
+/// a guessed type.
+fn kind(raw: u32) -> io::Result<FileType> {
+    Ok(match raw {
         libc::S_IFREG => FileType::RegularFile,
         libc::S_IFDIR => FileType::Directory,
         libc::S_IFLNK => FileType::Symlink,
@@ -101,8 +104,8 @@ fn kind(raw: u32) -> FileType {
         libc::S_IFSOCK => FileType::Socket,
         libc::S_IFBLK => FileType::BlockDevice,
         libc::S_IFCHR => FileType::CharDevice,
-        _ => unreachable!("DirectoryClient rejects invalid native type"),
-    }
+        _ => return Err(error(libc::EIO)),
+    })
 }
 fn name(name: &OsStr) -> io::Result<EntryName> {
     EntryName::new(name.to_os_string()).map_err(|_| error(libc::EINVAL))
@@ -302,14 +305,20 @@ impl DirectoryFilesystem {
         };
         Ok((ino, stat))
     }
-    fn attr(&self, ino: u64, metadata: &Metadata, file_type: u32, execute_bits: u16) -> FileAttr {
+    fn attr(
+        &self,
+        ino: u64,
+        metadata: &Metadata,
+        file_type: u32,
+        execute_bits: u16,
+    ) -> io::Result<FileAttr> {
         let time = metadata
             .modified_unix_seconds
             .and_then(|v| u64::try_from(v).ok())
             .and_then(|v| UNIX_EPOCH.checked_add(Duration::from_secs(v)))
             .unwrap_or(UNIX_EPOCH);
         let directory = metadata.kind == EntryKind::Directory;
-        FileAttr {
+        Ok(FileAttr {
             ino: INodeNo(ino),
             size: metadata.size,
             blocks: metadata.size.div_ceil(512),
@@ -317,7 +326,7 @@ impl DirectoryFilesystem {
             mtime: time,
             ctime: time,
             crtime: time,
-            kind: kind(file_type),
+            kind: kind(file_type)?,
             perm: if directory {
                 0o700
             } else if metadata.kind == EntryKind::Other {
@@ -331,7 +340,7 @@ impl DirectoryFilesystem {
             rdev: 0,
             blksize: 4096,
             flags: 0,
-        }
+        })
     }
     fn attributes(
         &self,
@@ -386,7 +395,7 @@ impl DirectoryFilesystem {
             }
             (stat.metadata, stat.execute_bits)
         };
-        Ok(self.attr(ino, &metadata, node.file_type, execute_bits))
+        self.attr(ino, &metadata, node.file_type, execute_bits)
     }
     fn open_file(&self, table: &mut Table, ino: u64, mode: OpenMode) -> io::Result<u64> {
         if table.files.len() >= HANDLES {
@@ -449,7 +458,9 @@ impl DirectoryFilesystem {
         self.job_effect(id, false)?.ok_or_else(|| error(libc::EIO))
     }
     fn job_effect(&self, id: u64, require_capture: bool) -> io::Result<Option<[u64; 2]>> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or_else(|| error(libc::EOVERFLOW))?;
         let mut failed = false;
         let mut destination = None;
         let mut captured = false;
@@ -524,12 +535,14 @@ impl Filesystem for DirectoryFilesystem {
             }
             // The request stays bound to this actual FUSE inode. In particular,
             // an open old FD cannot acquire the history of a replacement name.
-            if let Some(pin) = node.pin {
-                if self.source.metadata_pin(pin)?.identity != node.identity {
-                    return Err(error(libc::ESTALE));
-                }
+            if let Some(pin) = node.pin
+                && self.source.metadata_pin(pin)?.identity != node.identity
+            {
+                return Err(error(libc::ESTALE));
             }
             let parent = self.directory(&mut table, node.parent)?;
+            // The history query is a round trip to the source: never under the table lock.
+            drop(table);
             let name = node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?;
             let bytes = self
                 .source
@@ -585,9 +598,10 @@ impl Filesystem for DirectoryFilesystem {
                 .lookups
                 .checked_add(1)
                 .ok_or_else(|| error(libc::ENFILE))?;
+            drop(table);
             Ok::<_, io::Error>((
                 ino,
-                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits),
+                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)?,
             ))
         })();
         match result {
@@ -908,7 +922,7 @@ impl Filesystem for DirectoryFilesystem {
                     sequence: 0,
                     base: 0,
                     high_water: 0,
-                    rows,
+                    entries: rows,
                     done: false,
                 },
             );
@@ -968,16 +982,18 @@ impl Filesystem for DirectoryFilesystem {
                 rows.sequence = 0;
                 rows.base = 0;
                 rows.done = false;
-                rows.rows = vec![
+                rows.entries = vec![
                     Ok((ino.0, FileType::Directory, OsString::from("."))),
                     Ok((parent, FileType::Directory, OsString::from(".."))),
                 ];
             }
-            let replay_deadline = Instant::now() + Duration::from_secs(5);
+            let replay_deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or_else(|| error(libc::EOVERFLOW))?;
             loop {
                 let end = rows
                     .base
-                    .checked_add(rows.rows.len() as u64)
+                    .checked_add(rows.entries.len() as u64)
                     .ok_or_else(|| error(libc::EOVERFLOW))?;
                 if offset < end || rows.done {
                     if offset > end {
@@ -992,19 +1008,19 @@ impl Filesystem for DirectoryFilesystem {
                 rows.sequence = page.next_sequence;
                 rows.done = page.done;
                 rows.base = end;
-                rows.rows = page
+                rows.entries = page
                     .entries
                     .into_iter()
                     .map(|row| match row.stat {
-                        Some(stat) => {
-                            Ok((0, kind(stat.file_type), row.name.as_os_str().to_os_string()))
-                        }
+                        Some(stat) => kind(stat.file_type)
+                            .map(|kind| (0, kind, row.name.as_os_str().to_os_string()))
+                            .map_err(|_| libc::EIO),
                         None => Err(libc::EACCES),
                     })
                     .collect();
             }
             let index = usize::try_from(offset - rows.base).map_err(|_| error(libc::EINVAL))?;
-            for (index, row) in rows.rows.iter().enumerate().skip(index) {
+            for (index, row) in rows.entries.iter().enumerate().skip(index) {
                 let (entry_ino, kind, name) = row.as_ref().map_err(|code| error(*code))?;
                 let cookie = rows
                     .base
@@ -1077,7 +1093,7 @@ impl Filesystem for DirectoryFilesystem {
                 .ok_or_else(|| error(libc::ESTALE))?
                 .lookups += 1;
             Ok((
-                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits),
+                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)?,
                 handle,
             ))
         })();
@@ -1153,7 +1169,7 @@ impl Filesystem for DirectoryFilesystem {
                 .get_mut(&ino)
                 .ok_or_else(|| error(libc::ESTALE))?
                 .lookups += 1;
-            Ok(self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits))
+            self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)
         })();
         match result {
             Ok(attr) => {
@@ -1339,6 +1355,7 @@ mod tests {
                 actual.file_type,
                 actual.execute_bits
             )
+            .unwrap()
             .perm,
             0o711
         );
@@ -1375,6 +1392,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 fs.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)
+                    .unwrap()
                     .kind,
                 expected
             );

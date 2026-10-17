@@ -1,7 +1,7 @@
 //! Explicit, password-authenticated continuation of owned prepared connections.
 //! The backend owns checkpoint storage; the journey retains the current draft lease.
 use super::PreparedAccounts;
-pub(super) use imager_backend::account_checkpoint::Receipt;
+pub(in crate::setup::journey) use imager_backend::account_checkpoint::Receipt;
 use imager_backend::prepared_identity::DraftLock;
 use std::{io, path::Path};
 use zeroize::Zeroizing;
@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 fn invalid() -> io::Error {
     io::Error::other("Prepared connections could not be authenticated")
 }
-pub(super) fn save(
+pub(in crate::setup::journey) fn save(
     handle: &PreparedAccounts,
     root: &Path,
     binding: &str,
@@ -18,7 +18,7 @@ pub(super) fn save(
 ) -> io::Result<Receipt> {
     imager_backend::account_checkpoint::save(handle, root, binding, group, password)
 }
-pub(super) fn restore(
+pub(in crate::setup::journey) fn restore(
     root: &Path,
     receipt: &Receipt,
     password: &[u8],

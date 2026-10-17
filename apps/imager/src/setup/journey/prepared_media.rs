@@ -1549,7 +1549,7 @@ impl PreparedMedia {
         Ok(info)
     }
 
-    pub(super) fn matches_reviewed_belongings(
+    pub(in crate::setup) fn native_matches_reviewed_belongings(
         &self,
         identity: &PreparedIdentity,
         profile: &prepared_setup::PublicInstallProfile,
@@ -1560,7 +1560,7 @@ impl PreparedMedia {
             && self.retained.as_ref() == migration
     }
 
-    pub(crate) fn bind_recovery(
+    pub(in crate::setup) fn native_bind_recovery(
         &self,
         evidence: Vec<Arc<super::super::migration_recovery::Evidence>>,
         plan: &super::super::staging::plan::Plan,

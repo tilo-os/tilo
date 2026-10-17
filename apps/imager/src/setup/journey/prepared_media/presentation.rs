@@ -28,11 +28,7 @@ impl PreparedMedia {
     ) -> bool {
         #[cfg(target_os = "linux")]
         {
-            self.native_payload
-                .get::<super::prepared_media_native::NativePreparedMedia>()
-                .is_some_and(|native| {
-                    native.matches_reviewed_belongings(identity, profile, migration)
-                })
+            self.native_matches_reviewed_belongings(identity, profile, migration)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -48,10 +44,7 @@ impl PreparedMedia {
     ) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            self.native_payload
-                .get::<super::prepared_media_native::NativePreparedMedia>()
-                .ok_or(imager_backend::journey_media::Unsupported)?
-                .bind_recovery(evidence, plan)
+            self.native_bind_recovery(evidence, plan)
         }
         #[cfg(not(target_os = "linux"))]
         {

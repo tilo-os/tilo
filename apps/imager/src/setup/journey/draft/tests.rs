@@ -243,7 +243,7 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
         "schema": 1,
         "filename": format!("{}.sealed", uuid::Uuid::new_v4()),
         "sealed_bytes": 256,
-        "ciphertext_sha256": [1; 32],
+        "ciphertext_sha256": vec![1_u8; 32],
         "binding": pending.pointer.operation,
         "group": prepared.public_key(),
         "accounts": 1,
@@ -258,7 +258,7 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
     assert_eq!(before_update.account_checkpoint(), Some(&first));
     let mut fields = serde_json::to_value(&first).unwrap();
     fields["filename"] = serde_json::json!(format!("{}.sealed", uuid::Uuid::new_v4()));
-    fields["ciphertext_sha256"] = serde_json::json!([2; 32]);
+    fields["ciphertext_sha256"] = serde_json::json!(vec![2_u8; 32]);
     fields["accounts"] = serde_json::json!(0);
     let newer: Receipt = serde_json::from_value(fields).unwrap();
     store
@@ -283,7 +283,7 @@ fn stale_same_operation_account_checkpoint_cannot_replace_newer_selected_generat
     assert!(!invoked.get());
     let mut fields = serde_json::to_value(&first).unwrap();
     fields["filename"] = serde_json::json!(format!("{}.sealed", uuid::Uuid::new_v4()));
-    fields["ciphertext_sha256"] = serde_json::json!([3; 32]);
+    fields["ciphertext_sha256"] = serde_json::json!(vec![3_u8; 32]);
     let stale: Receipt = serde_json::from_value(fields).unwrap();
     assert!(
         store

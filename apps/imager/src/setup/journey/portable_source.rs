@@ -2,7 +2,7 @@
 //! the media writer consumes it. Original-source Copy authority is captured only
 //! for explicit offline continuation; ordinary immutable transfer is unchanged.
 use super::super::{
-    flatpak_transfer::{InstalledRef, NativeRunner, portable::PortableFlatpakSource},
+    flatpak_transfer::{NativeRunner, portable::PortableFlatpakSource},
     migration_intent::MigrationIntent,
     portable_home_media::HomeSource,
 };

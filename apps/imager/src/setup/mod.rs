@@ -2,7 +2,6 @@ pub mod account_admission;
 pub mod account_transfer;
 pub mod actions;
 pub mod applications_admission;
-pub(crate) mod browser_profiles;
 #[cfg(target_os = "linux")]
 pub mod browser_transfer;
 pub mod controller;
