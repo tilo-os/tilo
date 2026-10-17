@@ -12,6 +12,9 @@ pub struct CatalogApp {
     pub name: &'static str,
     pub category: &'static str,
     pub platforms: &'static [&'static str],
+    /// Its name in the other languages its manifest gives one
+    /// (`[package.names]`): "Dateien" for Files. Searched as the name.
+    pub names: &'static [&'static str],
     /// The other words people know it by, every language's together
     /// (`[package.keywords]`): "youtube" for a video app.
     pub keywords: &'static [&'static str],
@@ -26,19 +29,28 @@ pub fn catalog() -> &'static [CatalogApp] {
     catalog::APPS
 }
 
+/// The registry's entry for the app `package_id`, if it lists it.
+fn entry_for(package_id: &str) -> Option<&'static CatalogApp> {
+    // A local build publishes the same apps under `dev.tilo.`.
+    let canonical = package_id.strip_prefix("dev.tilo.");
+    catalog().iter().find(|app| {
+        app.id == package_id
+            || canonical.is_some_and(|name| app.id.strip_prefix("so.tilo.") == Some(name))
+    })
+}
+
 /// The keywords the registry knows for the app `package_id` — empty for an
 /// app it does not list.
 #[must_use]
 pub fn keywords_for(package_id: &str) -> &'static [&'static str] {
-    // A local build publishes the same apps under `dev.tilo.`.
-    let canonical = package_id.strip_prefix("dev.tilo.");
-    catalog()
-        .iter()
-        .find(|app| {
-            app.id == package_id
-                || canonical.is_some_and(|name| app.id.strip_prefix("so.tilo.") == Some(name))
-        })
-        .map_or(&[], |app| app.keywords)
+    entry_for(package_id).map_or(&[], |app| app.keywords)
+}
+
+/// The app's name in the other languages the registry knows ("Dateien",
+/// "Rechner") — empty for an app it does not list.
+#[must_use]
+pub fn names_for(package_id: &str) -> &'static [&'static str] {
+    entry_for(package_id).map_or(&[], |app| app.names)
 }
 
 /// Why an app declaring `platforms` is not offered: "Tilo OS only",
