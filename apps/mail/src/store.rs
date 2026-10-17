@@ -68,7 +68,13 @@ impl Store {
                                 }
                             }
                             let done = match messages {
-                                Some(messages) => write(&path, messages),
+                                Some(messages) => {
+                                    // What is no longer kept takes its
+                                    // attachments with it.
+                                    let kept = attachment_names(&messages);
+                                    write(&path, messages)
+                                        .and_then(|()| prune(&path.with_extension("files"), &kept))
+                                }
                                 None => remove(&path)
                                     .and_then(|()| remove_dir(&path.with_extension("files"))),
                             };
@@ -193,6 +199,39 @@ impl Store {
             let _ = writer.send((path, None, Vec::new()));
         }
     }
+}
+
+/// The file names of the attachments `messages` keep.
+fn attachment_names(messages: &[Message]) -> std::collections::HashSet<String> {
+    messages
+        .iter()
+        .flat_map(|message| {
+            message
+                .attachments
+                .iter()
+                .enumerate()
+                .filter(|(_, attachment)| attachment.kept)
+                .map(move |(index, _)| format!("{}.{index}", message.id))
+        })
+        .collect()
+}
+
+/// Remove every file in `folder` but the `kept` ones: attachments of mail
+/// that fell out of what is kept, or was removed from its server.
+fn prune(folder: &Path, kept: &std::collections::HashSet<String>) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !kept.contains(&name) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -325,6 +364,16 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
         assert!(loaded[0].attachments[0].is_downloadable());
+
+        // Mail that is no longer kept takes its attachment files with it.
+        assert!(store.save("me@x.example", vec![message(2)]).is_empty());
+        while store.attachment("me@x.example", id, 0).is_some() {
+            assert!(
+                ui::time::now() < deadline,
+                "the attachment outlived its mail"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

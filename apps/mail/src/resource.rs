@@ -1233,6 +1233,12 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         self.search_servers(query.text());
     }
 
+    /// The servers are still looking: a search showing waits for what they
+    /// find.
+    fn search_pending(&self) -> bool {
+        self.searching_servers()
+    }
+
     /// Every message already loaded, outside Trash: its subject, sender and
     /// body come from the engine, not the document.
     fn search_entries(&self) -> Vec<SearchEntry> {

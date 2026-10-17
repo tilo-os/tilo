@@ -5302,6 +5302,15 @@ impl MailApp {
         self.dirty = true;
     }
 
+    /// Whether a server search is still to be asked or answered.
+    pub(crate) fn searching_servers(&self) -> bool {
+        self.server_search.is_some()
+            || self
+                .pending_engine_requests
+                .values()
+                .any(|kind| *kind == EngineRequestKind::Search)
+    }
+
     /// Ask every account's server for the search text that is due.
     fn post_server_search(&mut self) {
         let due = self
@@ -6595,7 +6604,9 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         });
         app.search_servers("in");
         assert!(app.server_search.is_none(), "two letters search only here");
+        assert!(!app.searching_servers(), "nothing for a search to wait on");
         app.search_servers("invoice");
+        assert!(app.searching_servers(), "a search waits for the servers");
         app.post_server_search();
         assert!(
             requests.try_recv().is_err(),
@@ -6621,6 +6632,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             panic!("a search: {posted:?}");
         };
         assert_eq!(text, "invoice");
+        assert!(app.searching_servers(), "the servers are looking");
         app.search_servers("invoice");
         assert!(
             app.server_search.is_none(),
@@ -6644,6 +6656,21 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             })
             .unwrap();
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(
+            app.searching_servers(),
+            posted.len() > 1,
+            "the other accounts are still looking"
+        );
+        for other in &posted[1..] {
+            incoming
+                .send(EngineEvent::Completed {
+                    request_id: other.request_id(),
+                    kind: EngineRequestKind::Search,
+                })
+                .unwrap();
+        }
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(!app.searching_servers(), "every server answered");
         assert!(
             crate::search::message_entries(&app.shared.borrow().mailbox)
                 .iter()
