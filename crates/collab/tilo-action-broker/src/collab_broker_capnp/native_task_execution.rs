@@ -111,6 +111,27 @@ pub(super) fn child_provenance(
     )))
 }
 
+/// The step the run of `epoch` is paused at for its person, when a draft of
+/// it is still unsettled in the task's `control`: delivered with the run so
+/// an agent that restarted resumes at the draft rather than planning the
+/// task over, which would ask its person again for what they already saw.
+fn paused_step(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    epoch: u64,
+) -> Option<runtime_collab::TaskRunPausedStep> {
+    let held = control
+        .confirmation
+        .as_ref()
+        .filter(|held| held.run_epoch == epoch)?;
+    Some(runtime_collab::TaskRunPausedStep {
+        app: held.app.clone(),
+        resource: held.resource.clone(),
+        action: held.action.clone(),
+        draft: held.draft.clone(),
+        arguments_digest: held.arguments_digest,
+    })
+}
+
 fn native_request(
     run: &PendingTaskRun,
     target: runtime_collab::TaskAction<'_>,
@@ -540,6 +561,7 @@ impl CapnpBrokerState {
                 revision: 0,
             },
             TaskRunEnvelope {
+                paused: paused_step(control, run.epoch),
                 task_id: task_id.into(),
                 title: task.title.clone(),
                 instruction: Some(

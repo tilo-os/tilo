@@ -5,6 +5,7 @@ use super::{
 #[test]
 fn task_run_wire_is_typed_and_rejects_unknown_fields() {
     let envelope = TaskRunEnvelope {
+        paused: None,
         version: 1,
         task_id: "task:1".into(),
         title: "Review proposal".into(),
@@ -63,6 +64,7 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
             .at(tilo_actions::SelectionPlace::range("block-1", 0, 20)),
     };
     let envelope = TaskRunEnvelope {
+        paused: None,
         version: 1,
         task_id: "task:2".into(),
         presentation_version: None,
@@ -85,6 +87,7 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
         Some(subject)
     );
     let without = TaskRunEnvelope {
+        paused: None,
         subject: None,
         ..envelope
     };
@@ -100,6 +103,7 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
 #[test]
 fn the_request_is_the_persons_own_words_without_context_or_conversation() {
     let envelope = |instruction: &str| TaskRunEnvelope {
+        paused: None,
         version: 1,
         task_id: "task:3".into(),
         title: "Summarise".into(),

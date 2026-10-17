@@ -726,7 +726,7 @@ impl Session {
             )));
         }
         let request_id = self.next_request_id();
-        let invocation = self.task_child_id(run)?;
+        let invocation = self.task_child_id(run, action, arguments)?;
         self.link.send(&CollabRequest::InvokeTaskAction {
             request_id,
             invocation,
@@ -1266,6 +1266,7 @@ mod tests {
 
     fn task_run() -> runtime_collab::TaskRunEnvelope {
         runtime_collab::TaskRunEnvelope {
+            paused: None,
             version: 1,
             task_id: "task:review".into(),
             title: "Review draft".into(),
