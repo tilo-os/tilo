@@ -23,6 +23,9 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
+registry-types = { path = "../../packaging/registry-types" }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
 capnp-rpc.workspace = true
 # The broker thread is a panic boundary the session restarts.
 tilo-rt.workspace = true

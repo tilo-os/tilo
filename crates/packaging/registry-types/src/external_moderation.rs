@@ -75,7 +75,7 @@ impl ExternalModerationOperation {
         digest(&self.destination.owner_pubkey_hex)?;
         identifier(&self.request_id)?;
         if self.expires_at_unix <= self.issued_at_unix
-            || self.expires_at_unix - self.issued_at_unix > 86_400
+            || self.expires_at_unix.saturating_sub(self.issued_at_unix) > 86_400
         {
             return Err("validity must be positive and at most one day".into());
         }

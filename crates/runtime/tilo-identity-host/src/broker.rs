@@ -16,7 +16,9 @@ use collab_types::caps::Principal;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
-use tilo_action_policy::{ActionKind, Answer, Subject, TreePath};
+#[cfg(test)]
+use tilo_action_policy::Subject;
+use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 

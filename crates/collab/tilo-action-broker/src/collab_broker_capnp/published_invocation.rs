@@ -820,6 +820,87 @@ impl OriginalInvocation {
         Ok(())
     }
 
+    pub(super) fn for_external_moderation(
+        channel: &super::CapnpChannelHandle,
+        request: &runtime_collab::external_moderation::Request,
+    ) -> Result<Arc<Self>, String> {
+        request.validate()?;
+        let route = channel.route();
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)
+            .map_err(|error| error.to_string())?;
+        let data = {
+            let pending = channel
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut matches = pending.values().filter(|pending| {
+                pending.peer_id == channel.peer_id
+                    && pending.update.invocation().0.to_string() == request.invocation
+            });
+            let selected = matches
+                .next()
+                .ok_or("external moderation has no retained target invocation")?;
+            if matches.next().is_some() {
+                return Err("ambiguous external moderation invocation identity".into());
+            }
+            selected
+                .original
+                .clone()
+                .ok_or("original invocation authority unavailable")?
+        };
+        if route.app_id != "so.tilo.store"
+            || data.route != route
+            || data.spec.kind != tilo_actions::OperationKind::Effect
+            || data.spec.contract.kind != tilo_actions::ActionKind::Outside
+        {
+            return Err("external moderation target action or contract mismatch".into());
+        }
+        let argument = data
+            .request
+            .argument
+            .as_deref()
+            .ok_or("external moderation arguments absent")?;
+        runtime_collab::external_moderation::validate_action(
+            &data.request.address.action,
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+            &request.operation,
+        )?;
+        let worker = if let Some(worker) = admitted.worker_registration.clone() {
+            TargetCustody::Registered(Box::new(worker))
+        } else {
+            let connection = channel
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.as_ref())
+                .filter(|connection| connection.current())
+                .cloned()
+                .ok_or("native target process custody unavailable")?;
+            admitted
+                .certificate
+                .as_ref()
+                .ok_or("native target certificate unavailable")?;
+            TargetCustody::Native {
+                connection,
+                admitted: Box::new(admitted),
+            }
+        };
+        let original = Arc::new(Self {
+            broker: Arc::downgrade(&channel.state),
+            peer: channel.peer_id,
+            worker,
+            data,
+        });
+        original.check_execution_frontier(&channel.state)?;
+        original.check_resource_publication(&channel.state)?;
+        original.check_lifecycle()?;
+        Ok(original)
+    }
+
     pub(super) fn for_approved_check(
         channel: &super::CapnpChannelHandle,
         request: &runtime_collab::approved_checks::Request,
