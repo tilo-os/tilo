@@ -848,6 +848,14 @@ fn run_parsed(
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();
+    // The font database is built on its own thread, so the app's first text
+    // renderer finds the catalog verified and the fonts read. It starts
+    // first: the renderer preparation below also opens the early window on
+    // this thread and waits there for the compositor's first configure,
+    // and nothing in the font database waits for either.
+    if opens_native_window(&args) {
+        prepare_font_database_beside();
+    }
     // A window's GPU device and vello's pipelines are prepared on their own
     // thread while the app constructs, so its first redraw takes them ready
     // instead of starting them after the compositor's first configure. Never
@@ -858,11 +866,6 @@ fn run_parsed(
     } else {
         None
     };
-    // The font database likewise, so the app's first text renderer finds
-    // the catalog verified and the fonts read.
-    if opens_native_window(&args) {
-        prepare_font_database_beside();
-    }
     match dispatch_definition(spec, &args)? {
         DefinitionDispatch::Native(app) => {
             #[cfg(any(windows, target_os = "linux"))]

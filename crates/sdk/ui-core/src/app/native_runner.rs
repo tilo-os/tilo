@@ -1357,33 +1357,48 @@ fn create_window_render_prepared(
 }
 
 fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
-    let device = &device_handle.device;
-    // Vello's default heuristic uses every available core minus two. On a
-    // 16-thread laptop that means fourteen simultaneous Vulkan pipeline
-    // compilations for each freshly opened app, competing with the compositor
-    // and making the whole desktop appear frozen. Two workers keep startup
-    // parallel without turning one window into a system-wide CPU burst.
-    let shader_threads = std::env::var("TILO_VELLO_INIT_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .and_then(std::num::NonZeroUsize::new)
-        .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
-    tilo_startup_metrics::mark("window-vello-init-start");
-    // This app's own pipelines from its last launch, else the session's.
-    let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
-    // The first frame waits for this. Build only what it dispatches; the
-    // render worker starts the rest once that frame is presented. On a
-    // software adapter the worker rasterizes frames on the CPU and vello draws
-    // only backdrop blurs, so none of its pipelines are on the way there.
-    let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
-    let deferral = if software {
-        vello::PipelineDeferral::All
-    } else {
-        vello::PipelineDeferral::Unused
-    };
-    let mut renderer = Renderer::new_deferring(
-        device,
-        RendererOptions {
+    let plan = NativeRendererPlan::for_device(device_handle);
+    let renderer = plan.build(&device_handle.device)?;
+    Ok(plan.finish(device_handle, renderer))
+}
+
+/// What building vello's renderer for a device takes, decided on the thread
+/// that owns the device's handle; [`Self::build`], the compile, needs only
+/// the device itself, so it can run on another thread
+/// (`startup::renderer_beside_surface`).
+pub(super) struct NativeRendererPlan {
+    options: RendererOptions,
+    deferral: vello::PipelineDeferral,
+    pipelines: Option<crate::pipeline_cache::AppPipelineCache>,
+    software: bool,
+}
+
+impl NativeRendererPlan {
+    pub(super) fn for_device(device_handle: &crate::gpu::DeviceHandle) -> Self {
+        // Vello's default heuristic uses every available core minus two. On a
+        // 16-thread laptop that means fourteen simultaneous Vulkan pipeline
+        // compilations for each freshly opened app, competing with the compositor
+        // and making the whole desktop appear frozen. Two workers keep startup
+        // parallel without turning one window into a system-wide CPU burst.
+        let shader_threads = std::env::var("TILO_VELLO_INIT_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(std::num::NonZeroUsize::new)
+            .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
+        tilo_startup_metrics::mark("window-vello-init-start");
+        // This app's own pipelines from its last launch, else the session's.
+        let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
+        // The first frame waits for this. Build only what it dispatches; the
+        // render worker starts the rest once that frame is presented. On a
+        // software adapter the worker rasterizes frames on the CPU and vello draws
+        // only backdrop blurs, so none of its pipelines are on the way there.
+        let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
+        let deferral = if software {
+            vello::PipelineDeferral::All
+        } else {
+            vello::PipelineDeferral::Unused
+        };
+        let options = RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
             // faster on a device; the default remains the GPU pipeline.
@@ -1399,29 +1414,57 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             pipeline_cache: pipelines
                 .as_ref()
                 .map(|pipelines| pipelines.cache().clone()),
-        },
-        deferral,
-    )
-    .map_err(|e| format!("could not create the renderer: {e}"))?;
-    tilo_startup_metrics::mark("window-vello-init-done");
-    // Kept once the deferred pipelines are built too.
-    if let Some(pipelines) = pipelines {
-        pipelines.keep_until_built();
+        };
+        Self {
+            options,
+            deferral,
+            pipelines,
+            software,
+        }
     }
-    // A frame that draws a backdrop blur renders with vello even on a
-    // software adapter. When this app's first frame did last time, build at
-    // once, on the init threads and default-path pipelines first, so that
-    // frame waits on a build well under way instead of compiling each
-    // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
-    // nothing, so its app constructs without LLVM compiling beside it; its
-    // render worker starts the build with the first frame that draws a
-    // backdrop, or after the first present.
-    if software && crate::pipeline_cache::first_frame_backdrop::expected() {
-        renderer.start_deferred_pipelines(device, crate::pipeline_cache::persist_unsaved);
+
+    /// Compile the renderer's pipelines on `device`: the slow part.
+    pub(super) fn build(&self, device: &vello::wgpu::Device) -> Result<Renderer, String> {
+        let options = RendererOptions {
+            use_cpu: self.options.use_cpu,
+            antialiasing_support: self.options.antialiasing_support,
+            num_init_threads: self.options.num_init_threads,
+            pipeline_cache: self.options.pipeline_cache.clone(),
+        };
+        let renderer = Renderer::new_deferring(device, options, self.deferral)
+            .map_err(|e| format!("could not create the renderer: {e}"))?;
+        tilo_startup_metrics::mark("window-vello-init-done");
+        Ok(renderer)
     }
-    #[cfg(all(windows, feature = "dx12-shader-cache"))]
-    device_handle.finish_shader_cache();
-    Ok(renderer)
+
+    /// Keep what the build used, on the thread that owns the device's handle.
+    pub(super) fn finish(
+        self,
+        device_handle: &crate::gpu::DeviceHandle,
+        mut renderer: Renderer,
+    ) -> Renderer {
+        // Kept once the deferred pipelines are built too.
+        if let Some(pipelines) = self.pipelines {
+            pipelines.keep_until_built();
+        }
+        // A frame that draws a backdrop blur renders with vello even on a
+        // software adapter. When this app's first frame did last time, build at
+        // once, on the init threads and default-path pipelines first, so that
+        // frame waits on a build well under way instead of compiling each
+        // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
+        // nothing, so its app constructs without LLVM compiling beside it; its
+        // render worker starts the build with the first frame that draws a
+        // backdrop, or after the first present.
+        if self.software && crate::pipeline_cache::first_frame_backdrop::expected() {
+            renderer.start_deferred_pipelines(
+                &device_handle.device,
+                crate::pipeline_cache::persist_unsaved,
+            );
+        }
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
+        device_handle.finish_shader_cache();
+        renderer
+    }
 }
 
 #[allow(
