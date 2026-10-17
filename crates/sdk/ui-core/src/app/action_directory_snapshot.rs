@@ -77,6 +77,65 @@ pub(super) struct ActionDirectorySnapshot {
     pub actions: HashMap<ActionAddress, ActionDirectoryRow>,
 }
 
+/// A pre-event inert directory retained only for local mutation admission.
+/// Dropping the last owner makes the revision unavailable to the local RPC.
+pub(super) struct LocalDocumentDirectoryPin {
+    revision: String,
+    snapshot: std::rc::Rc<ActionDirectorySnapshot>,
+}
+
+impl App {
+    pub(super) fn pin_local_document_action_directory(
+        &mut self,
+        revision: &str,
+    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+        if revision.is_empty() || self.try_action_directory_revision().ok()? != revision {
+            return None;
+        }
+        let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
+        let pins = &mut self.actions.local_document_directory_pins;
+        pins.retain(|pin| pin.strong_count() > 0);
+        // Never evict an in-flight report to admit another one.
+        if pins.len() >= 64 {
+            return None;
+        }
+        let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
+            revision: revision.to_owned(),
+            snapshot,
+        });
+        pins.push(std::rc::Rc::downgrade(&pin));
+        Some(pin)
+    }
+
+    pub(super) fn resolve_local_document_action_directory(
+        &self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        let Some(pin) = self
+            .actions
+            .local_document_directory_pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|pin| pin.revision == revision)
+        else {
+            return runtime_collab::ActionDirectoryResolution::StaleRevision;
+        };
+        // No live provider fallback: only rows actually frozen before input
+        // may explain an already-applied mutation.
+        pin.snapshot
+            .actions
+            .get(&ActionAddress::new(resource, action))
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
+                runtime_collab::ActionDirectoryResolution::Found {
+                    row: Box::new(row.clone()),
+                    revision: Some(pin.revision.clone()),
+                }
+            })
+    }
+}
+
 struct Builder<'a, F> {
     effective: effective::Builder,
     snapshot: ActionDirectorySnapshot,

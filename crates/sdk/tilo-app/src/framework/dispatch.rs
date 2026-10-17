@@ -1094,6 +1094,7 @@ impl<R: Resource> Dispatcher<R> {
         if invoke.is_group() {
             return self.group_now(edits, &invoke);
         }
+        let _capture = self.capture_invocation(&invoke);
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
@@ -1150,6 +1151,8 @@ impl<R: Resource> Dispatcher<R> {
     /// applied as one action, one change and one entry in history, all or
     /// nothing.
     fn group_now(&self, edits: &mut Edits<'_>, invoke: &Invoke<R>) -> Result<(), ActionError> {
+        let _nonlocal = self.capture_nonlocal();
+        let _capture = self.capture_invocation(invoke);
         let Some(group_now) = &self.group_now else {
             return Err(ActionError::Refused(
                 "this record's edits are applied one at a time".into(),
@@ -1217,6 +1220,7 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
     ) -> Result<(), ActionError> {
+        let _nonlocal = self.capture_nonlocal();
         self.core.applies_now()?;
         if !self.may_apply(action) {
             return Err(self.not_allowed(action));
@@ -1240,6 +1244,14 @@ impl<R: Resource> Dispatcher<R> {
                 .as_ref()
                 .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
         let context = self.core.step_context(context, step, continues);
+        let fallback = if ui_core::local_document_action::has_invocation() {
+            None
+        } else {
+            Some(Invoke::<R>::apply(action).map_err(ActionError::Encode)?)
+        };
+        let _capture = fallback
+            .as_ref()
+            .and_then(|invoke| self.capture_invocation(invoke));
         (self.submit_now)(&mut self.core.host.borrow_mut(), edits, action, context)?;
         if !step {
             return Ok(());
@@ -1331,6 +1343,30 @@ impl<R: Resource> Dispatcher<R> {
             }),
             last: Rc::default(),
         }
+    }
+
+    fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {
+        (self.core.custody.is_some() || super::effect::acting_for().is_some())
+            .then(ui_core::local_document_action::suspend)
+    }
+
+    fn capture_invocation(
+        &self,
+        invoke: &Invoke<R>,
+    ) -> Option<ui_core::local_document_action::InvocationScope> {
+        if self.core.custody.is_some()
+            || super::effect::acting_for().is_some()
+            || ui_core::local_document_action::has_invocation()
+        {
+            return None;
+        }
+        Some(ui_core::local_document_action::with_invocation(
+            ui_core::local_document_action::PublishedInvocation {
+                resource: self.core.resource_id.to_string(),
+                action: invoke.id.to_owned(),
+                arguments: invoke.arguments.clone(),
+            },
+        ))
     }
 
     /// End the gesture the last immediate actions belonged to: the pointer

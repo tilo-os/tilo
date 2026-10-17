@@ -1050,6 +1050,18 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
+        let capture = self.begin_local_input_capture();
+        let result = self.dispatch_local_a11y_action(target, action);
+        drop(capture);
+        self.drain_local_input_capture();
+        result
+    }
+
+    fn dispatch_local_a11y_action(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
         use crate::accesskit_bridge::A11yTarget;
 

@@ -123,6 +123,7 @@ pub(super) fn decode_routed_mutation(
 }
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
+        let _background = crate::local_document_action::suspend();
         // Document traffic enters only the exact custody-checked merge door.
         // A mutable widget callback is not a read-only notification boundary.
         if !matches!(
@@ -160,24 +161,29 @@ impl App {
     /// it is working offline.
     pub fn document_sync_status(&self) -> Option<std::borrow::Cow<'_, str>> {
         use std::borrow::Cow;
-        let reported = self.action_publication_failure.as_deref().or(self
-            .document_routes
-            .status
+        let reported = self
+            .local_input_capture
+            .failure
             .as_deref()
-            .or(self.document_routes.primary.failure.as_deref())
-            .or(self.document_routes.outbound.as_deref())
-            .or_else(|| {
-                self.document_routes
-                    .owners
-                    .iter()
-                    .find_map(|entry| entry.pending.failure.as_deref())
-            })
-            .or_else(|| {
-                self.document_routes
-                    .owners
-                    .iter()
-                    .find_map(|entry| entry.outbound_failure.as_deref())
-            }));
+            .or(self.action_publication_failure.as_deref())
+            .or(self
+                .document_routes
+                .status
+                .as_deref()
+                .or(self.document_routes.primary.failure.as_deref())
+                .or(self.document_routes.outbound.as_deref())
+                .or_else(|| {
+                    self.document_routes
+                        .owners
+                        .iter()
+                        .find_map(|entry| entry.pending.failure.as_deref())
+                })
+                .or_else(|| {
+                    self.document_routes
+                        .owners
+                        .iter()
+                        .find_map(|entry| entry.outbound_failure.as_deref())
+                }));
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }

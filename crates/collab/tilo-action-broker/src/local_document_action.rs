@@ -10,7 +10,7 @@ const MAX_HASHES: usize = 256;
 /// The authenticated channel supplies the original actor, app and record.
 /// Encoded input, context, hashes and grouping are the application's report,
 /// not verified execution. Context never supplies the authenticated actor.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub version: u8,
@@ -28,6 +28,14 @@ pub struct Request {
     pub original_heads: Vec<[u8; 32]>,
     pub mutation_hashes: Vec<[u8; 32]>,
     pub group: Option<tilo_actions::ActionGroup>,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalDocumentActionRequest")
+            .field("invocation", &self.invocation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Request {
