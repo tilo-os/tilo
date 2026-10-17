@@ -1710,6 +1710,32 @@ impl NotificationCenter {
         out
     }
 
+    /// What the centre says about itself: why nothing pops up (the
+    /// header's quiet status line, read first), then which rows show.
+    fn description(
+        host: &dyn NotificationHost,
+        start: usize,
+        shown: usize,
+        total: usize,
+    ) -> String {
+        let rows = if total == 0 {
+            t("a11y-notifications-none")
+        } else {
+            t_args(
+                "a11y-notifications-description",
+                &[
+                    ("first", start.saturating_add(1).into()),
+                    ("last", start.saturating_add(shown).into()),
+                    ("total", total.into()),
+                ],
+            )
+        };
+        match host.quiet_status() {
+            Some(status) => format!("{status}. {rows}"),
+            None => rows,
+        }
+    }
+
     /// The centre as one modal dialog: the row list, Clear all, and while
     /// it can still be undone, the cleared status and Undo. `now` is one
     /// clock edge for every row, so adjacent rows cannot label their ages
@@ -1727,23 +1753,7 @@ impl NotificationCenter {
         }
         let (rows, _, start, shown) = self.window(host, layout);
         let total = rows.len();
-        let description = if total == 0 {
-            t("a11y-notifications-none")
-        } else {
-            t_args(
-                "a11y-notifications-description",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", total.into()),
-                ],
-            )
-        };
-        // The header's status line, read first: why nothing pops up.
-        let description = match host.quiet_status() {
-            Some(status) => format!("{status}. {description}"),
-            None => description,
-        };
+        let description = Self::description(host, start, shown, total);
         let history = AccessNode::new(Role::List)
             .with_name(t("a11y-notifications-list"))
             .with_children(self.accessibility_rows(host, layout, now));

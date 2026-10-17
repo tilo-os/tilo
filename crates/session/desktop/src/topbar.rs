@@ -621,6 +621,16 @@ enum FocusOrigin {
     Pointer,
 }
 
+/// The bell in the bar's status cluster.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TrayBell {
+    /// Unread notifications, counted beside the bell.
+    unread: u32,
+    /// Fresh banners are held (Do Not Disturb, presenting, a focus
+    /// schedule): the bell is silenced.
+    quiet: bool,
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -690,9 +700,9 @@ pub struct TopBarChrome {
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
     media_expanded: bool,
-    notification_badge: u32,
-    /// Fresh banners are held: the bell in the status cluster is silenced.
-    notifications_quiet: bool,
+    /// The bell in the status cluster: the unread count beside it, and
+    /// whether fresh banners are held (silenced).
+    bell: TrayBell,
     clock_overlay_pos: Option<Point>,
     clock_overlay_rect: Rect,
     clock_pause_rect: Rect,
@@ -1072,8 +1082,7 @@ impl TopBarChrome {
             media_signature: Vec::new(),
             media_started: None,
             media_expanded: false,
-            notification_badge: 0,
-            notifications_quiet: false,
+            bell: TrayBell::default(),
             clock_overlay_pos: None,
             clock_overlay_rect: Rect::ZERO,
             clock_pause_rect: Rect::ZERO,
@@ -1148,8 +1157,8 @@ impl TopBarChrome {
             status_key: self.status_key(),
             media_key: self.media_signature.clone(),
             media_expanded: self.media_expanded,
-            notification_badge: self.notification_badge,
-            notifications_quiet: self.notifications_quiet,
+            notification_badge: self.bell.unread,
+            notifications_quiet: self.bell.quiet,
             workspace_lens_open: self
                 .chrome
                 .as_ref()
@@ -3367,8 +3376,8 @@ impl TopBarChrome {
         let pct_style = tokens.typography.style(TextRole::Caption);
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
-        let badge_w = if self.notification_badge > 0 {
-            let label = Self::notification_badge_label(self.notification_badge);
+        let badge_w = if self.bell.unread > 0 {
+            let label = Self::notification_badge_label(self.bell.unread);
             let (w, h) = text_renderer.measure_style(&label, None, &pct_style);
             Self::notification_badge_size(w, h, theme).0
         } else {
@@ -3395,7 +3404,7 @@ impl TopBarChrome {
         }
         // One bell slot: the unread count rides beside it, and quiet mode
         // silences it.
-        if self.notification_badge > 0 || self.notifications_quiet {
+        if self.bell.unread > 0 || self.bell.quiet {
             slots = slots.saturating_add(1);
         }
         let mut tray_w = if slots == 0 {
@@ -3410,7 +3419,7 @@ impl TopBarChrome {
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
         }
-        if self.notification_badge > 0 {
+        if self.bell.unread > 0 {
             // Bell plus a compact exact count (`99+` once the number no longer
             // fits); the base slot calculation already paid for the bell.
             tray_w += badge_w + tray_gap;
@@ -3495,14 +3504,14 @@ impl TopBarChrome {
         layout: &TrayLayout,
         sx: f64,
     ) -> f64 {
-        if self.notification_badge == 0 && !self.notifications_quiet {
+        if self.bell.unread == 0 && !self.bell.quiet {
             return sx;
         }
         ui::icons::draw_icon(
             scene,
             transform,
             layout.slot_rect(sx),
-            if self.notifications_quiet {
+            if self.bell.quiet {
                 ui::icons::Icon::BellOff
             } else {
                 ui::icons::Icon::Bell
@@ -3510,10 +3519,10 @@ impl TopBarChrome {
             layout.bright,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        if self.notification_badge == 0 {
+        if self.bell.unread == 0 {
             return sx + layout.tray_slot + layout.tray_gap;
         }
-        let label = Self::notification_badge_label(self.notification_badge);
+        let label = Self::notification_badge_label(self.bell.unread);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
         let label_style = &layout.pct_style;
@@ -4310,12 +4319,12 @@ impl TopBarChrome {
                 self.cache_fp = CacheFingerprint::default();
             }
         }
-        self.notification_badge = self
+        self.bell.unread = self
             .chrome
             .as_ref()
             .map_or(0, |chrome| chrome.snapshot().notification_badge);
         if let Some(chrome) = self.chrome.as_ref() {
-            self.notifications_quiet = chrome.snapshot().notifications_quiet;
+            self.bell.quiet = chrome.snapshot().notifications_quiet;
         }
         if let Some(chrome) = self.chrome.as_ref() {
             let glance = chrome.snapshot().activity_glance;
@@ -6578,7 +6587,7 @@ mod tests {
         });
         lay_out_and_draw(&mut bar, 1280.0);
         let loud = bar.tray_pill_rect;
-        bar.notifications_quiet = true;
+        bar.bell.quiet = true;
         lay_out_and_draw(&mut bar, 1280.0);
         let quiet = bar.tray_pill_rect;
         assert!(

@@ -822,10 +822,7 @@ mod tests {
                         path.display()
                     );
                     if state == "dnd" {
-                        assert!(
-                            stack.rect().is_zero_area(),
-                            "{name}: Do Not Disturb puts no card over the work"
-                        );
+                        assert!(stack.rect().is_zero_area(), "{name}: no quiet card");
                         continue;
                     }
                     // The rendered pixels, not just the file: the first surface
