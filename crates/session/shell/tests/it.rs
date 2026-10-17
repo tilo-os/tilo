@@ -91,6 +91,8 @@ mod e2e_shell_flows;
 mod emoji_picker_commit;
 #[path = "expand_fullscreen_visual.rs"]
 mod expand_fullscreen_visual;
+#[path = "feedback_entry_e2e.rs"]
+mod feedback_entry_e2e;
 #[path = "file_drop_routing.rs"]
 mod file_drop_routing;
 #[path = "flatpak_share_e2e.rs"]
