@@ -119,22 +119,35 @@ impl KeyRepeat {
         self.held = None;
     }
 
-    /// Return every repeat owed by `now`, capped so resuming from a debugger
-    /// cannot pour seconds of stale Backspaces into the active widget.
-    fn due(&mut self, now: std::time::Instant) -> Vec<xkb::Keycode> {
-        let Some(held) = self.held.as_mut() else {
-            return Vec::new();
-        };
-        let mut due = Vec::new();
-        while now >= held.next && due.len() < 8 {
-            due.push(held.keycode);
-            held.next = held.next.checked_add(held.interval).unwrap_or(now);
+    /// The repeat owed by `now`, if any: at most one per call. Repeats a
+    /// late loop missed are dropped, not replayed: a held Backspace after a
+    /// stall deletes one more character and then goes on at its rate from
+    /// now, instead of a burst of the characters the stall skipped (which is
+    /// what the person sees as the key overshooting).
+    fn due(&mut self, now: std::time::Instant) -> Option<xkb::Keycode> {
+        let held = self.held.as_mut()?;
+        if now < held.next {
+            return None;
         }
-        if due.len() == 8 && now >= held.next {
+        held.next = held.next.checked_add(held.interval).unwrap_or(now);
+        if held.next <= now {
             held.next = now.checked_add(held.interval).unwrap_or(now);
         }
-        due
+        Some(held.keycode)
     }
+}
+
+/// When a key went down, on the loop's clock: its libinput timestamp
+/// (`CLOCK_MONOTONIC`, which `Instant` reads too), or `now` for a key with
+/// none. A key the loop read late still repeats on the person's timeline:
+/// held past the delay by the time it is read, it repeats at once.
+fn key_down_at(input_time_ns: Option<u64>, now: std::time::Instant) -> std::time::Instant {
+    let Some(input_time_ns) = input_time_ns else {
+        return now;
+    };
+    let now_ns = crate::shell::network::fabric_monotonic_us().saturating_mul(1_000);
+    let age = std::time::Duration::from_nanos(now_ns.saturating_sub(input_time_ns));
+    now.checked_sub(age).unwrap_or(now)
 }
 
 /// Errors a DRM backend can encounter during construction — each variant maps to a clean operator-visible message; the binary `eprintln!`s + exits 1 instead of panicking.
@@ -2734,7 +2747,7 @@ impl DrmDispatchState {
             {
                 let (delay, rate) = self.input.key_repeat_params();
                 self.key_repeat
-                    .press(keycode, std::time::Instant::now(), delay, rate);
+                    .press(keycode, key_down_at(input_time_ns, now), delay, rate);
             }
         } else {
             self.key_repeat.release(keycode);
@@ -2797,7 +2810,7 @@ impl DrmDispatchState {
     }
 
     fn pump_keyboard_repeat(&mut self, now: std::time::Instant) {
-        for keycode in self.key_repeat.due(now) {
+        if let Some(keycode) = self.key_repeat.due(now) {
             let input = self
                 .keyboard
                 .as_ref()
@@ -8348,27 +8361,64 @@ pub(super) mod tests {
             assert!(
                 repeat
                     .due(start + std::time::Duration::from_millis(299))
-                    .is_empty()
+                    .is_none()
             );
             assert_eq!(
                 repeat.due(start + std::time::Duration::from_millis(300)),
-                [key]
+                Some(key)
             );
             assert_eq!(
                 repeat.next_deadline(),
                 Some(start + std::time::Duration::from_millis(350))
             );
             assert_eq!(
-                repeat.due(start + std::time::Duration::from_millis(401)),
-                [key, key]
+                repeat.due(start + std::time::Duration::from_millis(351)),
+                Some(key)
+            );
+            assert_eq!(
+                repeat.next_deadline(),
+                Some(start + std::time::Duration::from_millis(400)),
+                "on time, the rate keeps its own grid"
             );
             repeat.release(key);
             assert_eq!(repeat.next_deadline(), None);
             assert!(
                 repeat
                     .due(start + std::time::Duration::from_secs(1))
-                    .is_empty()
+                    .is_none()
             );
+        }
+        // Phase `a_stalled_loop_gets_one_repeat_not_a_burst`.
+        {
+            let start = std::time::Instant::now();
+            let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
+            let mut repeat = KeyRepeat::default();
+            repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+            // The loop stalls for half a second past the delay: ten repeats
+            // fell due meanwhile. One is delivered, the rest are dropped, and
+            // the next comes one interval after the loop is back.
+            let back = start + std::time::Duration::from_millis(800);
+            assert_eq!(repeat.due(back), Some(key));
+            assert_eq!(repeat.due(back), None, "no burst of missed repeats");
+            assert_eq!(
+                repeat.next_deadline(),
+                Some(back + std::time::Duration::from_millis(50))
+            );
+        }
+        // Phase `a_key_read_late_repeats_from_when_it_went_down`.
+        {
+            let now = std::time::Instant::now();
+            let went_down_ns = crate::shell::network::fabric_monotonic_us()
+                .saturating_mul(1_000)
+                .saturating_sub(200_000_000);
+            let at = key_down_at(Some(went_down_ns), now);
+            let age = now.saturating_duration_since(at);
+            assert!(
+                age >= std::time::Duration::from_millis(199)
+                    && age <= std::time::Duration::from_millis(250),
+                "a key read 200 ms late counts its delay from the press, not the read ({age:?})"
+            );
+            assert_eq!(key_down_at(None, now), now);
         }
         // Phase `key_repeat_rate_zero_is_disabled_and_transient_loss_cancels`.
         {
@@ -8380,17 +8430,17 @@ pub(super) mod tests {
             assert!(
                 repeat
                     .due(start + std::time::Duration::from_secs(2))
-                    .is_empty(),
+                    .is_none(),
                 "rate 0 is the protocol-level disabled value, not a 1 Hz repeat"
             );
 
             repeat.press(key, start, std::time::Duration::ZERO, 30);
-            assert_eq!(repeat.due(start), [key]);
+            assert_eq!(repeat.due(start), Some(key));
             repeat.cancel();
             assert!(
                 repeat
                     .due(start + std::time::Duration::from_secs(2))
-                    .is_empty(),
+                    .is_none(),
                 "seat/device loss must retire a held destructive key"
             );
         }
@@ -8436,7 +8486,7 @@ pub(super) mod tests {
                 state
                     .key_repeat
                     .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
-                    .is_empty(),
+                    .is_none(),
                 "a Backspace held across sleep must not repeat after resume"
             );
 
