@@ -440,6 +440,7 @@ fn clipboard_bridge_pastes_exact_tickets_and_observes_retry_without_duplicate_co
             offer: offer.id,
             destination,
             operation: operation.clone(),
+            conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
         };
         assert!(matches!(
             b.command(paste.clone()).await,
@@ -522,6 +523,7 @@ fn clipboard_bridge_refuses_replaced_destination_before_capture_and_paste() {
                 offer,
                 destination,
                 operation: uuid::Uuid::new_v4().to_string(),
+                conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
             })
             .await
             .expect_err("replacement after Capture refuses");
@@ -587,6 +589,7 @@ fn clipboard_bridge_expired_ticket_and_closed_source_cannot_publish_or_paste() {
                 offer,
                 destination,
                 operation: uuid::Uuid::new_v4().to_string(),
+                conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
             })
             .await
             .expect_err("closed source cannot paste");
@@ -617,7 +620,8 @@ fn clipboard_bridge_cut_restores_exact_receipt_under_current_undo_authority() {
             b.command(Command::Paste {
                 offer,
                 destination,
-                operation: operation.clone()
+                operation: operation.clone(),
+                conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
             })
             .await,
             Ok(Reply::Running { .. })
@@ -853,6 +857,7 @@ fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_s
                 offer,
                 destination,
                 operation: operation.clone(),
+                conflict: runtime_collab::file_clipboard::Conflict::KeepBoth,
             })
             .await
             .unwrap();
@@ -873,4 +878,194 @@ fn clipboard_bridge_local_home_consent_refuses_foreign_person_without_blocking_s
         fs::read(receiving.join("shared.txt")).unwrap(),
         b"explicitly shared bytes"
     );
+}
+
+/// Capture `names` of `folder` by name, `chunk` entries per command.
+#[expect(
+    clippy::future_not_send,
+    reason = "Cap'n Proto runs on this test's LocalSet"
+)]
+async fn capture_named(
+    a: &Connection,
+    folder: &Path,
+    names: &[String],
+    chunk: usize,
+) -> Vec<String> {
+    use runtime_collab::file_clipboard::NamedEntry;
+    let (_folder, descriptor) = selected(folder);
+    let entries: Vec<NamedEntry> = names
+        .iter()
+        .map(|name| {
+            let metadata = fs::symlink_metadata(folder.join(name)).expect("shown entry");
+            NamedEntry {
+                name: name.as_bytes().to_vec(),
+                expected: ObjectIdentity {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                },
+            }
+        })
+        .collect();
+    let mut tickets = Vec::new();
+    for entries in entries.chunks(chunk) {
+        let Reply::CapturedNamed { ticket, count } = a
+            .command(Command::CaptureNamed {
+                folder: descriptor.clone(),
+                entries: entries.to_vec(),
+            })
+            .await
+            .expect("capture by name")
+        else {
+            panic!("named ticket");
+        };
+        assert_eq!(count, entries.len());
+        tickets.push(ticket);
+    }
+    tickets
+}
+
+/// Paste `offer` into `dest` with `conflict`: the operation and the answer.
+#[expect(
+    clippy::future_not_send,
+    reason = "Cap'n Proto runs on this test's LocalSet"
+)]
+async fn paste_into(
+    a: &Connection,
+    offer: &str,
+    dest: &Path,
+    conflict: runtime_collab::file_clipboard::Conflict,
+) -> (String, Reply) {
+    let (_held, descriptor) = selected(dest);
+    let Reply::Captured {
+        destination: Some(destination),
+        ..
+    } = a
+        .command(Command::Capture {
+            sources: vec![],
+            destination: Some(descriptor),
+        })
+        .await
+        .expect("destination ticket")
+    else {
+        panic!("destination");
+    };
+    let operation = uuid::Uuid::new_v4().to_string();
+    let reply = a
+        .command(Command::Paste {
+            offer: offer.into(),
+            destination,
+            operation: operation.clone(),
+            conflict,
+        })
+        .await
+        .expect("paste answer");
+    (operation, reply)
+}
+
+/// A folder's entries captured by name: hundreds of them cost the host one
+/// descriptor for the folder, a paste into a folder that has some of the
+/// names asks first, Replace sends the existing item to Trash, and Undo
+/// puts it back; Skip leaves it.
+#[test]
+fn clipboard_bridge_copies_a_large_named_selection_and_settles_clashes() {
+    use runtime_collab::file_clipboard::Conflict;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tokio::task::LocalSet::new().block_on(&runtime, async {
+        let fixture = Fixture::new();
+        let a = fixture.connect("window-a").await;
+        let many = fixture.directory.path().join("many");
+        fs::create_dir(&many).expect("source folder");
+        let names: Vec<String> = (0..300).map(|i| format!("f{i:03}.txt")).collect();
+        for name in &names {
+            fs::write(many.join(name), b"new").expect("source entry");
+        }
+        let tickets = capture_named(&a, &many, &names, 150).await;
+        let reserved = fixture
+            .clipboard
+            .state
+            .lock()
+            .unwrap()
+            .reserved_descriptors();
+        assert!(reserved < 16, "300 entries hold {reserved} descriptors");
+        let Reply::Published { offer } = a
+            .command(Command::Publish {
+                sources: tickets,
+                cut: false,
+            })
+            .await
+            .expect("publish the named entries")
+        else {
+            panic!("offer");
+        };
+        assert_eq!(offer.count, 300);
+
+        let dest = fixture.directory.path().join("dest");
+        fs::create_dir(&dest).expect("destination");
+        fs::write(dest.join("f000.txt"), b"old").expect("clashing item");
+        let (_, asked) = paste_into(&a, &offer.id, &dest, Conflict::Ask).await;
+        assert_eq!(
+            asked,
+            Reply::Conflicts {
+                names: vec!["f000.txt".into()],
+                count: 1
+            }
+        );
+        assert_eq!(
+            fs::read_dir(&dest).unwrap().count(),
+            1,
+            "nothing pasted yet"
+        );
+
+        let (operation, running) = paste_into(&a, &offer.id, &dest, Conflict::Replace).await;
+        assert!(matches!(running, Reply::Running { .. }), "{running:?}");
+        assert!(matches!(
+            a.settled(&operation).await,
+            Reply::Settled {
+                completed: 300,
+                error: None,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(dest.join("f000.txt")).unwrap(), b"new");
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 300, "no “f000 2.txt”");
+        let undone = a
+            .compensate(Command::Undo { operation })
+            .await
+            .expect("undo receipt");
+        assert!(
+            matches!(
+                undone,
+                Reply::Settled {
+                    error: None,
+                    undone: true,
+                    ..
+                }
+            ),
+            "{undone:?}"
+        );
+        assert_eq!(
+            fs::read(dest.join("f000.txt")).unwrap(),
+            b"old",
+            "the replaced item is back"
+        );
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
+
+        let skipped = fixture.directory.path().join("skipped");
+        fs::create_dir(&skipped).expect("second destination");
+        fs::write(skipped.join("f001.txt"), b"keep").expect("clashing item");
+        let (operation, _) = paste_into(&a, &offer.id, &skipped, Conflict::Skip).await;
+        assert!(matches!(
+            a.settled(&operation).await,
+            Reply::Settled {
+                completed: 299,
+                error: None,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(skipped.join("f001.txt")).unwrap(), b"keep");
+        assert_eq!(fs::read_dir(&skipped).unwrap().count(), 300);
+    });
 }

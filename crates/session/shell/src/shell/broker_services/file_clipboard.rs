@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use super::super::nearby_transfer::{SecureNearbyDestination, SecureNearbySource};
 use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
-use runtime_collab::file_clipboard::{Command, Offer as Offered, Reply, SelectedDescriptor};
+use runtime_collab::file_clipboard::{
+    Command, Conflict, Offer as Offered, Reply, SelectedDescriptor,
+};
 use tilo_action_broker::services::{FileClipboardContext, FileClipboardServices};
 use tilo_actions::ActionKind as Permission;
 use tilo_lock::MutexRecover as _;
@@ -24,6 +26,25 @@ const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_OPERATIONS: usize = 256;
 const MAX_WORKERS: usize = 4;
 const MAX_RETAINED_DESCRIPTORS: usize = 4096;
+/// The most clashing names a [`Reply::Conflicts`] lists (it also counts).
+const MAX_CONFLICT_NAMES: usize = 8;
+
+/// The names of `offer`'s entries still to paste that `destination` already
+/// has, in offer order.
+fn clashing_names(offer: &Offer, destination: &Destination) -> Result<Vec<String>, String> {
+    let consumed = offer
+        .consumed
+        .lock()
+        .map_err(|_| "clipboard consumption receipt unavailable")?
+        .clone();
+    Ok(offer
+        .entries
+        .iter()
+        .zip(consumed)
+        .filter(|(source, consumed)| !consumed && destination.directory.entry(&source.name).is_ok())
+        .map(|(source, _)| source.name.to_string_lossy().into_owned())
+        .collect())
+}
 
 mod journal;
 mod restore;
@@ -147,11 +168,20 @@ fn current_files_grant(
     current
 }
 
+/// How a captured entry is held. A single selected object keeps its own
+/// descriptor; the entries of a folder captured by name share the folder's
+/// descriptor and are pinned by a seal (identity, birth or change time), so
+/// thousands of them cost the host no descriptor each.
+enum Pin {
+    Held(Arc<File>),
+    Sealed(journal::Seal),
+}
+
 struct Source {
-    grant: Grant,
+    grant: Arc<Grant>,
     path: PathBuf,
     parent: Arc<SecureNearbyDestination>,
-    entry: Arc<File>,
+    pin: Pin,
     identity: Identity,
     name: OsString,
     link: Option<PathBuf>,
@@ -190,15 +220,67 @@ impl Source {
             None
         };
         Ok(Self {
-            grant,
+            grant: Arc::new(grant),
             path,
             parent: Arc::new(parent),
-            entry: Arc::new(entry),
+            pin: Pin::Held(Arc::new(entry)),
             identity,
             name,
             link,
         })
     }
+
+    /// The entry `name` of a folder already held (its grant and descriptor
+    /// shared with the folder's other captured entries), pinned by its seal.
+    fn open_named(
+        grant: &Arc<Grant>,
+        parent: &Arc<SecureNearbyDestination>,
+        folder: &Path,
+        name: OsString,
+    ) -> Result<Self, String> {
+        let entry = parent.entry(&name)?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() && !metadata.is_dir() && !metadata.file_type().is_symlink() {
+            return Err("source is not a file, folder or symbolic link".into());
+        }
+        let link = if metadata.file_type().is_symlink() {
+            Some(read_link(&entry)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            grant: grant.clone(),
+            path: folder.join(&name),
+            parent: parent.clone(),
+            pin: Pin::Sealed(journal::Seal::of(&metadata)),
+            identity: Identity::of(&metadata),
+            name,
+            link,
+        })
+    }
+
+    /// The captured entry itself: its held descriptor, or the folder's entry
+    /// of that name when it is still the very object that was captured.
+    fn entry(&self) -> Result<Arc<File>, String> {
+        match &self.pin {
+            Pin::Held(entry) => Ok(entry.clone()),
+            Pin::Sealed(seal) => {
+                let entry = self.parent.entry(&self.name)?;
+                let metadata = entry.metadata().map_err(|error| error.to_string())?;
+                if !seal.matches(&metadata) || Identity::of(&metadata) != self.identity {
+                    return Err("selected source was replaced or moved".into());
+                }
+                Ok(Arc::new(entry))
+            }
+        }
+    }
+
+    /// The descriptors this entry keeps open by itself (shared folder and
+    /// grant descriptors are counted once per folder).
+    fn own_descriptors(&self) -> usize {
+        usize::from(matches!(self.pin, Pin::Held(_)))
+    }
+
     fn anchored(&self) -> PathBuf {
         self.parent.anchored_root().join(&self.name)
     }
@@ -228,7 +310,12 @@ impl Source {
         owner: &str,
     ) -> Result<(), String> {
         self.check_parent(tree, workspace, owner)?;
-        if Identity::of(&self.entry.metadata().map_err(|error| error.to_string())?) != self.identity
+        if Identity::of(
+            &self
+                .entry()?
+                .metadata()
+                .map_err(|error| error.to_string())?,
+        ) != self.identity
         {
             return Err("retained source identity changed".into());
         }
@@ -358,11 +445,16 @@ impl Offer {
     }
 }
 
+/// What one pasted entry became. It is pinned by its seal, not a held
+/// descriptor, so a large paste keeps no descriptor per entry for its undo.
 struct Record {
     source: Arc<Source>,
     destination: PathBuf,
-    entry: Arc<File>,
+    seal: journal::Seal,
     identity: Identity,
+    /// The item of the same name this paste replaced, in Trash, to put back
+    /// when the paste is undone.
+    replaced: Option<PathBuf>,
     undone: bool,
 }
 struct Operation {
@@ -379,10 +471,54 @@ struct Operation {
     receipt: std::sync::OnceLock<Arc<journal::PendingReceipt>>,
     destination_name: Option<OsString>,
     restore_info: Option<restore::Info>,
+    /// What to do about names the destination already has.
+    conflict: Conflict,
 }
 enum SelectedObject {
     Source(Arc<Source>),
+    /// The entries of one folder captured by name: one ticket for all.
+    Sources(Vec<Arc<Source>>),
     Destination(Arc<Destination>),
+}
+
+/// What a paste does about one entry's name.
+enum Room {
+    /// The name is taken and the person chose Skip.
+    Skip,
+    /// Paste it; the item it replaces went to Trash at this path.
+    Paste(Option<PathBuf>),
+}
+
+/// Writable grants and folders opened for Cut, one per source folder.
+type WritableFolders = HashMap<PathBuf, (Arc<Grant>, Arc<SecureNearbyDestination>)>;
+
+/// The descriptors `sources` keep open: each held entry, and each shared
+/// grant and folder once. `seen` carries what was already counted.
+fn source_descriptors<'a>(
+    sources: impl IntoIterator<Item = &'a Arc<Source>>,
+    seen: &mut HashSet<usize>,
+) -> usize {
+    sources
+        .into_iter()
+        .map(|source| {
+            let grant = usize::from(seen.insert(Arc::as_ptr(&source.grant) as usize));
+            let parent = usize::from(seen.insert(Arc::as_ptr(&source.parent) as usize));
+            source
+                .own_descriptors()
+                .saturating_add(grant)
+                .saturating_add(parent)
+        })
+        .sum()
+}
+
+impl SelectedObject {
+    fn descriptors(&self, seen: &mut HashSet<usize>) -> usize {
+        match self {
+            Self::Source(source) => source_descriptors([source], seen),
+            Self::Sources(sources) => source_descriptors(sources, seen),
+            Self::Destination(_) => 2,
+        }
+    }
 }
 struct Ticket {
     context: FileClipboardContext,
@@ -523,7 +659,6 @@ impl State {
                 } else {
                     0
                 })
-                .saturating_add(operation.offer.entries.len())
                 .saturating_add(3)
                 > MAX_RETAINED_DESCRIPTORS
         {
@@ -537,13 +672,11 @@ impl State {
     }
     fn reserved_descriptors(&self) -> usize {
         let mut offers = HashSet::new();
+        let mut seen = HashSet::new();
         let mut total = self
             .tickets
             .values()
-            .map(|ticket| match ticket.object {
-                SelectedObject::Source(_) => 3,
-                SelectedObject::Destination(_) => 2,
-            })
+            .map(|ticket| ticket.object.descriptors(&mut seen))
             .sum::<usize>();
         for offer in self
             .offers
@@ -551,15 +684,12 @@ impl State {
             .chain(self.operations.values().map(|op| &op.offer))
         {
             if offers.insert(&offer.public.id) {
-                total = total.saturating_add(offer.entries.len().saturating_mul(3));
+                total = total.saturating_add(source_descriptors(&offer.entries, &mut seen));
             }
         }
-        for operation in self.operations.values() {
-            total = total
-                .saturating_add(operation.offer.entries.len())
-                .saturating_add(3);
-        }
-        total
+        // A running operation holds its destination and the entry it is on;
+        // what it pasted is pinned by seals.
+        total.saturating_add(self.operations.len().saturating_mul(3))
     }
 }
 
@@ -640,12 +770,10 @@ impl NativeFileClipboard {
             .lock()
             .map_err(|_| "clipboard state unavailable")?;
         state.prune_offers(now);
+        let mut seen = HashSet::new();
         let descriptors = captured
             .iter()
-            .map(|(_, object)| match object {
-                SelectedObject::Source(_) => 3,
-                SelectedObject::Destination(_) => 2,
-            })
+            .map(|(_, object)| object.descriptors(&mut seen))
             .sum::<usize>();
         if state.reserved_descriptors().saturating_add(descriptors) > MAX_RETAINED_DESCRIPTORS {
             return Err("clipboard descriptor capacity reached".into());
@@ -666,6 +794,76 @@ impl NativeFileClipboard {
             destination,
         })
     }
+    /// Capture the entries `names` of the shown folder as one ticket. The
+    /// folder travels as one descriptor and is checked against the folder
+    /// the window shows; each entry is pinned by its seal, so the host keeps
+    /// one descriptor for the folder however many entries there are.
+    fn capture_named(
+        &self,
+        context: &FileClipboardContext,
+        folder: &SelectedDescriptor,
+        entries: Vec<runtime_collab::file_clipboard::NamedEntry>,
+    ) -> Result<Reply, String> {
+        context.authorize(Permission::Read)?;
+        let path = PathBuf::from(OsString::from_vec(folder.path.clone()));
+        let grant = Arc::new(Grant::open(
+            &self.tree,
+            context.workspace(),
+            &path,
+            false,
+            context.owner(),
+        )?);
+        let parent = Arc::new(SecureNearbyDestination::open_beneath(grant.root(), &path)?);
+        verify_selected(context, folder, Identity::of(&parent.metadata()?))?;
+        let mut sources = Vec::with_capacity(entries.len());
+        let mut unique = HashSet::with_capacity(entries.len());
+        for entry in entries {
+            if !unique.insert(entry.name.clone()) {
+                return Err("clipboard selection contains a duplicate entry".into());
+            }
+            let source =
+                Source::open_named(&grant, &parent, &path, OsString::from_vec(entry.name))?;
+            // The object under the name must still be the one the window
+            // showed: a name is never consent to copy its replacement.
+            if source.identity
+                != (Identity {
+                    device: entry.expected.device,
+                    inode: entry.expected.inode,
+                })
+            {
+                return Err("shown object differs from its retained selection".into());
+            }
+            sources.push(Arc::new(source));
+        }
+        let count = sources.len();
+        let object = SelectedObject::Sources(sources);
+        let now = Instant::now();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "clipboard state unavailable")?;
+        state.prune_offers(now);
+        let mut seen = HashSet::new();
+        if state
+            .reserved_descriptors()
+            .saturating_add(object.descriptors(&mut seen))
+            > MAX_RETAINED_DESCRIPTORS
+        {
+            return Err("clipboard descriptor capacity reached".into());
+        }
+        let ticket = uuid::Uuid::new_v4().to_string();
+        state.tickets.insert(
+            ticket.clone(),
+            Arc::new(Ticket {
+                context: context.clone(),
+                expires: now.checked_add(OFFER_LIFETIME).unwrap_or(now),
+                object,
+            }),
+        );
+        drop(state);
+        Ok(Reply::CapturedNamed { ticket, count })
+    }
+
     fn ticket(&self, context: &FileClipboardContext, id: &str) -> Result<Arc<Ticket>, String> {
         let ticket = self
             .state
@@ -713,37 +911,34 @@ impl NativeFileClipboard {
             Permission::Read
         })?;
         let mut entries = Vec::with_capacity(sources.len());
+        let mut paths = HashSet::new();
+        // Cut needs write access to each source's folder: opened once per
+        // folder and shared by the entries in it.
+        let mut writable_folders = WritableFolders::new();
         for id in sources {
             let ticket = self.ticket(context, &id)?;
-            let SelectedObject::Source(source) = &ticket.object else {
-                return Err("clipboard source requires a selected entry ticket".into());
-            };
-            source.check(&self.tree, context.workspace(), context.owner())?;
-            let source = if cut {
-                let writable = Source::open(
-                    &self.tree,
-                    context.workspace(),
-                    source.path.clone(),
-                    true,
-                    context.owner(),
-                )?;
-                if writable.identity != source.identity
-                    || Identity::of(&writable.parent.metadata()?)
-                        != Identity::of(&source.parent.metadata()?)
-                {
-                    return Err("selected source was replaced or moved".into());
+            let captured: Vec<Arc<Source>> = match &ticket.object {
+                SelectedObject::Source(source) => vec![source.clone()],
+                SelectedObject::Sources(sources) => sources.clone(),
+                SelectedObject::Destination(_) => {
+                    return Err("clipboard source requires a selected entry ticket".into());
                 }
-                Arc::new(writable)
-            } else {
-                source.clone()
             };
-            if entries
-                .iter()
-                .any(|entry: &Arc<Source>| entry.path == source.path)
-            {
-                return Err("clipboard selection contains a duplicate entry".into());
+            for source in captured {
+                source.check(&self.tree, context.workspace(), context.owner())?;
+                let source = if cut {
+                    self.writable(context, &source, &mut writable_folders)?
+                } else {
+                    source
+                };
+                if !paths.insert(source.path.clone()) {
+                    return Err("clipboard selection contains a duplicate entry".into());
+                }
+                entries.push(source);
             }
-            entries.push(source);
+        }
+        if entries.len() > runtime_collab::file_clipboard::MAX_OFFER_ENTRIES {
+            return Err("clipboard selection has too many entries".into());
         }
         let public = Offered {
             id: uuid::Uuid::new_v4().to_string(),
@@ -766,7 +961,7 @@ impl NativeFileClipboard {
         state.prune_offers(now);
         if state
             .reserved_descriptors()
-            .saturating_add(offer.entries.len().saturating_mul(3))
+            .saturating_add(source_descriptors(&offer.entries, &mut HashSet::new()))
             > MAX_RETAINED_DESCRIPTORS
         {
             return Err("clipboard descriptor capacity reached".into());
@@ -775,6 +970,49 @@ impl NativeFileClipboard {
         drop(state);
         Ok(Reply::Published { offer: public })
     }
+    /// `source` held with write access to its folder, for Cut. Entries
+    /// captured by name share one writable folder per folder.
+    fn writable(
+        &self,
+        context: &FileClipboardContext,
+        source: &Arc<Source>,
+        folders: &mut WritableFolders,
+    ) -> Result<Arc<Source>, String> {
+        let writable = if matches!(source.pin, Pin::Sealed(_)) {
+            let folder = source.path.parent().ok_or("source has no parent")?;
+            let (grant, parent) = if let Some(held) = folders.get(folder) {
+                held.clone()
+            } else {
+                let grant = Arc::new(Grant::open(
+                    &self.tree,
+                    context.workspace(),
+                    folder,
+                    true,
+                    context.owner(),
+                )?);
+                let parent = Arc::new(SecureNearbyDestination::open_beneath(grant.root(), folder)?);
+                folders.insert(folder.to_path_buf(), (grant.clone(), parent.clone()));
+                (grant, parent)
+            };
+            Source::open_named(&grant, &parent, folder, source.name.clone())?
+        } else {
+            Source::open(
+                &self.tree,
+                context.workspace(),
+                source.path.clone(),
+                true,
+                context.owner(),
+            )?
+        };
+        if writable.identity != source.identity
+            || Identity::of(&writable.parent.metadata()?)
+                != Identity::of(&source.parent.metadata()?)
+        {
+            return Err("selected source was replaced or moved".into());
+        }
+        Ok(Arc::new(writable))
+    }
+
     fn snapshot(&self, context: &FileClipboardContext) -> Result<Reply, String> {
         context.authorize(Permission::Read)?;
         let mut state = self
@@ -960,6 +1198,7 @@ impl NativeFileClipboard {
         offer: &str,
         destination_ticket: String,
         id: String,
+        conflict: Conflict,
     ) -> Result<Reply, String> {
         context.authorize(Permission::Undoable)?;
         let prior = self.operation(context, &id).ok();
@@ -984,6 +1223,18 @@ impl NativeFileClipboard {
             return Err("clipboard destination requires a shown folder ticket".into());
         };
         destination.check(&self.tree, context.workspace(), context.owner())?;
+        if conflict == Conflict::Ask {
+            let clashing = clashing_names(&offered, destination)?;
+            if !clashing.is_empty() {
+                // Nothing starts: the window asks once and pastes again
+                // with the answer.
+                let count = clashing.len();
+                return Ok(Reply::Conflicts {
+                    names: clashing.into_iter().take(MAX_CONFLICT_NAMES).collect(),
+                    count,
+                });
+            }
+        }
         let destination = destination.clone();
         let operation = Arc::new(Operation {
             context: context.clone(),
@@ -999,6 +1250,7 @@ impl NativeFileClipboard {
             receipt: std::sync::OnceLock::new(),
             destination_name: None,
             restore_info: None,
+            conflict,
         });
         self.enqueue(&operation)
     }
@@ -1164,7 +1416,28 @@ impl Operation {
             if consumed {
                 continue;
             }
-            let result = self.transfer_one(tree, source);
+            let replaced = match self.make_room(tree, source) {
+                Ok(Room::Paste(replaced)) => replaced,
+                Ok(Room::Skip) => continue,
+                Err(reason) => {
+                    error = Some(reason);
+                    break;
+                }
+            };
+            let result = match self.transfer_one(tree, source) {
+                Ok(mut record) => {
+                    record.replaced = replaced;
+                    Ok(record)
+                }
+                // The replacement didn't arrive: put the original back.
+                Err(reason) => Err(match replaced {
+                    Some(slot) => match self.restore_replaced(&slot, &source.name) {
+                        Ok(()) => reason,
+                        Err(restore) => format!("{reason}; {restore}"),
+                    },
+                    None => reason,
+                }),
+            };
             match result {
                 Ok(record) => {
                     let destination = record.destination.clone();
@@ -1219,6 +1492,64 @@ impl Operation {
             });
         }
     }
+    /// What the destination's entry `name` is now.
+    fn destination_metadata(&self, name: &std::ffi::OsStr) -> Result<fs::Metadata, String> {
+        self.destination
+            .directory
+            .entry(name)?
+            .metadata()
+            .map_err(|error| error.to_string())
+    }
+
+    /// What to do with `source` given the name may be taken in the
+    /// destination: skip it, or paste it, after the item it replaces (if
+    /// any) went to Trash.
+    fn make_room(&self, tree: &WorkspaceTreeHandle, source: &Source) -> Result<Room, String> {
+        let taken = self.destination_name.is_none()
+            && self.destination.directory.entry(&source.name).is_ok();
+        Ok(match (taken, self.conflict) {
+            (true, Conflict::Skip) => Room::Skip,
+            (true, Conflict::Replace) => {
+                self.check(tree, source)?;
+                Room::Paste(Some(self.trash_existing(&source.name)?))
+            }
+            _ => Room::Paste(None),
+        })
+    }
+
+    /// Move the destination's own item called `name` to Trash, so a Replace
+    /// never destroys it; where it went, to put it back on undo.
+    fn trash_existing(&self, name: &std::ffi::OsStr) -> Result<PathBuf, String> {
+        let slot = trash::TrashSlot::prepare(&self.destination.path.join(name))?;
+        let files = trash::files_directory()?;
+        let leaf = slot
+            .path()
+            .file_name()
+            .ok_or("Trash slot has no name")?
+            .to_os_string();
+        rename_entry(&self.destination.directory, name, &files, &leaf).map_err(|reason| {
+            format!(
+                "couldn't move the existing “{}” to Trash: {reason}",
+                name.to_string_lossy()
+            )
+        })?;
+        slot.publish_with(&files, &leaf, || Ok(()))
+    }
+
+    /// Put back the item a Replace sent to Trash, once its replacement is
+    /// gone.
+    fn restore_replaced(&self, slot: &Path, name: &std::ffi::OsStr) -> Result<(), String> {
+        let files = trash::files_directory()?;
+        let leaf = slot.file_name().ok_or("Trash slot has no name")?;
+        rename_entry(&files, leaf, &self.destination.directory, name).map_err(|reason| {
+            format!(
+                "the replaced “{}” stays in Trash: {reason}",
+                name.to_string_lossy()
+            )
+        })?;
+        trash::consume_info(slot)
+    }
+
     fn receipt(&self) -> Result<&journal::PendingReceipt, String> {
         self.receipt
             .get()
@@ -1249,11 +1580,13 @@ impl Operation {
         let (entry, identity) = admission
             .staged
             .ok_or("staged transfer receipt unavailable")?;
+        let seal = journal::Seal::of(&entry.metadata().map_err(|error| error.to_string())?);
         Ok(Record {
             source: source.clone(),
             destination: self.destination.path.join(name),
-            entry,
+            seal,
             identity,
+            replaced: None,
             undone: false,
         })
     }
@@ -1307,6 +1640,13 @@ impl Operation {
                 error = Some(reason);
                 break;
             }
+            if let Some(slot) = record.replaced.take()
+                && let Some(name) = record.destination.file_name()
+                && let Err(reason) = self.restore_replaced(&slot, name)
+            {
+                error = Some(reason);
+                break;
+            }
             self.receipt()?
                 .restore_source_info(&record.source, tree, context)?;
             self.receipt()?.undone(&record.source)?;
@@ -1338,14 +1678,10 @@ impl Operation {
             .destination
             .file_name()
             .ok_or("receipt destination has no name")?;
-        let current = self.destination.directory.entry(name)?;
-        if Identity::of(&current.metadata().map_err(|error| error.to_string())?) != record.identity
-            || Identity::of(&record.entry.metadata().map_err(|error| error.to_string())?)
-                != record.identity
-        {
+        let metadata = self.destination_metadata(name)?;
+        if Identity::of(&metadata) != record.identity || !record.seal.same_object(&metadata) {
             return Err("receipt destination was replaced or removed".into());
         }
-        drop(current);
         if self.offer.public.cut {
             record
                 .source
@@ -1385,7 +1721,7 @@ impl Operation {
         self.receipt()?.undo_intent(
             &record.source,
             &self.destination.path.join(&recovery_name).join(&retained),
-            &record.entry.metadata().map_err(|error| error.to_string())?,
+            &self.destination_metadata(name)?,
         )?;
         if let Err(reason) = rename_entry(&self.destination.directory, name, &recovery, &retained) {
             let _ = fs::remove_dir(&recovery_path);
@@ -1714,7 +2050,7 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             .map_err(io::Error::other)?;
         let identity = Identity::of(&fs::symlink_metadata(material)?);
         if identity == self.source.identity {
-            return self.exact(&self.source.entry.metadata()?);
+            return self.exact(&self.source.entry().map_err(io::Error::other)?.metadata()?);
         }
         if let Some((entry, expected)) = &self.staged
             && identity == *expected
@@ -1803,13 +2139,17 @@ impl FileClipboardServices for NativeFileClipboard {
                 sources,
                 destination,
             } => self.capture(context, sources, destination),
+            Command::CaptureNamed { folder, entries } => {
+                self.capture_named(context, &folder, entries)
+            }
             Command::Release { tickets } => self.release(context, &tickets),
             Command::Publish { sources, cut } => self.publish(context, sources, cut),
             Command::Paste {
                 offer,
                 destination,
                 operation,
-            } => self.paste(context, &offer, destination, operation),
+                conflict,
+            } => self.paste(context, &offer, destination, operation, conflict),
             Command::RestoreTrash { source, operation } => self
                 .restore_trash(context, &source, operation)
                 .or_else(|reason| Ok(Reply::Rejected { reason })),
@@ -1904,7 +2244,7 @@ mod tests {
                 .contains("replaced")
         );
         assert_eq!(
-            Identity::of(&source.entry.metadata().unwrap()),
+            Identity::of(&source.entry().unwrap().metadata().unwrap()),
             source.identity
         );
         assert_eq!(fs::read(&path).unwrap(), b"replacement");
@@ -2002,7 +2342,15 @@ mod tests {
         let (tree, room) = granted(&grant);
         let source = Source::open(&tree, &room, path, false, "").unwrap();
         source.check(&tree, &room, "").unwrap();
-        assert!(source.entry.metadata().unwrap().file_type().is_symlink());
+        assert!(
+            source
+                .entry()
+                .unwrap()
+                .metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(source.link.as_deref(), Some(outside.as_path()));
         assert!(Grant::open(&tree, &room, &outside, false, "").is_err());
         assert_eq!(fs::read(outside).unwrap(), b"not granted");
