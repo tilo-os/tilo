@@ -701,7 +701,10 @@ fn parse_cal_date(val: &str) -> Option<NaiveDate> {
 /// RFC 5545 event durations are positive weeks, days or time spans, not
 /// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
 fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
-    let value = value.trim().strip_prefix('+').unwrap_or(value.trim());
+    let value = value
+        .trim()
+        .strip_prefix('+')
+        .unwrap_or_else(|| value.trim());
     let mut rest = value.strip_prefix('P')?;
     if let Some(weeks) = rest.strip_suffix('W') {
         let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;

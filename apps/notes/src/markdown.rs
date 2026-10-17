@@ -475,8 +475,8 @@ fn parse_external_link(
 fn link_destination_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut i = start;
-    while i < bytes.len() {
-        match bytes[i] {
+    while let Some(&byte) = bytes.get(i) {
+        match byte {
             b'\\' => i += 1,
             b'(' => depth += 1,
             b')' if depth == 0 => return Some(i),

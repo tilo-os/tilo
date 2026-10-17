@@ -210,6 +210,13 @@ pub fn build_delete_request(
     }
 }
 
+#[cfg_attr(
+    not(feature = "live"),
+    allow(
+        clippy::unused_async,
+        reason = "the offline build has nothing to await but keeps the live signature"
+    )
+)]
 pub async fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
@@ -222,6 +229,13 @@ pub async fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     }
 }
 
+#[cfg_attr(
+    not(feature = "live"),
+    allow(
+        clippy::unused_async,
+        reason = "the offline build has nothing to await but keeps the live signature"
+    )
+)]
 pub async fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
@@ -303,6 +317,13 @@ pub fn pull_calendar(
 /// Synchronise with durable per-collection checkpoints supplied by the caller.
 /// Keeping the checkpoint in the Automerge document (rather than a transport
 /// cache) makes restart and collaborative hand-off deterministic.
+#[cfg_attr(
+    not(feature = "live"),
+    allow(
+        clippy::unused_async,
+        reason = "the offline build has nothing to await but keeps the live signature"
+    )
+)]
 pub async fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
