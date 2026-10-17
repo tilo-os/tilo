@@ -1,9 +1,37 @@
 //! The system-owned feedback journey shared by native and browser hosts.
 
 use crate::{
-    DeliveryState, Destination, Draft, Error, MaskedScreenshot, Outbox, Preview, Receipt,
-    ReviewText, Submission,
+    DeclaredSensitivity, DeliveryState, Destination, Draft, Error, MaskedScreenshot, Outbox,
+    Preview, Receipt, ReviewText, Submission, TextOrigin,
 };
+
+/// What a report is about: the window the person opened Feedback from, as
+/// the desktop names it. Only the app's public identity becomes context;
+/// window titles and app content are never read through it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subject {
+    /// The app's id, as grants and launchers key it.
+    pub app: String,
+    /// The app's display name.
+    pub name: String,
+}
+
+impl Subject {
+    fn context(&self) -> ReviewText {
+        let text = if self.name.is_empty() || self.name == self.app {
+            format!("App: {}", self.app)
+        } else {
+            format!("App: {} ({})", self.name, self.app)
+        };
+        ReviewText {
+            node: "feedback.subject.app".into(),
+            sensitivity: DeclaredSensitivity::Public,
+            kind: None,
+            origin: TextOrigin::Semantic,
+            text,
+        }
+    }
+}
 
 /// Both attachments start off. Opening the composer collects neither.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -16,7 +44,10 @@ pub struct Consent {
 /// Implementations must not connect accounts, invent destinations or capture
 /// the desktop. They retain their authenticated route across retries.
 pub trait FeedbackHost {
-    /// Read opt-in context from the selected app.
+    /// Whether [`Self::capture`] can ever produce a screenshot. A host that
+    /// cannot is never offered the choice, rather than refusing it later.
+    fn offers_screenshots(&self) -> bool;
+    /// Read opt-in context from the selected app, beyond its identity.
     ///
     /// # Errors
     /// Reports unavailable or invalid context.
@@ -54,6 +85,7 @@ pub struct Composer {
     host: Box<dyn FeedbackHost>,
     reviewed: Option<(String, Consent, Preview)>,
     active: Option<String>,
+    subject: Option<Subject>,
 }
 
 impl Composer {
@@ -82,7 +114,25 @@ impl Composer {
             host,
             reviewed: None,
             active,
+            subject: None,
         })
+    }
+
+    /// Name what the next report is about. Its context changes, so an
+    /// earlier review no longer shows what would be sent.
+    pub fn about(&mut self, subject: Option<Subject>) {
+        if self.subject != subject {
+            self.reviewed = None;
+            self.subject = subject;
+        }
+    }
+
+    pub fn subject(&self) -> Option<&Subject> {
+        self.subject.as_ref()
+    }
+
+    pub fn offers_screenshots(&self) -> bool {
+        self.host.offers_screenshots()
     }
 
     /// A new review invalidates the old approval before any host call. Failed
@@ -104,7 +154,12 @@ impl Composer {
         let mut preview = Draft {
             text: text.to_owned(),
             context: if consent.context {
-                self.host.context()?
+                // Context describes the window the report is about; without
+                // one there is nothing truthful to attach.
+                let subject = self.subject.as_ref().ok_or(Error::Invalid("context"))?;
+                let mut context = vec![subject.context()];
+                context.extend(self.host.context()?);
+                context
             } else {
                 Vec::new()
             },
@@ -253,6 +308,9 @@ mod tests {
     }
     struct Host(Rc<RefCell<Calls>>);
     impl FeedbackHost for Host {
+        fn offers_screenshots(&self) -> bool {
+            false
+        }
         fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
             let mut calls = self.0.borrow_mut();
             calls.context = calls.context.saturating_add(1);
@@ -318,11 +376,70 @@ mod tests {
             composer.submit(id, "The book did not open", attached),
             Err(Error::NotApproved)
         ));
+        assert!(
+            matches!(
+                composer.review("The book did not open", attached),
+                Err(Error::Invalid("context"))
+            ),
+            "no window was named, so there is no context to attach"
+        );
+        composer.about(Some(notes()));
         assert!(matches!(
             composer.review("The book did not open", attached),
             Err(Error::CaptureProtected)
         ));
         assert!(composer.preview().is_none());
+        assert!(calls.borrow().sent.is_empty());
+    }
+
+    fn notes() -> Subject {
+        Subject {
+            app: "so.tilo.notes".into(),
+            name: "Notes".into(),
+        }
+    }
+
+    #[test]
+    fn context_names_the_subject_only_with_consent_and_a_new_subject_needs_review() {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        let mut composer = composer(Rc::new(MemoryStore::new()), calls.clone());
+        composer.about(Some(notes()));
+        composer
+            .review("Saving lost my edit", Consent::default())
+            .unwrap();
+        assert!(composer.preview().unwrap().feedback().context.is_empty());
+        assert_eq!(calls.borrow().context, 0, "nothing is read without consent");
+        let context = Consent {
+            context: true,
+            screenshot: false,
+        };
+        composer.review("Saving lost my edit", context).unwrap();
+        assert_eq!(calls.borrow().context, 1);
+        let reviewed = composer.preview().unwrap().feedback().clone();
+        assert_eq!(reviewed.context.len(), 1);
+        assert_eq!(reviewed.context[0].value, "App: Notes (so.tilo.notes)");
+        assert!(
+            !reviewed.context[0].key.contains("subject"),
+            "local semantic ids never travel as report keys"
+        );
+        composer.about(Some(notes()));
+        assert!(
+            composer.preview().is_some(),
+            "the same subject keeps the review"
+        );
+        composer.about(Some(Subject {
+            app: "so.tilo.files".into(),
+            name: "Files".into(),
+        }));
+        assert!(
+            composer.preview().is_none(),
+            "another window's context needs a fresh review"
+        );
+        let id = "0123456789abcdef0123456789abcdef".to_owned();
+        assert!(matches!(
+            composer.submit(id, "Saving lost my edit", context),
+            Err(Error::NotApproved)
+        ));
         assert!(calls.borrow().sent.is_empty());
     }
 
