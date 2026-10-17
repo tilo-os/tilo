@@ -30,7 +30,7 @@ use rustix::net::{
 
 use crate::{
     AudioCapture, AudioSource, CameraRequest, CaptureError, CaptureState, DeviceKind, Frame,
-    MAX_BUFFERED_SAMPLES, MicrophoneRequest, VideoCapture, VideoSource, valid_rgba_frame,
+    MAX_BUFFERED_SAMPLES, MicrophoneRequest, VideoCapture, VideoSource, Wake, valid_rgba_frame,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -408,6 +408,8 @@ struct Received {
     latest: Option<Frame>,
     samples: VecDeque<f32>,
     sample_rate: u32,
+    /// Told when `state` changes.
+    wake: Option<Wake>,
 }
 
 /// A running brokered capture: what the stream delivered, and the stream,
@@ -445,6 +447,7 @@ impl Client {
             latest: None,
             samples: VecDeque::new(),
             sample_rate: 0,
+            wake: None,
         }));
         let mut reader = ours.try_clone().map_err(failed)?;
         let shared = Arc::clone(&received);
@@ -527,7 +530,13 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
             ),
         };
         if let Some(state) = state {
-            shared.lock_recover().state = state;
+            let mut received = shared.lock_recover();
+            received.state = state;
+            let wake = received.wake.clone();
+            drop(received);
+            if let Some(wake) = wake {
+                wake();
+            }
         }
         if done {
             return;
@@ -547,6 +556,10 @@ impl VideoSource for Brokered {
     }
     fn take_latest(&mut self) -> Option<Frame> {
         self.received().latest.take()
+    }
+    fn notify(&mut self, wake: Wake) -> bool {
+        self.received().wake = Some(wake);
+        true
     }
 }
 
@@ -756,6 +769,64 @@ mod tests {
                 .decision("r", "so.tilo.video", DeviceKind::Camera),
             Some(Decision::Deny)
         );
+    }
+
+    /// While the person has not answered, nothing changes and nothing
+    /// wakes the app; their answer, either way, wakes it once, and the
+    /// state it then reads is that answer.
+    #[test]
+    fn the_persons_answer_wakes_an_app_that_sleeps_until_then() {
+        for allow in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let grants = Arc::new(DeviceGrants::open(&dir.path().join("grants")).unwrap());
+            let (asked_tx, asked_rx) = std::sync::mpsc::channel::<()>();
+            let (answer_tx, answer_rx) = std::sync::mpsc::channel::<bool>();
+            let prompt = Mutex::new((asked_tx, answer_rx));
+            let (app, runtime) = UnixDatagram::pair().unwrap();
+            let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
+                grants,
+                room: "r".into(),
+                app: "so.tilo.camera".into(),
+                declared: vec![DeviceKind::Camera],
+                consent: move |_| {
+                    let prompt = prompt.lock_recover();
+                    let _ = prompt.0.send(());
+                    Ok(prompt.1.recv().unwrap_or(false))
+                },
+            });
+            let sources: Arc<dyn Sources> = Arc::new(synthetic::Devices);
+            std::thread::spawn(move || serve(&runtime, &policy, &sources));
+            let client = Client::new(app);
+
+            let mut camera = client.camera(&CAMERA).unwrap();
+            let (woke_tx, woke_rx) = std::sync::mpsc::channel::<()>();
+            let woke_tx = Mutex::new(woke_tx);
+            assert!(
+                camera.notify(move || {
+                    let _ = woke_tx.lock_recover().send(());
+                }),
+                "the broker says when its state changes"
+            );
+            asked_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the host asks the person");
+            assert_eq!(camera.state(), CaptureState::Starting);
+            assert!(
+                woke_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                "nothing wakes the app while the prompt is open"
+            );
+
+            answer_tx.send(allow).unwrap();
+            woke_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the answer wakes the app");
+            let expected = if allow {
+                CaptureState::Live
+            } else {
+                CaptureState::Failed(CaptureError::PermissionDenied)
+            };
+            assert_eq!(camera.state(), expected, "allow: {allow}");
+        }
     }
 
     #[test]

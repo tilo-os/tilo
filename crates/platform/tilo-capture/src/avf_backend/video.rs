@@ -24,7 +24,7 @@ use super::{Capture, Feed, SampleDelegate, Slot, number, settle, state};
 use crate::CameraRequest;
 #[cfg(avf_screen)]
 use crate::ScreenRequest;
-use crate::{CaptureError, CaptureState, Frame, VideoSource, valid_rgba_frame};
+use crate::{CaptureError, CaptureState, Frame, VideoSource, Wake, valid_rgba_frame};
 
 struct Video {
     slot: Slot<Frame>,
@@ -38,6 +38,11 @@ impl VideoSource for Video {
 
     fn take_latest(&mut self) -> Option<Frame> {
         self.slot.lock_recover().latest.take()
+    }
+
+    fn notify(&mut self, wake: Wake) -> bool {
+        self.slot.lock_recover().wake = Some(wake);
+        true
     }
 }
 
