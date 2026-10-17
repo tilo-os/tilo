@@ -345,6 +345,13 @@ class EngineRuntimeShips(unittest.TestCase):
             self.assertEqual((stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').read_text(),
                              self.PUBLISHER + '\n')
 
+    def test_a_toolbox_build_also_looks_at_the_hosts_installed_engines(self):
+        environ = {'XDG_DATA_HOME': '/data'}
+        self.assertEqual(ASSEMBLER.host_runtime_roots(environ),
+                         [Path('/data/tilo-runtime'), Path('/usr/lib/tilo-runtime')])
+        self.assertEqual(ASSEMBLER.host_runtime_roots(environ, host_root=Path('/run/host'))[-1],
+                         Path('/run/host/usr/lib/tilo-runtime'))
+
     def test_a_differently_versioned_signed_bundle_is_not_relabelled_by_its_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             stage, tool = self.fixture(directory)

@@ -278,13 +278,23 @@ def engine_pins(repo):
     return sorted(pins)
 
 
-def host_runtime_roots():
-    """Where this host already keeps runtime bundles, read only."""
+def container_host_root():
+    """The host's root as a toolbox/podman container sees it, else None."""
+    return Path('/run/host') if Path('/run/.containerenv').is_file() else None
+
+
+def host_runtime_roots(environ=os.environ, host_root=None):
+    """Where this host already keeps runtime bundles, read only.
+
+    Built in a toolbox (as `tdev` does), `/usr` is the container's, which has
+    no engine; the host's own installed engines stay at `/run/host/usr`."""
     roots = []
-    if os.environ.get('TILO_RUNTIME_BUNDLE_DIR'):
-        roots.append(Path(os.environ['TILO_RUNTIME_BUNDLE_DIR']))
-    data = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share')
+    if environ.get('TILO_RUNTIME_BUNDLE_DIR'):
+        roots.append(Path(environ['TILO_RUNTIME_BUNDLE_DIR']))
+    data = environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share')
     roots += [Path(data) / 'tilo-runtime', Path('/usr/lib/tilo-runtime')]
+    if host_root is not None:
+        roots.append(host_root / 'usr/lib/tilo-runtime')
     return roots
 
 
@@ -305,9 +315,11 @@ def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
     registry, and the cohort is refused when neither has it."""
     publishers = set()
     runtime_root = stage / 'tree/usr/lib/tilo-runtime'
+    if roots is None:
+        roots = host_runtime_roots(host_root=container_host_root())
     for reference in engine_pins(repo):
         version = reference.split('/', 1)[1]
-        source = next((root / version for root in (host_runtime_roots() if roots is None else roots)
+        source = next((root / version for root in roots
                        if (root / version / 'bundle.toml').is_file()), None)
         if source is None:
             fetched = stage / 'work/engine-fetch'
