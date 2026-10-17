@@ -92,6 +92,7 @@ enum CtxAction {
         start: usize,
         end: usize,
         replacement: String,
+        original: String,
     },
     AddToDictionary(String),
     IgnoreInField(String),
@@ -143,6 +144,30 @@ pub struct TextActionRequest {
 }
 
 /// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
+impl TextActionRequest {
+    /// What the action made of the requested text (a rewrite, a
+    /// translation, a grammar fix), to write back with
+    /// [`TextInput::apply_text_action_result`].
+    #[must_use]
+    pub fn result(&self, replacement: impl Into<String>) -> TextActionResult {
+        TextActionResult {
+            range: self.range,
+            original: self.text.clone(),
+            replacement: replacement.into(),
+        }
+    }
+}
+
+/// A text action's result for the range it was requested for. It applies
+/// only while the range still holds `original`: the field may have been
+/// edited, by the person or a collaborator, while the action ran.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextActionResult {
+    pub range: (usize, usize),
+    pub original: String,
+    pub replacement: String,
+}
+
 /// Prose, so apps opt out only for the smaller set of structured fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextInputKind {
@@ -937,27 +962,41 @@ impl TextInput {
         let Some(pending) = self.pending_autocorrection.take() else {
             return false;
         };
-        let caret = self.core.caret();
-        let boundary = self.text.get(pending.end..caret).unwrap_or_default();
+        let boundary = self.text.get(pending.end..self.core.caret());
+        boundary.is_some_and(|boundary| boundary.chars().count() == 1)
+            && self.apply_autocorrection(pending)
+    }
+
+    /// Make `correction` of the word right before the caret, or before the
+    /// one word boundary after it, as a step of its own: undoing it gives
+    /// back the word as typed and keeps the typing before it. The caret
+    /// stays after the boundary.
+    fn apply_autocorrection(&mut self, correction: AutocorrectionPreview) -> bool {
+        let Some(boundary) = self.text.get(correction.end..self.core.caret()) else {
+            return false;
+        };
         if self.has_selection()
-            || self.text.get(pending.start..pending.end) != Some(pending.original.as_str())
-            || boundary.chars().count() != 1
+            || boundary.chars().count() > 1
             || boundary.chars().any(char::is_alphanumeric)
         {
             return false;
         }
         let boundary_len = boundary.len();
-        self.core.set_selection(pending.start, pending.end);
-        self.insert_str(&pending.replacement);
-        let end = pending.start.saturating_add(pending.replacement.len());
+        let Some(end) = self.replace_step(
+            correction.start..correction.end,
+            &correction.original,
+            &correction.replacement,
+        ) else {
+            return false;
+        };
         let boundary_end = end.saturating_add(boundary_len);
         self.set_cursor_pos(boundary_end);
         self.last_autocorrection = Some(Autocorrection {
-            start: pending.start,
+            start: correction.start,
             end,
             boundary_end,
-            original: pending.original,
-            replacement: pending.replacement,
+            original: correction.original,
+            replacement: correction.replacement,
         });
         true
     }
@@ -993,6 +1032,68 @@ impl TextInput {
     /// produces a request drained by `take_text_action_request`; the widget
     /// never blocks on the action itself.
     #[must_use]
+    /// Replace `range`, which must still hold `expected`, with `replacement`
+    /// as exactly one undo step: the typing before it is closed off as a
+    /// step of its own, and typing after it starts a new one. Leaves the
+    /// replacement selected.
+    ///
+    /// Refuses, changing nothing, when the range no longer holds `expected`
+    /// (the text moved while an asynchronous action ran, or a collaborator
+    /// edited it), when the field is read-only or disabled, or while an
+    /// input method composition is open.
+    pub fn replace_range(
+        &mut self,
+        range: Range<usize>,
+        expected: &str,
+        replacement: &str,
+    ) -> bool {
+        let start = range.start;
+        let Some(end) = self.replace_step(range, expected, replacement) else {
+            return false;
+        };
+        self.core.set_selection(start, end);
+        true
+    }
+
+    /// Write back what a text action made of the text it was handed
+    /// ([`Self::take_text_action_request`]), as [`Self::replace_range`] does.
+    pub fn apply_text_action_result(&mut self, result: &TextActionResult) -> bool {
+        let (start, end) = result.range;
+        self.replace_range(start..end, &result.original, &result.replacement)
+    }
+
+    /// [`Self::replace_range`] with the caret after the replacement; where
+    /// the replacement ends.
+    fn replace_step(
+        &mut self,
+        range: Range<usize>,
+        expected: &str,
+        replacement: &str,
+    ) -> Option<usize> {
+        if self.read_only
+            || self.effectively_disabled()
+            || self.core.has_preedit()
+            || self.text.get(range.clone()) != Some(expected)
+        {
+            return None;
+        }
+        // What was typed so far reaches the owner first, so the replacement
+        // does not join it.
+        self.notify_user_change(true);
+        self.typing.close();
+        let edit = self.core.replace(range.clone(), replacement);
+        let end = edit.at.saturating_add(edit.inserted.len());
+        if !edit.is_noop() && !self.apply_edit(&edit) {
+            return None;
+        }
+        self.last_autocorrection = None;
+        self.typing.close();
+        // A discrete change of its own, which the typing after it does not
+        // continue.
+        self.notify_user_change(false);
+        Some(end)
+    }
+
     pub fn with_text_action(mut self, id: &str, label: &str) -> Self {
         self.add_text_action(id, label);
         self
@@ -4243,7 +4344,10 @@ impl TextInput {
         self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
     }
 
-    fn autocorrect_previous_word(&mut self) -> Option<Autocorrection> {
+    /// The correction a word boundary typed now makes of the word before the
+    /// caret, made by [`Self::apply_autocorrection`] once the boundary is
+    /// written, unless the owner defers it.
+    fn autocorrect_previous_word(&mut self) -> Option<AutocorrectionPreview> {
         if !self.autocorrect_enabled() || self.has_selection() || self.core.caret() == 0 {
             return None;
         }
@@ -4261,18 +4365,7 @@ impl TextInput {
             self.pending_autocorrection = Some(preview);
             return None;
         }
-        let (start, end) = (preview.start, preview.end);
-        let (original, replacement) = (preview.original, preview.replacement);
-        self.core.set_selection(start, end);
-        self.insert_str(&replacement);
-        let replacement_end = start.saturating_add(replacement.len());
-        Some(Autocorrection {
-            start,
-            end: replacement_end,
-            boundary_end: replacement_end,
-            original,
-            replacement,
-        })
+        Some(preview)
     }
 
     fn word_ending_at_caret(&self) -> Option<(usize, usize)> {
@@ -4444,12 +4537,17 @@ impl TextInput {
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
-        if self.text.get(preview.start..preview.end) != Some(preview.original.as_str()) {
+        if self
+            .replace_step(
+                preview.start..preview.end,
+                &preview.original,
+                &preview.replacement,
+            )
+            .is_none()
+        {
             self.clear_suggestion();
             return false;
         }
-        self.core.set_selection(preview.start, preview.end);
-        self.insert_str(&preview.replacement);
         self.clear_suggestion();
         self.suggestion_chip = None;
         self.spell_cache_key = None;
@@ -4481,9 +4579,8 @@ impl TextInput {
     fn insert_word_boundary(&mut self, boundary: &str) {
         let correction = self.autocorrect_previous_word();
         self.insert_str(boundary);
-        if let Some(mut correction) = correction {
-            correction.boundary_end = self.core.caret();
-            self.last_autocorrection = Some(correction);
+        if let Some(correction) = correction {
+            self.apply_autocorrection(correction);
         }
     }
 
@@ -4509,6 +4606,8 @@ impl TextInput {
         } else {
             correction.end
         };
+    /// The boundary is written before the correction, so undoing the
+    /// correction keeps the boundary that was typed.
         self.core.set_selection(correction.start, replace_end);
         self.insert_str(&correction.original);
         true
@@ -4834,6 +4933,7 @@ impl TextInput {
             menu.push(MenuItem::action(
                 crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
                 || {},
+                    original: word.clone(),
             ));
             actions.push(Some(CtxAction::AskAgent));
             menu.push(MenuItem::separator());
@@ -4883,8 +4983,12 @@ impl TextInput {
                 end,
                 replacement,
             } => {
-                self.core.set_selection(start, end);
-                self.insert_str(&replacement);
+                if self
+                    .replace_step(start..end, &original, &replacement)
+                    .is_none()
+                {
+                    return false;
+                }
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
@@ -4912,6 +5016,7 @@ impl TextInput {
             }
             CtxAction::TextAction(index) => {
                 if let (Some(action), Some((start, end)), Some(selected)) = (
+                original,
                     self.text_actions.get(index),
                     self.selection_range(),
                     self.shareable_selection(),
@@ -6990,10 +7095,6 @@ impl TextInput {
             self.insert_str("\n");
             *handled = true;
         }
-        if let Some(mut correction) = correction {
-            correction.boundary_end = self.core.caret();
-            self.last_autocorrection = Some(correction);
-        }
     }
 
     /// Only reached when `self.tab_spaces.is_some()` — otherwise the host keeps Tab for focus traversal.
@@ -7027,10 +7128,17 @@ impl TextInput {
         *handled = true;
     }
 
+            // What is submitted is the corrected word.
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
     fn handle_ctrl_shortcut(&mut self, c: &str, handled: &mut bool) {
         let lc = c.to_lowercase();
         match lc.as_str() {
             "a" => {
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
                 self.do_select_all();
                 *handled = true;
             }

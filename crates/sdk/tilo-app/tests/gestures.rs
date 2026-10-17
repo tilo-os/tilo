@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test assertions"
+)]
+
 //! Consecutive edits of one field by one person within one gesture are one
 //! undo step: typing a word, dragging a slider.
 
@@ -140,4 +147,138 @@ fn a_group_submitted_now_is_one_change() {
     let state = mixer.state().unwrap();
     assert_eq!(state.name, "Drums");
     assert!((state.level - 0.5).abs() < f64::EPSILON);
+}
+
+/// The same field with spelling help.
+struct AssistedApp;
+
+impl ResourceApp for AssistedApp {
+    type Resource = Mixer;
+    const ID: &'static str = "so.tilo.test-mixer-assisted";
+    const TITLE: &'static str = "Mixer";
+
+    fn view(cx: &mut ViewCx<Mixer>) -> Element {
+        Box::new(
+            cx.input(cx.paths().name)
+                .with_id("name")
+                .with_spellcheck(true)
+                .with_autocorrect(true)
+                .with_spell_language("en_US"),
+        )
+    }
+}
+
+fn ctrl_z(harness: &mut tilo_app::headless::FrameHarness) {
+    harness.set_modifiers(&["ctrl".into()]);
+    harness.key("z");
+    harness.set_modifiers(&[]);
+}
+
+#[test]
+fn undoing_an_autocorrection_gives_back_the_typed_word_and_keeps_the_typing_before_it() {
+    let mut app = TestApp::<AssistedApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("we saw teh ");
+    assert_eq!(app.state().name, "we saw the ");
+    ctrl_z(app.harness());
+    assert_eq!(
+        app.state().name,
+        "we saw teh ",
+        "only the correction is undone"
+    );
+    ctrl_z(app.harness());
+    assert_ne!(
+        app.state().name,
+        "we saw teh ",
+        "the typing before the correction is a step of its own"
+    );
+}
+
+/// A field whose surface runs a text action (a rewrite) for the selection,
+/// as an app hosting model work does.
+struct Rewriter {
+    input: TextInput,
+}
+
+impl tilo_app::widget::Decorator for Rewriter {
+    type Inner = TextInput;
+    fn inner(&self) -> &TextInput {
+        &self.input
+    }
+    fn inner_mut(&mut self) -> &mut TextInput {
+        &mut self.input
+    }
+}
+
+impl ResourceSurface<Mixer> for Rewriter {
+    fn present(&mut self, _: &std::rc::Rc<Mixer>) {}
+}
+
+struct RewriterApp;
+
+impl ResourceApp for RewriterApp {
+    type Resource = Mixer;
+    const ID: &'static str = "so.tilo.test-mixer-rewriter";
+    const TITLE: &'static str = "Mixer";
+
+    fn view(cx: &mut ViewCx<Mixer>) -> Element {
+        let input = cx
+            .input(cx.paths().name)
+            .with_id("name")
+            .with_text_action("shout", "Shout");
+        cx.surface(Rewriter { input })
+    }
+}
+
+/// Select the whole field and run its text action from the context menu,
+/// as the person does; the request the surface takes.
+fn request_shout(app: &mut TestApp<RewriterApp>) -> tilo_app::widget::TextActionRequest {
+    use tilo_app::synthetic_input::{cursor_moved, mouse_input};
+    use tilo_app::winit::event::{ElementState, MouseButton};
+    let harness = app.harness();
+    harness.set_modifiers(&["ctrl".into()]);
+    harness.key("a");
+    harness.set_modifiers(&[]);
+    let field = harness.targets()["name"];
+    let (x, y) = (field.x0 + 12.0, field.center().y);
+    harness.send(&cursor_moved(x, y));
+    harness.send(&mouse_input(ElementState::Pressed, MouseButton::Right));
+    harness.send(&mouse_input(ElementState::Released, MouseButton::Right));
+    // The menu opens at the pointer; the registered action is its first row.
+    let row = f64::from(tilo_app::tokens::Metrics::BASE.menu_row_height);
+    let inset = f64::from(tilo_app::tokens::Spacing::BASE.s2);
+    harness.click_at(x + 40.0, y + inset + row / 2.0);
+    app.with_surface(|surface: &mut Rewriter| surface.input.take_text_action_request())
+        .flatten()
+        .expect("the selection's action was requested")
+}
+
+fn apply(app: &mut TestApp<RewriterApp>, result: &tilo_app::widget::TextActionResult) -> bool {
+    app.with_surface(|surface: &mut Rewriter| surface.input.apply_text_action_result(result))
+        .unwrap()
+}
+
+#[test]
+fn a_text_action_result_is_one_undo_step_and_refused_once_its_range_changed() {
+    let mut app = TestApp::<RewriterApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("drums");
+    let request = request_shout(&mut app);
+    assert_eq!(request.text, "drums");
+    assert!(apply(
+        &mut app,
+        &request.result(request.text.to_uppercase())
+    ));
+    assert_eq!(app.state().name, "DRUMS");
+    ctrl_z(app.harness());
+    assert_eq!(app.state().name, "drums", "one undo takes the result back");
+
+    // The person types before the range while the action runs, moving the
+    // text it was asked about: the late result is refused rather than
+    // written over the wrong letters.
+    let request = request_shout(&mut app);
+    app.harness().key("Home");
+    app.harness().type_text("big ");
+    assert!(!apply(&mut app, &request.result("DRUMS")));
+    assert_eq!(app.state().name, "big drums");
 }
