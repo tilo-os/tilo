@@ -40,6 +40,7 @@ fn overlapping_includes_preserve_one_signed_payload_or_refuse_conflicting_bytes(
             arch: Some("x86_64"),
             identity: Some(&key),
             extra_libs: &includes,
+            extra_bins: &[],
         };
         let out = tempfile::tempdir().unwrap();
         let built = build_bundle_with(out.path(), "2026.07", &options).unwrap();
@@ -407,6 +408,7 @@ fn a_bundle_of_many_files_is_hashed_whole_and_refuses_a_change_in_any_of_them() 
             arch: Some("x86_64"),
             identity: None,
             extra_libs: &libs,
+            extra_bins: &[],
         },
     )
     .unwrap();
