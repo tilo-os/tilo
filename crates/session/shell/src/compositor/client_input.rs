@@ -625,6 +625,9 @@ impl State {
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered {
             self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
+            if pressed && !is_modifier_keycode(keycode) {
+                self.last_client_typing_at = Some(std::time::Instant::now());
+            }
         }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             if let Some((delivery_time_ns, observed_surface)) =
@@ -2337,6 +2340,12 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
         fb.host_mut().keep_clicked_group_in_place(strip, group);
     }
     changed
+}
+
+/// Whether evdev `keycode` is a modifier on its own (Shift, Ctrl, Alt,
+/// Super, `AltGr`, Caps Lock): pressing one is not typing.
+fn is_modifier_keycode(keycode: u32) -> bool {
+    matches!(keycode, 29 | 42 | 54 | 56 | 58 | 97 | 100 | 125 | 126)
 }
 
 #[cfg(test)]

@@ -134,6 +134,15 @@ mod dropped_content_startup_tests {
     }
 }
 
+/// Whether a banner may surface while the person types into a window:
+/// only what is addressed to them (a message or mention from a verified
+/// person, a call, a reminder they set, an ask waiting on them), and the
+/// desktop's own must-know notices that already pierce Do Not Disturb.
+/// Everything else waits for them to pause.
+pub(crate) fn may_interrupt_typing(n: &Notification) -> bool {
+    n.addressed().is_some() || n.bypass_dnd
+}
+
 fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
@@ -763,6 +772,15 @@ pub struct ChromeState {
     /// Short, bounded edge flash requested by the visual-alert accessibility
     /// setting. Local session state only; it is never synced or written back.
     visual_alert_until: Option<std::time::Instant>,
+    /// While the person types into a window, until this instant (their
+    /// last key plus the desk's pause): only banners addressed to them
+    /// surface; the rest wait in [`Self::waiting_banners`]. Set by the
+    /// overlay host from the same typing signal that sends desk widgets
+    /// away.
+    typing_until: Option<std::time::Instant>,
+    /// Banners that arrived while the person typed and were not addressed
+    /// to them, oldest first; shown once they pause.
+    waiting_banners: Vec<Notification>,
     /// Mirrored from the compositor's `SessionManager` each frame.
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
@@ -1014,6 +1032,8 @@ impl ChromeState {
             notification_policy_checked: None,
             presenting: false,
             visual_alert_until: None,
+            typing_until: None,
+            waiting_banners: Vec::new(),
             session_locked: false,
             active_exposures: Vec::new(),
             session_lock_requested: false,
@@ -2653,6 +2673,44 @@ impl ChromeState {
     /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;
     /// D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
+        let id = n.id;
+        if self.typing_at(std::time::Instant::now()) && !may_interrupt_typing(&n) {
+            self.waiting_banners.push(n);
+            return id;
+        }
+        self.show_notification(n)
+    }
+
+    /// The person typing into a window until `until` (`None`: not typing).
+    /// Banners held while they typed surface once it lapses, through
+    /// [`Self::release_waiting_banners`].
+    pub fn set_typing_until(&mut self, until: Option<std::time::Instant>) {
+        self.typing_until = until;
+    }
+
+    /// Whether the person is typing at `now`.
+    pub fn typing_at(&self, now: std::time::Instant) -> bool {
+        self.typing_until.is_some_and(|until| now < until)
+    }
+
+    /// The banners waiting for the person to pause.
+    pub fn waiting_banner_count(&self) -> usize {
+        self.waiting_banners.len()
+    }
+
+    /// Show the banners that waited while the person typed, once they have
+    /// paused at `now`. Returns whether any surfaced.
+    pub fn release_waiting_banners(&mut self, now: std::time::Instant) -> bool {
+        if self.typing_at(now) || self.waiting_banners.is_empty() {
+            return false;
+        }
+        for n in std::mem::take(&mut self.waiting_banners) {
+            self.show_notification(n);
+        }
+        true
+    }
+
+    fn show_notification(&mut self, n: Notification) -> u64 {
         let id = n.id;
         if self.notifications_quiet() && !n.bypass_dnd {
             self.record_history(n);

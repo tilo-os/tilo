@@ -198,6 +198,53 @@ impl NowPlayingSource for NoPlayers {
     }
 }
 
+/// Players fixed when made, taking the commands sent to them: what a
+/// scenario capture shows and drives without a session bus. A play/pause
+/// flips the player's status, so the next frame shows what was pressed.
+#[cfg(feature = "hosted-test-control")]
+#[derive(Debug, Default)]
+pub struct FixturePlayers {
+    players: std::cell::RefCell<Vec<PlayerSnapshot>>,
+    /// Every command sent, oldest first.
+    pub sent: std::cell::RefCell<Vec<(String, PlayerCommand)>>,
+}
+
+#[cfg(feature = "hosted-test-control")]
+impl FixturePlayers {
+    #[must_use]
+    pub fn new(players: Vec<PlayerSnapshot>) -> Self {
+        Self {
+            players: std::cell::RefCell::new(players),
+            sent: std::cell::RefCell::default(),
+        }
+    }
+}
+
+#[cfg(feature = "hosted-test-control")]
+impl NowPlayingSource for FixturePlayers {
+    fn players(&self) -> Vec<PlayerSnapshot> {
+        self.players.borrow().clone()
+    }
+
+    fn send(&self, bus_name: &str, command: PlayerCommand) -> bool {
+        if command == PlayerCommand::PlayPause
+            && let Some(player) = self
+                .players
+                .borrow_mut()
+                .iter_mut()
+                .find(|player| player.bus_name == bus_name)
+        {
+            player.status = if player.status == PlaybackStatus::Playing {
+                PlaybackStatus::Paused
+            } else {
+                PlaybackStatus::Playing
+            };
+        }
+        self.sent.borrow_mut().push((bus_name.to_string(), command));
+        true
+    }
+}
+
 /// The player the card shows: the one the person picked while it is still
 /// around, else whatever is playing, else whatever is paused, else the first.
 #[must_use]

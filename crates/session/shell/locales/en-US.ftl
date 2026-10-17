@@ -2826,3 +2826,10 @@ storage-low-title = Storage is almost full
 storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
+
+## Desk widgets
+
+desk-team-title = In this workspace
+# Where a person is: their strip, then the window they are on.
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } more

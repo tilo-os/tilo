@@ -7475,6 +7475,7 @@ fn power_notification_to_incoming(
         contact_endpoint: None,
         sender_name: None,
         sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
+        incoming_call: false,
     }
 }
 
@@ -9871,6 +9872,7 @@ pub fn run() {
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
     crate::app_icons::set_wake(Arc::clone(&session_wake));
+    crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
     // admitted or its job changes, not on the next unrelated wake.
@@ -10802,6 +10804,18 @@ pub fn run() {
         // outside this loop and reused every tick to avoid a per-frame
         // allocation on this hot path, and an event may expand into further
         // events that must run next, before anything the backend queued later.
+        // A Super held alone past its hold peeks on the wake its deadline
+        // asked for, with no new event to carry it.
+        if let Some(gesture) = super_tap.poll(Instant::now())
+            && !session.is_locked()
+        {
+            frame_builder.host_mut().super_gesture(
+                gesture,
+                &test_control_ctx.doc,
+                &test_control_ctx.root_obj,
+            );
+            session_changed = true;
+        }
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
             dispatched_input.note(&event);
@@ -10878,12 +10892,17 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
-                    // A lone Super tap opens global search. Observed ahead of every
-                    // branch below, so a chord one of them handles still disarms it.
-                    if super_tap.observe(wev) && !session.is_locked() {
-                        frame_builder
-                            .host_mut()
-                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                    // Super alone, tapped or held, opens the Super surface.
+                    // Observed ahead of every branch below, so a chord one of
+                    // them handles still disarms it.
+                    if let Some(gesture) = super_tap.observe(wev, Instant::now())
+                        && !session.is_locked()
+                    {
+                        frame_builder.host_mut().super_gesture(
+                            gesture,
+                            &test_control_ctx.doc,
+                            &test_control_ctx.root_obj,
+                        );
                         session_changed = true;
                     }
 
@@ -12320,6 +12339,14 @@ pub fn run() {
             })
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces_with_input(&floating_surfaces);
+        // Live calls and navigation float where the person left them; desk
+        // widgets share the edges with them and step past them.
+        frame_builder.host_mut().set_system_activity_rects(
+            floating_surfaces
+                .iter()
+                .map(|(_, _, rect, _)| *rect)
+                .collect(),
+        );
         state.sync_capture_protection();
         state.set_capture_placeholder_fill(
             crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
@@ -14284,6 +14311,7 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("super-hold", super_tap.deadline()),
                 (
                     "network-retry",
                     peer_sync

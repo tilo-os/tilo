@@ -134,7 +134,7 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// `TILO_CLOCK` pins the bar's clock, for the same reason `TILO_SHOTS_THEME`
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
-fn clock_snapshot() -> ClockSnapshot {
+pub(crate) fn clock_snapshot() -> ClockSnapshot {
     let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
