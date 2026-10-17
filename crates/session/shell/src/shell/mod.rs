@@ -67,6 +67,7 @@ pub mod document_import;
 pub mod durable_writer;
 pub mod emoji_recents;
 pub mod fabric_clock;
+pub(crate) mod feedback_entry;
 mod file_picker_overlay;
 pub mod fixed_chords;
 pub mod fixture_inputs;
@@ -1006,7 +1007,7 @@ pub fn mount_in_process(
     let room = request.room.to_string();
     let tab = request.tab.id;
     let mounted = match kind {
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Feedback") => {
+        ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
         ShellKind::Terminal => apps.borrow_mut().mount(
