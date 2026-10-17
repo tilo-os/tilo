@@ -23,7 +23,7 @@
 //! state. The bundled sample corpus is a screenshot's fixture.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
@@ -86,6 +86,9 @@ const DISCOVERY_DEBOUNCE_MS: u64 = 400;
 const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
 /// The shortest text the servers are searched for.
 const SERVER_SEARCH_MIN_CHARS: usize = 3;
+/// How long a message sent from this window waits before it goes to the
+/// server, so "Undo" on the sending notice takes it back unsent.
+const SEND_UNDO_SECS: u64 = 10;
 
 /// Whether `email` reads as a whole address: something before the `@` and
 /// a domain with a dot and a top-level part of two letters or more.
@@ -149,6 +152,14 @@ type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 /// How the outbox drain hears how a delivery went: delivered, or refused
 /// for good with the server's reason; an error leaves it to try again.
 type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
+
+/// A message sent from this window, held back from the server until `due`
+/// so it can be taken back unsent.
+struct HeldSend {
+    outgoing: Outgoing,
+    done: DeliveryDone,
+    due: ui::time::Instant,
+}
 
 /// The server updates the document's projection asked for: queued until the
 /// next sync hands them to the engine, then carried out by it. Whichever
@@ -398,6 +409,17 @@ pub struct MailApp {
     /// The outbox message the composer was reopened from after its server
     /// refused it; sending again replaces it.
     resending: Option<String>,
+    /// Messages sent from this window, waiting out the undo time.
+    held_sends: Vec<HeldSend>,
+    /// Sends pressed whose outbox messages have yet to reach the drain:
+    /// each is held when it does.
+    sends_to_hold: usize,
+    /// The notice showing (or about to) is the sending one: its "Undo"
+    /// takes the held messages back.
+    send_notice: bool,
+    sending_notice_next: bool,
+    /// "Undo" was pressed on the sending notice.
+    unsend: bool,
     /// Where account changes persist. The live app targets the real user config
     /// root; the sample / shots / test constructors target a throwaway sandbox
     /// so they can never write into the real account store.
@@ -737,6 +759,11 @@ impl MailApp {
             delivery: None,
             pending_send: HashMap::new(),
             resending: None,
+            held_sends: Vec::new(),
+            sends_to_hold: 0,
+            send_notice: false,
+            sending_notice_next: false,
+            unsend: false,
             accounts_persist,
             persisted_active_account: None,
             person_accounts: None,
@@ -1717,7 +1744,64 @@ impl MailApp {
             st.mailbox.purge(draft_id);
         }
         self.compose.close();
-        self.shared.borrow_mut().status = Some("Sending…".into());
+        // It waits out the undo time before it goes; the notice's Undo
+        // takes it back.
+        self.sends_to_hold += 1;
+        self.sending_notice_next = true;
+        self.shared.borrow_mut().say_undoable("Sending…");
+        self.dirty = true;
+    }
+
+    /// Hand the held messages whose undo time is up to the engine. One that
+    /// left the outbox meanwhile (undone) comes back to the composer.
+    fn release_held_sends(&mut self, doc: &ui::widget::Edits<'_>) {
+        if self.held_sends.is_empty() {
+            return;
+        }
+        let now = ui::time::now();
+        let waiting: HashSet<String> = read_mail(doc.doc())
+            .map(|mail| {
+                mail.outbox
+                    .pending()
+                    .map(|(id, _)| id.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for held in std::mem::take(&mut self.held_sends) {
+            if !waiting.contains(&held.outgoing.id) {
+                self.reopen_unsent(&held.outgoing);
+            } else if held.due <= now {
+                self.deliver(held.outgoing, held.done);
+            } else {
+                self.held_sends.push(held);
+            }
+        }
+    }
+
+    /// "Undo" on the sending notice: the held messages leave the outbox
+    /// unsent, and the composer opens on them again.
+    fn take_back_sends(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if !std::mem::take(&mut self.unsend) {
+            return;
+        }
+        self.sends_to_hold = 0;
+        for held in std::mem::take(&mut self.held_sends) {
+            self.shared.borrow().submit(
+                doc,
+                Mail::CANCEL_SEND.with(mailbox::CancelSend {
+                    id: held.outgoing.id.clone(),
+                }),
+            );
+            self.reopen_unsent(&held.outgoing);
+        }
+        self.dirty = true;
+    }
+
+    /// Open the composer on `outgoing`, taken back unsent.
+    fn reopen_unsent(&mut self, outgoing: &Outgoing) {
+        if !self.compose.open {
+            self.compose.open_with_draft(&outgoing.to_draft());
+        }
         self.dirty = true;
     }
 
@@ -2652,6 +2736,7 @@ impl MailApp {
             return;
         };
         let kind = Self::status_kind(&msg);
+        self.send_notice = std::mem::take(&mut self.sending_notice_next);
         if undoable {
             self.nav.toast_with_action(msg, kind, "Undo");
         } else {
@@ -3127,7 +3212,17 @@ impl MailApp {
     /// account carries it out.
     fn flush_server_outbox(&mut self) {
         let deliveries = std::mem::take(&mut self.server_outbox.borrow_mut().deliveries);
+        let due = ui::time::now() + std::time::Duration::from_secs(SEND_UNDO_SECS);
         for (outgoing, done) in deliveries {
+            if self.sends_to_hold > 0 {
+                self.sends_to_hold -= 1;
+                self.held_sends.push(HeldSend {
+                    outgoing,
+                    done,
+                    due,
+                });
+                continue;
+            }
             self.deliver(outgoing, done);
         }
         let queued = std::mem::take(&mut self.server_outbox.borrow_mut().queued);
@@ -4371,7 +4466,9 @@ impl Widget for MailApp {
         self.drain_engine(state);
         self.reveal_requested(state);
         self.deliver_effect_replies();
+        self.take_back_sends(state);
         self.flush_server_outbox();
+        self.release_held_sends(state);
         self.compose.settle(state, path);
         self.keep_compose_headers(state);
         if !self.shared.borrow().seeded {
@@ -4830,6 +4927,7 @@ impl Widget for MailApp {
             .chain(self.setup_discovery_due)
             .chain(self.compose.headers_due_at())
             .chain(self.server_search.as_ref().map(|(_, at)| *at))
+            .chain(self.held_sends.iter().map(|held| held.due))
             .min()
     }
 
@@ -4865,9 +4963,14 @@ impl Widget for MailApp {
 /// A notice's Undo goes through the host's undo, the same as Ctrl+Z.
 impl ui::undo::UndoControl for MailApp {
     fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
-        self.nav
-            .take_toast_action()
-            .map(|_| ui::undo::UndoRequest::Undo)
+        self.nav.take_toast_action()?;
+        if self.send_notice && (!self.held_sends.is_empty() || self.sends_to_hold > 0) {
+            // The messages still waiting come back; nothing else is undone.
+            self.unsend = true;
+            self.dirty = true;
+            return None;
+        }
+        Some(ui::undo::UndoRequest::Undo)
     }
 }
 
@@ -6339,6 +6442,7 @@ mod tests {
                 .borrow_mut()
                 .deliver(queued.clone(), Box::new(|_| {}));
             app.flush_server_outbox();
+            app.undo_time_is_up(&mut doc);
             let EngineRequest::Send { account, draft, .. } = outgoing.try_recv().unwrap() else {
                 panic!("the compose action must reach the send backend");
             };
@@ -6678,6 +6782,91 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                     == Some(format!("mail.message:{old_id}").as_str())),
             "what the server found is searched"
         );
+    }
+
+    /// A sent message waits out the undo time before it reaches the server;
+    /// "Undo" on the sending notice takes it back to the composer unsent.
+    #[test]
+    fn a_sent_message_waits_so_undo_takes_it_back_unsent() {
+        let send = |app: &mut MailApp, doc: &mut AutoCommit| -> Outgoing {
+            app.compose.open_blank();
+            app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            app.compose.reattach(&crate::model::Draft {
+                to: "dest@there.example".into(),
+                subject: "Hi".into(),
+                body: "Hello".into(),
+                ..Default::default()
+            });
+            app.send_compose(&mut ui::widget::Edits::lend(doc));
+            let dispatcher = app
+                .shared
+                .borrow()
+                .dispatcher
+                .clone()
+                .expect("a dispatcher");
+            TestMail::confirm(doc, &dispatcher);
+            let outbox = TestMail::outbox(doc);
+            let [(outgoing, None)] = outbox.as_slice() else {
+                panic!("one message waits in the outbox: {outbox:?}");
+            };
+            outgoing.clone()
+        };
+        let (mut app, mut doc) = app();
+        let (outgoing_tx, requests) = std::sync::mpsc::channel();
+        let (_incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing_tx,
+            rx: incoming_rx,
+        });
+        let outgoing = send(&mut app, &mut doc);
+        app.show_status();
+        assert!(app.send_notice, "the sending notice offers Undo");
+        app.server_outbox()
+            .borrow_mut()
+            .deliver(outgoing.clone(), Box::new(|_| {}));
+        app.flush_server_outbox();
+        app.release_held_sends(&ui::widget::Edits::lend(&mut doc));
+        assert!(requests.try_recv().is_err(), "it waits before it goes");
+        assert!(
+            app.next_wake_deadline().is_some(),
+            "the window wakes to send it"
+        );
+
+        app.unsend = true;
+        app.take_back_sends(&mut ui::widget::Edits::lend(&mut doc));
+        let dispatcher = app
+            .shared
+            .borrow()
+            .dispatcher
+            .clone()
+            .expect("a dispatcher");
+        TestMail::confirm(&mut doc, &dispatcher);
+        assert!(TestMail::outbox(&doc).is_empty(), "taken back unsent");
+        assert!(app.compose.open, "back in the composer");
+        app.flush_server_outbox();
+        assert!(requests.try_recv().is_err(), "never sent");
+
+        app.compose.close();
+        let outgoing = send(&mut app, &mut doc);
+        app.server_outbox()
+            .borrow_mut()
+            .deliver(outgoing, Box::new(|_| {}));
+        app.flush_server_outbox();
+        app.undo_time_is_up(&mut doc);
+        assert!(
+            matches!(requests.try_recv(), Ok(EngineRequest::Send { .. })),
+            "after the undo time it goes"
+        );
+    }
+
+    impl MailApp {
+        /// The undo time of every held message is up: they go.
+        fn undo_time_is_up(&mut self, doc: &mut AutoCommit) {
+            for held in &mut self.held_sends {
+                held.due = ui::time::now();
+            }
+            self.release_held_sends(&ui::widget::Edits::lend(doc));
+        }
     }
 
     struct InterleavedEngineFixture {
@@ -7714,6 +7903,7 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 Box::new(move |result| *answer.borrow_mut() = Some(result)),
             );
             app.flush_server_outbox();
+            app.undo_time_is_up(&mut doc);
             let (&request_id, _) = app
                 .pending_send
                 .iter()
