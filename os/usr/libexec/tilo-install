@@ -277,16 +277,9 @@ from pathlib import Path
 context = Path('/proc/self/attr/current').read_text().strip().strip('\0')
 enforcing = Path('/sys/fs/selinux/enforce').read_bytes().strip() == b'1'
 assert enforcing and context.split(':')[2] in ('init_t', 'unconfined_service_t'), f'backend probe did not execute in enforcing system service: enforcing={enforcing} domain={context!r}'
-resolver = None
+# The development target's profile resolver is compiled into tilo-installer-offline-target.
+resolver = hashlib.sha256(Path('/usr/libexec/tilo-installer-offline-target').read_bytes()).hexdigest()
 target = None
-helper_path = Path('/usr/libexec/tilo-installer-dev-target-uki.py')
-spec = importlib.util.spec_from_file_location('runtime_projection_probe', helper_path)
-helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
-if hasattr(helper, 'PROFILE_TOOLS'):
-    module_path = helper.PROFILE_TOOLS / 'hardware_profile.py'
-    module = helper.load_module(module_path, 'runtime_profile_probe')
-    module.resolve_profile(Path('/'), os.uname().release, 'aarch64')
-    resolver = hashlib.sha256(module_path.read_bytes()).hexdigest()
 if sys.argv[2] == '--cached-target':
     path = Path('/etc/tilo/installer-code-bootstrap/tilo-installer-code-target-probe.py')
     spec = importlib.util.spec_from_file_location('cached_target_probe', path)
@@ -1167,7 +1160,7 @@ promote_target_uki() {
       || die "could not mount the selected immutable development target"
     if [ ! -f "$dev_image_root/boot/tilo-target/tilo-target.efi" ]; then
       if dev_result="$(REQUIRE_TPM_PREDICTION="${REQUIRE_TPM_PREDICTION:-0}" \
-          python3 /usr/libexec/tilo-installer-dev-target-uki.py promote \
+          /usr/libexec/tilo-installer-offline-target dev-target-uki promote \
           --image-root "$dev_image_root" --target-root "$ENC_MNT" --esp "$esp")"; then
         podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
         [[ "$dev_result" =~ ^[0-9a-f]{128}$ ]] || die "development UKI returned an invalid digest"

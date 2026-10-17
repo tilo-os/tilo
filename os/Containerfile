@@ -1373,7 +1373,6 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-update-policy-set \
     os/usr/libexec/tilo-update-policy-check \
     /usr/libexec/
-COPY --chmod=0755 os/dev/uki-cmdline.py /usr/libexec/tilo-uki-cmdline
 COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator /usr/lib/systemd/system-generators/tilo-boot-mode-generator
 COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/lib/systemd/system-generators/tilo-esp-generator
 COPY \
@@ -2649,7 +2648,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
 # the composefs backend (bootc#2208), so /usr/libexec/tilo-deployment verifies what
 # it did and falls back to the boot loader's own default entry.
 #
-# uki-cmdline.py ships as tilo-uki-cmdline because the repair entry is DERIVED from
+# tilo-uki-cmdline (tilo-esp-write's UKI editor) ships because the repair entry is DERIVED from
 # the installed UKI rather than built: a second UKI inside the rootfs would change
 # the composefs digest it has to name. It rewrites `tilo.mode=normal` to
 # `tilo.mode=repair` in place, same length, so every following PE section keeps its

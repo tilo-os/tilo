@@ -27,7 +27,7 @@ class ResealCommands(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        for name in ('reseal-image.sh', '_common.sh', 'uki-cmdline.py'):
+        for name in ('reseal-image.sh', '_common.sh'):
             (self.root / name).write_text((REPO / 'os/dev' / name).read_text())
         (self.root / 'podman').write_text('''#!/usr/bin/python3
 import json, os, sys
@@ -47,7 +47,7 @@ elif args[0] == 'cp':
         open(os.path.join(args[2], '7.2.7.efi'), 'wb').write(b'fixture')
     else:
         sys.exit(1)
-elif args[0] == 'rm':
+elif args[0] in ('rm', 'run'):
     pass
 elif args[0] == 'build':
     if '--iidfile' in args:
@@ -64,8 +64,6 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
         helper = helper[:helper.index('\n}\n') + 3]
         (self.root / '_common.sh').write_text(
             'TILO_OS_DIR="$FIXTURE"\ndie() { echo "$*" >&2; exit 1; }\n' + helper)
-        (self.root / 'dev').mkdir()
-        (self.root / 'dev/uki-cmdline.py').write_text('')
         self.env = {'PATH': f'{self.root}:/usr/bin:/bin', 'HOME': str(self.root),
                     'CALLS': str(self.root / 'calls'), 'FIXTURE': str(self.root),
                     'CONTAINERFILE': str(self.root / 'Containerfile')}
@@ -96,6 +94,12 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
             self.assertNotIn('RUN ', containerfile)
             self.assertTrue(any('create' in call for call in calls))
             self.assertTrue(any('cp' in call for call in calls))
+            # The digest is rewritten by the image's own editor, offline.
+            edit = next(call for call in calls if 'run' in call)
+            self.assertEqual(edit[-4:], [IMAGE, 'set', 'composefs=' + 'a' * 128, '/stage/uki.efi'])
+            for flag in ('--rm', '--pull=never', '--network=none'):
+                self.assertIn(flag, edit)
+            self.assertEqual(edit[edit.index('--entrypoint') + 1], '/usr/libexec/tilo-uki-cmdline')
         restart_fixture(self)
         with self.subTest(phase="podman5_clamps_to_the_epoch"):
             result, calls = self.run_script()

@@ -10,6 +10,8 @@
 //! * [`dev_ssh`]: `tilo-install-dev-ssh --etc ETC --username USERNAME --key KEY`
 //! * [`bootc_copy_cache`]: `tilo-vm-bootc-copy-cache check|record` (VMs only)
 //! * [`offline_target`]: `tilo-installer-offline-target verify|import`
+//! * [`dev_target_uki`]: `tilo-installer-offline-target dev-target-uki
+//!   validate-image|promote` (development installer VMs only)
 //! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`
 //! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
 //!   (VMs only)
@@ -21,6 +23,7 @@ use std::process::ExitCode;
 pub mod args;
 pub mod bootc_copy_cache;
 pub mod dev_ssh;
+pub mod dev_target_uki;
 pub mod handoff_copy;
 pub mod ini;
 pub mod install_proof;

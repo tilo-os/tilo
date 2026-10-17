@@ -8,12 +8,12 @@ import argparse
 from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
 import stat
+import struct
 import subprocess
 import tempfile
 import time
@@ -60,6 +60,20 @@ def contents(path, limit=512 * 1024):
     return data
 
 
+def sealed_cmdline(data):
+    """The UKI's .cmdline file offset and size (the smaller of raw and virtual)."""
+    pe = struct.unpack_from('<I', data, 0x3C)[0]
+    require(data[pe:pe + 4] == b'PE\0\0', 'CI UKI is not a PE image')
+    count = struct.unpack_from('<H', data, pe + 6)[0]
+    base = pe + 24 + struct.unpack_from('<H', data, pe + 20)[0]
+    for index in range(count):
+        header = base + index * 40
+        if data[header:header + 8].rstrip(b'\0') == b'.cmdline':
+            size, _address, raw_size, offset = struct.unpack_from('<IIII', data, header + 8)
+            return offset, min(size, raw_size)
+    raise ValueError('CI UKI has no .cmdline section')
+
+
 def selected_deployment(esp):
     entries = trusted(esp, 'loader/entries')
     names = list(entries.glob('*.conf'))
@@ -71,10 +85,8 @@ def selected_deployment(esp):
     require(match is not None, 'CI boot entry is not a composefs UKI')
     path = trusted(esp, values[0].lstrip('/'))
     require(path.is_file() and path.stat().st_size <= 256 * 1024 * 1024, 'invalid CI UKI')
-    spec = importlib.util.spec_from_file_location('bootstrap_uki', Path(__file__).with_name('uki-cmdline.py'))
-    uki = importlib.util.module_from_spec(spec); spec.loader.exec_module(uki)
     data = path.read_bytes()
-    offset, length = uki.find_cmdline(data)
+    offset, length = sealed_cmdline(data)
     tokens = data[offset:offset + length].rstrip(b'\0').decode('utf-8').split()
     require('tilo.install' in tokens and 'composefs=' + match[1] in tokens,
             'bootstrap requires the exact installer UKI deployment')

@@ -34,13 +34,17 @@ need_file "$OS/usr/lib/systemd/system/tilo-repair@.service"       "the repair co
 need_file "$OS/usr/lib/systemd/system/tilo-boot-entries.service"  "the boot-entry unit ships"
 need_file "$OS/usr/lib/systemd/system/tilo-boot-health.service"   "the boot-health unit ships"
 need_file "$OS/usr/lib/bootc/kargs.d/04-mode.toml"               "the mode karg ships"
-need_file "$OS/dev/uki-cmdline.py"                               "the cmdline rewriter ships"
+if grep -Fq '{ link = "tilo-esp-write", to = "/usr/libexec/tilo-uki-cmdline" }' "$OS/components.toml"; then
+  ok "the cmdline rewriter ships"
+else
+  bad "the cmdline rewriter (tilo-uki-cmdline, a link to tilo-esp-write) is not in os/components.toml"
+fi
 [ "$fail" = 0 ] || exit 1
 
 # --- THE load-bearing one: the two mode values must be the same length --------
 # The repair UKI is the installed one with these bytes swapped in place. A
 # length-changing edit would move every following PE section and produce an image
-# the firmware loads as garbage — uki-cmdline.py refuses it, so the failure would
+# the firmware loads as garbage — tilo-uki-cmdline refuses it, so the failure would
 # be "no repair entry, silently" on every machine. Assert it here, where it is one
 # line of arithmetic.
 normal="$(sed -n 's/^kargs = \["\(tilo\.mode=[a-z]*\)"\]$/\1/p' "$OS/usr/lib/bootc/kargs.d/04-mode.toml" | head -1)"
@@ -59,7 +63,7 @@ else
   bad "'$normal' (${#normal} bytes) and '$repair' (${#repair} bytes) are different lengths.
       The repair UKI is derived by overwriting one with the other inside the
       sealed .cmdline section; a length change would move every following PE
-      section. uki-cmdline.py refuses it, so every machine would silently end up
+      section. tilo-uki-cmdline refuses it, so every machine would silently end up
       with no repair entry."
 fi
 

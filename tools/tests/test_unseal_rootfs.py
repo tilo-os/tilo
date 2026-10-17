@@ -1,5 +1,4 @@
 import importlib.util
-import shutil
 import struct
 import sys
 import tempfile
@@ -49,8 +48,6 @@ class UnsealRootfsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         (root / "usr/lib/modules" / KVER).mkdir(parents=True)
-        (root / "usr/libexec").mkdir(parents=True)
-        shutil.copy(REPO / "os/dev/uki-cmdline.py", root / "usr/libexec/tilo-uki-cmdline")
         return root
 
     def uki(self, root: Path) -> Path:
