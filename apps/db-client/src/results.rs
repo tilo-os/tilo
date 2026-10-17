@@ -149,6 +149,10 @@ fn compare_cells(a: Option<&Cell>, b: Option<&Cell>) -> Ordering {
         (Some(Cell::Real(a)), Some(Cell::Real(b))) => a
             .partial_cmp(b)
             .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan())),
+        // Cross-type comparisons must use the same rank for both numeric types:
+        // comparing their display text against nonnumbers would create cycles.
+        (Some(Cell::Integer(_) | Cell::Real(_)), Some(_)) => Ordering::Less,
+        (Some(_), Some(Cell::Integer(_) | Cell::Real(_))) => Ordering::Greater,
         (Some(a), Some(b)) => a.display().to_lowercase().cmp(&b.display().to_lowercase()),
     }
 }
@@ -401,10 +405,40 @@ mod tests {
     }
 
     #[test]
+    fn mixed_types_sort_consistently_in_every_input_order() {
+        // SQLite columns can contain numbers and text in the same result.
+        // Comparing cross-type pairs as text used to create 2 < 10.0 < "11" < 2.
+        let cells = [Cell::Integer(2), Cell::Real(10.0), Cell::Text("11".into())];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut table = ResultsTable::new("results");
+            table.bind(Some(Arc::new(QueryResult {
+                columns: vec!["mixed".into()],
+                rows: order.iter().map(|&i| vec![cells[i].clone()]).collect(),
+                is_select: true,
+                ..Default::default()
+            })));
+            table.sort_by(0);
+            let ascending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+            assert_eq!(ascending, [0, 1, 2], "input: {order:?}");
+            table.sort_by(0);
+            let descending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+            assert_eq!(descending, [2, 1, 0], "input: {order:?}");
+        }
+    }
+
+    #[test]
     fn mixed_numbers_compare_exactly_and_sort_consistently() {
-        // Ascending equivalence classes, including both sides of f64's exact
-        // integer range and i64's bounds. Every triple must be transitive.
+        // Ascending equivalence classes, including nulls, nonnumbers, both sides
+        // of f64's exact integer range and i64's bounds. Every triple must be transitive.
         let groups = [
+            vec![Cell::Null],
             vec![Cell::Real(f64::NEG_INFINITY)],
             vec![Cell::Real(-18_446_744_073_709_551_616.0)],
             vec![Cell::Integer(i64::MIN), Cell::Real(i64::MIN as f64)],
@@ -421,6 +455,8 @@ mod tests {
             vec![Cell::Real(0.5)],
             vec![Cell::Integer(1)],
             vec![Cell::Real(1.5)],
+            vec![Cell::Integer(2)],
+            vec![Cell::Real(10.0)],
             vec![
                 Cell::Integer(9_007_199_254_740_992),
                 Cell::Real(9_007_199_254_740_992.0),
@@ -431,6 +467,13 @@ mod tests {
             vec![Cell::Real(9_223_372_036_854_775_808.0)],
             vec![Cell::Real(f64::INFINITY)],
             vec![Cell::Real(f64::NAN)],
+            vec![Cell::Text("".into())],
+            vec![Cell::Text("11".into())],
+            vec![Cell::Text("A".into()), Cell::Text("a".into())],
+            vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],
+            vec![Cell::Blob(2)],
+            vec![Cell::Text("z".into())],
+            vec![Cell::Text("Ä".into()), Cell::Text("ä".into())],
         ];
         let values: Vec<_> = groups
             .iter()
