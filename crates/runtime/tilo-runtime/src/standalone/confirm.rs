@@ -6,6 +6,21 @@ use tilo_action_broker::app_actions::{
 };
 use tokio::sync::oneshot;
 
+/// Put to `person` in the runtime's native prompt what their agent asks to
+/// confirm, through `broker`'s app actions; an app's name is read from `apps`.
+pub(super) fn ask_the_person(
+    broker: &tilo_action_broker::collab_broker::BrokerHandle,
+    person: &str,
+    apps: &std::sync::Arc<crate::apps::Apps>,
+) {
+    if let Some(actions) = broker.app_action_broker() {
+        actions.set_app_action_consent(std::sync::Arc::new(ConfirmationPrompt {
+            person: person.to_owned(),
+            apps: std::sync::Arc::clone(apps),
+        }));
+    }
+}
+
 /// Longest label a prompt quotes.
 const LABEL_CHARS: usize = 80;
 
@@ -15,11 +30,11 @@ const LABEL_CHARS: usize = 80;
 /// Allow confirms: this invocation, and the agent's outside actions in that
 /// app until its run ends. An action whose own contract asks for
 /// confirmation still asks every time.
-pub(super) struct ConfirmationPrompt {
+struct ConfirmationPrompt {
     /// The person this runtime serves; nobody else is asked.
-    pub(super) person: String,
+    person: String,
     /// Where an app's name is read.
-    pub(super) apps: std::sync::Arc<crate::apps::Apps>,
+    apps: std::sync::Arc<crate::apps::Apps>,
 }
 
 impl AppActionConsentPrompter for ConfirmationPrompt {

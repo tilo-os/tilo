@@ -129,8 +129,6 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
-# An ordinary SDK app, to prove the standalone session admits and publishes it.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true
