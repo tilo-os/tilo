@@ -39,6 +39,7 @@ namespaces = [
     "uts",
     "ipc",
     "mount",
+    "net",
 ]
 seccomp    = "tilo-default"
 landlock   = "strict"
