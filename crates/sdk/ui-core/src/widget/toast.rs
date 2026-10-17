@@ -427,6 +427,12 @@ impl ToastStack {
         self.activated.take()
     }
 
+    /// Take down every notice that offers a button: what it would act on
+    /// has moved on, so its "Undo" would undo something else.
+    pub fn dismiss_actionable(&mut self) {
+        self.toasts.retain(|toast| toast.action.is_none());
+    }
+
     fn push_toast(&mut self, text: String, kind: ToastKind, action: Option<String>) {
         // Charge elapsed time only to entries that existed during that time.
         // A new notice gets its full lifetime even if the previous frame stalled.
@@ -2578,5 +2584,15 @@ mod tests {
             s.tick(Duration::from_millis(500));
             assert_eq!(s.len(), 0, "expires once un-hovered");
         }
+    }
+
+    #[test]
+    fn notices_with_a_button_go_once_what_they_act_on_moves_on() {
+        let mut s = ToastStack::new();
+        s.push_with_action("Deleted Groceries", ToastKind::Info, "Undo");
+        s.push("Imported", ToastKind::Success);
+        s.dismiss_actionable();
+        assert_eq!(s.len(), 1, "only the notice without a button stays");
+        assert!(s.iter().all(|toast| toast.action.is_none()));
     }
 }

@@ -383,3 +383,53 @@ fn ctrl_n_then_typing_names_the_note_and_enter_goes_on_to_its_body() {
         "the page tree shows the note under its name: {rows:?}"
     );
 }
+
+/// Two quick Ctrl+N notes sit side by side at the top level: the first
+/// note being selected does not make the second its child.
+#[test]
+fn ctrl_n_twice_makes_two_top_level_notes() {
+    let mut app = fresh();
+    app.call("new-note", serde_json::json!({ "title": "Inbox" }))
+        .unwrap();
+    app.settle();
+    for title in ["One", "Two"] {
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("n");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        app.harness().type_text(title);
+        app.harness().key("Enter");
+        app.settle();
+    }
+    let pages = app.read_document(read::list_pages);
+    for title in ["Inbox", "One", "Two"] {
+        let page = pages
+            .iter()
+            .find(|page| page.title == title)
+            .unwrap_or_else(|| panic!("{title} in {pages:?}"));
+        assert_eq!(page.parent, None, "{title} is a top-level note");
+    }
+}
+
+/// "/sub" after a line of text makes a note inside this one, titled with
+/// the line, and the line becomes a link to it.
+#[test]
+fn slash_sub_note_turns_a_line_into_a_linked_note_inside() {
+    let mut app = fresh();
+    app.call("new-note", serde_json::json!({ "title": "Trips" }))
+        .unwrap();
+    app.settle();
+    let parent = app.read_document(read::list_pages)[0].id;
+    app.harness().type_text("Lisbon in May /sub");
+    app.harness().key("Enter");
+    app.settle();
+    let pages = app.read_document(read::list_pages);
+    let child = pages
+        .iter()
+        .find(|page| page.title == "Lisbon in May")
+        .unwrap_or_else(|| panic!("the line names the new note: {pages:?}"));
+    assert_eq!(child.parent, Some(parent), "inside the note it came from");
+    let body = app.read_document(|doc| read::page_block_snapshots(doc, parent));
+    let texts: Vec<_> = body.into_iter().map(|(_, text)| text).collect();
+    assert_eq!(texts, ["Lisbon in May"], "the writing stays, now as a link");
+}

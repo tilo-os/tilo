@@ -256,6 +256,8 @@ close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 
+block-image-untitled = Bild
+block-image-missing = Noch nicht auf diesem Gerät
 notes-image-edit = Bild bearbeiten
 notes-image-done = Fertig
 notes-image-source = Bildbeschreibung und Ziel
@@ -264,7 +266,7 @@ table-edit-visual = Tabelle
 table-add-row = Zeile hinzufügen
 table-add-column = Spalte hinzufügen
 
-block-editor-drag-hint = Klicken für Blocktyp · Ziehen zum Verschieben · Alt+↑/↓
+block-editor-empty = Etwas schreiben…
 block-editor-find-placeholder = In Notiz suchen
 block-editor-find-no-results = Keine Ergebnisse
 block-editor-find-previous = Vorheriger Treffer
@@ -273,10 +275,7 @@ block-editor-find-close = Suche schließen
 block-editor-change-type = Blocktyp ändern
 block-editor-copy-code-hint = Code kopieren
 
-block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
-block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
-block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
 widget-breadcrumb = Pfad
 
 widget-filepicker-cancel = Abbrechen
@@ -433,7 +432,6 @@ day-tomorrow = Morgen
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
-save-status-saving = Wird gespeichert…
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
 save-status-not-saved-detail = Deine Änderungen sind noch da.
@@ -483,6 +481,28 @@ block-callout-tip = Tipp
 block-callout-important = Wichtig
 block-callout-warning = Warnung
 block-callout-caution = Vorsicht
+
+slash-menu-name = Blocktypen
+slash-menu-filter = Blöcke filtern…
+slash-paragraph = Absatz
+slash-heading-1 = Überschrift 1
+slash-heading-2 = Überschrift 2
+slash-heading-3 = Überschrift 3
+slash-bullet = Aufzählung
+slash-numbered = Nummerierte Liste
+slash-checklist = Checkliste
+slash-page = Unternotiz
+slash-link-page = Notiz verlinken
+slash-image = Bild
+slash-quote = Zitat
+slash-code = Codeblock
+slash-table = Tabelle
+slash-tex = TeX-Formel
+slash-typst = Typst-Formel
+slash-divider = Trennlinie
+link-popover-name = Notizen verlinken
+link-popover-filter = Notiz finden…
+filter-menu-no-matches = Keine Treffer
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern

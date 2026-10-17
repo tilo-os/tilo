@@ -8,7 +8,6 @@ notes-table-add-row = Zeile darunter einfügen
 notes-table-add-column = Spalte danach einfügen
 notes-table-delete-row = Zeile löschen
 notes-table-delete-column = Spalte löschen
-notes-surface-rename = Klicken, um diese Notiz umzubenennen
 notes-surface-tag = Notizen mit dem Schlagwort { $tag } anzeigen
 notes-surface-backlink = Verlinkende Notiz öffnen: { $title }
 notes-parent-path = In { $path }
@@ -16,48 +15,23 @@ notes-linked-from = Verlinkt von
 notes-title-placeholder = Ohne Titel
 notes-save-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 notes-affordance-new-note = Neue Notiz
-notes-affordance-new-child = Neue untergeordnete Notiz
+notes-affordance-new-child = Neue Unternotiz
 notes-affordance-note-actions = Weitere Notizaktionen
-notes-affordance-note-row = Doppelklick zum Umbenennen; Rechtsklick für Notizaktionen
-notes-help-code = Codeblock
-notes-help-bullet = Aufzählung
-notes-help-numbered = Nummerierte Liste
-notes-help-checklist = Checkliste
-
-notes-help-close-compact = Esc schließt
-notes-help-more-compact = Weiter unten ↓
-notes-help-earlier-compact = Weiter oben ↑
-
-notes-help-code-exit = Unter Code schreiben
-notes-help-code-before = Über Code schreiben
-notes-help-code-copy = Code kopieren
-notes-help-code-indent = Code einrücken
-
-notes-help-code-blank = Leere Codezeile
-notes-help-code-select = Code, dann Notiz wählen
 
 notes-scroll-position = Scrollposition der Notiz
 notes-scroll-help = Zum Scrollen ziehen. Pfeiltasten bewegen schrittweise; Bild auf und Bild ab blättern; Pos1 und Ende springen zum Anfang oder Ende.
-notes-help-outline-indent = Text oder Liste ein- / ausrücken
-notes-help-editor-leave = Fokus aus dem Editor bewegen
-notes-help-block-backspace = Am Blockanfang: ausrücken, Format lösen, verbinden
-notes-help-block-indent = Ganzen Block ein- / ausrücken
 notes-title = Notizen
-notes-menu-new-child = Untergeordnete Notiz erstellen
+notes-menu-new-child = Neue Unternotiz
 notes-menu-rename = Umbenennen
 notes-menu-duplicate = Duplizieren
 notes-menu-copy-link = Notizlink kopieren
 notes-menu-export = Markdown exportieren
 notes-menu-insert-image = Bild einfügen
 notes-menu-delete = Löschen
-notes-a11y-new-child-under = Untergeordnete Notiz erstellen unter
+notes-a11y-new-child-under = Neue Unternotiz in
 notes-a11y-more-actions-for = Weitere Aktionen für
 
 notes-view-editor = Editor
-
-notes-help-block-duplicate = Blöcke mit Unterelementen duplizieren
-
-notes-help-block-move = Fokussierte oder ausgewählte Blöcke verschieben
 
 ## Verlauf: was jede Änderung getan hat, nach Feld und nach Aktion
 
@@ -77,6 +51,12 @@ notes-notebook-tags = { $op ->
    *[other] Schlagwort entfernt
 }
 notes-new-note = { $title } erstellt
+notes-deleted = { $inside ->
+    [0] { $title } gelöscht
+    [one] { $title } und 1 Notiz darin gelöscht
+   *[other] { $title } und { $inside } Notizen darin gelöscht
+}
+notes-undo = Rückgängig
 notes-new-child = { $title } in { $item } erstellt
 notes-rename = { $item } in { $title } umbenannt
 notes-delete = { $item } gelöscht
@@ -92,3 +72,47 @@ notes-delete-tag = Schlagwort { $item } gelöscht
 notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
+
+## Keyboard shortcuts sheet
+notes-help-title = Tastenkürzel
+notes-help-group-notes = Notizen
+notes-help-group-writing = Schreiben
+notes-help-group-formatting = Formatierung
+notes-help-group-code = Codeblöcke
+notes-help-group-help = Hilfe
+notes-help-new-note = Neue Notiz
+notes-help-new-sub-note = Neue Unternotiz
+notes-help-jump = Zu einer Notiz
+notes-help-back-forward = Zurück / vor
+notes-help-rename = Notiz umbenennen
+notes-help-note-actions = Notizaktionen
+notes-help-note-move = Notiz nach oben / unten
+notes-help-note-indent = Notiz ein- / ausrücken
+notes-help-delete = Notiz löschen
+notes-help-find = In Notiz suchen
+notes-help-block-menu = Blockmenü
+notes-help-link = Notiz verlinken
+notes-help-embed = Notiz einbetten
+notes-help-outline-indent = Ein- / ausrücken
+notes-help-block-indent = Mit Unterelementen ein- / ausrücken
+notes-help-block-move = Block nach oben / unten
+notes-help-block-duplicate = Block duplizieren
+notes-help-editor-leave = Notiz verlassen
+notes-help-bold = Fett
+notes-help-italic = Kursiv
+notes-help-inline-code = Code im Text
+notes-help-headings = Überschrift 1 / 2 / 3
+notes-help-bullet = Aufzählung
+notes-help-numbered = Nummerierte Liste
+notes-help-checklist = Checkliste
+notes-help-quote = Zitat
+notes-help-code = Codeblock
+notes-help-code-exit = Darunter schreiben
+notes-help-code-before = Darüber schreiben
+notes-help-code-blank = Leerzeile
+notes-help-code-indent = Ein- / ausrücken
+notes-help-code-copy = Code kopieren
+notes-help-code-select = Code auswählen
+notes-help-shortcuts = Tastenkürzel
+notes-help-close = Schließen
+notes-help-soft-break = Neue Zeile im selben Eintrag

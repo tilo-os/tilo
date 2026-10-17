@@ -43,8 +43,8 @@ cargo run -p notes --release
 
 The binary opens the host-owned default notebook. A new notebook starts empty
 and presents **New note**. The shared record host supplies persistence,
-history, undo and collaboration; the status bubble shows **Saving...** while a
-write is queued and **Saved** once it lands.
+history, undo and collaboration. Saving is silent: the note's header says
+something only when a write stalls or fails.
 
 Passing a Markdown file on the command line (or opening one with Notes)
 imports it as a new note, with the images next to it, and opens it. The same
@@ -108,8 +108,9 @@ Inline marks inside non-code blocks:
 | Navigation | Back / forward note | `Alt-Left` / `Alt-Right` |
 | Navigation | Move sidebar selection | `Up` / `Down` |
 | Navigation | Collapse / expand branch | `Left` / `Right` |
-| Navigation | Open shortcut reference | `?` |
-| Notes | New child of selected note | `Cmd-N` / `Ctrl-N` |
+| Navigation | Open shortcut reference | `Ctrl-/` / `F1` |
+| Notes | New note | `Cmd-N` / `Ctrl-N` |
+| Notes | New note inside the selected one | `Cmd-Shift-N` / `Ctrl-Shift-N` |
 | Notes | Rename selected note | double-click / `F2` |
 | Notes | Open note actions | Menu / `Shift-F10` |
 | Notes | Indent / outdent note | `Tab` / `Shift-Tab` |

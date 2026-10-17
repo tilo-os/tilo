@@ -293,6 +293,15 @@ fn reached(
                 && node.state.expanded == Some(true)
                 && !node.state.hidden
         }),
+        Some("slash_query") => {
+            matches!(blocks, [block] if block.text() == "Groceries for Monday /c")
+                && observed(driver, |node| {
+                    node.semantic_key.as_deref() == Some("notes.slash-menu")
+                        && node.value.as_deref() == Some("c")
+                        && node.children.first().and_then(|row| row.name.as_deref())
+                            == Some("Checklist")
+                })
+        }
         Some("slash_applied") => {
             matches!(blocks, [block] if matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Overview")
         }
@@ -419,7 +428,7 @@ fn reached(
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
         Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
-        Some("saving" | "save_retrying") => {
+        Some("save_retrying") => {
             observed(driver, |node| node.name.as_deref() == Some("Saving…"))
         }
         Some("save_not_saved") => observed(driver, |node| {

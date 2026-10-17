@@ -271,7 +271,14 @@ fn notes_editor(
     RichTextSurface::over(body).with_editor(
         BlockEditor::new()
             .with_wrap_lines(true)
-            .with_compact_paragraph_spacing(true),
+            .with_compact_paragraph_spacing(true)
+            .with_slash_commands(
+                true,
+                &[
+                    ui::widget::SlashHostCommand::Page,
+                    ui::widget::SlashHostCommand::Image,
+                ],
+            ),
     )
 }
 
@@ -892,6 +899,11 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    /// The slash command the person chose that Notes carries out, once.
+    pub fn take_slash_request(&mut self) -> Option<ui::widget::SlashRequest> {
+        self.editor.editor_mut().take_slash_request()
     }
 
     /// Images pasted into the open note since the last call.
@@ -1794,6 +1806,9 @@ impl Widget for MainPanel {
             self.editor
                 .editor_mut()
                 .set_tooltip_viewport(Some(viewport));
+            // The slash menu and link picker stay in the visible page,
+            // opening above the caret near its bottom.
+            self.editor.editor_mut().set_popover_bounds(Some(viewport));
             self.scroll_layout_dirty = false;
         }
     }
@@ -2166,7 +2181,6 @@ impl Widget for MainPanel {
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        use ui::i18n::I18nManager;
         // Header controls keep their toolkit hit geometry and hints. The
         // panel supplies the exact persisted times behind its compact caption.
         fn header_hint(
@@ -2188,12 +2202,6 @@ impl Widget for MainPanel {
         self.page_id?;
         if self.tooltips_suppressed || !self.rect.contains(point) {
             return None;
-        }
-        if self.title_rect.contains(point) && !self.title_label.is_editing() {
-            return Some((
-                self.title_rect,
-                I18nManager::lookup("notes-surface-rename", None),
-            ));
         }
         let date_id = format!(
             "notes.caption:{}",
@@ -2623,7 +2631,10 @@ mod tests {
                 panel.cursor_shape(panel.title_rect.center()),
                 Some(winit::window::CursorIcon::Text)
             );
-            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
+            assert!(
+                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
+                "the title is a text field: its caret says it is editable"
+            );
             assert!(
                 panel
                     .tooltip_target_at(tag_rect.center())
@@ -2657,14 +2668,9 @@ mod tests {
                 assert!(panel.tooltip_target_at(rect.center()).is_none());
             }
             panel.suppress_tooltips(false);
-            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
+            for rect in [tag_rect, backlink_rect, date_rect] {
                 assert!(panel.tooltip_target_at(rect.center()).is_some());
             }
-            panel.begin_title_edit();
-            assert!(
-                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
-                "rename hint must not cover an active title edit"
-            );
         }
     }
 

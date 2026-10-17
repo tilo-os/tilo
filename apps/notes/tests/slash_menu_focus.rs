@@ -41,7 +41,10 @@ fn slash_menu_owns_arrow_and_enter_keys() {
             Some(welcome)
         );
 
-        // Type `/` in the editor → the block menu opens.
+        // Back in the body, type `/` → the block menu opens, the slash in
+        // the note where it was typed.
+        let editor = app.harness().targets()["block_editor"];
+        app.harness().click_at(editor.x0 + 20.0, editor.y0 + 10.0);
         dispatch(&mut app, &char_key("/"));
         assert!(
             surface(&mut app, |notes| notes.editor_slash_menu_visible_for_test()),
@@ -54,7 +57,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .slash_menu()
                 .highlighted()
                 .cloned()),
-            Some(BlockKind::Paragraph),
+            Some(ui::widget::SlashCommand::Block(BlockKind::Paragraph)),
             "the menu starts on the first row"
         );
 
@@ -72,7 +75,7 @@ fn slash_menu_owns_arrow_and_enter_keys() {
                 .slash_menu()
                 .highlighted()
                 .cloned()),
-            Some(BlockKind::Heading(1)),
+            Some(ui::widget::SlashCommand::Block(BlockKind::Heading(1))),
             "ArrowDown advances the block-menu highlight"
         );
 
