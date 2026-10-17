@@ -382,3 +382,67 @@ fn the_on_screen_keyboard_docks_on_its_fields_display() {
     desk.fb.set_osk_surface(None, None, None, false);
     crate::shell::foreign::store().forget(SURFACE);
 }
+
+/// A permission prompt opens across the top of the window of the app that
+/// asks, on that window's display, not across the top of the other one.
+#[test]
+fn a_permission_prompt_opens_over_the_window_that_asks() {
+    let mut desk = Desk::new("laptop-beside-1080p");
+    desk.fb.with_chrome(|chrome| {
+        let mut tree = chrome.tree_mut();
+        let group = tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter_mut()
+            .find(|g| g.id == ON_MONITOR)
+            .expect("the monitor's window");
+        group.tabs[0].tile = TileContent::LocalApp {
+            app_id: "org.tilo.audit".into(),
+            label: "Audit".into(),
+            note: String::new(),
+        };
+    });
+    // The person works on the panel; the monitor's app asks.
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_PANEL, tab_of(ON_PANEL));
+    desk.settle();
+    let (reply, _answer) = tokio::sync::oneshot::channel();
+    desk.fb.with_chrome(|chrome| {
+        chrome
+            .pending_grants
+            .push_back(crate::shell::chrome_state::PendingPrompt::with_reply(
+                "org.tilo.audit".into(),
+                crate::shell::state::Capability::HostShell {
+                    scope: crate::shell::state::GRANT_ALWAYS,
+                },
+                reply,
+            ));
+    });
+    desk.fb.host_mut().pump_permission_prompt();
+    desk.settle();
+    let prompt = desk
+        .fb
+        .host()
+        .trusted_frame_targets(&ui::theme::Theme::dark())
+        .into_iter()
+        .find(|(name, _)| *name == crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET)
+        .map(|(_, band)| band)
+        .expect("the prompt is up");
+    let window = desk
+        .fb
+        .host_mut()
+        .group_at_for_tests(STRIP, 1)
+        .map(|group| ui::widget::Widget::get_rect(&*group))
+        .expect("the asking window is laid out");
+    assert_on(
+        desk.display(1),
+        prompt,
+        "the permission prompt",
+        "the monitor",
+    );
+    assert!(
+        prompt.y0 >= window.y0 - 8.0 && prompt.y0 < window.y0 + 120.0,
+        "the prompt {prompt:?} sits at the top of the asking window {window:?}"
+    );
+}
