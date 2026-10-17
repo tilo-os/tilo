@@ -92,8 +92,8 @@ set -euo pipefail
 # baked into the deployment). NOT where the bits come from now — those come
 # from the booted image we copy to storage. Resolve the immutable profile on
 # every re-exec; an environment override may not change its reviewed origin.
-TILO_TARGET_IMGREF="$(python3 /usr/lib/tilo/hardware_profile.py \
-  --install-update-origin "${TILO_TARGET_IMGREF:-}")" || exit 1
+TILO_TARGET_IMGREF="$(/usr/libexec/tilo-board-successor \
+  install-update-origin "${TILO_TARGET_IMGREF:-}")" || exit 1
 
 # The local-storage tag `bootc image copy-to-storage` writes to by default.
 LOCAL_IMG="localhost/bootc"

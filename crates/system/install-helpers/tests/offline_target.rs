@@ -246,8 +246,19 @@ fn direct_import_preserves_digest_and_uses_immutable_id() {
             return Ok(expected_digest.clone());
         }
         assert_eq!(argv[0..2], ["podman", "run"]);
-        assert!(argv.contains(&id));
         assert!(argv.iter().any(|word| word == "--network=none"));
+        // The target image resolves its own origin with its compiled reader.
+        let origin = update();
+        assert_eq!(
+            argv[argv.len() - 5..],
+            [
+                "--entrypoint",
+                "/usr/libexec/tilo-board-successor",
+                id.as_str(),
+                "install-update-origin",
+                origin.as_str(),
+            ]
+        );
         Ok(String::new())
     });
     assert_eq!(import_image(&host).unwrap(), image_id);
