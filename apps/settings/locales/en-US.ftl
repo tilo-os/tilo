@@ -2563,3 +2563,20 @@ accounts-remove-files = Remove Files
 accounts-disconnect-mail = Disconnect Mail
 accounts-service-action = { $action } — { $service }
 accounts-mail-configured = Mail · { $identity }
+
+## Appearance: desk widgets
+
+settings-desk-card = Desk widgets
+settings-desk-music = Music
+settings-desk-team = People in this workspace
+settings-desk-when = Shows
+settings-desk-edge = Waits at
+settings-desk-show-pause = When I pause typing
+settings-desk-show-always = Always, on the strips I pin it to
+settings-desk-show-ask = Only when I ask
+settings-desk-edge-left = Left edge
+settings-desk-edge-right = Right edge
+settings-desk-edge-bottom = Bottom edge
+settings-desk-edge-bottom-left = Bottom-left corner
+settings-desk-edge-bottom-right = Bottom-right corner
+settings-desk-note = Widgets step aside while you type and come back when you pause or reach for their edge. Hold or tap Super to see them all. Drag one to move it to another edge; its pin keeps it on the strip you are on.
