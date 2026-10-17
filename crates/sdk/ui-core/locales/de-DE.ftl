@@ -423,7 +423,7 @@ palette-results = Ergebnisse
 palette-placeholder = Suchen…
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
-palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+palette-no-results-hint = Schreibweise prüfen oder ein anderes Wort versuchen
 palette-searching = Suche läuft…
 
 # Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
