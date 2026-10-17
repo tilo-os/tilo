@@ -42,6 +42,28 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 )
                 self.assertTrue(contract.adapter_registration_errors(source.replace(body, delayed)))
 
+    def test_the_client_reaches_the_guest_through_the_harness_and_never_ships(self):
+        repository = SCRIPT.parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("tools/atspi_external_client.py", "os/dev/vm.sh", "os/Containerfile"):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text((repository / name).read_text(encoding="utf-8"), encoding="utf-8")
+            self.assertEqual(contract.external_client_errors(root), [])
+            containerfile = root / "os/Containerfile"
+            original = containerfile.read_text(encoding="utf-8")
+            containerfile.write_text(
+                original + "COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py\n",
+                encoding="utf-8")
+            self.assertEqual(contract.external_client_errors(root), [
+                "os/Containerfile: the image ships the external AT-SPI client, which is test tooling"])
+            containerfile.write_text(original, encoding="utf-8")
+            harness = root / "os/dev/vm.sh"
+            harness.write_text(harness.read_text(encoding="utf-8").replace(
+                '"tools/atspi_external_client.py ', '"tools/other.py '), encoding="utf-8")
+            self.assertEqual(contract.external_client_errors(root), [
+                "os/dev/vm.sh: the VM harness does not deliver the external AT-SPI client into the guest"])
+
     def audit_update(self, update, *, source="crates/sdk/ui-core/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -77,6 +99,8 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "apps/photos/tilo-app.toml",
                 "apps/settings/tilo-app.toml",
                 "tools/atspi_external_client.py",
+                "os/dev/vm.sh",
+                "os/Containerfile",
             ):
                 files[name] = (repository / name).read_text(encoding="utf-8")
             for name, source in files.items():

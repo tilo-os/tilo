@@ -396,7 +396,8 @@ if ! grep -q '^  pull_request:' "$os" \
   && grep -Fq 'org.a11y.atspi.Text.GetText -- 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
-  && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \
+  && grep -Fq '"tools/atspi_external_client.py atspi-external-client.py"' "$repo/os/dev/vm.sh" \
+  && ! grep -Fq 'atspi_external_client' "$repo/os/Containerfile" \
   && grep -Fq 'accessibility.atspi_acceptance' "$repo/apps/settings/tilo-app.toml"; then
   ok 'OS release VM drives compositor and manifest-certified app AT-SPI actions over its session bus'
 else

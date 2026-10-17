@@ -38,6 +38,11 @@
 #   ./os/dev/vm.sh console                     print the installer/greeter console socket
 #                                             (tilo-control --socket PATH actions list)
 #   ./os/dev/vm.sh tool PROGRAM [ARGS...]      run a host tool where QEMU lives (distrobox)
+#   ./os/dev/vm.sh test NAME [ARGS...]         run in-guest test tooling (GUEST_TESTS below,
+#                                             e.g. installed-atspi-apps.sh) from this
+#                                             checkout over SSH; ARGS are joined like ssh's
+#   ./os/dev/vm.sh with-tests COMMAND          run COMMAND over SSH with that tooling's
+#                                             directory in $TILO_GUEST_TESTS
 #   ./os/dev/vm.sh keys KEY...                 send named keys (ret tab esc f2..)
 #   ./os/dev/vm.sh pointer X Y                 move the absolute USB tablet in guest pixels
 #   ./os/dev/vm.sh click X Y [left|right|middle]
@@ -516,6 +521,43 @@ cmd_greeter_acceptance() {
     --console "$TILO_CONSOLE" --out "$dir" --width "$TILO_XRES" --height "$TILO_YRES"
 }
 
+# In-guest test tooling the image does not ship, as checkout path and the name
+# it runs under in the guest.
+GUEST_TESTS=(
+  "tools/atspi_external_client.py atspi-external-client.py"
+  "os/tests/installed_atspi_apps.sh installed-atspi-apps.sh"
+  "crates/session/shell/tests/native_atspi_smoke.sh native-atspi-smoke.sh"
+  "apps/file-explorer/tests/atspi_smoke.sh files-atspi-smoke.sh"
+  "os/tests/collaborative-files-image-contract.sh collaborative-files-image-contract.sh"
+  "os/tests/boot_performance_gate.sh boot-performance-gate.sh"
+  "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
+  "os/tests/installed-admin-actions.sh installed-admin-actions.sh"
+  "os/tests/projection-boot-check.sh projection-boot-check.sh"
+)
+
+# Each call copies GUEST_TESTS from this checkout into a private directory in
+# the guest, runs COMMAND with TILO_GUEST_TESTS naming it (and
+# TILO_ATSPI_CLIENT the client in it), and removes it. The files travel on
+# stdin, a name line then a base64 line each, so COMMAND gets no stdin;
+# concurrent calls each get their own copy.
+cmd_with_tests() {
+  [ "$#" -gt 0 ] || die "usage: with-tests COMMAND"
+  local entry
+  for entry in "${GUEST_TESTS[@]}"; do
+    [ -f "$TILO_REPO/${entry% *}" ] || die "guest test tooling is missing: ${entry% *}"
+  done
+  for entry in "${GUEST_TESTS[@]}"; do
+    printf '%s\n' "${entry#* }"
+    base64 -w0 "$TILO_REPO/${entry% *}"
+    printf '\n'
+  done | gssh "d=\$(mktemp -d) || exit 1; trap 'rm -rf \"\$d\"' EXIT;" \
+    "while IFS= read -r n && IFS= read -r b; do" \
+    "printf %s \"\$b\" | base64 -d > \"\$d/\$n\" || exit 1; done;" \
+    "chmod 0700 \"\$d\"/* || exit 1;" \
+    "export TILO_GUEST_TESTS=\"\$d\" TILO_ATSPI_CLIENT=\"\$d/atspi-external-client.py\";" \
+    "$*"
+}
+
 # One capture of whatever is on screen now, saved as NAME.png and required to
 # be fully painted.
 cmd_check_frame() {
@@ -654,6 +696,9 @@ case "$sub" in
   # stdin passed through: in the distrobox when TILO_DISTROBOX is set.
   tool) [ "$#" -gt 0 ] || die "usage: tool PROGRAM [ARGS...]"; inenv "$(printf '%q ' "$@")";;
   ssh) gssh "$@";;
+  test) [ "$#" -gt 0 ] || die "usage: test NAME [ARGS...]"
+    name="$1"; shift; cmd_with_tests "\"\$TILO_GUEST_TESTS/$name\"" "$@";;
+  with-tests) cmd_with_tests "$@";;
   serial) cmd_serial "$@";;
   journal) cmd_journal "$@";;
   status) cmd_status;;
@@ -661,6 +706,6 @@ case "$sub" in
   capture-boot) cmd_capture_boot "$@";;
   greeter-acceptance) cmd_greeter_acceptance "$@";;
   check-frame) cmd_check_frame "$@";;
-  -h|--help|"") sed -n '2,51p' "$0";;
+  -h|--help|"") sed -n '2,61p' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

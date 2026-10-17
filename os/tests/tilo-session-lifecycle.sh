@@ -133,7 +133,7 @@ grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$relea
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
 # stronger accessibility release gate before any filesystem test could run.
-grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions' "$release_workflow"
+grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh oobe-actions' "$release_workflow"
 grep -Fq './os/dev/vm.sh keys tab ret' "$release_workflow"
 grep -Fq 'identity ceremony did not produce the certified chain' "$release_workflow"
 

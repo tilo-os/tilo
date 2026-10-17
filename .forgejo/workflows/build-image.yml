@@ -3041,7 +3041,7 @@ jobs:
           # newly serialized network wait, initramfs stall, or service timeout.
           # Before the login: it checks the greeter's login endpoint, which
           # greetd removes once the session has started.
-          ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh'
+          ./os/dev/vm.sh with-tests 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 "$TILO_GUEST_TESTS/boot-performance-gate.sh"'
 
           # The sign-in screen as a person meets it, judged from the frames
           # QEMU scans out: whole before any input and while the pointer
@@ -3086,16 +3086,16 @@ jobs:
           # Password fields refuse Copy and Cut. Typed and copied with the
           # real keyboard, ordinary chrome text reaches the session clipboard
           # while the backup passphrase leaves it holding what it held.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-plain
+          ./os/dev/vm.sh test native-atspi-smoke.sh oobe-copy-plain
           ./os/dev/vm.sh type tiloplainprobe
           ./os/dev/vm.sh keys ctrl-a ctrl-c
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh clipboard-is tiloplainprobe
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-secret
+          ./os/dev/vm.sh test native-atspi-smoke.sh clipboard-is tiloplainprobe
+          ./os/dev/vm.sh test native-atspi-smoke.sh oobe-copy-secret
           ./os/dev/vm.sh type tilosecretprobe42
           ./os/dev/vm.sh keys ctrl-a ctrl-c ctrl-x
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh \
+          ./os/dev/vm.sh test native-atspi-smoke.sh \
             clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
+          ./os/dev/vm.sh test native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
               "test -s \"\$HOME/.config/tilo/identity/primary.json\" && test -s /var/lib/tilo/device/cert.bin"; then
@@ -3131,7 +3131,7 @@ jobs:
           fi
           ./os/dev/vm.sh ssh "/usr/libexec/tilo-session-report --render-gate $render_budgets"
 
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
+          ./os/dev/vm.sh test projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
           # deadlines on the shipped script, independent of Containerfile
           # assembly. Failure is visible here and does not undo the desktop
@@ -3141,30 +3141,30 @@ jobs:
           else
             echo '::error::AirPlay encrypted-session acceptance failed (separate from desktop readiness; see #57)'
           fi
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/collaborative-files-image-contract.sh runtime
+          ./os/dev/vm.sh test collaborative-files-image-contract.sh runtime
           # Drive the signed Settings and Files payloads as an independent
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          ./os/dev/vm.sh test installed-atspi-apps.sh
           # The sandboxed Settings reads the device's network through the
           # system authorities it is granted: its Network pane must say what
           # nmcli says on the same booted, connected VM, and show no read error.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh settings-network
+          ./os/dev/vm.sh test installed-atspi-apps.sh settings-network
           # The empty workspace's cards perform what they name: the Notes card
           # opens Notes itself rather than a launcher pre-filled with "Notes".
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
+          ./os/dev/vm.sh test installed-atspi-apps.sh card Notes Notes
           # The call card starts the workspace's call through Chat's own
           # action: Chat opens already in the call, not on a Call button.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'card "Start a call" Chat --expect "Leave call"'
           # The Tasks card opens Calendar through its own read-only view action.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card Tasks Calendar --expect "Task list"'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'card Tasks Calendar --expect "Task list"'
           # Browser renders a page through its Chromium engine runtime: Browser
           # opens through the app palette's action, the page comes from a
           # server in the guest, the address arrives on the real keyboard, and
           # the loaded page's title is read back over AT-SPI.
           if [[ $TILO_WITH_BROWSER == 1 ]]; then
             page_log="/var/tmp/tilo-browser-page-${{ matrix.arch }}.log"
-            ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh page > "$page_log" 2>&1 &
+            ./os/dev/vm.sh test installed-atspi-apps.sh page > "$page_log" 2>&1 &
             page_check=$!
             page_url=""
             for attempt in $(seq 1 240); do
@@ -3196,7 +3196,7 @@ jobs:
           new_tab_gate() {
             local app="$1" log gate status=0
             log="$(mktemp /var/tmp/tilo-new-tab.XXXXXX)"
-            ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh new-tab "$app" >"$log" 2>&1 &
+            ./os/dev/vm.sh test installed-atspi-apps.sh new-tab "$app" >"$log" 2>&1 &
             gate=$!
             for _ in $(seq 1 180); do
               grep -q '^READY' "$log" && break
@@ -3220,15 +3220,15 @@ jobs:
           else
             echo '::notice::image built without the Browser; its Ctrl+T desktop-tab gate is inapplicable'
           fi
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          ./os/dev/vm.sh test native-atspi-smoke.sh desktop
           # Quick Settings must reach the system, not merely open: change
           # the power profile there and read it back from the daemon.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh quick-settings
+          ./os/dev/vm.sh test native-atspi-smoke.sh quick-settings
           # The system authentication sheet is drawn by the compositor, not
           # an app window. A real polkit request from the graphical session
           # must reach an external reader as a dialog with password text it
           # can focus, type into and cancel.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh auth
+          ./os/dev/vm.sh test native-atspi-smoke.sh auth
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
           # session's logind scope and their own app scopes, and nothing of
@@ -3236,35 +3236,35 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
           # The device admin drives the session through the action model over
           # their own ssh login: no TILO_TEST_CONTROL, no synthetic input.
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-admin-actions.sh
+          ./os/dev/vm.sh test installed-admin-actions.sh
 
           # Typing in a note is a keyboard's job, so the sentence reaches Notes
           # through QEMU's keyboard as key presses, never an app API. The
           # document must read back exactly what was typed, in order.
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-typing'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'type-into Notes "New note" --field "Block text" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
           # The note is durable, and Notes says so: "Saved", never "Not saved".
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
+          ./os/dev/vm.sh test installed-atspi-apps.sh "typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Tab in a note nests the line under the one above instead of
           # moving focus away; the second block must read as nested.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'type-into Notes "New note" --field "Block text" --state /tmp/notes-nesting'
           ./os/dev/vm.sh type one
           ./os/dev/vm.sh keys ret
           ./os/dev/vm.sh type two
           ./os/dev/vm.sh keys tab
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
 
           # A screenshot copied elsewhere pastes into a note as an image with
           # Ctrl+V, kept by the document media service the launcher must reach.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-image'
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'type-into Notes "New note" --field "Block text" --state /tmp/notes-image'
+          ./os/dev/vm.sh test native-atspi-smoke.sh copy-image
           # The copy reaches Notes as a selection event; give it a moment to
           # read the image before pasting.
           sleep 2
           ./os/dev/vm.sh keys ctrl-v
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh present Notes "Pasted image" --state /tmp/notes-image'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'present Notes "Pasted image" --state /tmp/notes-image'
 
           # A note someone typed for minutes keeps thousands of changes in its
           # history, one or more per key. Typed here on the real keyboard, it
@@ -3272,21 +3272,21 @@ jobs:
           # launch's APP-STARTUP line and History's HISTORY-OPEN line are
           # judged with every other launch below.
           long_note=$(python3 -c 'import itertools; words = "sidebar flickers when a note is renamed twice then the search field loses focus".split(); print(" ".join(itertools.islice(itertools.cycle(words), 340))[:2000])')
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-history'
+          ./os/dev/vm.sh test installed-atspi-apps.sh 'type-into Notes "New note" --field "Block text" --state /tmp/notes-history'
           ./os/dev/vm.sh type "$long_note"
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$long_note' --state /tmp/notes-history --status Saved --min-chars 1800"
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh reopen-history Notes so.tilo.notes --expect-text '${long_note:0:12}'"
+          ./os/dev/vm.sh test installed-atspi-apps.sh "typed '$long_note' --state /tmp/notes-history --status Saved --min-chars 1800"
+          ./os/dev/vm.sh test installed-atspi-apps.sh "reopen-history Notes so.tilo.notes --expect-text '${long_note:0:12}'"
 
           # Keyboards and mice plugged in after login must reach the running
           # compositor: a USB keyboard hot-added on QEMU's own bus, then a
           # virtual keyboard plugged and unplugged repeatedly, every time
           # listed in the compositor's input snapshot as opened and dropped.
           usb_kbd='QEMU QEMU USB Keyboard'
-          usb_kbds=$(./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh count '$usb_kbd'")
+          usb_kbds=$(./os/dev/vm.sh test input-hotplug-check.sh "count '$usb_kbd'")
           ./os/dev/vm.sh cmd 'device_add usb-kbd,id=hotplug-kbd'
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $((usb_kbds + 1))"
+          ./os/dev/vm.sh test input-hotplug-check.sh "wait-count '$usb_kbd' $((usb_kbds + 1))"
           ./os/dev/vm.sh cmd 'device_del hotplug-kbd'
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $usb_kbds"
+          ./os/dev/vm.sh test input-hotplug-check.sh "wait-count '$usb_kbd' $usb_kbds"
 
           # The windows opened above logged the GPU adapter they render on. On
           # a virgl boot none may have fallen back to a CPU rasterizer; the 2D
@@ -3312,7 +3312,7 @@ jobs:
           # of its letter keys must type into it, read back over AT-SPI. Root
           # owns the touchscreen; the session user's client says where to tap.
           touch_log="$(mktemp /var/tmp/tilo-touch.XXXXXX)"
-          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh touchscreen \"\$XDG_RUNTIME_DIR/tilo/input-state.json\" \"/run/user/\$(id -u)/tilo-touch\" \"\$(id -un)\"" \
+          ./os/dev/vm.sh with-tests "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' \"\$TILO_GUEST_TESTS/input-hotplug-check.sh\" touchscreen \"\$XDG_RUNTIME_DIR/tilo/input-state.json\" \"/run/user/\$(id -u)/tilo-touch\" \"\$(id -un)\"" \
             >"$touch_log" 2>&1 &
           touch_helper=$!
           for _ in $(seq 1 60); do
@@ -3325,7 +3325,7 @@ jobs:
             echo "::error::the compositor never opened a touchscreen plugged in after login" >&2
             exit 1
           fi
-          if ! ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh osk-search "/run/user/$(id -u)/tilo-touch"'; then
+          if ! ./os/dev/vm.sh test installed-atspi-apps.sh 'osk-search "/run/user/$(id -u)/tilo-touch"'; then
             cat "$touch_log"
             ./os/dev/vm.sh ssh 'journalctl -b --no-pager -o short-monotonic -n 200 _UID=$(id -u)' || true
             echo "::error::the on-screen keyboard did not type into a tapped field" >&2
@@ -3340,8 +3340,8 @@ jobs:
           # protected password field and instructions on the session bus. The
           # chord comes from the last virtual keyboard plugged in above, so it
           # also proves a hot-plugged device's keys reach the compositor.
-          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh uinput \"\$XDG_RUNTIME_DIR/tilo/input-state.json\""
-          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
+          ./os/dev/vm.sh with-tests "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' \"\$TILO_GUEST_TESTS/input-hotplug-check.sh\" uinput \"\$XDG_RUNTIME_DIR/tilo/input-state.json\""
+          ./os/dev/vm.sh test native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
 

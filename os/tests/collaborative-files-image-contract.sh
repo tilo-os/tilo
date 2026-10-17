@@ -6,7 +6,10 @@
 #                                      booted system and logged-in user session
 #
 # The image mode runs during os/Containerfile itself.  Runtime mode is driven
-# over SSH by build-image.yml after bootc installation and graphical login.
+# over SSH by build-image.yml after bootc installation and graphical login,
+# through `os/dev/vm.sh test`, which copies this script, the Files AT-SPI smoke
+# and the external AT-SPI client (test tooling the image does not ship) into
+# the guest and names their directory in TILO_GUEST_TESTS.
 # It intentionally does not turn missing FUSE/session facilities into skips.
 set -euo pipefail
 
@@ -62,9 +65,7 @@ echo "== collaborative Files shipped-image contract ($mode) =="
 for path in /usr/bin/fs /usr/bin/tilo-launcher \
             /usr/bin/tilo-runtime-mcp \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
-            /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
-            /usr/libexec/tilo/native-atspi-smoke.sh \
-            /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
+            /usr/bin/fusermount3 /usr/bin/cage \
             /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
             /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
             /usr/bin/dbus-update-activation-environment; do
@@ -384,8 +385,9 @@ if [ "$mode" = runtime ]; then
   # Exercise the installed package the way a user opens it: the session's
   # app palette, driven over AT-SPI, launches it through the launcher, in its
   # sandbox, attached to the session's runtime host.
-  TILO_FILES_SESSION_OPENER=/usr/libexec/tilo/atspi-external-client.py \
-    /usr/libexec/tilo/files-atspi-smoke.sh \
+  guest_tests="${TILO_GUEST_TESTS:?runtime mode runs through os/dev/vm.sh test, which sets TILO_GUEST_TESTS}"
+  TILO_FILES_SESSION_OPENER="$guest_tests/atspi-external-client.py" \
+    "$guest_tests/files-atspi-smoke.sh" \
     || die "installed Files AT-SPI smoke failed"
 fi
 

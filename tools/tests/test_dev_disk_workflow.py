@@ -322,7 +322,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
             prod = gate.index("./os/dev/build-image.sh", dev)
             self.assertLess(gate.index("          else\n", dev), prod)
             # Same desktop gate, then tilo-vmd.
-            self.assertIn("./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock", gate)
+            self.assertIn("./os/dev/vm.sh test native-atspi-smoke.sh lock", gate)
             self.assertLess(
                 gate.index("native-atspi-smoke.sh lock"),
                 gate.index('./os/dev/check-dev-vm.sh --arch'),
