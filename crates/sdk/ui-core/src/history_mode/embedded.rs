@@ -330,27 +330,33 @@ pub(crate) fn invoke_door(
         if result.is_some() || !history.encloses(owner) {
             return;
         }
-        let resources = [history.door_resource()];
-        result = Some((|| {
-            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
-                &resources,
-                &intent.address,
-                None,
-                Some(&intent.arguments),
-                false,
-            )?;
-            let encoded = crate::bound_dispatch::encode_resource_action(
-                &resources,
-                &intent.address,
-                arguments.as_ref(),
-                None,
-            )?;
-            history
-                .invoke_door(&encoded)
-                .map_err(tilo_actions::DoorError::Failed)
-        })());
+        result = Some(run_door_control(history, intent));
     });
     result
+}
+/// Run one History door control on `history` exactly as its own History
+/// control does: resolved against the door this History serves now.
+pub(crate) fn run_door_control(
+    history: &mut host::HistoryHost,
+    intent: &tilo_actions::ControlInvocation,
+) -> Result<(), tilo_actions::DoorError> {
+    let resources = [history.door_resource()];
+    let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+        &resources,
+        &intent.address,
+        None,
+        Some(&intent.arguments),
+        false,
+    )?;
+    let encoded = crate::bound_dispatch::encode_resource_action(
+        &resources,
+        &intent.address,
+        arguments.as_ref(),
+        None,
+    )?;
+    history
+        .invoke_door(&encoded)
+        .map_err(tilo_actions::DoorError::Failed)
 }
 pub(crate) fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;

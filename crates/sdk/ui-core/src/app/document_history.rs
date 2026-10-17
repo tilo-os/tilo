@@ -819,6 +819,44 @@ impl App {
         }
     }
 
+    /// This app is shown in a desktop window, whose tab row presents its
+    /// History while `tab_presents`: the app draws no History band of its
+    /// own, and offers its header row the control only while the tab row
+    /// is hidden.
+    pub(crate) fn set_window_presents_history(&mut self, tab_presents: bool) {
+        if let Some(history) = &mut self.history {
+            history.remove_fallback_bar();
+            history.set_open_button(!tab_presents);
+            self.layout.request_rebuild();
+        }
+    }
+
+    /// The History control the window shows for this app, if it has a
+    /// History to open.
+    pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
+        self.history
+            .as_ref()
+            .filter(|history| history.offers_control())
+            .map(|history| crate::widget::HistoryControl::of(history.is_open()))
+    }
+
+    /// The window's History control was pressed: run it on this app's
+    /// History door, as the History shortcut does.
+    pub(crate) fn invoke_window_history_control(
+        &mut self,
+        control: crate::widget::HistoryControl,
+    ) -> Result<(), String> {
+        let history = self.history.as_mut().ok_or("History is unavailable")?;
+        let intent = crate::standalone_history_host::history_control_binding(control)
+            .invoke(())
+            .map_err(|error| error.to_string())?;
+        crate::history_mode::embedded::run_door_control(history, &intent)
+            .map_err(|error| error.to_string())?;
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
+        Ok(())
+    }
+
     /// A registered framework History serves the same History door as the
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {

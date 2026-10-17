@@ -14,6 +14,7 @@ use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::hover_intent::{HoverIntent, Item as IntentItem, Sample as IntentSample};
+use crate::widget::window_header::HistoryControl;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -289,6 +290,12 @@ pub struct TabBar {
     max_rects: Vec<Rect>,
     /// Hover-only "search in app" hit regions, aligned 1:1 with `tabs`.
     search_rects: Vec<Rect>,
+    /// Hover-only History chips, aligned 1:1 with `tabs`; `Rect::ZERO` for a
+    /// tab whose window has no History.
+    history_rects: Vec<Rect>,
+    /// The History control each tab's window offers, by tab id: the window's
+    /// History door, shown as one more chip in the pill's cluster.
+    history: HashMap<u64, HistoryControl>,
     new_tab_rect: Rect,
     /// Keyed by tab id, alongside the title/size it was measured at, so a rename or
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
@@ -316,6 +323,7 @@ pub struct TabBar {
     hover_close_idx: Option<usize>,
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
+    hover_history_idx: Option<usize>,
     /// Which pill the pointer has opened. Resting on or heading for a
     /// control never opens or collapses anything that would move it; resting
     /// on a pill's body opens it after a short dwell; menu aim keeps it open
@@ -336,6 +344,8 @@ pub struct TabBar {
     pub pending_close: Option<u64>,
     pub pending_max: Option<u64>,
     pub pending_search: Option<u64>,
+    /// A press on a pill's History chip: the tab, and the control it showed.
+    pending_history: Option<(u64, HistoryControl)>,
     pub pending_new_tab: Option<()>,
     /// One-shot selection edge produced by direct user interaction.  The
     /// retained shell must not infer a click merely because model rebuilding
@@ -454,6 +464,9 @@ impl TabBar {
         for rect in &mut self.search_rects {
             *rect = shift_rect(*rect, shift);
         }
+        for rect in &mut self.history_rects {
+            *rect = shift_rect(*rect, shift);
+        }
         self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
     }
 
@@ -478,6 +491,8 @@ impl TabBar {
             close_hit_rects: Vec::new(),
             max_rects: Vec::new(),
             search_rects: Vec::new(),
+            history_rects: Vec::new(),
+            history: HashMap::new(),
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
             advance_changed: false,
@@ -491,6 +506,7 @@ impl TabBar {
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            hover_history_idx: None,
             hover_intent: HoverIntent::default(),
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
@@ -514,6 +530,7 @@ impl TabBar {
             pending_close: None,
             pending_max: None,
             pending_search: None,
+            pending_history: None,
             pending_new_tab: None,
             pending_activation: None,
             pending_detach: None,
@@ -625,6 +642,7 @@ impl TabBar {
         self.hover_close_idx = None;
         self.hover_max_idx = None;
         self.hover_search_idx = None;
+        self.hover_history_idx = None;
         self.hover_intent.clear();
         self.hover_new_tab = false;
         self.press_origin = None;
@@ -1362,6 +1380,43 @@ impl TabBar {
                 1.5,
             );
         }
+
+        let history_rect_target = self.history_rects.get(i).copied().unwrap_or(Rect::ZERO);
+        if history_rect_target.area() > 0.0 {
+            let alpha = chip_alpha_at(zone, HISTORY_CHIP_REACH);
+            let history_r = shift_rect(history_rect_target, offset);
+            let history_hover = Some(i) == self.hover_history_idx && self.pointer_settled();
+            // Open, the chip reads as on: the same round its hover wears.
+            let open = self
+                .tabs
+                .get(i)
+                .and_then(|t| self.history.get(&t.id))
+                .is_some_and(|control| control.is_open());
+            if history_hover || open {
+                let ring = chip_hover_ring(history_r);
+                let chip = RoundedRect::from_rect(ring, ring.height() / 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    chip_tint.with_alpha_factor(alpha),
+                    None,
+                    &chip,
+                );
+            }
+            let icon_color = if history_hover || open {
+                icon_active
+            } else {
+                icon_idle
+            };
+            icons::draw_icon(
+                scene,
+                transform,
+                history_r,
+                icons::Icon::History,
+                icon_color.with_alpha_factor(alpha),
+                1.5,
+            );
+        }
     }
 
     /// Narrower than `draw_pill_inner`: no hover/search/maximize/presence — the
@@ -1493,6 +1548,40 @@ impl TabBar {
             1.0
         }
     }
+    /// The reveal zone `reveal` opens pill `i` to: fully open, a pill whose
+    /// window has History holds one chip more.
+    fn reserve_of(&self, i: usize, reveal: Reveal) -> f64 {
+        let history = matches!(reveal, Reveal::Full)
+            && self
+                .tabs
+                .get(i)
+                .is_some_and(|t| self.history.contains_key(&t.id));
+        if history {
+            reveal.reserve() + CHIP_PITCH
+        } else {
+            reveal.reserve()
+        }
+    }
+
+    /// Right edge to the leftmost chip of pill `i`'s open cluster.
+    fn cluster_width(&self, i: usize) -> f64 {
+        self.reserve_of(i, Reveal::Full) - TITLE_CHIP_GAP
+    }
+
+    /// Where pill `i`'s History chip stands once the reveal zone reaches it:
+    /// one pitch left of the search chip.
+    fn history_chip_rect(&self, i: usize, search: Rect, effective: f64) -> Rect {
+        let has_history = self
+            .tabs
+            .get(i)
+            .is_some_and(|t| self.history.contains_key(&t.id));
+        if has_history && search.area() > 0.0 && effective >= HISTORY_CHIP_REACH {
+            shift_rect(search, vello::kurbo::Vec2::new(-CHIP_PITCH, 0.0))
+        } else {
+            Rect::ZERO
+        }
+    }
+
     /// Pointer-independent by construction — lets `apply_layout` fit the whole row
     /// from resting widths and leave the fit alone as the pointer moves across it.
     fn resting_reveal(&self, i: usize) -> Reveal {
@@ -1572,14 +1661,19 @@ impl TabBar {
     fn aim_target(&self, i: usize) -> Option<Rect> {
         let r = self.tab_rects.get(i).copied().filter(|r| r.area() > 0.0)?;
         let id = self.tabs.get(i)?.id;
-        let still_to_grow = (Reveal::Full.reserve() - self.reveal_reserve(id)).max(0.0);
+        let still_to_grow = (self.reserve_of(i, Reveal::Full) - self.reveal_reserve(id)).max(0.0);
         let x1 = r.x1 + still_to_grow;
         let (y0, y1) = if self.rect.height() > 0.0 {
             (self.rect.y0.min(r.y0), self.rect.y1.max(r.y1))
         } else {
             (r.y0, r.y1)
         };
-        Some(Rect::new((x1 - CHIP_CLUSTER_W).max(r.x0), y0, x1, y1))
+        Some(Rect::new(
+            (x1 - self.cluster_width(i)).max(r.x0),
+            y0,
+            x1,
+            y1,
+        ))
     }
 
     /// Lets the hover intent's dwell and aim hold run out between pointer
@@ -1611,7 +1705,8 @@ impl TabBar {
                 .and_then(|_| self.close_hit_rect(i));
             let max = self.max_rects.get(i).copied();
             let search = self.search_rects.get(i).copied();
-            [close, max, search]
+            let history = self.history_rects.get(i).copied();
+            [close, max, search, history]
         });
         pills
             .chain([Some(self.new_tab_rect)])
@@ -1633,13 +1728,13 @@ impl TabBar {
         let reserve = if self.reveal_anim.contains_key(&t.id) {
             self.reveal_reserve(t.id)
         } else {
-            self.target_reveal(idx).reserve()
+            self.reserve_of(idx, self.target_reveal(idx))
         };
-        ((reserve - Reveal::None.reserve()) / HOVER_GROWTH_PX).clamp(0.0, 1.0)
+        let growth = self.reserve_of(idx, Reveal::Full) - Reveal::None.reserve();
+        ((reserve - Reveal::None.reserve()) / growth).clamp(0.0, 1.0)
     }
 
-    fn advance_reveal(&mut self, id: u64, target: Reveal) -> f64 {
-        let to = target.reserve();
+    fn advance_reveal(&mut self, id: u64, to: f64) -> f64 {
         let Some(existing) = self.reveal_anim.get(&id).copied() else {
             // First pass seeing this tab — start settled rather than animating in,
             // so a static capture doesn't depend on how long the renderer took to boot.
@@ -2288,6 +2383,45 @@ impl TabBar {
     pub fn take_search(&mut self) -> Option<u64> {
         self.pending_search.take()
     }
+    /// A press on a pill's History chip since the last call: the tab, and
+    /// the control it showed (open History, or close it).
+    pub fn take_history(&mut self) -> Option<(u64, HistoryControl)> {
+        self.pending_history.take()
+    }
+    /// The History control tab `id`'s window offers, or `None` where it has
+    /// no History: one more chip in the pill's cluster, left of search.
+    pub fn set_history_control(&mut self, id: u64, control: Option<HistoryControl>) {
+        let had = self.history.contains_key(&id);
+        match control {
+            Some(control) => {
+                self.history.insert(id, control);
+            }
+            None => {
+                self.history.remove(&id);
+            }
+        }
+        if had != control.is_some() {
+            // The pill's cluster gained or lost a chip: lay the row out again.
+            self.advance_changed = true;
+        }
+    }
+    /// The History control tab `id` shows, if any.
+    #[must_use]
+    pub fn history_control(&self, id: u64) -> Option<HistoryControl> {
+        self.history.get(&id).copied()
+    }
+    /// Press tab `id`'s History chip: select the tab, and queue its control.
+    fn press_history(&mut self, id: u64) -> bool {
+        let Some(control) = self.history.get(&id).copied() else {
+            return false;
+        };
+        if self.active_id != id {
+            self.active_id = id;
+            self.pending_activation = Some(id);
+        }
+        self.pending_history = Some((id, control));
+        true
+    }
     pub fn take_new_tab(&mut self) -> Option<()> {
         self.pending_new_tab.take()
     }
@@ -2336,6 +2470,11 @@ impl TabBar {
         &self.search_rects
     }
 
+    #[cfg(any(test, debug_assertions))]
+    pub fn history_rects(&self) -> &[Rect] {
+        &self.history_rects
+    }
+
     /// The pointer target of a maximize/search chip: at least the theme's
     /// minimum pointer target on a side (HIG §9.6: 32 px), centred on the
     /// chip's glyph rect, and never outside the bar. The painted chip stays
@@ -2367,10 +2506,13 @@ impl TabBar {
         let glyph = (0..self.tabs.len()).find_map(|i| {
             let max = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
             let search = self.search_rects.get(i).copied().unwrap_or(Rect::ZERO);
+            let history = self.history_rects.get(i).copied().unwrap_or(Rect::ZERO);
             if max.area() > 0.0 && max.contains(p) {
                 Some((i, ActionChip::Maximize))
             } else if search.area() > 0.0 && search.contains(p) {
                 Some((i, ActionChip::Search))
+            } else if history.area() > 0.0 && history.contains(p) {
+                Some((i, ActionChip::History))
             } else {
                 None
             }
@@ -2379,10 +2521,13 @@ impl TabBar {
             (0..self.tabs.len()).find_map(|i| {
                 let max = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
                 let search = self.search_rects.get(i).copied().unwrap_or(Rect::ZERO);
+                let history = self.history_rects.get(i).copied().unwrap_or(Rect::ZERO);
                 if self.action_hit_rect(max).contains(p) {
                     Some((i, ActionChip::Maximize))
                 } else if self.action_hit_rect(search).contains(p) {
                     Some((i, ActionChip::Search))
+                } else if self.action_hit_rect(history).contains(p) {
+                    Some((i, ActionChip::History))
                 } else {
                     None
                 }
@@ -2688,6 +2833,10 @@ const MAX_CHIP_REACH: f64 = CLOSE_HIT_PX / 2.0 + CHIP_PITCH + ACTION_W / 2.0;
 /// maximize, then search.
 const CHIP_CLUSTER_W: f64 = MAX_CHIP_REACH + CHIP_PITCH;
 
+/// Right edge to the left edge of the History chip, one pitch past search,
+/// on a pill whose window has History.
+const HISTORY_CHIP_REACH: f64 = CHIP_CLUSTER_W + CHIP_PITCH;
+
 // The painted maximize glyph stays clear of the close chip's 32 px target,
 // so a press on what the eye sees as maximize never closes the tab.
 const _: () = assert!(CLOSE_HIT_PX / 2.0 + CHIP_PITCH - ACTION_W / 2.0 > CLOSE_HIT_PX);
@@ -2706,13 +2855,15 @@ const CHIP_FADE_PX: f64 = 10.0;
 /// Hover growth is anchored: (1) rightward only, so a pill's own left edge
 /// and everyone left of it never move; (2) into headroom `apply_layout`
 /// already held back by fitting the row at *resting* widths inside
-/// `width - HOVER_GROWTH_PX`, so neighbours translate but are never re-fitted.
+/// `width` less the widest opening, so neighbours translate but are never
+/// re-fitted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Reveal {
     None,
     /// Close chip only — an active pill at rest.
     Close,
-    /// Close, maximize and search — a hovered pill.
+    /// Close, maximize and search — a hovered pill — and History where the
+    /// window has it (`TabBar::reserve_of`).
     Full,
 }
 
@@ -2726,7 +2877,9 @@ impl Reveal {
     }
 }
 
-/// The headroom the row holds back so growth never re-fits anyone.
+/// How far a pill without History opens: the headroom a row of them holds
+/// back so growth never re-fits anyone.
+#[cfg(test)]
 const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
 
 /// Matched to [`LAYOUT_ANIM_MS`] so a pill opening and neighbours sliding
@@ -2974,6 +3127,7 @@ fn title_x0(r: Rect, leading_shift: f64) -> f64 {
 enum ActionChip {
     Maximize,
     Search,
+    History,
 }
 
 /// The round a hovered action chip paints behind its glyph: `CLOSE_W`
@@ -3027,6 +3181,7 @@ impl Widget for TabBar {
         self.close_hit_rects.clear();
         self.max_rects.clear();
         self.search_rects.clear();
+        self.history_rects.clear();
         // Pre-size so the visual-order pass can write `tab_rects[data_idx]`
         // directly — data index stays the canonical key for every cache.
         self.tab_rects.resize(self.tabs.len(), Rect::ZERO);
@@ -3034,6 +3189,7 @@ impl Widget for TabBar {
         self.close_hit_rects.resize(self.tabs.len(), Rect::ZERO);
         self.max_rects.resize(self.tabs.len(), Rect::ZERO);
         self.search_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.history_rects.resize(self.tabs.len(), Rect::ZERO);
         self.reveal_px.clear();
         self.reveal_px
             .resize(self.tabs.len(), Reveal::None.reserve());
@@ -3127,6 +3283,10 @@ impl Widget for TabBar {
             if let Some(slot) = self.search_rects.get_mut(i) {
                 *slot = search_rect;
             }
+            let history_rect = self.history_chip_rect(i, search_rect, effective);
+            if let Some(slot) = self.history_rects.get_mut(i) {
+                *slot = history_rect;
+            }
             x = r.x1 + gap;
         }
         // `x` is the strip's write head; the "+" chip is suppressed once pills
@@ -3219,6 +3379,7 @@ impl Widget for TabBar {
                 self.hover_close_idx = None;
                 self.hover_max_idx = None;
                 self.hover_search_idx = None;
+                self.hover_history_idx = None;
                 self.hover_intent.clear();
             }
             WindowEvent::MouseInput {
@@ -3334,11 +3495,25 @@ impl Widget for TabBar {
                             }),
                     ])
                 };
-                let node = if self.modified_ids.contains(&t.id) {
+                let mut node = if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))
                 } else {
                     node
                 };
+                if let Some(control) = self.history.get(&t.id) {
+                    node.children.push(
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name(crate::i18n::I18nManager::lookup_plain(
+                                "standalone-history-title",
+                            ))
+                            .with_action_target(format!("tab-history:{}", t.id))
+                            .with_state(AccessState {
+                                focusable: true,
+                                checked: Some(control.is_open()),
+                                ..Default::default()
+                            }),
+                    );
+                }
                 match self.marks.get(&t.id) {
                     Some(mark) if mark.is_control() => {
                         let mut node = node.with_description(mark.description());
@@ -3396,6 +3571,12 @@ impl Widget for TabBar {
             .and_then(|value| value.parse::<u64>().ok())
         {
             return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-history:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return self.press_history(id);
         }
         if let Some(id) = target
             .strip_prefix("tab-mute:")
@@ -3521,7 +3702,7 @@ impl TabBar {
         let tab_ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
         let mut animated: Vec<f64> = Vec::with_capacity(tab_ids.len());
         for (i, &id) in tab_ids.iter().enumerate() {
-            let target = self.target_reveal(i);
+            let target = self.reserve_of(i, self.target_reveal(i));
             animated.push(self.advance_reveal(id, target));
         }
         // Visual-slot → data-index: pinned first, then unpinned. `self.tabs`
@@ -3550,11 +3731,13 @@ impl TabBar {
             .iter()
             .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
             .collect();
-        let headroom = if pinned_flags.iter().any(|p| !p) {
-            HOVER_GROWTH_PX
-        } else {
-            0.0
-        };
+        // The widest pill's opening: a pill with History opens one chip wider.
+        let headroom = visual_order
+            .iter()
+            .zip(&pinned_flags)
+            .filter(|(_, pinned)| !**pinned)
+            .map(|(&i, _)| self.reserve_of(i, Reveal::Full) - Reveal::None.reserve())
+            .fold(0.0, f64::max);
         let row = self.pill_row();
         let laid_out = row.width() > 0.0;
         let fit_avail = if laid_out {
@@ -3987,6 +4170,9 @@ impl TabBar {
         self.hover_search_idx = action
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
+        self.hover_history_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::History)
+            .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
         // Opening a pill grows it rightward, carrying its × and everything
         // after it along; the intent keeps that from happening under a
@@ -4087,6 +4273,9 @@ impl TabBar {
         let search_idx = action
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
+        let history_idx = action
+            .filter(|&(_, chip)| chip == ActionChip::History)
+            .map(|(i, _)| i);
 
         // Sits in the bar's trailing space, also the whole-group drag-grab
         // zone, so it must win the press first.
@@ -4133,6 +4322,14 @@ impl TabBar {
             // hits never bleed into selection, same as close
             // and maximize.
             self.pending_search = Some(t.id);
+            *handled = true;
+            return;
+        }
+        // History opens on the window it names: unlike the other chips it
+        // selects its tab, so the History it opens is the one shown.
+        if let Some(id) = history_idx.and_then(|hi| self.tabs.get(hi)).map(|t| t.id)
+            && self.press_history(id)
+        {
             *handled = true;
             return;
         }

@@ -909,6 +909,33 @@ impl WindowGroup {
         }
     }
 
+    /// The window presents its tabs' History: each tab's pill carries the
+    /// History control while the tab row shows, so no tile draws a band of
+    /// its own for it. While the row is hidden (maximized, or navigation
+    /// drawn elsewhere) the app's own header row may hold the control.
+    fn offer_history_controls(&mut self) {
+        let tab_row = !self.maximized && self.navigation_bar_visible();
+        for (id, host) in &mut self.hosts {
+            host.set_window_presents_history(tab_row);
+            self.bar.set_history_control(*id, host.history_control());
+        }
+    }
+
+    /// Run a press on a pill's History chip on that tab's History door, as
+    /// the History shortcut and the palette do. Returns whether one ran.
+    fn drain_history_press(&mut self) -> bool {
+        let Some((id, control)) = self.bar.take_history() else {
+            return false;
+        };
+        let Some((_, host)) = self.hosts.iter_mut().find(|(i, _)| *i == id) else {
+            return false;
+        };
+        if let Err(error) = host.invoke_history_control(control) {
+            tracing::debug!(%error, "window: History control refused");
+        }
+        true
+    }
+
     /// The bar showed or hid: repaint, and rebuild where an app's header
     /// lives in the bar (it stands in the tree only while shown).
     fn top_edge_changed(&mut self) {
@@ -2096,6 +2123,8 @@ impl WindowGroup {
             handled = true;
         }
 
+        handled |= self.drain_history_press();
+
         // The group knows its own id; the shell knows what a new tab
         // should contain, so republish with the id and let it decide.
         if self.bar.take_new_tab().is_some() {
@@ -3136,7 +3165,10 @@ impl Widget for WindowGroup {
         }
     }
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        self.active_host_mut().is_some_and(|h| h.update(s, p))
+        // A History chip pressed from assistive technology arrives outside
+        // `handle_event`: run it here, before the frame lays out.
+        let history = self.drain_history_press();
+        self.active_host_mut().is_some_and(|h| h.update(s, p)) || history
     }
     fn build_layout(
         &mut self,
@@ -3150,6 +3182,7 @@ impl Widget for WindowGroup {
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
+        self.offer_history_controls();
         for (id, host) in &mut self.hosts {
             if *id != active_id {
                 host.discard_layout_nodes();
@@ -3243,6 +3276,7 @@ impl Widget for WindowGroup {
         if !std::mem::take(&mut self.spring_stepped) {
             self.step_rect_spring();
         }
+        self.offer_history_controls();
         // An indicator that flashes in and out before an app has time to
         // draw would just be a flicker, so nothing paints until either
         // something has drawn or the wait is long enough to say so.
