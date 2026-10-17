@@ -9,9 +9,9 @@
     },
     {
       "file": "math-reader.png",
-      "sha256": "585feaf8abb2447d44152b18289fea7a7d588ed16f052bee45a4b79e46468da6",
-      "bytes": 125092,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/585feaf8abb2447d44152b18289fea7a7d588ed16f052bee45a4b79e46468da6/math-reader.png"
+      "sha256": "f60bf0d838970071a7dc83559175a8ae8d69d53b640e889a8cad66c972db0344",
+      "bytes": 125112,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f60bf0d838970071a7dc83559175a8ae8d69d53b640e889a8cad66c972db0344/math-reader.png"
     },
     {
       "file": "serif-reader-windows.png",
@@ -21,9 +21,9 @@
     },
     {
       "file": "serif-reader.png",
-      "sha256": "b3104ea1f2a32d49045dbf66898c279230261e7919ef32754df3552d5a5c46cf",
-      "bytes": 245840,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b3104ea1f2a32d49045dbf66898c279230261e7919ef32754df3552d5a5c46cf/serif-reader.png"
+      "sha256": "e3b0abd34594d6f8bba184827fa99fbb04b05872d5fb3cad48b557facbcca75e",
+      "bytes": 245835,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/e3b0abd34594d6f8bba184827fa99fbb04b05872d5fb3cad48b557facbcca75e/serif-reader.png"
     }
   ]
 }
