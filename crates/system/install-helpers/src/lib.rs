@@ -12,7 +12,8 @@
 //! * [`offline_target`]: `tilo-installer-offline-target verify|import`
 //! * [`dev_target_uki`]: `tilo-installer-offline-target dev-target-uki
 //!   validate-image|promote` (development installer VMs only)
-//! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`
+//! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`, and
+//!   the installer backend's own checks (`check-device-label`, `gpt`, …)
 //! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
 //!   (VMs only)
 //! * [`code_refresh`]: `tilo-vm-install-proof code-refresh`, the development

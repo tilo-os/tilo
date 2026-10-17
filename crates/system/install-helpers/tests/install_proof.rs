@@ -368,7 +368,14 @@ fn backend_emits_proof_only_after_encrypted_finish() {
     assert!(backend.contains("VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof"));
     assert!(backend.contains("systemd-detect-virt --vm --quiet"));
     assert!(backend.contains("printf '%s\\n' \"$proof_line\" > \"$VM_INSTALL_PROOF_PORT\""));
-    assert!(backend.contains("  /usr/libexec/tilo-vm-install-proof \\\n"));
+    assert!(
+        backend.contains("  VM_INSTALL_PROOF_SCHEMA=\"$(/usr/libexec/tilo-vm-install-proof \\\n")
+    );
+    assert!(
+        backend.contains(
+            "elif [ \"$VM_INSTALL_PROOF_SCHEMA\" = tilo.vm-install-image-proof.v3 ]; then"
+        )
+    );
     assert!(!backend.contains("tilo-vm-install-proof.py"));
 }
 

@@ -21,7 +21,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_install_helpers::offline_target::{
-    BUILD_TYPE, BUILDER, Host, checked_provenance, import_image, read_target, verify,
+    BUILD_TYPE, BUILDER, Host, checked_provenance, import_image, read_target, receipt_facts, verify,
 };
 use tilo_install_helpers::{Error, Result};
 
@@ -337,6 +337,33 @@ fn development_transport(dir: &Path, target: &mut Target) {
 }
 
 #[test]
+fn the_receipt_names_the_verified_origin_and_target_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = Fixture::new(dir.path());
+    let error = receipt_facts(&host).unwrap_err();
+    assert!(error.0.contains("no verified preflight"), "{error}");
+    fs::create_dir(dir.path().join("run")).unwrap();
+    let mut target = fixture(dir.path());
+    let write = |metadata: &Map<String, Value>| {
+        fs::write(host.receipt(), Value::Object(metadata.clone()).to_string()).unwrap();
+    };
+    write(&target.metadata);
+    assert_eq!(
+        receipt_facts(&host).unwrap(),
+        format!("UPDATE_ORIGIN={}\nDEVELOPMENT=0", update())
+    );
+    development_transport(dir.path(), &mut target);
+    write(&target.metadata);
+    assert!(receipt_facts(&host).unwrap().ends_with("\nDEVELOPMENT=1"));
+    for origin in [Value::Null, json!(""), json!("a\nDEVELOPMENT=1")] {
+        let mut metadata = target.metadata.clone();
+        metadata.insert("update_origin".into(), origin);
+        write(&metadata);
+        assert!(receipt_facts(&host).is_err());
+    }
+}
+
+#[test]
 fn development_transport_requires_the_vm_gate() {
     let dir = tempfile::tempdir().unwrap();
     let mut target = fixture(dir.path());
@@ -607,6 +634,7 @@ fn the_installer_runs_the_compiled_helper() {
     .unwrap();
     assert!(backend.contains("LOCAL_IMG=\"$(/usr/libexec/tilo-installer-offline-target import)\""));
     assert!(backend.contains("/usr/libexec/tilo-installer-offline-target verify >/dev/null"));
+    assert!(backend.contains("\"$(/usr/libexec/tilo-installer-offline-target receipt)\""));
     assert!(!backend.contains("tilo-installer-offline-target.py"));
     let _ = Error::new("");
 }

@@ -20,7 +20,7 @@ use super::{Fail, HANDOFF_MAX_BYTES, Host, Result, Strict, canonical, lsblk_disk
 const RECEIPT_MAX_BYTES: usize = HANDOFF_MAX_BYTES + 32768;
 const PREPARED_TRANSPORT: &str = "tilo-installer-prepared-setup-extract";
 
-fn parse_receipt(input: impl Read) -> Result<Value> {
+pub(super) fn parse_receipt(input: impl Read) -> Result<Value> {
     let mut bytes = Vec::new();
     input
         .take((RECEIPT_MAX_BYTES + 1) as u64)
