@@ -5173,6 +5173,18 @@ mod live_draft_presence {
     fn focused_app(text: &str) -> ChatApp {
         let mut app = ChatApp::new_ephemeral();
         app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
+        app.channels = vec![crate::model::Channel {
+            id: app.active_channel.clone(),
+            workspace: String::new(),
+            category: String::new(),
+            name: "general".into(),
+            topic: String::new(),
+            kind: crate::model::ChannelKind::Text,
+            order: 0,
+            unread: 0,
+            archived: false,
+            conversation_with: None,
+        }];
         app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
         let mut doc = AutoCommit::new();
         crate::testing::set_draft(&mut doc, &app.active_channel, text);

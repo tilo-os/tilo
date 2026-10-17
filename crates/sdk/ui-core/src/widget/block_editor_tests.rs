@@ -2607,3 +2607,54 @@ fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_rea
     editor.set_read_only(true);
     assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
 }
+
+/// The editing keys every text field has, in the rich-text editor too: word
+/// deletion with Ctrl, word-wise selection with Ctrl+Shift, and deleting a
+/// selection.
+#[test]
+fn ctrl_backspace_and_word_selection_edit_by_words() {
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    fn named(key: NamedKey) -> WindowEvent {
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(key),
+            None,
+            ElementState::Pressed,
+        ))
+    }
+
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("hello brave world")]);
+    editor.focus_block(0, CursorPlacement::Byte(17));
+    let mut ctrl = Dispatch::new().modifiers(ModifiersState::CONTROL);
+    ctrl.send(&mut editor, &named(NamedKey::Backspace));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "hello brave ",
+        "Ctrl+Backspace deletes a word"
+    );
+
+    Dispatch::new()
+        .modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT)
+        .send(&mut editor, &named(NamedKey::ArrowLeft));
+    assert_eq!(
+        editor.selected_text().as_deref(),
+        Some("brave "),
+        "Ctrl+Shift+Left selects a word"
+    );
+    dispatch(&mut editor, &named(NamedKey::Delete));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "hello ",
+        "Delete removes the selection"
+    );
+
+    editor.focus_block(0, CursorPlacement::Byte(0));
+    ctrl.send(&mut editor, &named(NamedKey::Delete));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        " ",
+        "Ctrl+Delete deletes the next word"
+    );
+}
