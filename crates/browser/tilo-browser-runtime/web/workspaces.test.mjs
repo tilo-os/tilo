@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -45,6 +45,29 @@ test('a person new to the host is pre-admitted by it and joins with the pre-admi
   assert.equal(calls.joined[0].origin, 'https://rooms.example');
   assert.equal(calls.joined[0].identity.userPublicKey, '22'.repeat(32));
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '22'.repeat(32)});
+});
+
+test('a host refusing the door\'s own invitation is asked once more, then named without blaming an invitation', async () => {
+  const refusal = () => Object.assign(new Error('refused'), {name: 'AdmissionError', code: 'refused', reason: 'no seat'});
+  const {calls, options} = harness();
+  let refusals = 1;
+  options.join = async joined => {
+    calls.joined.push(joined);
+    if (refusals-- > 0) throw refusal();
+    return {room: 'ROOM'};
+  };
+  assert.deepEqual(await joinViaHost(options), {room: 'ROOM'});
+  assert.equal(calls.posted.length, 2, 'a fresh invitation from the door');
+
+  const again = harness();
+  again.options.join = async () => { throw refusal(); };
+  await assert.rejects(joinViaHost(again.options), error => {
+    assert.equal(error.message, doorRefused('Commons'));
+    assert.doesNotMatch(error.message, /invit/i);
+    assert.equal(error.reason, 'no seat');
+    return true;
+  });
+  assert.equal(again.calls.posted.length, 2);
 });
 
 test('a person joins at once under a random adjective-animal name when none is given', async () => {
