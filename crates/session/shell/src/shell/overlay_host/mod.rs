@@ -2245,6 +2245,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
@@ -14414,6 +14417,51 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Serve private windows' actions on this device
+    /// ([`crate::shell::device_local_actions`]): run what the catalogue
+    /// queued through each window's door, then publish what every private
+    /// window offers now.
+    pub(crate) fn run_device_local_actions(&mut self) {
+        use crate::shell::device_local_actions::{DeviceLocalWindow, receipt};
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let queued = std::mem::take(&mut chrome.borrow_mut().device_local_invocations);
+        let ran = !queued.is_empty();
+        for invocation in queued {
+            let started = match self.desktop_surface_mut() {
+                Some(surface) => surface.invoke_device_local_action(
+                    invocation.tab,
+                    &invocation.address,
+                    &invocation.arguments,
+                ),
+                None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+            };
+            *invocation.answer.borrow_mut() = Some(receipt(started));
+        }
+        if ran {
+            crate::shell::search::invocation_wake::waker().wake_by_ref();
+        }
+        let windows: Vec<DeviceLocalWindow> = self
+            .desktop_surface_mut()
+            .map(tilo_desktop::composition::DesktopSurface::device_local_windows)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(tab, resources)| DeviceLocalWindow {
+                tab,
+                actions: tilo_actions::door::survey(&resources),
+            })
+            .collect();
+        let mut state = chrome.borrow_mut();
+        if state.device_local_windows != windows {
+            state.device_local_windows = windows;
+            state.device_local_revision = state.device_local_revision.wrapping_add(1);
+            // Read once more after the tree settles: a window opened this
+            // frame mounts after this pass.
+            state.bump();
+        }
+    }
+
     /// Run `action` once, as its chord does; for the action door, which
     /// has no key event. `false` when it is not a desktop shortcut the
     /// host runs.
@@ -19007,6 +19055,7 @@ impl Widget for ShellOverlayHost {
         self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
+        self.run_device_local_actions();
         self.latch_overview_transition();
         steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it

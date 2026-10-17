@@ -472,6 +472,58 @@ impl DesktopSurface {
         })
     }
 
+    /// Every private window this surface hosts, by tab, with the resources
+    /// it offers this device's automation ([`ui::widget::AppWidget::device_local_resources`]).
+    pub fn device_local_windows(&mut self) -> Vec<(u64, Vec<tilo_actions::Resource>)> {
+        let mut windows = Vec::new();
+        self.for_each_app(|tab, app| {
+            if let Some(resources) = app.device_local_resources() {
+                windows.push((tab, resources));
+            }
+        });
+        windows
+    }
+
+    /// Invoke `address` on the private window of tab `tab`, through its door.
+    ///
+    /// # Errors
+    /// Refuses a tab that hosts no private window here, and whatever its
+    /// door refuses.
+    pub fn invoke_device_local_action(
+        &mut self,
+        tab: u64,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        let mut result = Err(tilo_actions::DoorError::Unknown(address.clone()));
+        self.for_each_app(|candidate, app| {
+            if candidate == tab {
+                result = app.invoke_device_local_action(address, arguments);
+            }
+        });
+        result
+    }
+
+    /// Visit each tab's in-process app, across every strip.
+    fn for_each_app(&mut self, mut visit: impl FnMut(u64, &mut dyn ui::widget::AppWidget)) {
+        for strip in self.strip_ids() {
+            let Some(row) = self.row_mut(strip) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                let tabs: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
+                for tab in tabs {
+                    if let Some(ui::widget::TileContent::App(app)) = group
+                        .host_for_tab_mut(tab)
+                        .map(ui::widget::TileHost::content_mut)
+                    {
+                        visit(tab, app.as_mut());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn row(&self, id: StripId) -> Option<&GroupRow> {
         self.row_at(*self.rows.get(&id)?)
     }
