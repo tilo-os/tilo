@@ -151,7 +151,6 @@ pub(crate) fn settle_chat(
             if target.channels.contains(&Id::from_raw(&id)) {
                 continue;
             }
-            target.drafts.entry(id.clone()).or_default();
             target.channels.push(
                 Id::from_raw(&id),
                 Channel {
@@ -355,7 +354,6 @@ mod tests {
         assert_eq!(channel_names(&doc), channels);
         let ids: Vec<&str> = chat.channels.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(ids, ["c_general", "c_help", "c_show_and_tell"]);
-        assert!(chat.drafts.contains_key("c_general"));
     }
 
     #[test]
