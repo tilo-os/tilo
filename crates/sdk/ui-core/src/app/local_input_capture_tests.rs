@@ -146,7 +146,7 @@ fn disconnected_input_keeps_local_framework_edits_available() {
     drop(scope);
     fixture.app.drain_local_input_capture();
     assert!(fixture.app.local_input_capture.failure.is_none());
-    assert!(fixture.app.local_input_capture.pending.is_empty());
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
 }
 
 #[test]
