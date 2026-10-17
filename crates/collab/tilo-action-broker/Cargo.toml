@@ -26,6 +26,8 @@ parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
 registry-types = { path = "../../packaging/registry-types" }
+# The host's pinned registry configuration, never an app-supplied trust anchor.
+app-cli = { path = "../../packaging/app-cli" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 capnp-rpc.workspace = true

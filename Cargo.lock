@@ -16304,6 +16304,7 @@ dependencies = [
 name = "tilo-action-broker"
 version = "0.1.0"
 dependencies = [
+ "app-cli",
  "blake3",
  "capnp",
  "capnp-rpc",

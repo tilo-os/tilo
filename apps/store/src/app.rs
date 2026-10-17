@@ -1921,7 +1921,7 @@ impl StoreApp {
         if !appeal && report.is_case() {
             return Err("this report was already submitted".into());
         }
-        let (item, registry_name) = self.reported_app(&report)?;
+        let (_, registry_name) = self.reported_app(&report)?;
         let registry = self
             .directory
             .registry(&registry_name)
@@ -1944,13 +1944,14 @@ impl StoreApp {
                 evidence_digest_hex: None,
             }
         } else {
-            let envelope = report_envelope(&report, Some(&item));
-            let evidence = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+            let evidence_digest_hex =
+                registry_types::report_evidence_digest(app, &report.status, &report.note, None)
+                    .map_err(|error| error.to_string())?;
             ModerationMutation::FileReport {
                 package_id: app.into(),
                 category: "policy".into(),
                 summary: report.note.trim().into(),
-                evidence_digest_hex: blake3::hash(&evidence).to_hex().to_string(),
+                evidence_digest_hex,
             }
         };
         let now = ui::time::unix_now();

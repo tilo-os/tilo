@@ -39,6 +39,10 @@ mod external_moderation_rpc_tests {
 
     impl Room {
         fn new(native: bool) -> Self {
+            Self::with_document(native, None)
+        }
+
+        fn with_document(native: bool, document: Option<Arc<dyn NativeDocumentReads>>) -> Self {
             let original = signed_worker::OriginalRoom::new(
                 if native {
                     tilo_user_identity::DeviceCapabilities::primary()
@@ -51,6 +55,7 @@ mod external_moderation_rpc_tests {
             let route = CrdtRoute::record("so.tilo.store", &original.route.cluster_id, "store");
             let fanout = Arc::new(FanoutState::new());
             let mut services = original.membership.services();
+            services.committed_documents = document;
             if native {
                 services.launcher = Some(Arc::new(ExactLaunch {
                     app: route.app_id.clone(),
@@ -275,6 +280,262 @@ mod external_moderation_rpc_tests {
                             .await
                             .is_err()
                     );
+                }
+            })
+            .await;
+    }
+
+    struct ReportDocument(Vec<u8>);
+
+    impl DocumentBytes for ReportDocument {
+        fn bytes(&self) -> &[u8] {
+            &self.0
+        }
+    }
+
+    impl NativeDocumentReads for ReportDocument {
+        fn requires_room(&self, _: &str) -> bool {
+            true
+        }
+        fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
+            context.revalidate()
+        }
+        fn capture(
+            &self,
+            context: &NativeDocumentReadContext,
+            _: Option<[u8; 32]>,
+            maximum: usize,
+        ) -> Result<NativeDocumentRead, String> {
+            self.authorize(context)?;
+            if self.0.len() > maximum {
+                return Err("report exceeds bound".into());
+            }
+            Ok(NativeDocumentRead::Captured {
+                revision: *blake3::hash(&self.0).as_bytes(),
+                heads: Vec::new(),
+                body: Box::new(ReportDocument(self.0.clone())),
+            })
+        }
+    }
+
+    fn committed_report(note: &str, case: Option<&str>) -> Arc<dyn NativeDocumentReads> {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        let reports = doc
+            .put_object(automerge::ROOT, "reports", automerge::ObjType::Map)
+            .unwrap();
+        let report = doc
+            .put_object(reports, "org.example.app", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&report, "status", "Not submitted").unwrap();
+        if let Some(case) = case {
+            doc.put(&report, "case", case).unwrap();
+        }
+        let text = doc
+            .put_object(&report, "note", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(text, 0, 0, note).unwrap();
+        Arc::new(ReportDocument(doc.save()))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_checks_committed_original_report_before_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_STORE_CONFIG_DIR", temp.path())
+            .set("XDG_CONFIG_HOME", temp.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", temp.path().join("identity"));
+        std::fs::write(temp.path().join("registries.toml"), format!(
+            "[[registry]]\nname = 'Custom'\nbase_url = 'https://custom.example'\nowner_pubkey_hex = '{}'\n", "ab".repeat(32),
+        )).unwrap();
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for altered in ["digest", "summary", "package", "category", "none"] {
+                    let note = "The package description is misleading";
+                    let room = Room::with_document(false, Some(committed_report(note, None)));
+                    let target = room.worker(977).await;
+                    let descriptor = descriptor("submit-report");
+                    target
+                        .handle
+                        .publish_actions(&room.route.app_id, &[descriptor])
+                        .await
+                        .unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let mut operation = operation(false);
+                    operation.destination.base_url = "https://custom.example".into();
+                    operation.mutation = ModerationMutation::FileReport {
+                        package_id: if altered == "package" {
+                            "other.app"
+                        } else {
+                            "org.example.app"
+                        }
+                        .into(),
+                        category: if altered == "category" {
+                            "security"
+                        } else {
+                            "policy"
+                        }
+                        .into(),
+                        summary: if altered == "summary" {
+                            "A caller-invented report"
+                        } else {
+                            note
+                        }
+                        .into(),
+                        evidence_digest_hex: if altered == "digest" {
+                            "cd".repeat(32)
+                        } else {
+                            registry_types::report_evidence_digest(
+                                "org.example.app",
+                                "Not submitted",
+                                note,
+                                None,
+                            )
+                            .unwrap()
+                        },
+                    };
+                    target
+                        .handle
+                        .invoke_published_action(
+                            977,
+                            "workspace:atlas",
+                            "submit-report",
+                            Some(&argument(&operation)),
+                            "{}",
+                        )
+                        .await
+                        .unwrap();
+                    let id = stream.read().await.unwrap().invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    refused(
+                        &target.handle,
+                        &request,
+                        id,
+                        if altered == "none" {
+                            "identity"
+                        } else {
+                            "committed report evidence"
+                        },
+                    )
+                    .await;
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_appeal_requires_committed_case_and_reason() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_STORE_CONFIG_DIR", temp.path())
+            .set("XDG_CONFIG_HOME", temp.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", temp.path().join("identity"));
+        std::fs::write(temp.path().join("registries.toml"), format!(
+            "[[registry]]\nname = 'Custom'\nbase_url = 'https://custom.example'\nowner_pubkey_hex = '{}'\n", "ab".repeat(32),
+        )).unwrap();
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for altered in ["case", "reason", "digest", "none"] {
+                    let note = "The reported problem has been addressed";
+                    let room =
+                        Room::with_document(false, Some(committed_report(note, Some("case-one"))));
+                    let target = room.worker(978).await;
+                    let descriptor = descriptor("appeal");
+                    target
+                        .handle
+                        .publish_actions(&room.route.app_id, &[descriptor])
+                        .await
+                        .unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let mut operation = operation(true);
+                    operation.destination.base_url = "https://custom.example".into();
+                    operation.mutation = ModerationMutation::PublisherAppeal {
+                        case_id: if altered == "case" {
+                            "case-other"
+                        } else {
+                            "case-one"
+                        }
+                        .into(),
+                        reason: if altered == "reason" {
+                            "An invented appeal reason"
+                        } else {
+                            note
+                        }
+                        .into(),
+                        evidence_digest_hex: (altered == "digest").then(|| "cd".repeat(32)),
+                    };
+                    target
+                        .handle
+                        .invoke_published_action(
+                            978,
+                            "workspace:atlas",
+                            "appeal",
+                            Some(&argument(&operation)),
+                            "{}",
+                        )
+                        .await
+                        .unwrap();
+                    let id = stream.read().await.unwrap().invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    refused(
+                        &target.handle,
+                        &request,
+                        id,
+                        if altered == "none" {
+                            "identity"
+                        } else {
+                            "committed report evidence"
+                        },
+                    )
+                    .await;
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_uses_host_registry_pins_not_caller_trust() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_STORE_CONFIG_DIR", temp.path());
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for (enabled, base, owner, expected) in [
+                    (true, "https://other.example", "ab".repeat(32), "trusted configured registry"),
+                    (true, "https://custom.example", "ef".repeat(32), "trusted configured registry"),
+                    (false, "https://custom.example", "ab".repeat(32), "trusted configured registry"),
+                    (true, "https://custom.example", "ab".repeat(32), "committed report owner unavailable"),
+                ] {
+                    std::fs::write(
+                        temp.path().join("registries.toml"),
+                        format!("[[registry]]\nname = 'Custom'\nbase_url = '{base}'\nowner_pubkey_hex = '{owner}'\nenabled = {enabled}\n"),
+                    ).unwrap();
+                    let room = Room::new(false);
+                    let target = room.worker(976).await;
+                    let descriptor = descriptor("submit-report");
+                    target.handle.publish_actions(&room.route.app_id, &[descriptor]).await.unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let mut operation = operation(false);
+                    operation.destination.base_url = "https://custom.example".into();
+                    target.handle.invoke_published_action(
+                        976, "workspace:atlas", "submit-report", Some(&argument(&operation)), "{}",
+                    ).await.unwrap();
+                    let delivered = stream.read().await.unwrap();
+                    let id = delivered.invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    refused(&target.handle, &request, id, expected).await;
                 }
             })
             .await;

@@ -19,6 +19,7 @@ struct Context {
     original: Arc<OriginalInvocation>,
     state: Weak<CapnpBrokerState>,
     request: Request,
+    document: super::NativeDocumentReadContext,
 }
 impl Context {
     fn recheck(&self) -> Result<(), String> {
@@ -47,7 +48,51 @@ impl Context {
         {
             return Err("external moderation operation expired or not yet valid".into());
         }
+        trusted_destination(&self.request.operation.destination)?;
+        self.check_committed_evidence(&state)?;
         self.original.check_execution_frontier(&state)
+    }
+
+    fn check_committed_evidence(&self, state: &CapnpBrokerState) -> Result<(), String> {
+        use super::NativeDocumentRead;
+        use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+
+        self.document.revalidate()?;
+        let service = state
+            .services
+            .committed_documents
+            .as_ref()
+            .ok_or("external moderation committed report owner unavailable")?;
+        service.authorize(&self.document)?;
+        let _reservation = state.committed_read_budget.reserve()?;
+        let captured = service.capture(&self.document, None, MAX_DOCUMENT_BYTES)?;
+        let NativeDocumentRead::Captured { body, .. } = captured else {
+            return Err("external moderation committed report unavailable".into());
+        };
+        if body.bytes().len() > MAX_DOCUMENT_BYTES {
+            return Err("external moderation committed report exceeds limit".into());
+        }
+        let document = automerge::Automerge::load(body.bytes())
+            .map_err(|_| "external moderation committed report is invalid")?;
+        let argument = self
+            .original
+            .request()
+            .argument
+            .as_deref()
+            .ok_or("external moderation original report arguments unavailable")?;
+        let argument: serde_json::Value = serde_json::from_str(
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+        )
+        .map_err(|_| "external moderation invalid original report arguments")?;
+        let app = argument
+            .get("app")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("external moderation original report app unavailable")?;
+        validate_committed_report(&document, app, &self.request.operation)?;
+        service.authorize(&self.document)?;
+        self.document.revalidate()
     }
 
     fn run(&self) -> Reply {
@@ -111,6 +156,99 @@ impl Context {
     }
 }
 
+fn validate_committed_report(
+    document: &automerge::Automerge,
+    app: &str,
+    operation: &registry_types::ExternalModerationOperation,
+) -> Result<(), String> {
+    use automerge::{ObjType, ReadDoc as _, Value};
+    use registry_types::ModerationMutation;
+    let object = |parent: &automerge::ObjId, key: &str| {
+        let values = document.get_all(parent, key).map_err(|e| e.to_string())?;
+        match values.as_slice() {
+            [(Value::Object(ObjType::Map), object)] => Ok(object.clone()),
+            _ => Err("external moderation committed report absent or ambiguous".to_string()),
+        }
+    };
+    let reports = object(&automerge::ROOT, "reports")?;
+    let report = object(&reports, app)?;
+    let text = |key: &str| -> Result<Option<String>, String> {
+        let values = document.get_all(&report, key).map_err(|e| e.to_string())?;
+        match values.as_slice() {
+            [] => Ok(None),
+            [(Value::Scalar(value), _)] if value.is_null() => Ok(None),
+            [(Value::Scalar(value), _)] => value
+                .to_str()
+                .map(|s| Some(s.to_owned()))
+                .ok_or_else(|| "external moderation invalid committed report text".into()),
+            [(Value::Object(ObjType::Text), object)] => {
+                document.text(object).map(Some).map_err(|e| e.to_string())
+            }
+            _ => Err("external moderation ambiguous committed report text".into()),
+        }
+    };
+    let note = text("note")?.unwrap_or_default();
+    let status = text("status")?.unwrap_or_default();
+    let case = text("case")?;
+    let digest = registry_types::report_evidence_digest(app, &status, &note, case.as_deref())
+        .map_err(|error| error.to_string())?;
+    let matches = match &operation.mutation {
+        ModerationMutation::FileReport {
+            package_id,
+            category,
+            summary,
+            evidence_digest_hex,
+        } => {
+            package_id == app
+                && category == "policy"
+                && summary == note.trim()
+                && status == "Not submitted"
+                && case.is_none()
+                && evidence_digest_hex == &digest
+        }
+        ModerationMutation::PublisherAppeal {
+            case_id,
+            reason,
+            evidence_digest_hex,
+        } => {
+            case.as_deref() == Some(case_id.as_str())
+                && reason == &note
+                && evidence_digest_hex
+                    .as_ref()
+                    .is_none_or(|value| value == &digest)
+        }
+        _ => false,
+    };
+    if !matches {
+        return Err(
+            "external moderation differs from the original committed report evidence".into(),
+        );
+    }
+    Ok(())
+}
+
+/// The operation names a destination, not a trust anchor. Read the host's
+/// current configuration on every frontier check so disabling a registry or
+/// rotating its pin also retires already admitted requests.
+fn trusted_destination(destination: &registry_types::ModerationDestination) -> Result<(), String> {
+    destination_url(&destination.base_url)?;
+    let configured = app_cli::config::load_registries_no_seed();
+    if !configured.enabled().any(|registry| {
+        registry.base_url == destination.base_url
+            && registry
+                .owner_pubkey_hex
+                .eq_ignore_ascii_case(&destination.owner_pubkey_hex)
+            && registry.owner_pubkey_hex != app_cli::config::placeholder_owner_pubkey()
+            && hex::decode(&registry.owner_pubkey_hex).is_ok_and(|key| key.len() == 32)
+    }) {
+        return Err(
+            "external moderation destination and owner are not a trusted configured registry"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn destination_url(base: &str) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse(base)
         .map_err(|_| "registry destination must be credential-free HTTPS")?;
@@ -159,6 +297,7 @@ pub(super) fn start(
     let context = Context {
         original: OriginalInvocation::for_external_moderation(channel, &request)?,
         state: Arc::downgrade(&channel.state),
+        document: channel.document_read_context()?,
         request,
     };
     context.recheck()?;
