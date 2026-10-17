@@ -513,7 +513,8 @@ pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<Artwor
     let file = ArtworkFile::parse(&json)?;
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| broken(&error))?;
-        let Some(hash) = entry.name().strip_prefix(CONTENT_DIR).map(str::to_owned) else {
+        let name = entry.name().map_err(|error| broken(&error))?;
+        let Some(hash) = name.strip_prefix(CONTENT_DIR).map(str::to_owned) else {
             continue;
         };
         if !tilo_content::valid_hash(&hash) {

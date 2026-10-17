@@ -220,7 +220,7 @@ fn real_spreadsheets_parse_roundtrip_and_edit_as_crdt() {
             let mut file = source.by_index(i).unwrap();
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).unwrap();
-            entries.push((file.name().to_string(), bytes));
+            entries.push((file.name().unwrap().into_owned(), bytes));
         }
         entries.push((
             "xl/styles.xml".into(),

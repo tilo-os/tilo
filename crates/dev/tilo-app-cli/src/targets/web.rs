@@ -1579,7 +1579,10 @@ mod tests {
         write_registry_zip(&archive, &output, &manifest, "abc").unwrap();
         let first = std::fs::read(&archive).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(first.clone())).unwrap();
-        let mut names: Vec<String> = zip.file_names().map(str::to_owned).collect();
+        let mut names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect();
         names.sort();
         assert_eq!(
             names,

@@ -63,7 +63,7 @@ fn unzip(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::with_capacity(ar.len());
     for i in 0..ar.len() {
         let mut f = ar.by_index(i).expect("entry readable");
-        let name = f.name().to_string();
+        let name = f.name().expect("entry name").into_owned();
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).expect("entry bytes");
         out.push((name, buf));
@@ -92,7 +92,7 @@ fn method_of(bytes: &[u8], name: &str) -> CompressionMethod {
     let mut ar = ZipArchive::new(Cursor::new(bytes)).unwrap();
     for i in 0..ar.len() {
         let f = ar.by_index(i).unwrap();
-        if f.name() == name {
+        if f.name().is_ok_and(|entry| entry == name) {
             return f.compression();
         }
     }

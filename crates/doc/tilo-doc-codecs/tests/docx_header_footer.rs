@@ -50,7 +50,7 @@ fn parts_of(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
             let mut f = archive.by_index(i).unwrap();
             let mut out = Vec::new();
             f.read_to_end(&mut out).unwrap();
-            (f.name().to_string(), out)
+            (f.name().unwrap().into_owned(), out)
         })
         .collect()
 }

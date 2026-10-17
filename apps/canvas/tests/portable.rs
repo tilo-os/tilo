@@ -107,7 +107,10 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
     // The package: its type, the artwork, and the picture once, as placed.
     let bytes = std::fs::read(&path).unwrap();
     let mut package = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
-    let names: Vec<&str> = package.file_names().collect();
+    let names: Vec<String> = package
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect();
     assert_eq!(names.len(), 3, "{names:?}");
     let mut kept = Vec::new();
     package
