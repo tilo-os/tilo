@@ -265,6 +265,24 @@ fn job_rows_keep_progress_across_bounded_pages_and_account_for_utf8_bytes() {
 }
 
 #[test]
+fn uncertified_job_rows_remain_available_without_a_certified_session() {
+    let chrome = chrome();
+    let actor = chrome.borrow().active_local_user();
+    let broker =
+        crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(
+        );
+    let provider = LiveAppActionsProvider::new(broker.clone());
+    broker.record_completion_for_test(17, &actor, progress(17, "Routing", None, None));
+    let doc = AutoCommit::new();
+    let state = chrome.borrow();
+    let row = provider
+        .resolve(&job_status_id(17), context(&state, &doc))
+        .unwrap();
+    assert_eq!(row.id, job_status_id(17));
+    assert_eq!(row.subtitle.as_deref(), Some("Reported: Routing"));
+}
+
+#[test]
 fn job_rows_remain_unique_with_multiple_workspace_sessions() {
     let chrome = chrome();
     chrome
