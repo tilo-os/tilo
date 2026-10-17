@@ -19,7 +19,7 @@
  * around.
  */
 export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New workspace',
-  subtitle: 'Create a workspace on a machine you set up'});
+  subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
 export const INVITE = Object.freeze({id: 'invite-someone', title: 'Invite someone',
   subtitle: 'Copy a link that asks to join this workspace'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',

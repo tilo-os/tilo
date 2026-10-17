@@ -3194,6 +3194,7 @@ mod tests {
             title: id.into(),
             subtitle: None,
             source: None,
+            label: None,
         };
         assert!(
             handle
