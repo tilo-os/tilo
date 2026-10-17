@@ -50,6 +50,7 @@
 //! own default in place, the strictly smaller failure.
 
 use std::path::{Path, PathBuf};
+use tilo_lock::MutexRecover as _;
 
 /// GLVND's EGL vendor selection: a colon-separated list of vendor ICD
 /// JSONs; when set, GLVND loads only these and skips the directory scan.
@@ -361,12 +362,11 @@ fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
 #[cfg(target_os = "linux")]
 pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
     use std::collections::HashMap;
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::Mutex;
     static CACHE: Mutex<Option<HashMap<(PathBuf, IcdSearch), GpuSelection>>> = Mutex::new(None);
     let key = (node.to_path_buf(), search.clone());
     if let Some(found) = CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .as_ref()
         .and_then(|cache| cache.get(&key))
     {
@@ -409,8 +409,7 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
         },
     };
     CACHE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .get_or_insert_with(HashMap::new)
         .insert(key, selection.clone());
     selection
@@ -826,12 +825,9 @@ mod loaded {
             // Mesa drivers register exit handlers; unloading one would run
             // them against freed code. Keep it, as the loader does.
             std::mem::forget(lib);
-            // SAFETY: `get_instance_proc_addr` is the ICD's own entry point.
-            let entry = unsafe {
-                ash::Entry::from_static_fn(ash::StaticFn {
-                    get_instance_proc_addr,
-                })
-            };
+            // SAFETY: `get_instance_proc_addr` is the ICD's own entry point,
+            // kept alive by the library forgotten above.
+            let entry = unsafe { entry_of(get_instance_proc_addr) }?;
             let app = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
             let create = vk::InstanceCreateInfo::default().application_info(&app);
             // SAFETY: a plain instance with no layers or extensions.
@@ -842,6 +838,39 @@ mod loaded {
             unsafe { instance.destroy_instance(None) };
             result
         }
+    }
+
+    /// The Vulkan entry an ICD's `get_instance_proc_addr` opens, or why it
+    /// opens none. A driver whose device has failed (an NVIDIA GPU that fell
+    /// off the bus, say) can still load yet hand out no vkCreateInstance;
+    /// ash panics on a missing entry point, and a panic in the probe cannot
+    /// unwind, so it would abort the whole compositor. Such a driver counts
+    /// as offering no devices instead.
+    ///
+    /// # Safety
+    ///
+    /// `get_instance_proc_addr` must be a Vulkan ICD's entry point that stays
+    /// loaded for as long as the returned entry is used.
+    #[allow(
+        unsafe_code,
+        reason = "the Vulkan ICD interface is a C ABI reached through dlopen"
+    )]
+    unsafe fn entry_of(
+        get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
+    ) -> Result<ash::Entry, String> {
+        // SAFETY: the caller's entry point, asked with a null instance for a
+        // global command, as the loader-driver contract allows.
+        let create_instance =
+            unsafe { get_instance_proc_addr(vk::Instance::null(), c"vkCreateInstance".as_ptr()) };
+        if create_instance.is_none() {
+            return Err("the driver offers no vkCreateInstance".into());
+        }
+        // SAFETY: the caller guarantees a live ICD entry point.
+        Ok(unsafe {
+            ash::Entry::from_static_fn(ash::StaticFn {
+                get_instance_proc_addr,
+            })
+        })
     }
 
     #[allow(
@@ -894,6 +923,35 @@ mod loaded {
         }
 
         Ok(out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// What a failed driver answers for every command: nothing.
+        unsafe extern "system" fn nothing(
+            _instance: vk::Instance,
+            _name: *const std::ffi::c_char,
+        ) -> vk::PFN_vkVoidFunction {
+            None
+        }
+
+        /// A driver that loads but hands out no vkCreateInstance is refused
+        /// with a reason rather than panicking inside ash.
+        #[test]
+        #[allow(
+            unsafe_code,
+            reason = "calls the unsafe probe helper with a test entry point"
+        )]
+        fn a_driver_without_create_instance_offers_no_entry() {
+            // SAFETY: `nothing` is a static function that never dereferences.
+            let refused = unsafe { entry_of(nothing) };
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("the driver offers no vkCreateInstance")
+            );
+        }
     }
 }
 

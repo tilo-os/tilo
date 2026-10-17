@@ -153,6 +153,7 @@ shortcut-name-magnifier-zoom-out = Magnifier zoom out
 shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
 shortcut-category-system = System
@@ -297,10 +298,10 @@ qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
 
 # Quick Settings: editing the control grid
 qs-edit-controls = Edit controls
-qs-edit-help = Drag to reorder · Ctrl + Up/Down
+qs-edit-help = Drag or press Ctrl + Up/Down to reorder
 qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
-qs-edit-active-heading = ACTIVE CONTROLS
-qs-edit-available-heading = AVAILABLE
+qs-edit-active-heading = Active controls
+qs-edit-available-heading = Available
 qs-edit-reset = Reset defaults
 qs-edit-reset-a11y = Reset Quick Settings defaults
 qs-edit-done = Done
@@ -409,6 +410,7 @@ portal-chooser-file-not-granted = This app has not been given { $path }.
 portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
 portal-chooser-other-workspace = The app's workspace is not the one on screen.
+portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
 portal-launcher-icon-compass = Tilo web compass
 portal-background-title = Allow background activity?
 portal-background-resource = The app may keep working after its window is closed.
@@ -905,6 +907,8 @@ osd-microphone-on = Microphone on
 osd-keyboard-backlight-off = Keyboard backlight off
 osd-keyboard-backlight = Keyboard backlight { $percent }%
 osd-no-backlight = No adjustable display
+osd-no-agent = No agent is available here
+osd-starting-agent = Starting the agent…
 osd-airplane-mode-on = Airplane mode on
 osd-airplane-mode-off = Airplane mode off
 osd-touchpad-on = Touchpad on
@@ -1012,9 +1016,9 @@ window-tab-action-document-refused = The workspace document did not accept the c
 
 # Tab context menu, workspace toasts and placeholder tiles
 shell-workspace-renamed = Workspace renamed
-shell-tab-menu-close = Close Tab
-shell-tab-menu-split-right = Split Right
-shell-tab-menu-new-group = Move to New Group
+shell-tab-menu-close = Close tab
+shell-tab-menu-split-right = Split right
+shell-tab-menu-new-group = Move to new group
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
@@ -1080,6 +1084,10 @@ bluetooth-prompt-a11y-code = Code { $code }
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
 portal-file-choose-folder = Choose folder
+portal-file-grant-write-folder = Allow this app to read and write the selected folder and its contents
+portal-file-existing-write-folder = Choose a writable folder already accessible to this app
+portal-file-allow-write-folder = Allow read and write
+portal-file-use-write-folder = Use writable folder
 portal-file-open = Open
 portal-notification-open = Open
 portal-inhibit-unnamed-app = An app
@@ -1410,6 +1418,8 @@ search-action-invitation-cancel = Cancel an invitation
 search-action-invitation-cancel-subtitle = Revoke a pending invitation so it can no longer be redeemed
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
+search-action-agent-remove = Remove an agent
+search-action-agent-remove-subtitle = Take an agent out of this workspace and revoke everything it could do here, at once
 search-action-record-bring = Add an item to this workspace
 search-action-record-bring-subtitle = Make it available here without moving the original
 search-action-quick-settings-brightness-set = Set display brightness
@@ -1466,6 +1476,7 @@ search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
 search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
 search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
+search-action-enrollment-copy-failed = Could not copy the setup code to the clipboard
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
@@ -1809,7 +1820,7 @@ peer-sync-title-invite = Invite someone
 peer-sync-title-join = Join a workspace
 peer-sync-title-workspace-invite = Workspace invite
 peer-sync-paste-token = Paste or type the invite token
-peer-sync-identity-copied = Identity copied — send it to the inviter
+peer-sync-identity-copied = Copied
 peer-sync-invite-failed = Invite failed: { $error }
 peer-sync-identity-unavailable = Identity unavailable: { $error }
 peer-sync-joined-room = Joined room { $room }
@@ -1819,19 +1830,22 @@ peer-sync-resend-failed = Could not resend: { $error }
 peer-sync-invite-canceled = Invite canceled
 peer-sync-cancel-failed = Could not cancel: { $error }
 peer-sync-unexpected-response = Unexpected collaboration response
-peer-sync-using-verified-identity = Using verified identity · { $verification }
+peer-sync-working = Working…
+peer-sync-using-verified-identity = Using verified identity: { $verification }
 peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
 peer-sync-name-required = Say who this invite is for
 peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
 peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
 peer-sync-copied = Copied
-peer-sync-pasted = Pasted — press Enter to join
+peer-sync-copy-failed = Could not copy to the clipboard
+peer-sync-joining = Joining…
+peer-sync-pasted = Pasted
 peer-sync-clipboard-empty = Nothing on the clipboard to paste
-peer-sync-identity-bound = Identity bound · { $fingerprint }
+peer-sync-identity-bound = Identity bound: { $fingerprint }
 peer-sync-identity-invalid = That is not a Tilo identity key (expected 64 hexadecimal characters)
-peer-sync-pending-heading = PENDING INVITES
-peer-sync-pending-heading-paged = PENDING INVITES · { $first }–{ $last } of { $total } · scroll
-peer-sync-role-expires = { $role } · { $unit ->
+peer-sync-pending-heading = Pending invites
+peer-sync-pending-heading-paged = Pending invites ({ $first }–{ $last } of { $total })
+peer-sync-role-expires = { $role }, { $unit ->
     [now] expires in moments
     [seconds] expires in { $count ->
         [one] 1 second
@@ -1850,7 +1864,7 @@ peer-sync-role-expires = { $role } · { $unit ->
        *[other] { $count } days
     }
 }
-peer-sync-received-role-expires = { $role } access · { $unit ->
+peer-sync-received-role-expires = { $role } access, { $unit ->
     [now] expires in moments
     [seconds] expires in { $count ->
         [one] 1 second
@@ -1881,29 +1895,29 @@ peer-sync-create-invite = Create invite
 peer-sync-review-invite = Review invite
 peer-sync-paste-identity = Paste new identity
 peer-sync-copy-identity = Copy my identity
-peer-sync-recipient-heading = WHO ARE YOU INVITING?
-peer-sync-recipient-new = Someone new · exchange their Tilo identity
-peer-sync-role-heading = ACCESS THEY WILL RECEIVE
-peer-sync-review-workspace = Workspace · { $workspace }
-peer-sync-review-workspace-this = Workspace · this workspace
-peer-sync-review-inviter = Invited by · { $inviter }
-peer-sync-review-inviter-you = Invited by · You
-peer-sync-review-recipient = Recipient · { $name }
-peer-sync-review-recipient-unnamed = Recipient · Someone
-peer-sync-review-role = Access · { $role }
-peer-sync-review-identity = Bound identity · { $fingerprint }
-peer-sync-review-identity-missing = Bound identity · missing
+peer-sync-recipient-heading = Who are you inviting?
+peer-sync-recipient-new = Someone new
+peer-sync-role-heading = Access
+peer-sync-review-workspace = Workspace: { $workspace }
+peer-sync-review-workspace-this = Workspace: this workspace
+peer-sync-review-inviter = Invited by: { $inviter }
+peer-sync-review-inviter-you = Invited by: You
+peer-sync-review-recipient = Recipient: { $name }
+peer-sync-review-recipient-unnamed = Recipient: Someone
+peer-sync-review-role = Access: { $role }
+peer-sync-review-identity = Bound identity: { $fingerprint }
+peer-sync-review-identity-missing = Bound identity: missing
 peer-sync-review-note = Only this identity can redeem the signed one-hour invite.
 peer-sync-selected-person = Selected person
 peer-sync-name-new-person = Name the new person
 peer-sync-name-placeholder = Their name
 peer-sync-recipient-hint = Choose a verified person or paste their Tilo identity.
-peer-sync-identity-remembered = Verified remembered identity · { $fingerprint }
-peer-sync-identity-new = New identity bound · { $fingerprint }
+peer-sync-identity-remembered = Verified remembered identity: { $fingerprint }
+peer-sync-identity-new = New identity bound: { $fingerprint }
 peer-sync-invite-anyone = Anyone with this invite
 peer-sync-invite-received = Invite received
 peer-sync-paste-invite-hint = Paste the invite they sent you.
-peer-sync-token-characters = { $token } · { $count ->
+peer-sync-token-characters = { $token }, { $count ->
     [one] 1 character
    *[other] { $count } characters
 }
@@ -1957,7 +1971,6 @@ hosted-window-running-on = Running on { $device }
 shell-document-unavailable = Document unavailable
 shell-named-document-unavailable = { $name } unavailable
 shell-path-open-failed = Cannot open { $path }: { $error }
-shell-path-read-failed = Cannot read { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
@@ -2437,6 +2450,13 @@ session-diagnostics-gpu_stages = Record GPU stage timing
 session-diagnostics-gpu_timestamps = Enable GPU timestamps
 session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
 session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
+session-diagnostics-profile-start = Profile the compositor and save the profile
+session-diagnostics-profile-stop = Stop profiling the compositor
+session-diagnostics-profile-seconds = How many seconds to record (default 30)
+session-diagnostics-profile-seconds-range = A profile records between 1 and { $max } seconds.
+session-diagnostics-profile-no-state-dir = There is no state directory to save the profile in; set HOME or XDG_STATE_HOME.
+session-diagnostics-profile-already-recording = A profile is already recording to { $path }. Stop it first.
+session-diagnostics-profile-not-created = The profile could not be created: { $error }
 
 device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
 search-action-activity-acknowledge = Acknowledge viewed activity
@@ -2686,53 +2706,40 @@ file-picker-declared-operation = Use a declared file chooser operation.
 
 portal-chooser-file-grant-unavailable = The selected file is no longer available. Choose it again.
 
-## Private marker-adjacent Agent composer
+## The agent composer: one field to ask an agent or tell it what to do
 agent-quick-title = { $agent }
-agent-quick-kind = Agent
-agent-quick-accessible-name = Agent quick composer
-agent-quick-origin-context = Context when opened: { $context }
-agent-quick-shots-context = Release Notes Agent was applying Rename to release notes
-agent-quick-checking = Checking what this agent can do…
-agent-quick-ready = Choose a task to send a direction
-agent-quick-message = Message
-agent-quick-queue = Queue
-agent-quick-steer = Steer
-agent-quick-intent = What should this agent do?
-agent-quick-placeholder = Write a message or instruction
-agent-quick-editor-name = Message or instruction
+agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
+agent-quick-about-window = About { $app }; nothing is selected
+agent-quick-accessible-name = Agent composer
+agent-quick-shots-context = About your selection in Notes: “[tilo OS](search for the tilo homepage)”
+agent-quick-shots-draft = What does this link point to?
+agent-quick-shots-question = Does this link point anywhere yet?
+agent-quick-shots-answer = Not yet. It's written as a link, but the part in parentheses is a note to look up the address rather than an address itself.
+agent-quick-shots-request = Replace the parenthesis with the real link
+agent-quick-shots-task = Link the tilo homepage
+agent-quick-shots-steer = Use the https address
+agent-quick-placeholder-idle = Ask { $agent }, or say what to do
+agent-quick-placeholder-running = Tell { $agent } how to continue
+agent-quick-editor-name = Your message to the agent
 agent-quick-send = Send
-agent-quick-open-conversation = Open conversation
-agent-quick-open-tasks = Open Task Center
+agent-quick-stop = Stop
 agent-quick-close = Close
-agent-quick-message-submitting = Saving direction to the selected task…
-agent-quick-message-outcome-unknown = Waiting for confirmation that the direction was saved…
-agent-quick-message-sent = Chat accepted an earlier message
-agent-quick-message-refused = Message unavailable. Your draft is still here.
-agent-quick-queue-help = Save separate work; open its conversation to consciously start it
-agent-quick-queue-submitting = Asking Task Center to queue this work…
-agent-quick-queue-outcome-unknown = Sent. Waiting for Task Center to confirm whether it was queued…
-agent-quick-queue-accepted = Task { $task } was queued, not started. Open conversation to start it in Chat.
-agent-quick-guide-task = Steer current task: { $task }
-agent-quick-guide-choose = Choose which current task to steer
-agent-quick-task-label = Task
-agent-quick-task-placeholder = Choose a task
-agent-quick-task-changed = The current task changed. Choose a task again.
-agent-quick-task-option = { $task } ({ $phase })
-agent-quick-task-phase-unknown = Status unavailable
-agent-quick-task-phase-accepted = Agent accepted task
-agent-quick-task-phase-planning = Planning
-agent-quick-task-phase-executing = Working
-agent-quick-guide-none = This agent has no current task to steer
-agent-quick-guide-submitting = Saving direction to the current task…
-agent-quick-guide-outcome-unknown = Sent. Waiting for Task Center to confirm whether the direction was saved…
-agent-quick-guide-saved = Direction saved to { $task }, run { $run }, revision { $revision }.
-agent-quick-guide-applied = Direction applied by { $task }, run { $run }, revision { $revision }.
-agent-quick-work-refused = This action is unavailable. Your draft is still here.
-agent-quick-shots-draft = Review changes and flag open decisions.
-agent-quick-stop = Stop current task
-agent-quick-stopped = Task { $task }, run { $run }, was stopped.
-agent-quick-stop-submitting = Asking Task Center to stop the current task…
-agent-quick-stop-outcome-unknown = Waiting for Task Center to confirm whether the current task was stopped…
+agent-quick-insert = Insert
+agent-quick-save-note = Save as note
+agent-quick-you-asked = You: { $text }
+agent-quick-thinking = Thinking…
+agent-quick-steering = Sending…
+agent-quick-stopping = Stopping…
+agent-quick-steer-saved = Sent. { $agent } will take it into account.
+agent-quick-steer-applied = { $agent } is following your note.
+agent-quick-run-starting = Starting: { $task }
+agent-quick-run-working = Working on it: { $task }
+agent-quick-run-done = { $agent } is done.
+agent-quick-run-attention = { $agent } stopped and needs you.
+agent-quick-run-stopped = Stopped.
+agent-quick-outcome-unknown = No reply yet. Your message is still here.
+agent-quick-refused = { $agent } couldn't take that. Your message is still here.
+agent-quick-stop-refused = Couldn't stop it. Try again.
 ## Search vocabulary: the words people use for actions and settings pages.
 ## Each `search-kw-*` message is a comma-separated list; desktop search matches
 ## the lists of every language whatever language the desktop speaks.
@@ -2913,3 +2920,18 @@ search-kw-settings-updates = update, upgrade, software update, system update, fi
 search-settings-page-about = About
 search-settings-page-about-subtitle = Device identity and transfer
 search-kw-settings-about = about, device name, hostname, version, specs, system info, serial number, hardware, os version, identity
+
+storage-app-name = Storage
+storage-volume-home = your files
+storage-volume-system = the system
+storage-low-title = Storage is almost full
+storage-low-body = { $free } left for { $volume }. Delete large downloads or open Settings, Storage to free space.
+storage-full-title = Storage is full
+storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
+
+## Desk widgets
+
+desk-team-title = In this workspace
+# Where a person is: their strip, then the window they are on.
+desk-team-place = { $strip } · { $window }
+desk-team-more = +{ $count } more

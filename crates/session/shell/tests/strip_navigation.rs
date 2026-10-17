@@ -982,6 +982,62 @@ fn the_position_indicators_show_while_navigating_and_fade_after() {
     assert_eq!(moved, 1.0, "scrolling the strip shows them again");
 }
 
+/// A touchpad pan is the commonest way along a strip. Its frames are
+/// composited from the layers drawn before it began, so the indicators stay
+/// as they were while the fingers move and on the frame the pan rests on;
+/// from the next frame they show, as for any other navigation. They used to
+/// take the rest as the new starting point and never show at all, which with
+/// a touchpad left the window rail looking gone.
+#[test]
+fn a_touchpad_pan_shows_the_position_indicators_once_it_rests() {
+    let mut h = Harness::new();
+    let t0 = Instant::now();
+    assert_eq!(h.host.strip_indicator_alpha_at(t0, false), 0.0, "at rest");
+
+    assert!(h.host.update_active_strip_pan(300.0, true, t0));
+    assert!(
+        h.host
+            .update_active_strip_pan(600.0, false, t0 + Duration::from_millis(80))
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(t0 + Duration::from_millis(90), false),
+        0.0,
+        "the chrome layer holds still under the fingers"
+    );
+    let released = t0 + Duration::from_millis(400);
+    // Lifted after the fingers came to rest: nothing is thrown, so this
+    // reports no motion of its own.
+    let _thrown = h.host.end_active_strip_pan(released, false);
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("the strip has a row")
+        .tick_snap_at(released + Duration::from_secs(2));
+    h.lay_out();
+    let rest = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(rest, false),
+        0.0,
+        "the frame the pan rests on is composited from its layers"
+    );
+    let next = rest + Duration::from_millis(16);
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(next, false),
+        1.0,
+        "the frame after it shows where the pan left you"
+    );
+    assert!(
+        h.host.strip_rail_for_tests().is_meaningful(),
+        "the rail is among what shows"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(next + Duration::from_secs(2), false),
+        0.0,
+        "and fades like any other navigation"
+    );
+}
+
 #[test]
 fn the_rail_maps_the_strip_and_travels_on_click() {
     // Phase `the_rail_maps_the_strip_and_marks_what_is_on_screen`.

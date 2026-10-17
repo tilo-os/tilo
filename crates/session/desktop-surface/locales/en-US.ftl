@@ -156,9 +156,9 @@ a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
 a11y-shell-activity-agent-review = Agent task review
 a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } audit events
 a11y-shell-activity-task-latest = latest: { $latest }
-activity-view-catch-up = Catch up
+activity-view-catch-up = What's new
 activity-view-tasks = Tasks
-activity-view-explore = Explore
+activity-view-explore = History
 activity-view-replay = Replay
 activity-title-catch-up = While you were away
 activity-title-tasks = Task Center
@@ -241,7 +241,7 @@ activity-brief-underlying = { $count } underlying { $count ->
         [one] action
        *[other] actions
     }
-activity-brief-open-explorer = Open this work session in Explorer →
+activity-brief-open-explorer = Open this work session in History →
 activity-brief-show-affected = Show affected resources and actions
 activity-browse-by = Browse by
 activity-more-lenses = More lenses…
@@ -324,17 +324,15 @@ activity-replay-no-workspace = The workspace did not exist at this checkpoint
 activity-replay-empty-window = Empty window
 activity-replay-layout-not-recorded = Window sizes and selected tabs were not recorded
 activity-presence-trail = Presence trail
-activity-tasks-subtitle = { $workspace } · { $active } active { $active ->
-        [one] task
-       *[other] tasks
-    } · { $agents } assigned { $agents ->
-        [one] agent
-       *[other] agents
+activity-tasks-subtitle = { $workspace } · { $active ->
+        [0] nothing open
+        [one] 1 open task
+       *[other] { $active } open tasks
     }
-activity-tasks-tagline = Native workspace tasks · model optional · every action auditable
+activity-tasks-tagline = What people and agents are doing in this workspace
 activity-tasks-pending = Tasks are waiting for current edits to finish
 activity-tasks-empty = No tasks yet
-activity-tasks-empty-hint = Create one manually, or attach the resource selected in Explore.
+activity-tasks-empty-hint = Create one here, or ask an agent from any app.
 activity-task-new = + New task
 activity-task-queue = WORKSPACE QUEUE
 activity-task-composer-title = Create work without leaving the desktop
@@ -782,6 +780,24 @@ workspace-settings-agent-detail = { $count ->
 }
 workspace-settings-admitted = Admitted
 workspace-settings-review-access = Review access
+workspace-settings-agent-access-back = All agents
+workspace-settings-agent-access-note = Choose what this agent may do in each app. Sending, publishing and deleting for good still ask you first, unless you chose Always allow for that action.
+workspace-settings-agent-access-read = Reading
+workspace-settings-agent-access-change = Changes
+workspace-settings-agent-access-outside = Outside effects
+workspace-settings-agent-access-summary-part = { $kind }: { $answer }
+workspace-settings-agent-access-custom = Custom
+workspace-settings-agent-access-custom-detail = Set for this agent
+workspace-settings-agent-access-inherited = Follows its admission
+workspace-settings-agent-access-set-here = set here
+workspace-settings-agent-access-default = default
+workspace-settings-agent-access-reset = Use defaults
+workspace-settings-agent-access-always = ALWAYS ALLOWED · { $count }
+workspace-settings-agent-access-stop = Ask again
+workspace-settings-agent-access-empty = No apps in this workspace yet.
+workspace-settings-answer-allow = Allow
+workspace-settings-answer-ask = Ask first
+workspace-settings-answer-deny = Deny
 workspace-settings-revoke = Revoke
 workspace-settings-admission-admin = Admin admission
 workspace-settings-admission-write = Write admission
@@ -986,7 +1002,7 @@ window-switcher-description = Windows in this workspace, most recently used firs
 window-switcher-app-title = Switch windows of this app
 window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
 window-switcher-untitled = Untitled window
-window-switcher-caption-paged = { $title } ({ $position } of { $count })
+window-switcher-caption-paged = { $position } of { $count }
 
 # Workspace wheel
 a11y-shell-wheel = Workspace wheel
@@ -1010,7 +1026,6 @@ overview-presence-you-and-one = You and { $name } are here
 overview-presence-you-and-many = You and { $count } others are here
 overview-presence-one = { $name } is here
 overview-presence-many = { $count } people are here
-overview-collaborators-here = { $count } collaborators are here
 
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
@@ -1065,41 +1080,98 @@ notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
 
-activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
-activity-task-review-history = Review action history
+activity-task-review-unavailable = Can't reach the workspace owner right now, so tasks can't be changed. Their history is still readable.
+activity-task-review-history = See changes
 activity-task-steer = Change instructions
-activity-task-cancel-run = Cancel this run
-activity-task-retry-run = Retry task
+activity-task-cancel-run = Cancel task
+activity-task-retry-run = Try again
 activity-task-direction-send = Send instructions
 activity-task-direction-close = Back to task
-activity-task-direction-label = Public task instructions
+activity-task-direction-label = Instructions for the agent
 activity-task-direction-placeholder = Describe the change you want the agent to make
-activity-task-direction-observation = Instructions for run { $epoch }, after revision { $revision }. A changed run requires another review.
-activity-task-review-saving = Waiting for the workspace owner to save…
-activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
-activity-task-review-refused = Not saved. Your draft is retained. { $detail }
+activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
+activity-task-review-saving = Saving…
+activity-task-review-saved = Saved. The agent's response will show up here.
+activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
+
+activity-confirm-waiting = Waiting for your confirmation
+activity-confirm-confirmed = Confirmed
+activity-confirm-declined = Declined
+activity-confirm-risk-sends = Sends outside
+activity-confirm-risk-deletes = Can't be undone
+activity-confirm-risk-privileged = Changes access
+activity-confirm-risk-sensitive = Shares private data
+activity-confirm-risk-changes = Changes your work
+activity-confirm-risk-reads = Reads your work
+activity-confirm-meta = { $agent } asks first · { $resource }
+activity-confirm-withheld = Hidden
+activity-confirm-yes = Yes
+activity-confirm-no = No
+activity-confirm-list = { $count }: { $items }
+activity-confirm-list-label = { $label } ({ $count })
+activity-confirm-more = { $count } more
+activity-confirm-to = To
+activity-confirm-cc = Cc
+activity-confirm-bcc = Bcc
+activity-confirm-subject = Subject
+activity-confirm-body = Message
+activity-confirm-attachments = Attachments
+activity-confirm-confirm = Confirm
+activity-confirm-edit = Edit
+activity-confirm-discard = Discard changes
+activity-confirm-decline = Decline
+activity-confirm-send-decline = Decline action
+activity-confirm-back = Back
+activity-confirm-always = Always allow this
+activity-confirm-always-note = “Always allow this” changes this workspace’s agent access, so it works only on the device that manages the workspace. You can undo it in Workspace Settings › Agents.
+activity-confirm-reason-label = Reason for the agent (optional)
+activity-confirm-reason-placeholder = Say what to do instead
+activity-confirm-field-description = Change this before confirming
+activity-confirm-on-its-way = Your answer is on its way to the agent.
+activity-confirm-notice-title = { $agent } asks first: { $action }
+activity-confirm-notice-body = { $task }
+activity-confirm-notice-gist = { $task } · { $gist }
+activity-confirm-notice-review = Review
 
 activity-task-next = Next task
 activity-task-previous = Previous task
-activity-task-review-source = Workspace owner · generation { $generation } · sampled { $time }
-activity-task-review-status = { $status } · Agent: { $agent }
-activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
-activity-task-review-direction = { $author }: { $text }
+activity-task-review-source = Workspace owner's copy · version { $generation } · checked { $time }
+activity-task-review-status = { $status ->
+        [queued] { $agent } hasn't started yet
+        [in-progress] { $agent } is working on it
+        [waiting] { $agent } stopped before finishing
+        [done] { $agent } finished this
+       *[cancelled] Cancelled
+    }
+activity-task-review-frontier = Run { $epoch } · { $revision ->
+        [one] 1 instruction sent
+       *[other] { $revision } instructions sent
+    } · { $applied } applied by the agent
+activity-task-review-direction = { $author }: “{ $text }”
 activity-task-review-missing = This task is no longer available in this workspace.
 
-activity-task-approve-run = Approve run
+activity-task-review-status-unassigned = { $status ->
+        [done] Done
+        [cancelled] Cancelled
+       *[other] Nobody is working on this yet
+    }
+activity-task-review-status-asking = { $agent } is waiting for your answer
+activity-task-details = Details
+activity-task-hide-details = Hide details
+activity-task-position = { $index } of { $count }
+activity-task-run-approved-by-you = You approved this · { $time }
+activity-task-approve-run = Approve
 activity-task-run-approved = Approved by { $person } · { $time }
-activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
-activity-task-run-accepted = Agent accepted this run · last report { $time }
-activity-task-run-planning = Agent is planning this run · last report { $time }
-activity-task-run-executing = Agent is processing this run · last report { $time }
-
+activity-task-awaiting-acceptance = Waiting for the agent to pick this up. It may be offline.
+activity-task-run-accepted = The agent picked this up · last update { $time }
+activity-task-run-planning = The agent is planning the steps · last update { $time }
+activity-task-run-executing = The agent is making changes · last update { $time }
 topbar-cpu-reading = CPU { $value }
 topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
-activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-empty = Morning sources: choose a resource in History → Details. Up to eight sources; none are connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = This source isn't available here
 activity-morning-source-unnamed = Chosen source

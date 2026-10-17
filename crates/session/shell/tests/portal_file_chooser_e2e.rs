@@ -629,6 +629,121 @@ async fn file_chooser_answers_cancelled_and_concurrent_requests_instead_of_hangi
     }
 }
 
+fn directory_options(write: bool) -> std::collections::HashMap<String, OwnedValue> {
+    let mut options = std::collections::HashMap::from([
+        ("directory".to_owned(), OwnedValue::from(true)),
+        (
+            "accept_label".to_owned(),
+            OwnedValue::try_from(zbus::zvariant::Value::from("Open")).unwrap(),
+        ),
+    ]);
+    if write {
+        let choices = vec![(
+            tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE.to_owned(),
+            "Open".to_owned(),
+            Vec::<(String, String)>::new(),
+            "true".to_owned(),
+        )];
+        options.insert(
+            "choices".into(),
+            OwnedValue::try_from(zbus::zvariant::Value::new(choices)).unwrap(),
+        );
+    }
+    options
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn writable_directory_backend_requires_visible_consent_and_keeps_room_private() {
+    let dir = user_dir();
+    let selected = dir.path().join("selected");
+    let sibling = dir.path().join("sibling");
+    std::fs::create_dir(&selected).unwrap();
+    std::fs::create_dir(&sibling).unwrap();
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let pickers = FilePickerQueue::new();
+    let (_host, grants, ws) = host_with_portal(prompts.clone(), pickers.clone(), dir.path());
+    let (_srv, _cli, proxy) =
+        portal_proxy(context(grants.clone(), prompts, pickers.clone(), ws)).await;
+    for (write, cancelled) in [(true, false), (false, false), (true, true)] {
+        let proxy = proxy.clone();
+        let call = tokio::spawn(async move {
+            let options = directory_options(write);
+            proxy
+                .call::<_, _, (u32, std::collections::HashMap<String, OwnedValue>)>(
+                    "OpenFile",
+                    &(
+                        ObjectPath::try_from("/org/freedesktop/portal/desktop/request/destination")
+                            .unwrap(),
+                        APP.to_owned(),
+                        String::new(),
+                        "Open folder".to_owned(),
+                        options,
+                    ),
+                )
+                .await
+                .unwrap()
+        });
+        let request = tokio::time::timeout(crate::support::HANG_BOUND, async {
+            loop {
+                if let Some(request) = pickers.drain().pop() {
+                    break request;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("backend must enqueue a real picker");
+        assert_eq!(request.writable_directory, write);
+        assert!(request.directory);
+        assert!(!request.save);
+        if write {
+            assert_eq!(
+                request.display_title(),
+                shell::shell::i18n::t("portal-file-grant-write-folder")
+            );
+            assert_eq!(
+                request.confirm_label(),
+                shell::shell::i18n::t("portal-file-allow-write-folder")
+            );
+        }
+        assert!(
+            !call.is_finished(),
+            "caller assertion cannot acknowledge consent"
+        );
+        request
+            .reply
+            .send((!cancelled).then(|| vec![selected.clone()]))
+            .unwrap();
+        let (code, results) = call.await.unwrap();
+        if cancelled {
+            assert_eq!(code, 1);
+            assert!(results.is_empty());
+        } else {
+            assert_eq!(code, 0);
+            assert_eq!(
+                uris_of(&results),
+                vec![url::Url::from_file_path(&selected).unwrap().to_string()]
+            );
+            assert_eq!(
+                bool::try_from(results["writable"].try_clone().unwrap()).unwrap(),
+                write
+            );
+            assert_eq!(results.contains_key("choices"), write);
+        }
+        // This is the store connected to the production backend and overlay,
+        // not an unrelated empty store constructed solely for an assertion.
+        let caller = PortalCaller::new(ws, APP);
+        assert!(grants.granted_paths(&caller).is_empty());
+        for path in [&selected, &sibling, dir.path()] {
+            assert!(!grants.filesystem_path_allows(
+                &caller,
+                path,
+                collab_types::caps::Access::Write
+            ));
+        }
+    }
+}
+
 #[allow(
     unused_imports,
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."

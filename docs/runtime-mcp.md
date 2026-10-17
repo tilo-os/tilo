@@ -223,9 +223,14 @@ Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
 ## HTTP endpoint
 
 A hosted machine (for example a provider's per-user VM) exposes the same tools
-over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon; a
-non-loopback address also requires `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose
-contents callers present as `Authorization: Bearer …`:
+over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon,
+with `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose nonempty contents callers
+present as `Authorization: Bearer …`. A token is required on loopback too:
+every process and account on the machine can reach a loopback port. Requests
+without the token cannot create, use or delete a session, drive `/watch`, or
+manage viewer invitations. Local assistants can use the owner-only Unix socket
+with `--connect` instead; inside a Tilo login that still selects the desktop's
+agent door, never an accidental standalone daemon:
 
 ```sh
 TILO_RUNTIME_MCP_HTTP=0.0.0.0:7391 \
@@ -557,11 +562,13 @@ This is a local, same-user native host. The profile's workspace and actor are
 fixed when the host starts; MCP requests cannot select an actor, workspace, or
 executable. Discovery and invocation retain the production broker's workspace
 authority and current-instance checks; the Tilo permission system decides what
-is visible and invokable. An action whose contract asks for confirmation is not
-refused: the MCP client's own allow/deny decision for the `tilo_invoke` call is
-the confirmation, and the host supplies the evidence the resolved contract
-names. Risk levels travel in each action's contract, and `tilo_invoke` is
-annotated as potentially destructive so clients can prompt.
+is visible and invokable. An agent never confirms by its own word: an action
+that asks for confirmation, or that the agent's role answers with Ask (an
+action reaching outside, such as a browser page action), is put to the person
+on this device, and runs once they allow it. On macOS the standalone runtime
+asks in a native prompt, for that one invocation; where nobody can be asked,
+the action is refused. Risk levels travel in each action's contract, and
+`tilo_invoke` is annotated as potentially destructive so clients can prompt.
 
 The concrete launcher uses Unix sockets, process execution, and descriptor
 inheritance and is currently qualified for macOS and Linux. Windows host

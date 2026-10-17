@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 account-custody = { path = "../../system/account-custody" }
 browser-continuity = { path = "../../browser/browser-continuity" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

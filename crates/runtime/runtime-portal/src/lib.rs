@@ -55,6 +55,8 @@ use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 use rustix::io::fcntl_getfd;
 #[cfg(all(unix, feature = "rpc"))]
 use rustix::io::{FdFlags, fcntl_setfd};
+#[cfg(test)]
+use tilo_lock::RwLockRecover as _;
 #[cfg(all(unix, feature = "rpc"))]
 use tokio::net::UnixStream;
 #[cfg(feature = "rpc")]
@@ -310,6 +312,19 @@ pub fn connect_service_fd(name: &str) -> Result<OwnedFd, NotAvailable> {
     shared::connect(name, fd)
 }
 
+#[cfg(all(unix, feature = "rpc"))]
+/// The descriptor lane of the launcher-inherited service `name`: a descriptor
+/// sent on it reaches the service ahead of every call any client of `name`
+/// in this process makes afterwards, numbered as [`descriptor_lane`] says.
+///
+/// # Errors
+///
+/// As [`connect_service`].
+pub fn service_descriptors(name: &str) -> Result<descriptor_lane::DescriptorSender, NotAvailable> {
+    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
+    shared::descriptors(name, fd)
+}
+
 #[cfg(feature = "rpc")]
 /// Helper for service crates: open a connection to an inherited service
 /// ([`connect_service`]) and pull out the bootstrap.
@@ -410,6 +425,9 @@ mod tests {
 #[cfg(unix)]
 pub mod fd_transport;
 
+#[cfg(all(unix, feature = "rpc"))]
+pub mod descriptor_lane;
+
 /// A child forked between a descriptor's creation and its `exec` holds a copy of
 /// that descriptor until the `exec` closes it (every descriptor here is
 /// close-on-exec), so a test that waits for the last copy of one to close can
@@ -423,18 +441,14 @@ static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 /// Held by a test while it spawns a child process.
 #[cfg(test)]
 pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
-    CHILD_SPAWNS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    CHILD_SPAWNS.read_recover()
 }
 
 /// Held by a test that checks a descriptor was closed, so that no sibling test
 /// has a child between its fork and its exec meanwhile.
 #[cfg(test)]
 pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
-    CHILD_SPAWNS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    CHILD_SPAWNS.write_recover()
 }
 
 pub mod editor;

@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use crate::policy::PowerPolicy;
+use tilo_lock::MutexRecover as _;
 
 /// A battery/power notification the compositor should surface as an OS toast.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,9 +177,7 @@ impl PowerBridge {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BridgeInner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 }
 

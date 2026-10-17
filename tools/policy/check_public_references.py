@@ -36,27 +36,31 @@ def internal_reference(text):
 
 
 def audit(root, staged=False):
-    args = ["git", "-C", str(root), "grep", "-n", "-I", "-i", "-E"]
+    args = ["git", "-C", str(root), "--literal-pathspecs", "grep", "-n", "-z", "-I", "-i", "-E"]
     for pattern in GIT_PATTERNS:
         args += ["-e", pattern]
     if staged:
         changed = subprocess.run(
             ["git", "-C", str(root), "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
             capture_output=True, check=True,
-        ).stdout.decode().split("\0")
+        ).stdout.decode("utf-8", errors="surrogateescape").split("\0")
         changed = [path for path in changed if path]
         if not changed:
             return []
         args += ["--cached", "--", *changed]
-    result = subprocess.run(args, capture_output=True, text=True)
+    result = subprocess.run(args, capture_output=True)
     if result.returncode not in (0, 1):
-        raise ValueError(result.stderr.strip() or "git grep failed")
+        raise ValueError(result.stderr.decode("utf-8", errors="replace").strip() or "git grep failed")
     failures = []
-    for line in result.stdout.splitlines():
-        path, number, text = line.split(":", 2)
-        hit = internal_reference(text)
+    remaining = result.stdout
+    while remaining:
+        # With -z both filename and line number end in NUL; only the
+        # matched source line ends in LF. Filenames need not be UTF-8.
+        path, number, rest = remaining.split(b"\0", 2)
+        text, _, remaining = rest.partition(b"\n")
+        hit = internal_reference(text.decode("utf-8", errors="surrogateescape"))
         if hit:
-            failures.append(f"{path}:{number}: {hit}")
+            failures.append(f"{path.decode('utf-8', errors='surrogateescape')}:{number.decode()}: {hit}")
     return failures
 
 

@@ -204,6 +204,9 @@ enum Backend {
     /// Boxed: the pipeline state is far larger than the other backends.
     #[cfg(gst_decode)]
     Gst(Box<crate::gst_backend::GstState>),
+    /// The decode backend is built in but its pipeline could not be made.
+    #[cfg(gst_decode)]
+    Unavailable(UnavailableState),
     #[cfg(web_page)]
     Web(crate::web::WebState),
 }
@@ -249,9 +252,11 @@ impl MediaEngine {
 
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
-    /// this stands up a `GStreamer` pipeline; if `GStreamer` can't initialise
-    /// (or the feature is off) it transparently falls back to the synthesized
-    /// backend. Never fails.
+    /// this stands up a `GStreamer` pipeline. Without the feature it is the
+    /// synthesized backend. With it, a pipeline that cannot be built is never
+    /// replaced by synthesized pictures: the engine reports
+    /// [`Self::is_real_decode`] `false` and every open fails with
+    /// [`MediaEvent::Error`] saying why. Never panics.
     pub fn new() -> Self {
         Self::with_config(EngineConfig::default())
     }
@@ -274,28 +279,26 @@ impl MediaEngine {
             }
         }
         #[cfg(gst_decode)]
-        {
-            if let Some(gst) = crate::gst_backend::GstState::new(
-                config.acceptance,
-                config.hw_policy,
-                config.audio_output,
-            ) {
-                return Self {
-                    handoff_id: Self::next_handoff_id(),
-                    handoff_controller_bus_name: None,
-                    backend: Backend::Gst(Box::new(gst)),
-                    source: None,
-                    volume: config.volume,
-                    muted: false,
-                    rate: 1.0,
-                    config,
-                };
+        let backend = match crate::gst_backend::GstState::new(
+            config.acceptance,
+            config.hw_policy,
+            config.audio_output,
+        ) {
+            Ok(gst) => Backend::Gst(Box::new(gst)),
+            Err(reason) => {
+                tracing::error!(%reason, "media: no decode pipeline");
+                Backend::Unavailable(UnavailableState {
+                    reason,
+                    pending: false,
+                })
             }
-        }
+        };
+        #[cfg(not(gst_decode))]
+        let backend = Backend::Synth(SynthState::new());
         Self {
             handoff_id: Self::next_handoff_id(),
             handoff_controller_bus_name: None,
-            backend: Backend::Synth(SynthState::new()),
+            backend,
             source: None,
             volume: config.volume,
             muted: false,
@@ -336,6 +339,8 @@ impl MediaEngine {
             Backend::Synth(_) => HwReport::default(),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.hw_report(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => HwReport::default(),
             #[cfg(web_page)]
             Backend::Web(_) => HwReport::default(),
         }
@@ -348,6 +353,8 @@ impl MediaEngine {
             Backend::Synth(_) => false,
             #[cfg(gst_decode)]
             Backend::Gst(_) => true,
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(_) => true,
         }
@@ -371,6 +378,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.open(&source, self.volume),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.open(&source, self.volume),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(u) => u.open(),
             #[cfg(web_page)]
             Backend::Web(w) => w.open(&source, self.volume),
         }
@@ -387,6 +396,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.set_playing(true),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.set_playing(true),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => {}
             #[cfg(web_page)]
             Backend::Web(w) => w.set_playing(true),
         }
@@ -399,6 +410,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.set_playing(false),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.set_playing(false),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => {}
             #[cfg(web_page)]
             Backend::Web(w) => w.set_playing(false),
         }
@@ -420,6 +433,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.playing,
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.is_playing(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(w) => w.is_playing(),
         }
@@ -451,6 +466,8 @@ impl MediaEngine {
             }
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.seek(ms, mode),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(w) => {
                 let _ = mode;
@@ -498,6 +515,10 @@ impl MediaEngine {
             } else {
                 Err(SeekWaitError::TimedOut)
             };
+        }
+        #[cfg(gst_decode)]
+        if let Backend::Unavailable(u) = &self.backend {
+            return Err(SeekWaitError::Failed(u.reason.clone()));
         }
         let deadline = Instant::now().checked_add(timeout);
         // A pipeline that has not finished prerolling refuses seeks, so the
@@ -548,6 +569,8 @@ impl MediaEngine {
             Backend::Synth(_) => {}
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.set_volume(self.volume),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => {}
             #[cfg(web_page)]
             Backend::Web(w) => w.set_volume(self.volume),
         }
@@ -565,6 +588,8 @@ impl MediaEngine {
             Backend::Synth(_) => {}
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.set_muted(muted),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => {}
             #[cfg(web_page)]
             Backend::Web(w) => w.set_muted(muted),
         }
@@ -583,6 +608,8 @@ impl MediaEngine {
             Backend::Synth(state) => state.set_rate(self.rate),
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.set_rate(self.rate),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => {}
             #[cfg(web_page)]
             Backend::Web(state) => state.set_rate(self.rate),
         }
@@ -600,6 +627,8 @@ impl MediaEngine {
             Backend::Synth(_) => Vec::new(),
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.audio_tracks(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => Vec::new(),
             #[cfg(web_page)]
             Backend::Web(_) => Vec::new(),
         }
@@ -611,6 +640,8 @@ impl MediaEngine {
             Backend::Synth(_) => Vec::new(),
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.subtitle_tracks(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => Vec::new(),
             #[cfg(web_page)]
             Backend::Web(_) => Vec::new(),
         }
@@ -623,6 +654,8 @@ impl MediaEngine {
             Backend::Synth(_) => Vec::new(),
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.chapters(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => Vec::new(),
             #[cfg(web_page)]
             Backend::Web(_) => Vec::new(),
         }
@@ -637,6 +670,8 @@ impl MediaEngine {
             }
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.select_audio_track(index),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(_) => false,
         }
@@ -651,6 +686,8 @@ impl MediaEngine {
             }
             #[cfg(gst_decode)]
             Backend::Gst(state) => state.select_subtitle_track(index),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(_) => false,
         }
@@ -666,7 +703,7 @@ impl MediaEngine {
     #[cfg(gst_decode)]
     pub fn audio_sink(&self) -> Option<gstreamer::Element> {
         match &self.backend {
-            Backend::Synth(_) => None,
+            Backend::Synth(_) | Backend::Unavailable(_) => None,
             Backend::Gst(g) => g.audio_sink(),
         }
     }
@@ -677,6 +714,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.position,
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.position_ms(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => 0,
             #[cfg(web_page)]
             Backend::Web(w) => w.position_ms(),
         }
@@ -688,6 +727,8 @@ impl MediaEngine {
             Backend::Synth(s) => Some(s.duration),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.duration_ms(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => None,
             #[cfg(web_page)]
             Backend::Web(w) => w.duration_ms(),
         }
@@ -699,6 +740,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.buffering_percent(),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.buffering_percent(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => 100,
             #[cfg(web_page)]
             Backend::Web(w) => w.buffering_percent(),
         }
@@ -715,6 +758,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.latest.as_ref(),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.latest_frame(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => None,
             #[cfg(web_page)]
             Backend::Web(w) => w.latest_frame(),
         }
@@ -732,6 +777,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.latest.is_some(),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.latest().is_some() && g.frame_is_post_seek(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => false,
             #[cfg(web_page)]
             Backend::Web(w) => w.frame_is_current(),
         }
@@ -748,6 +795,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.latest_native.as_ref(),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.latest(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(_) => None,
             #[cfg(web_page)]
             Backend::Web(w) => w.latest(),
         }
@@ -761,6 +810,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.poll_at(mono_now_ms()),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.poll(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(u) => u.poll(),
             #[cfg(web_page)]
             Backend::Web(w) => w.poll(),
         };
@@ -776,6 +827,8 @@ impl MediaEngine {
             Backend::Synth(s) => s.poll_at(now_ms),
             #[cfg(gst_decode)]
             Backend::Gst(g) => g.poll(),
+            #[cfg(gst_decode)]
+            Backend::Unavailable(u) => u.poll(),
             #[cfg(web_page)]
             Backend::Web(w) => w.poll(),
         };
@@ -852,6 +905,31 @@ impl Drop for MediaEngine {
 impl Default for MediaEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A decode build whose pipeline could not be made. It plays nothing and
+/// paints nothing; each open fails with the reason, so a player shows that
+/// instead of pretending to play.
+#[cfg(gst_decode)]
+struct UnavailableState {
+    reason: String,
+    /// An open whose failure the next poll reports.
+    pending: bool,
+}
+
+#[cfg(gst_decode)]
+impl UnavailableState {
+    fn open(&mut self) {
+        self.pending = true;
+    }
+
+    fn poll(&mut self) -> Vec<MediaEvent> {
+        if std::mem::take(&mut self.pending) {
+            vec![MediaEvent::Error(self.reason.clone())]
+        } else {
+            Vec::new()
+        }
     }
 }
 

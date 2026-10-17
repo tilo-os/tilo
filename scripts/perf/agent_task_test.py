@@ -18,13 +18,15 @@ from pathlib import Path
 import agent_task
 
 NOTES = "so.tilo.notes"
+USER_ROOM = "0f1e2d3c-4b5a-4968-8776-655443322110"
+SCRATCH_ROOM = "6b70142a-2ef8-4c3c-8e2c-a385611ab642"
 
 
 class FakeNotesDesktop:
     """A control socket over a toy notebook: new-page, append-paragraph, search, open."""
 
     def __init__(self, invoke_state="succeeded", unsettled=False, publish_body=True,
-                 stale_writes=0):
+                 stale_writes=0, person=False):
         self.directory = tempfile.mkdtemp(prefix="atask-", dir="/tmp")
         self.path = os.path.join(self.directory, "s.sock")
         self.invoke_state = invoke_state
@@ -32,6 +34,13 @@ class FakeNotesDesktop:
         self.stale_writes = stale_writes
         self.unsettled = unsettled
         self.publish_body = publish_body
+        # A person's running desktop: their workspace with their notebook open.
+        # Notes reaches the toy notebook only once the run opened it in a
+        # workspace of its own.
+        self.person = person
+        self.workspaces = [{"id": 1, "name": "Home", "room": USER_ROOM, "strips": []}]
+        self.active = 1
+        self.launched = not person
         self.pages = {}  # page id -> {"title", "body"}
         self.opened = []
         self.requests = []
@@ -70,6 +79,16 @@ class FakeNotesDesktop:
                     conn.sendall(json.dumps(reply).encode() + b"\n")
 
     def rows(self):
+        rows = self.notebook_rows() if self.launched else []
+        if self.person:
+            rows.append({"provider": "app-actions", "id": f"{NOTES}\x1fuser\x1fnew-page",
+                         "title": "New note", "application": NOTES, "room": USER_ROOM,
+                         "record": "package-primary", "resource": "notes.notebook",
+                         "operation": "new-page", "params": [{"name": "value", "type": "text",
+                                                              "required": True}]})
+        return rows
+
+    def notebook_rows(self):
         rows = [{"provider": "app-actions", "id": f"{NOTES}\x1fnotebook\x1fnew-page",
                  "title": "New note", "application": NOTES, "resource": "notes.notebook",
                  "operation": "new-page", "params": [{"name": "value", "type": "text",
@@ -92,6 +111,10 @@ class FakeNotesDesktop:
                              "title": "Reveal block", "subtitle": paragraph, "application": NOTES,
                              "resource": bound(f"notes.block:{page}:genesis.0"),
                              "operation": "open", "params": []})
+        if self.person:
+            for row in rows:
+                if row.get("application") == NOTES:
+                    row.update(room=SCRATCH_ROOM, record="package-primary")
         return rows
 
     def answer(self, payload):
@@ -108,6 +131,17 @@ class FakeNotesDesktop:
             if start + 1 < len(rows):
                 answer["next_cursor"] = str(start + 1)
             return {"answer": answer}
+        if op == "state_dump":
+            return {"state": {"workspace_tree": {"workspaces": self.workspaces,
+                                                 "active": self.active}}}
+        if op == "actions_invoke" and payload["provider"] in ("actions", "applications"):
+            if (payload["provider"], payload["id"]) == ("actions", "workspace.create"):
+                self.workspaces.append({"id": 2, "name": payload["args"]["name"],
+                                        "room": SCRATCH_ROOM, "strips": []})
+                self.active = 2
+            elif (payload["provider"], payload["id"]) == ("applications", NOTES):
+                self.launched = True
+            return {"answer": {"receipt": {"update": {"state": "succeeded"}}}}
         if op == "actions_invoke":
             return self.invoke(payload)
         if op == "actions_status":
@@ -118,6 +152,8 @@ class FakeNotesDesktop:
 
     def invoke(self, payload):
         ident, args = payload["id"], payload.get("args", {})
+        if "\x1fuser\x1f" in ident:
+            return {"err": {"code": "test", "message": "the person's notebook was written to"}}
         if ident.endswith("append") and self.stale_writes:
             self.stale_writes -= 1
             return {"err": {"code": "action_failed", "message": "directory action refused: invalid "
@@ -146,8 +182,10 @@ def bound(resource):
 
 
 def arguments(**overrides):
+    # The fake is a throwaway desktop, as `--spawn` seeds; `own_notebook`
+    # is what `--socket` against a person's desktop runs with.
     values = dict(repetitions=3, warmup=1, split_repetitions=2, think_ms=0.0, tokens_per_s=0.0,
-                  startup_timeout=5)
+                  startup_timeout=5, own_notebook=False)
     values.update(overrides)
     return argparse.Namespace(**values)
 
@@ -203,6 +241,32 @@ class AgentTaskTests(unittest.TestCase):
                 if call.step in agent_task.INVOKE_STEPS:
                     self.assertIsNotNone(call.accept_ms)
                     self.assertAlmostEqual(call.ms, call.accept_ms + call.apply_ms)
+
+    def test_a_running_desktop_is_measured_in_a_notebook_of_its_own(self):
+        fake = self.desktop(person=True)
+        runs, _ = agent_task.measure(fake.path, arguments(repetitions=1, warmup=0,
+                                                          split_repetitions=0, own_notebook=True))
+        self.assertEqual(len(runs), 1)
+        invokes = [(r["provider"], r["id"]) for r in fake.requests if r["op"] == "actions_invoke"]
+        # Its own workspace, Notes opened there, then only that notebook.
+        self.assertEqual(invokes[:2], [("actions", "workspace.create"), ("applications", NOTES)])
+        self.assertTrue(all("\x1fuser\x1f" not in ident for _, ident in invokes))
+        self.assertEqual(len(fake.pages), 1)
+
+    def test_main_never_lets_a_running_desktop_use_its_notebook(self):
+        seen = {}
+
+        def measure(path, args):
+            seen["own_notebook"] = args.own_notebook
+            raise agent_task.BenchError("stop")
+
+        original = agent_task.measure
+        agent_task.measure = measure
+        try:
+            self.assertEqual(agent_task.main(["--socket", "/nonexistent"]), 1)
+        finally:
+            agent_task.measure = original
+        self.assertTrue(seen["own_notebook"])
 
     def test_think_time_is_the_models_and_not_tilos(self):
         fake = self.desktop()

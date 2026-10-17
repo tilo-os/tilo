@@ -117,6 +117,65 @@ fn a_pasted_screenshot_decodes_for_drawing() {
     assert!(drawn, "{source} never decoded");
 }
 
+/// The pasted picture appears by itself: once its decode settles off the UI
+/// thread, the window schedules a frame and that frame paints the picture,
+/// with no key, click or relayout from anyone. A plate that waits for the
+/// next input to show its picture is the grey box a person sees.
+#[test]
+fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = note();
+    recorder.copy_image_elsewhere(ClipboardImage {
+        mime: "image/png",
+        bytes: png(64, 48, false),
+    });
+    paste(&mut app);
+    let source = images(&app, page)[0]
+        .0
+        .split("](")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')')
+        .to_owned();
+    // Pictures the window's frame paints: draws with vello's image tag
+    // (`vello_encoding::DrawTag::IMAGE`). The empty plate paints none.
+    let pictures = |app: &mut TestApp<NotesShell>| {
+        app.harness()
+            .frame_render_input()
+            .scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|tag| tag.0 == 0x28C)
+            .count()
+    };
+    // Wait for the decode without laying anything out: `surface_mut` runs
+    // no frame, unlike `surface`.
+    assert!(
+        app.surface_mut::<notes::NotesApp>()
+            .image_decoded_for_test(&source),
+        "{source} never decoded"
+    );
+    // The decode may settle while the paste's own frames still run, which
+    // then paint the picture; when it settles after them, its completion
+    // must schedule the frame that does.
+    if pictures(&mut app) == 0 {
+        let schedule = app.harness().frame_schedule();
+        assert!(
+            schedule.needs_redraw || schedule.needs_animation_frame,
+            "the picture decoded but no frame is due to show it: {:?}",
+            app.harness().redraw_sources()
+        );
+        assert!(app.harness().poll_frame().unwrap(), "no frame was drawn");
+    }
+    assert_eq!(
+        pictures(&mut app),
+        1,
+        "the frame after the decode still paints the empty plate"
+    );
+}
+
 #[test]
 fn a_screenshot_larger_than_an_asset_is_kept_smaller() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -153,4 +212,44 @@ fn a_dropped_image_file_goes_into_the_note() {
         dropped[0].0
     );
     assert_eq!(dropped[0].1, bytes);
+}
+
+/// Pasting one picture after another, writing a line under each, keeps every
+/// picture and every line in the order they were put there, whether the
+/// paste is made at the end of a line or on a fresh empty one: after a paste
+/// the caret is on a line under the picture, so typing never goes back above
+/// it or onto it, and the next picture goes under that line.
+#[test]
+fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
+    for enter_first in [false, true] {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let (mut app, page) = note();
+        let mut expected = vec!["above".to_owned()];
+        for n in 0..5u8 {
+            let image = image::RgbImage::from_pixel(12, 9, image::Rgb([n * 40, 40, 40]));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let bytes = bytes.into_inner();
+            let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+            recorder.copy_image_elsewhere(ClipboardImage {
+                mime: "image/png",
+                bytes,
+            });
+            if enter_first {
+                app.harness().key("Enter");
+            }
+            paste(&mut app);
+            app.harness().type_text(&format!("line {n}"));
+            expected.push(format!("![Pasted image]({source})"));
+            expected.push(format!("line {n}"));
+        }
+        let blocks: Vec<String> = app
+            .read_document(|doc| read::page_block_snapshots(doc, page))
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(blocks, expected, "Enter before each paste: {enter_first}");
+        assert_eq!(images(&app, page).len(), 5);
+    }
 }

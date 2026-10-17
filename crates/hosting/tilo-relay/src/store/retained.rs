@@ -18,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tilo_automerge_isolate::{Applied, Dependencies};
+use tilo_lock::MutexRecover as _;
 use tilo_relay_store::durable::SELECTION_PREFIX;
 #[cfg(unix)]
 pub(crate) use tilo_relay_store::durable::stamp;
@@ -257,12 +258,9 @@ type Digests = std::collections::HashMap<[u64; 2], ([i64; 5], [u8; 32])>;
 /// it was hashed with still holds those bytes.
 #[cfg(unix)]
 fn digests() -> std::sync::MutexGuard<'static, Digests> {
-    use std::sync::{Mutex, OnceLock, PoisonError};
+    use std::sync::{Mutex, OnceLock};
     static DIGESTS: OnceLock<Mutex<Digests>> = OnceLock::new();
-    DIGESTS
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    DIGESTS.get_or_init(Mutex::default).lock_recover()
 }
 
 #[cfg(unix)]
@@ -584,7 +582,7 @@ pub struct RetainBuild {
     /// Every record digest a delta's full scan saw, to install as the index.
     collected: Option<std::collections::HashSet<u64>>,
 }
-/// The durable stage of a lineage's first checkpoint, written outside the
+/// The durable stage of a lineage's next checkpoint, written outside the
 /// workspace's order ([`WorkspaceStore::stage_fresh_checkpoint`]) and not
 /// yet selected.
 pub(crate) struct FreshCheckpoint {
@@ -592,6 +590,9 @@ pub(crate) struct FreshCheckpoint {
     staged: PathBuf,
     selection: PathBuf,
     name: String,
+    /// The generation the stage replaces whole, and the records it held
+    /// when it was staged; `None` when the stage starts its lineage.
+    base: Option<(PathBuf, Vec<std::ffi::OsString>)>,
 }
 impl FreshCheckpoint {
     /// The lineage and the stage, for a [`CheckpointDiscard`]: it leaves the
@@ -748,6 +749,7 @@ impl CheckpointStage {
     /// Returns an error when `CURRENT` cannot be switched durably.
     pub fn promote(&mut self) -> Result<(), StoreError> {
         if matches!(self.build.phase, RetainPhase::Commit) {
+            self.build.store.forget_lineage_listing(&self.build.lineage);
             let staged = self
                 .build
                 .staged
@@ -803,6 +805,7 @@ impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
+
     /// Whether this build made its scratch directory: a checkpoint's ordered
     /// pass and a shell selection do; a plain delta never does, so its owner
     /// has nothing to dispose of afterwards.
@@ -917,6 +920,7 @@ impl RetainBuild {
                 // Written behind the index's back: never overwrite it; list.
                 return self.rescan();
             }
+            self.store.forget_lineage_listing(&self.lineage);
             if std::mem::take(&mut self.fresh) {
                 // An append goes into the selected generation, where a
                 // continuity marker reserves its slot: select it first.
@@ -965,10 +969,6 @@ impl RetainBuild {
         self.phase = RetainPhase::Scan(fs::read_dir(&self.active)?);
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     /// One quantum of retention; done with what to publish.
     ///
     /// # Errors
@@ -977,6 +977,28 @@ impl RetainBuild {
     /// shell selection fails; [`Self::publication_on_error`] then says what
     /// may already be visible.
     pub fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
+        // Where a commit's turn goes, by the phase each quantum began in
+        // (`crate::timing`).
+        let phase = match self.phase {
+            RetainPhase::Scan(_) => "retain.scan",
+            RetainPhase::Indexed => "retain.indexed",
+            RetainPhase::Sort => "retain.sort",
+            RetainPhase::Inspect(_) => "retain.inspect",
+            RetainPhase::Stage(_) => "retain.stage",
+            RetainPhase::Commit => "retain.commit",
+            RetainPhase::Collect(_) => "retain.collect",
+            RetainPhase::Done => "retain.publish",
+        };
+        crate::timing::windowed(phase, || self.step_phase(limit))
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
+    fn step_phase(
         &mut self,
         limit: super::bounded::WorkLimit,
     ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
@@ -1213,6 +1235,7 @@ impl RetainBuild {
             RetainPhase::Commit => {
                 let staged = self.staged.as_ref().invariant("staged missing")?;
                 tail_index::forget(&self.lineage);
+                self.store.forget_lineage_listing(&self.lineage);
                 if !self.staged_synced {
                     sync_dir(staged)?;
                 }
@@ -1384,18 +1407,26 @@ impl WorkspaceStore {
             .join("CURRENT")
             .exists()
     }
-    /// Stage the checkpoint `bytes` on `channel` as the first generation of
-    /// a lineage that has none yet, and make the stage durable, all outside
-    /// the workspace's order: everything [`RetainBuild`] writes before its
-    /// commit for such a checkpoint, which depends on nothing retained. The
-    /// owner's turn is left with the commit, [`Self::start_fresh_retain`]:
-    /// one barrier instead of three rounds of them, for the identity record
-    /// each newcomer of a room retains first.
+    /// Stage the checkpoint `bytes` on `channel` as the next generation of
+    /// its lineage, and make the stage durable, all outside the workspace's
+    /// order: everything [`RetainBuild`] writes before its commit for such
+    /// a checkpoint. The owner's turn is left with the commit,
+    /// [`Self::start_fresh_retain`]: one barrier instead of three rounds of
+    /// them and every read of what the lineage held.
     ///
-    /// `None` when the lineage has a generation, the workspace has retained
-    /// nothing yet, or the checkpoint is one [`RetainBuild`] would not stage
-    /// as a generation of its own (it neither covers itself nor stands
-    /// alone).
+    /// A checkpoint is staged so when it starts its lineage (the identity
+    /// record each newcomer of a room retains first), which depends on
+    /// nothing retained, or when it stands alone and replaces every record
+    /// of the lineage's generation (a device's next access request or
+    /// acknowledgement): the generation it replaces is then read here, and
+    /// the turn commits the stage only while that generation is still the
+    /// lineage's, unchanged.
+    ///
+    /// `None` when the workspace has retained nothing yet, or the
+    /// checkpoint is one [`RetainBuild`] would not stage as a generation of
+    /// its own (it neither covers itself nor stands alone), or would not
+    /// stage alone (a record of the generation it follows would survive
+    /// it, or it repeats one).
     ///
     /// Stages of other lineages, and the owner, change the retained root
     /// and this lineage meanwhile, so every barrier here is a real one: a
@@ -1422,13 +1453,23 @@ impl WorkspaceStore {
         }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
-        if !v2.is_dir()
-            || current(&lineage)?.is_some()
-            || (!covers(bytes, bytes, self.workspace_id)
-                && standalone(&**self.payloads(), bytes, self.workspace_id).is_none())
-        {
+        if !v2.is_dir() {
             return Ok(None);
         }
+        let base = match current(&lineage)? {
+            None if covers(bytes, bytes, self.workspace_id)
+                || standalone(&**self.payloads(), bytes, self.workspace_id).is_some() =>
+            {
+                None
+            }
+            Some(active) if standalone(&**self.payloads(), bytes, self.workspace_id).is_some() => {
+                match self.replaced_whole(&active, bytes)? {
+                    Some(entries) => Some((active, entries)),
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
         for directory in self.root.ancestors().take(3) {
             sync_dir_once(directory)?;
         }
@@ -1458,14 +1499,55 @@ impl WorkspaceStore {
             staged,
             selection,
             name,
+            base,
         }))
+    }
+    /// The names of the records in `generation`, when the standalone
+    /// checkpoint `bytes` replaces every one of them, as [`RetainBuild`]
+    /// decides it: each is a record of the same author and channel, none
+    /// repeats `bytes` or covers it. `None` when one would survive, or the
+    /// generation holds anything else.
+    fn replaced_whole(
+        &self,
+        generation: &Path,
+        bytes: &[u8],
+    ) -> Result<Option<Vec<std::ffi::OsString>>, StoreError> {
+        /// A standalone route keeps one record; a generation holding more
+        /// is retained as usual.
+        const MAX_REPLACED: usize = 8;
+        let key = checkpoint_key(bytes, self.workspace_id);
+        let mut names = Vec::new();
+        for entry in fs::read_dir(generation)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let lossy = name.to_string_lossy();
+            if names.len() >= MAX_REPLACED
+                || !entry.file_type()?.is_file()
+                || !lossy.ends_with(".delta")
+                || lossy.starts_with('.')
+            {
+                return Ok(None);
+            }
+            let prior = fs::read(entry.path())?;
+            if checkpoint_key(&prior, self.workspace_id).is_some_and(|old| Some(old) == key)
+                || covers(&prior, bytes, self.workspace_id)
+                || !replaces(&**self.payloads(), bytes, &prior, self.workspace_id)
+            {
+                return Ok(None);
+            }
+            names.push(name);
+        }
+        names.sort();
+        Ok(Some(names))
     }
     /// Begin committing the stage of [`Self::stage_fresh_checkpoint`] in
     /// the workspace's order: the build renames the stage's CURRENT into
-    /// place and syncs the lineage, then goes on as any checkpoint's build.
-    /// The stage comes back, with `bytes`, when the lineage has a generation
-    /// by now or the stage is not what was written: retain `bytes` with
-    /// [`Self::start_retain`] then, and discard the stage.
+    /// place and syncs the lineage, then goes on as any checkpoint's build,
+    /// collecting the generation it replaced. The stage comes back, with
+    /// `bytes`, when the lineage moved since it was staged (it has another
+    /// generation, or its generation holds other records) or the stage is
+    /// not what was written: retain `bytes` with [`Self::start_retain`]
+    /// then, and discard the stage.
     ///
     /// # Errors
     ///
@@ -1488,9 +1570,28 @@ impl WorkspaceStore {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
         // Nothing but a commit of this lineage removes a stage of it, and a
-        // commit leaves a CURRENT: an intact stage under no CURRENT is the
-        // durable one its writer made.
-        let intact = current(&lineage)?.is_none()
+        // commit moves its CURRENT: an intact stage under the CURRENT it
+        // was staged against is the durable one its writer made. Records
+        // are written once under a name of their own, so the same names
+        // are the same records the stage was decided against.
+        let unmoved = match (current(&lineage)?, &fresh.base) {
+            (None, None) => true,
+            (Some(active), Some((base, records))) => {
+                active == *base
+                    && fs::read_dir(&active)
+                        .and_then(|entries| {
+                            entries
+                                .map(|entry| entry.map(|entry| entry.file_name()))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .is_ok_and(|mut held| {
+                            held.sort();
+                            held == *records
+                        })
+            }
+            _ => false,
+        };
+        let intact = unmoved
             && fs::read(fresh.staged.join("checkpoint.delta")).is_ok_and(|held| held == bytes)
             && fs::read(&fresh.selection).is_ok_and(|held| held == fresh.name.as_bytes());
         if !intact {
@@ -1504,7 +1605,9 @@ impl WorkspaceStore {
         ));
         Ok(Ok(RetainBuild {
             lineage,
-            active: fresh.staged.clone(),
+            active: fresh
+                .base
+                .map_or_else(|| fresh.staged.clone(), |(base, _)| base),
             fresh: false,
             unsynced_parent: None,
             pending_current: Some(fresh.selection),
@@ -2429,13 +2532,6 @@ pub(super) mod tests {
         let (route, first) = standalone_checkpoint(channel, 1, 1);
         let (_, second) = standalone_checkpoint(channel, 1, 2);
         store.retain_checkpoint(&route, &first).unwrap();
-        // Nothing to stage once the lineage has a generation.
-        assert!(
-            store
-                .stage_fresh_checkpoint(&route, &second)
-                .unwrap()
-                .is_none()
-        );
         let lineage = store.root().join(RETAINED_DIR).join("v2").join(format!(
             "{}-{}",
             hex::encode([1; 32]),
@@ -2458,6 +2554,85 @@ pub(super) mod tests {
             while discard.step(WorkLimit::default()).unwrap() == Step::More {}
         }
         assert!(!staged.exists());
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![second]);
+    }
+
+    /// A device's next standalone checkpoint replaces its lineage's whole
+    /// generation, so it is staged before its turn too, reading the
+    /// generation it replaces there; the turn selects the stage with one
+    /// barrier and collects the replaced generation.
+    #[test]
+    fn a_staged_replacement_costs_its_turn_one_barrier_and_its_collection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let channel = collab_types::ChannelId::new();
+        let (route, first) = standalone_checkpoint(channel, 1, 1);
+        let (_, second) = standalone_checkpoint(channel, 1, 2);
+        store.retain_checkpoint(&route, &first).unwrap();
+        let lineage = store.root().join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode([1; 32]),
+            hex::encode(route)
+        ));
+        let replaced = current(&lineage).unwrap().unwrap();
+        let staged = store
+            .stage_fresh_checkpoint(&route, &second)
+            .unwrap()
+            .expect("a standalone checkpoint replacing its lineage's records is staged");
+        let before = crate::store::thread_fsyncs();
+        let Ok(mut build) = store
+            .start_fresh_retain(&route, staged, second.clone())
+            .unwrap()
+        else {
+            panic!("an intact stage over an unmoved generation is committed");
+        };
+        drive(&mut build);
+        // CURRENT renamed into place and the lineage synced, then the
+        // replaced generation collected and the lineage synced once more.
+        let issued = crate::store::thread_fsyncs() - before;
+        assert!((1..=2).contains(&issued), "{issued} barriers");
+        assert!(!replaced.exists(), "the replaced generation is collected");
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![second.clone()]);
+
+        // Repeating the retained checkpoint is not staged: the turn decides
+        // what a repeat publishes, as for any checkpoint.
+        assert!(
+            store
+                .stage_fresh_checkpoint(&route, &second)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A stage decided against a generation that gained a record before its
+    /// turn is not committed: the turn retains the checkpoint as usual.
+    #[test]
+    fn a_staged_replacement_over_a_changed_generation_is_retained_as_usual() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let channel = collab_types::ChannelId::new();
+        let (route, first) = standalone_checkpoint(channel, 1, 1);
+        let (_, second) = standalone_checkpoint(channel, 1, 2);
+        store.retain_checkpoint(&route, &first).unwrap();
+        let staged = store
+            .stage_fresh_checkpoint(&route, &second)
+            .unwrap()
+            .expect("staged");
+        let lineage = store.root().join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode([1; 32]),
+            hex::encode(route)
+        ));
+        let active = current(&lineage).unwrap().unwrap();
+        fs::write(active.join("0000000000000001.delta"), &first).unwrap();
+        let Err((_, second)) = store.start_fresh_retain(&route, staged, second).unwrap() else {
+            panic!("a stage over a changed generation is not committed");
+        };
+        assert_eq!(current(&lineage).unwrap(), Some(active));
+        let mut build = store.start_retain(&route, None, second.clone()).unwrap();
+        drive(&mut build);
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![second]);
     }

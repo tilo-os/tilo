@@ -13,6 +13,8 @@ lock_staged_names=$(git diff --cached --name-only)
 # Run before the merge-only index hides scripts inherited from main, or
 # those baseline entries would incorrectly look like removed scripts.
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_image_interpreters.py" || fail=1
+# Content validation needs the complete index, including inherited exceptions.
+GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
@@ -37,7 +39,6 @@ if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
   fi
   export GIT_INDEX_FILE="$merge_index"
 fi
-python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
 python3 "$root/tools/policy/check_public_references.py" --staged || fail=1
 note() { printf '  %s\n' "$*" >&2; }
 
@@ -49,7 +50,7 @@ python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
 python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
-python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
+GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`

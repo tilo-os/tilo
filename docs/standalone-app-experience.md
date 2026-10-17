@@ -221,4 +221,4 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
   process attestation, service admission and filtered action-directory serving.
 - `crates/session/shell/src/identity_broker.rs`, `crates/runtime/runtime-identity/src/secure_store.rs`
   and `crates/session/shell/src/shell/mls_vault.rs`: identity and MLS custody boundaries.
-- `docs/superpowers/specs/2026-09-12-macos-app-qualification.json`: qualification status.
+- `docs/standalone-app-qualification.json`: qualification status.

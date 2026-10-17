@@ -197,6 +197,11 @@ def verify(out, source, sequence, trusted_key):
         manifest = tomllib.loads(inspected.split('--- manifest.toml ---\n', 1)[1].split('--- payload (', 1)[0])
         require(manifest['package']['id'] == package_id and manifest['package']['kind'] == kind
                 and manifest['package']['version'] == proof['package_version'], 'Signal package declaration differs')
+        require(manifest['package'].get('isa') == {'x86_64': 'v3'},
+                'Signal package architecture/ISA differs')
+        require(manifest['sandbox'].get('seccomp') == 'tilo-default'
+                and manifest['sandbox'].get('landlock') == 'strict',
+                'Signal package sandbox declaration differs')
         field = 'provides' if kind == 'runtime' else 'runtime'
         require(manifest['package'][field] == runtime_build and manifest['sandbox']['net']['mode'] == 'off',
                 'Signal package runtime/network declaration differs')

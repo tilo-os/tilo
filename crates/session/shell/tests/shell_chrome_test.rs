@@ -181,7 +181,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 }
 
 #[test]
-fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
+fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
     // Phase `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
     {
         use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
@@ -252,31 +252,6 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
             TopBarChrome::overview_glyph_icon(),
             Icon::LayoutGrid,
             "overview glyph must be lucide LayoutGrid per visual-gap #5",
-        );
-    }
-
-    // Phase `topbar_chrome_active_center_dot_is_larger_than_inactive`.
-    // The center-band active dot must read as a focused indicator, not a
-    // slightly tinted sibling — converged radii lose the "where are we" cue.
-    {
-        use shell::shell::topbar_chrome::TopBarChrome;
-        let tree = WorkspaceTree {
-            desktop: shell::shell::state::DesktopTree {
-                workspaces: vec![mk_workspace(0, "A")],
-                active: WorkspaceId::from(0),
-                active_strip: HashMap::default(),
-                active_group: HashMap::default(),
-                collaborators: vec![],
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let chrome = TopBarChrome::from_tree(&tree.desktop);
-        assert!(
-            chrome.active_dot_radius() > chrome.inactive_dot_radius(),
-            "active dot radius {} must exceed inactive {}",
-            chrome.active_dot_radius(),
-            chrome.inactive_dot_radius(),
         );
     }
 }

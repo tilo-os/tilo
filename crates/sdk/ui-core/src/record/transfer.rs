@@ -548,6 +548,33 @@ pub fn install_as(
     Ok(checkout)
 }
 
+/// Put `doc` in place as the room's own document of `package` in `room`
+/// (the [package-primary](RecordId::package_primary) record), as an earlier
+/// version of the app left it on this device: how a room written before a
+/// change of the app's storage is opened in a test. Refuses to overwrite
+/// one.
+///
+/// # Errors
+/// An invalid package or room, an occupied room document, or storage
+/// failure.
+pub fn install_room_document(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+    doc: &mut AutoCommit,
+) -> Result<(), TransferError> {
+    app_state::validate_record_namespace(package, room)?;
+    let key = StorageKey::room_index(package, room);
+    let _writer = writer(store, &key)?;
+    if store
+        .read(&key)?
+        .is_some_and(|stored| !stored.bytes.is_empty())
+    {
+        return Err(RecordOpenError::AlreadyExists.into());
+    }
+    persist(store, &key, doc)
+}
+
 /// Merge every change `source` holds that `target` in `room` lacks — the
 /// edits its old writer made after the transfer read it. Deterministic:
 /// it is a CRDT merge, so the order it runs in cannot change the result.

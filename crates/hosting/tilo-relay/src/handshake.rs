@@ -7,7 +7,7 @@
 //! endpoint checks beyond that (room membership, the owner gate on compute
 //! control) is authorization and stays with the endpoint.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -21,6 +21,7 @@ use crate::auth::{
 };
 use crate::frame::{read_frame, write_frame};
 use crate::policy::TrustPolicy;
+use tilo_lock::RwLockRecover as _;
 
 /// The most bytes a pre-authentication frame may declare. The session's
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
@@ -96,13 +97,10 @@ impl LiveIdentity {
         };
         let now_ns = tilo_clock::unix_now_ns();
         let server_nonce: [u8; 32] = rand::random();
-        let revocations = self
-            .revocations
-            .read()
-            .unwrap_or_else(PoisonError::into_inner);
+        let revocations = self.revocations.read_recover();
         match trust {
             EndpointTrust::Live(policy) => {
-                let policy = policy.read().unwrap_or_else(PoisonError::into_inner);
+                let policy = policy.read_recover();
                 auth::server_begin(
                     &identity,
                     HandshakeTrust::Live(&policy),

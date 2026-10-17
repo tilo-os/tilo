@@ -77,14 +77,34 @@ def source_files(source):
     return files, size
 
 
+def validate_receipt(source, mirror, receipt):
+    if any(receipt.resolve().is_relative_to(path.resolve()) for path in (source, mirror)):
+        raise ValueError("receipt/config must stay outside the source worktree and upload mirror")
+
+
+def mirror_path(mirror, name):
+    path = mirror / name
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError("owned mirror contains a symlink; refuse modifying source paths")
+    return path
+
+
 def prepare(source, mirror, receipt):
+    validate_receipt(source, mirror, receipt)
     source = source.resolve()
+    # Canonicalize trusted parent aliases (for example /home -> /var/home),
+    # but retain the mirror leaf so a linked mirror itself is still refused.
+    mirror = mirror.parent.resolve() / mirror.name
     if mirror.resolve().is_relative_to(source) or source.is_relative_to(mirror.resolve()):
         raise ValueError("source owner worktree and build mirror must be disjoint")
     if mirror.exists() and not (mirror / '.source-build-owner').exists():
         raise ValueError('refuse an unowned mirror')
     if shutil.disk_usage(mirror.parent).free < 3 * MAX_BYTES:
         raise ValueError("insufficient disk headroom for bounded source mirror")
+    # A previous receipt ceases to describe the mirror as soon as it is edited.
+    receipt.unlink(missing_ok=True)
+    for name in ('.source-build-owner', '.source-manifest.json', '.git/info/exclude'):
+        mirror_path(mirror, name)
     mirror.mkdir(parents=True, exist_ok=True)
     (mirror / '.source-build-owner').touch()
     files, size = source_files(source)
@@ -94,9 +114,7 @@ def prepare(source, mirror, receipt):
         after = (source / name).lstat()
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise ValueError('source changed while preparing; wait for owner edits and retry: ' + name)
-        destination = mirror / name
-        if destination.is_symlink() or any(parent.is_symlink() for parent in destination.parents):
-            raise ValueError("owned mirror contains a symlink; refuse writing source")
+        destination = mirror_path(mirror, name)
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(payload).hexdigest()
         if not destination.exists() or hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
@@ -108,7 +126,7 @@ def prepare(source, mirror, receipt):
     if previous.exists():
         for name in json.loads(previous.read_text()):
             if name not in manifest and allowed(name, True):
-                (mirror / name).unlink(missing_ok=True)
+                mirror_path(mirror, name).unlink(missing_ok=True)
     if [(name, info.st_mtime_ns, info.st_ctime_ns) for name, info in source_files(source)[0]] != [(name, info.st_mtime_ns, info.st_ctime_ns) for name, info in files]:
         raise ValueError('source selection changed during preparation; retry after owner edits settle')
     previous.write_text(json.dumps(manifest, sort_keys=True))
@@ -133,9 +151,11 @@ def main():
     parser.add_argument('--mirror', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
+    try:
+        validate_receipt(args.source, args.mirror, args.receipt)
+    except ValueError as error:
+        parser.error(str(error))
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
-    if args.receipt.resolve().is_relative_to(args.mirror.resolve()):
-        parser.error('receipt/config must stay outside the upload mirror')
     with args.receipt.with_suffix('.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = prepare(args.source, args.mirror, args.receipt)

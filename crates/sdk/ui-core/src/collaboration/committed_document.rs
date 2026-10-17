@@ -5,6 +5,7 @@ use super::{
 };
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 use std::collections::BTreeMap;
+use tilo_lock::MutexRecover as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
@@ -83,30 +84,18 @@ impl Reads {
     /// How many readiness changes happened so far; pass it to
     /// [`Self::wait_progress`] after checking the state it guards.
     pub(super) fn progress(&self) -> u64 {
-        *self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.5.changes.lock_recover()
     }
     /// Wait until a readiness change after `seen`, or `bound` elapses.
     pub(super) fn wait_progress(&self, seen: u64, bound: Duration) {
-        let changes = self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changes = self.5.changes.lock_recover();
         let _ = self
             .5
             .changed
             .wait_timeout_while(changes, bound, |changes| *changes == seen);
     }
     pub(super) fn progressed(&self) {
-        let mut changes = self
-            .5
-            .changes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut changes = self.5.changes.lock_recover();
         *changes = changes.wrapping_add(1);
         drop(changes);
         self.5.changed.notify_all();
@@ -591,6 +580,14 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// An agent's connection never asks for a committed document, which the
+    /// broker would refuse it; a person's app still reads its own.
+    #[test]
+    fn only_a_person_route_opens_its_committed_document() {
+        assert!(!opens_committed_document("agent"));
+        assert!(!opens_committed_document(super::super::SERVICE_PARTICIPANT));
+        assert!(opens_committed_document("person"));
+    }
     #[tokio::test]
     async fn terminal_reads_cannot_be_republished_or_renewed() {
         let reads = Reads::default();
@@ -1342,7 +1339,7 @@ impl NativeReadJoin {
                     &key,
                     &self.presentation,
                     &self.participant_handle,
-                    &self.participant_kind,
+                    super::broker_participant_kind(&self.participant_kind),
                     &self.record_kind,
                 )
                 .await
@@ -1448,6 +1445,18 @@ async fn until_merged(read: &CommittedDocument, live: impl Fn() -> bool) {
     }
 }
 
+/// Whether a route joined as `participant_kind` asks the broker for its
+/// committed document. The broker serves committed reads only to a process
+/// the launcher holds custody of for that app, which an agent never is, so it
+/// refuses an agent's open. An agent works through actions and task runs, not
+/// its own document; asking would fail its whole connection in a native room.
+/// A headless service (`CollaborationManager::for_service`) holds no document
+/// either: it publishes actions and answers them, and its room never holds a
+/// record of it to read.
+fn opens_committed_document(participant_kind: &str) -> bool {
+    !matches!(participant_kind, "agent" | super::SERVICE_PARTICIPANT)
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
@@ -1458,13 +1467,17 @@ pub(super) async fn install(
     inbound: &InboundBridge,
     join: NativeReadJoin,
 ) -> Result<bool, String> {
+    let key = spec.channel_id();
+    if !opens_committed_document(join.participant_kind.as_str()) {
+        inbound.state.document_reads.legacy(&key)?;
+        return Ok(false);
+    }
     let first = channel
         .committed_document(&Request::Open {
             known_revision: None,
         })
         .await
         .map_err(|e| e.to_string())?;
-    let key = spec.channel_id();
     if first == Reply::Legacy {
         inbound.state.document_reads.legacy(&key)?;
         return Ok(false);

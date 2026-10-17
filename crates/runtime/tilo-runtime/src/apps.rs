@@ -19,7 +19,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -31,6 +31,7 @@ use tilo_action_broker::{
     },
 };
 use tilo_installed_apps::InstalledApp;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod creation;
@@ -293,6 +294,7 @@ impl LauncherServices for Apps {
                 package_id: app.package_id,
                 display_name: app.display_name,
                 unconfined: false,
+                offers: app.offers,
             })
             .collect()
     }
@@ -466,35 +468,28 @@ impl Launched {
             return false;
         };
         let ticket = self.1.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                pid,
-                LaunchRecord {
-                    start_time,
-                    app: app.to_owned(),
-                    room: room.to_owned(),
-                    creation,
-                    ticket,
-                },
-            );
+        self.0.lock_recover().insert(
+            pid,
+            LaunchRecord {
+                start_time,
+                app: app.to_owned(),
+                room: room.to_owned(),
+                creation,
+                ticket,
+            },
+        );
         true
     }
 
     /// The ticket of the launch recorded for `pid`, whatever it attests.
     fn ticket(&self, pid: u32) -> Option<u64> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&pid)
-            .map(|record| record.ticket)
+        self.0.lock_recover().get(&pid).map(|record| record.ticket)
     }
 
     /// Whether `pid` is still the process recorded for exactly `app` and
     /// `room`.
     fn attest(&self, pid: u32, app: &str, room: &str) -> bool {
-        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let launches = self.0.lock_recover();
         let Some(record) = launches.get(&pid) else {
             return false;
         };
@@ -512,7 +507,7 @@ impl Launched {
         room: &str,
     ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
         let start = process_start_time(pid)?;
-        let launches = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let launches = self.0.lock_recover();
         let record = launches.get(&pid)?;
         let creation = (record.start_time == start && record.app == app && record.room == room)
             .then(|| record.creation.clone())
@@ -525,10 +520,7 @@ impl Launched {
 
     /// Forget `pid`, once its process has been reaped.
     fn forget(&self, pid: u32) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&pid);
+        self.0.lock_recover().remove(&pid);
     }
 }
 

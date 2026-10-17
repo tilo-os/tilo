@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
 
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
@@ -721,6 +722,12 @@ impl ActionArgs {
                 });
             }
             match &value {
+                ArgValue::Number(number) if !number.is_finite() => {
+                    return Err(ArgError::Constraint {
+                        name,
+                        reason: "must be a finite number".into(),
+                    });
+                }
                 ArgValue::Resource(address)
                     if address.trim().is_empty()
                         || address.contains(crate::KEY_SEP)
@@ -740,7 +747,13 @@ impl ActionArgs {
                 _ => {}
             }
             if let Some(schema) = &param.schema {
-                check_schema(&value.to_json(), schema).map_err(|refusal| match refusal {
+                validate_shared_schema_definition(schema).map_err(|reason| {
+                    ArgError::Constraint {
+                        name: name.clone(),
+                        reason,
+                    }
+                })?;
+                check_schema_value(&value.to_json(), schema).map_err(|refusal| match refusal {
                     SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
                         name: name.clone(),
                         violation,
@@ -907,9 +920,7 @@ fn schema_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error>
     static COMPILED: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<String, regex_lite::Regex>>,
     > = std::sync::LazyLock::new(std::sync::Mutex::default);
-    let mut compiled = COMPILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut compiled = COMPILED.lock_recover();
     if let Some(expression) = compiled.get(pattern) {
         return Ok(expression.clone());
     }
@@ -993,15 +1004,18 @@ fn validate_object_schema(
     {
         for (key, property_schema) in properties {
             if let Some(property) = object.get(key) {
-                validate_schema(property, property_schema)
+                validate_schema_value(property, property_schema)
                     .map_err(|reason| format!("property `{key}` {reason}"))?;
             }
         }
-        if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-            for key in object.keys() {
-                if !properties.contains_key(key) {
-                    return Err(format!("contains unknown property `{key}`"));
-                }
+    }
+    if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        for key in object.keys() {
+            if !properties.is_some_and(|properties| properties.contains_key(key)) {
+                return Err(format!("contains unknown property `{key}`"));
             }
         }
     }
@@ -1053,6 +1067,22 @@ fn check_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), SchemaRefusal> {
+    // Check even branches the value never visits before enforcing the contract.
+    validate_schema_definition(schema)?;
+    check_schema_value(value, schema)
+}
+
+fn validate_schema_value(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+fn check_schema_value(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), SchemaRefusal> {
     let Some(schema) = schema.as_object() else {
         return Err(SchemaRefusal::Other(
             "has a schema that is not an object".into(),
@@ -1082,7 +1112,7 @@ fn validate_one_of(
     let mut failures = Vec::new();
     let mut matched = 0_usize;
     for alternative in alternatives {
-        match validate_schema(value, alternative) {
+        match validate_schema_value(value, alternative) {
             Ok(()) => matched = matched.saturating_add(1),
             Err(reason) => failures.push((alternative, reason)),
         }
@@ -1297,12 +1327,12 @@ fn validate_schema_array(
             .and_then(serde_json::Value::as_array)
             .map_or(&[][..], Vec::as_slice);
         for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
-            validate_schema(item, item_schema)
+            validate_schema_value(item, item_schema)
                 .map_err(|reason| format!("item {index} {reason}"))?;
         }
         if let Some(item_schema) = schema.get("items") {
             for (index, item) in items.iter().enumerate().skip(prefix.len()) {
-                validate_schema(item, item_schema)
+                validate_schema_value(item, item_schema)
                     .map_err(|reason| format!("item {index} {reason}"))?;
             }
         }
@@ -1325,8 +1355,8 @@ fn validate_schema_object(
 ///
 /// # Errors
 ///
-/// Returns a human-readable contract violation when `schema` is not an object
-/// or `value` fails one of its supported assertions.
+/// Returns a human-readable contract violation when `schema` is malformed,
+/// uses unsupported assertions, or `value` fails one of its supported assertions.
 pub fn validate_json_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,

@@ -747,8 +747,7 @@ fn dispatch_encoded_with_context(
             spec.kind.as_str()
         )));
     }
-    let mut context =
-        ActionContext::for_resource(resource.id.as_str(), &resource.kind, &resource.label);
+    let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }

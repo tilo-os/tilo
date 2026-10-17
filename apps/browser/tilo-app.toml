@@ -30,6 +30,9 @@ required = ["network.http", "webview"]
 # Reviewed account-session imports need secret custody; ordinary browsing does not.
 optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets"]
 
+[resources]
+kinds = ["browser.address-book", "browser.application", "browser.browsing-history"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

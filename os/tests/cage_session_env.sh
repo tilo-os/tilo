@@ -20,7 +20,7 @@ cat >"$work/bin/cage" <<'EOF'
 #!/bin/sh
 printf 'args=%s\n' "$*"
 printf 'umask=%s\n' "$(umask)"
-for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH; do
+for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH TILO_CAGE_SESSION_KEEP_OUTPUT; do
   eval "value=\${$name-unset}"
   printf '%s=%s\n' "$name" "$value"
 done
@@ -40,6 +40,7 @@ card() {
 mkdir -p "$work/run-greeter"
 run_program() {
   env -u WLR_RENDERER -u WLR_DRM_NO_ATOMIC -u WLR_NO_HARDWARE_CURSORS -u TILO_STARTUP_METRICS_PATH \
+    -u TILO_CAGE_SESSION_KEEP_OUTPUT TILO_JOURNAL_STDOUT_SOCKET="$work/no-journal" \
     PATH="$work/bin:$PATH" TILO_DRM_SYSFS="$work/drm" TILO_CAGE="$work/bin/cage" \
     TILO_GREETER_RECORD_DIR="$work/run-greeter" "$@" bash "$wrapper" "$program"
 }
@@ -106,5 +107,44 @@ rmdir "$work/run-greeter"
 out="$(run)"
 grep -qx 'TILO_STARTUP_METRICS_PATH=unset' <<<"$out" \
   && ok "no record directory, no record" || bad "the greeter was pointed at a missing directory: $out"
+
+# --- the console stays quiet, the journal keeps the output -----------------
+# greetd hands the session the login VT as stdout and stderr; cage, libseat
+# and the greeter printed onto the console before the first frame and their
+# errors never reached the journal.
+python3 -I -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$work/journal.sock"
+cat >"$work/bin/systemd-cat" <<'EOF'
+#!/bin/sh
+printf 'systemd-cat=%s\n' "$*" >"$JOURNAL_ARGS"
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@" >>"$JOURNAL_OUT" 2>&1
+EOF
+chmod +x "$work/bin/systemd-cat"
+journaled() {
+  env -u TILO_CAGE_SESSION_KEEP_OUTPUT PATH="$work/bin:$PATH" TILO_DRM_SYSFS="$work/drm" \
+    TILO_CAGE="$work/bin/cage" TILO_GREETER_RECORD_DIR="$work/run-greeter" \
+    TILO_JOURNAL_STDOUT_SOCKET="$work/journal.sock" JOURNAL_ARGS="$work/journal.args" \
+    JOURNAL_OUT="$work/journal.out" "$@"
+}
+: >"$work/journal.out"
+console="$(journaled bash "$wrapper" /usr/bin/tilo-greeter 2>&1)"
+[ -z "$console" ] \
+  && ok 'nothing the greeter session prints reaches the console' \
+  || bad "the greeter session printed onto the console: $console"
+grep -q -- '^systemd-cat=--identifier=tilo-greeter --stderr-priority=warning -- .*bash '"$wrapper"' /usr/bin/tilo-greeter$' "$work/journal.args" \
+  && ok 'the greeter session logs under tilo-greeter, stderr at warning' \
+  || bad "unexpected journal routing: $(cat "$work/journal.args")"
+grep -qx 'args=-s -- /usr/bin/tilo-greeter' "$work/journal.out" \
+  && grep -qx 'TILO_CAGE_SESSION_KEEP_OUTPUT=unset' "$work/journal.out" \
+  && ok 'cage and the greeter run once, with their output in the journal' \
+  || bad "cage did not run under the journal stream: $(cat "$work/journal.out")"
+journaled bash "$wrapper" /usr/bin/tilo-installer >/dev/null 2>&1
+grep -q -- '--identifier=tilo-installer ' "$work/journal.args" \
+  && ok 'the installer logs under its own name' \
+  || bad "the installer is not journaled as tilo-installer: $(cat "$work/journal.args")"
+grep -Fq 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"' "$repo/os/etc/greetd/config.toml" \
+  && ok 'greetd starts the greeter through tilo-cage-session' \
+  || bad 'greetd starts the greeter without tilo-cage-session, so its output reaches the console'
 
 exit "$fail"

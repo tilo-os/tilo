@@ -12,6 +12,7 @@
 //! | `insert-block` | `kind`, `text`, `after`/`position`, `level`, `indent`, `done`, `lang` | one block |
 //! | `insert-markdown` | `markdown`, `after`/`position` | the blocks it says |
 //! | `set-block-text` | `block`, `text`, `markdown` | a block's text |
+//! | `replace-range` | `at`, `text`, `markdown` | characters of one block |
 //! | `set-block-kind` | `block`, `kind`, `level`, `indent`, `done`, `lang` | a block's kind, or (no kind) a checklist item's state |
 //! | `indent-block` | `block`, `levels` (negative outdents) | a list item |
 //! | `move-block` | `block`, `after`/`position` | a block's place |
@@ -32,13 +33,14 @@ use tilo_resource::ActionDecl;
 use crate::RichText;
 use crate::action::RichTextAction;
 use crate::block_edit::{BlockKind, BlockShape, NewBlock, Placement};
-use crate::block_markdown::{render, short_ids};
+use crate::block_markdown::{has_inline_markdown, render, short_ids};
 
 /// The ids of the declared actions that answer what they changed.
-pub const ANSWERING: [&str; 8] = [
+pub const ANSWERING: [&str; 9] = [
     "insert-block",
     "insert-markdown",
     "set-block-text",
+    "replace-range",
     "set-block-kind",
     "indent-block",
     "move-block",
@@ -62,6 +64,27 @@ fn block_param() -> ActionParam {
         "block",
         "A block id, as the read shows it after ^ (a unique prefix of it is enough)",
     )
+}
+
+/// Whether an edit's `text` is inline Markdown. Left out, the text decides
+/// ([`has_inline_markdown`]): the read answers Markdown, so text taken from
+/// it (escapes included) or written like it (a `[link](url)`) means what it
+/// says, and text without any is plain.
+fn markdown_param() -> ActionParam {
+    optional(
+        "markdown",
+        ParamType::Boolean,
+        "Whether `text` is inline Markdown, as the read shows text: **bold**, _italic_, `code`, ~~strike~~, [link](url), \\-escapes. Leave out to let the text decide: with any Markdown it is Markdown (a [link](url) becomes a real link), without it is plain and the marks around it stay. `false` only to write Markdown characters literally",
+    )
+}
+
+/// An edit's `text` and whether it is Markdown ([`markdown_param`]).
+fn text_of(args: &ActionArgs) -> Result<(String, bool), String> {
+    let text = args.text("text").ok_or("give the text")?.to_owned();
+    let markdown = args
+        .boolean("markdown")
+        .unwrap_or_else(|| has_inline_markdown(&text));
+    Ok((text, markdown))
 }
 
 fn placement_params() -> [ActionParam; 2] {
@@ -102,7 +125,7 @@ fn shape_params() -> [ActionParam; 4] {
 }
 
 fn kind_param(required: bool) -> ActionParam {
-    let description = "paragraph, heading, bullet, numbered, checklist, quote or code";
+    let description = "paragraph, heading, bullet, numbered, checklist, quote, code, or a callout: note, tip, important, warning or caution";
     let param = if required {
         text_param("kind", description)
     } else {
@@ -155,6 +178,25 @@ fn block_of(args: &ActionArgs) -> Result<String, String> {
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| "name the block".to_owned())
+}
+
+/// The characters of one block `at` names: a range `start..end` of it, or
+/// a caret (an empty range) to insert at.
+fn range_of(args: &ActionArgs) -> Result<(String, usize, usize), String> {
+    let at = args
+        .get("at")
+        .map(tilo_actions::ArgValue::to_json)
+        .ok_or("give the place, `at`")?;
+    let place: tilo_resource::Place =
+        serde_json::from_value(at).map_err(|error| format!("`at`: {error}"))?;
+    match place {
+        tilo_resource::Place::Range { item, start, end } => Ok((item, start, end)),
+        tilo_resource::Place::Caret { item, at } => Ok((item, at, at)),
+        tilo_resource::Place::Item(_) => Err(
+            "`at` is a caret `at` or a range `start..end` in a block; set-block-text replaces a whole block"
+                .to_owned(),
+        ),
+    }
 }
 
 /// Indent (`levels` positive, default 1) or outdent (negative) a list item.
@@ -234,21 +276,48 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
             vec![
                 block_param(),
                 text_param("text", "The block's new text"),
-                optional(
-                    "markdown",
-                    ParamType::Boolean,
-                    "Read `text` as inline Markdown (**bold**, _italic_, `code`, [link](url)); default plain text, where the block's marks stay as they are",
-                ),
+                markdown_param(),
             ],
             |args, _| {
+                let (text, markdown) = text_of(args)?;
                 Ok(RichTextAction::SetBlockText {
                     block: block_of(args)?,
-                    text: args.text("text").ok_or("give the text")?.to_owned(),
-                    markdown: args.boolean("markdown").unwrap_or(false),
+                    text,
+                    markdown,
                 })
             },
         )
-        .describe("Replace one block's text, changing only the characters that differ. Answers the block's id.")
+        .describe("Replace one block's whole text, changing only the characters that differ. `text` is written the way the read shows it: a [link](url) in it becomes a real link. To change part of a block (a selected phrase) use `replace-range` at that place instead. Answers the block's id.")
+        .answering(),
+        ActionDecl::new(
+            "replace-range",
+            "Replace text at a place",
+            vec![
+                ActionParam::required_owned(
+                    "at",
+                    ParamType::Object,
+                    "Where: `{\"item\": <block id>, \"start\": n, \"end\": m}` for characters n..m of a block, or `{\"item\": <block id>, \"at\": n}` to insert at character n. The place a person's selection is shared as",
+                )
+                .as_place(),
+                text_param(
+                    "text",
+                    "The text that replaces those characters, on one line",
+                ),
+                markdown_param(),
+            ],
+            |args, _| {
+                let (block, start, end) = range_of(args)?;
+                let (text, markdown) = text_of(args)?;
+                Ok(RichTextAction::ReplaceBlockRange {
+                    block,
+                    start,
+                    end,
+                    text,
+                    markdown,
+                })
+            },
+        )
+        .describe("Replace characters of one block, or insert at a caret in it, leaving the rest of the block and the page's blocks as they are. The way to change a person's selection, or part of a block: rewrite a selected phrase, or turn it into a link by writing `[text](url)`. Answers the block's id.")
         .answering(),
         ActionDecl::new("set-block-kind", "Set block kind", set_kind, |args, _| {
             let named = args
@@ -546,10 +615,11 @@ pub fn action_result_under(
 }
 
 /// The [`RichTextAction`] variants the declared actions above build.
-const BLOCK_VARIANTS: [&str; 9] = [
+const BLOCK_VARIANTS: [&str; 10] = [
     "InsertBlocks",
     "InsertMarkdown",
     "SetBlockText",
+    "ReplaceBlockRange",
     "SetBlockShape",
     "SetBlockDone",
     "ShiftIndent",

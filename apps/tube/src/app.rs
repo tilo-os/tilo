@@ -2212,14 +2212,6 @@ impl Widget for TubeApp {
         }
     }
 
-    fn on_external_event(
-        &mut self,
-        _payload: &str,
-        _state: &mut ui::widget::Edits<'_>,
-        _root: &ModelPath,
-    ) {
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let structure_dirty = std::mem::take(&mut self.structure_dirty);
         // Fold any results that arrived between events so live data still

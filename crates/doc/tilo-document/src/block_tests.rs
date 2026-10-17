@@ -255,6 +255,54 @@ fn markdown_is_inserted_as_the_blocks_it_says_with_their_marks() {
 }
 
 #[test]
+fn block_text_written_as_the_read_shows_it_means_what_its_markdown_says() {
+    let mut replica = seeded("[tilo OS](search for the tilo homepage)");
+    let id = id_of(&replica, "\\[tilo OS");
+    // The read escapes the brackets that are no link; text taken from it
+    // writes them back as they were, not with the escapes in them.
+    let shown = page(&replica).remove(0);
+    assert_eq!(shown, "\\[tilo OS\\](search for the tilo homepage)");
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": format!("{shown} today") }),
+    )
+    .unwrap();
+    assert_eq!(
+        blocks(&replica)[0].text,
+        "[tilo OS](search for the tilo homepage) today"
+    );
+
+    // A link written as Markdown, with nothing said about it, is a link.
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": "[tilo OS](https://tilo.so/)" }),
+    )
+    .unwrap();
+    let block = &blocks(&replica)[0];
+    assert_eq!(block.text, "tilo OS");
+    assert!(
+        block
+            .marks
+            .iter()
+            .any(|mark| mark.name == "link" && (mark.start, mark.end) == (0, 7)),
+        "{:?}",
+        block.marks
+    );
+    assert_eq!(page(&replica), ["[tilo OS](https://tilo.so/)"]);
+
+    // `markdown: false` writes the characters as they are.
+    call(
+        &mut replica,
+        "set-block-text",
+        json!({ "block": id, "text": "[a](https://tilo.so/)", "markdown": false }),
+    )
+    .unwrap();
+    assert_eq!(blocks(&replica)[0].text, "[a](https://tilo.so/)");
+}
+
+#[test]
 fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
     let mut replica = seeded("buy **oat** milk");
     let id = id_of(&replica, "buy");
@@ -305,6 +353,105 @@ fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
         .unwrap_err()
         .contains("no block")
     );
+}
+
+#[test]
+fn a_range_of_a_block_is_replaced_and_the_rest_of_the_page_stays() {
+    let mut replica = seeded("# Notes\n- see the search docs for xy\nlast line");
+    let item = id_of(&replica, "- see");
+    let before = blocks(&replica).len();
+
+    // "the search docs" (characters 4..19) becomes a link, nothing else moves.
+    let mut bob = replica.fork();
+    let answer = call_as(
+        &mut bob,
+        "bob",
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 4, "end": 19 },
+            "text": "[the search docs](https://example.org/search?q=xy)",
+            "markdown": true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(answer["changed"].as_array().unwrap().len(), 1, "{answer}");
+    assert_eq!(
+        page(&bob),
+        [
+            "# Notes",
+            "- see [the search docs](https://example.org/search?q=xy) for xy",
+            "last line"
+        ]
+    );
+    assert_eq!(blocks(&bob).len(), before, "the page keeps its blocks");
+    let runs = tilo_doc::author_runs(&blocks(&bob)[1].marks);
+    assert!(
+        runs.iter().any(|(_, _, who)| who == "bob"),
+        "the words bob wrote are his: {runs:?}"
+    );
+
+    // A caret inserts plain text.
+    call(
+        &mut replica,
+        "replace-range",
+        json!({ "at": { "item": item, "at": 3 }, "text": " also" }),
+    )
+    .unwrap();
+    assert_eq!(page(&replica)[1], "- see also the search docs for xy");
+
+    // A link written as Markdown is a link without saying so, and
+    // `markdown: false` keeps the characters as they are.
+    let mut carol = replica.fork();
+    call(
+        &mut carol,
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 9, "end": 24 },
+            "text": "[the search docs](https://example.org/docs)",
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&carol)[1],
+        "- see also [the search docs](https://example.org/docs) for xy"
+    );
+    call(
+        &mut replica,
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 9, "end": 24 },
+            "text": "[a](https://example.org/)",
+            "markdown": false,
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&replica)[1],
+        "- see also \\[a\\](https://example.org/) for xy"
+    );
+
+    for (at, text, refusal) in [
+        (
+            json!({ "item": item, "start": 4, "end": 99 }),
+            "x",
+            "not in block",
+        ),
+        (
+            json!({ "item": item, "start": 0, "end": 1 }),
+            "a\nb",
+            "line break",
+        ),
+        (json!({ "item": item }), "x", "set-block-text"),
+        (json!({ "item": "zzzz", "at": 0 }), "x", "no block"),
+    ] {
+        let error = call(
+            &mut replica,
+            "replace-range",
+            json!({ "at": at, "text": text }),
+        )
+        .unwrap_err();
+        assert!(error.contains(refusal), "{at}: {error}");
+    }
 }
 
 #[test]

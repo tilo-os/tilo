@@ -1,0 +1,67 @@
+# tilo-web-search — Tilo application manifest.
+#
+# A service, not a window: it publishes `search` and `fetch` as actions, and
+# agents and shortcuts invoke them through the broker like any app's. Nothing
+# is ever drawn, so `kind = "service"` keeps it out of the command palette
+# and the entrypoint is `cli`.
+
+[package]
+id       = "so.tilo.web-search"
+name     = "Web Search"
+category = "Utility"
+version  = "0.1.0"
+kind     = "service"
+runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Talks to the local collaboration broker over inherited IPC until actions go over the relay."
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["app-files", "network.http", "threads"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+# Search engines are a fixed list, but `fetch` reads whatever public page a
+# result or a person names, so no host allowlist can describe it. The service
+# refuses loopback, private, link-local and local-name destinations itself,
+# on every redirect hop, before a request leaves (crates/platform/tilo-web-search,
+# `guard`); a person's network grants can still narrow it.
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+# With no broker there is nobody to publish to.
+collab = "required@1"
+
+[entrypoint]
+bin  = "bin/tilo-web-search"
+type = "cli"
+
+[providers]
+mime = []
+ext  = []

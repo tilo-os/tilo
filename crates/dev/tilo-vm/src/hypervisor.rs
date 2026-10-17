@@ -890,6 +890,117 @@ impl Hypervisor for Qemu {
 
 pub struct Utm;
 
+/// What a UTM VM gets unless `--memory-mb`/`--cpus` say otherwise: building
+/// the shell in the VM needs more than the other adapters' default (a
+/// release link of `tilo-relay` alone was killed at 6 GiB).
+pub const UTM_MEMORY_MB: u32 = 16384;
+pub const UTM_CPUS: u32 = 8;
+
+/// Import `disk` (qcow2) into UTM as the template VM `name`: an aarch64 guest
+/// on Apple's hypervisor with UEFI, `memory_mb` and `cpus`, and one virtio
+/// disk, on UTM's shared network. UTM copies the disk into the VM's bundle.
+///
+/// # Errors
+///
+/// UTM refused the import, or `osascript` could not run.
+pub fn utm_import_template(
+    runner: &mut dyn Runner,
+    (name, disk): (&str, &str),
+    (memory_mb, cpus): (u32, u32),
+) -> Result<(), CliError> {
+    let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+    let lines = [
+        format!("set diskFile to POSIX file \"{}\"", quote(disk)),
+        "tell application \"UTM\"".to_owned(),
+        format!(
+            "make new virtual machine with properties {{backend:qemu, configuration:{{name:\"{}\", architecture:\"aarch64\", memory:{memory_mb}, cpu cores:{cpus}, hypervisor:true, uefi:true, drives:{{{{interface:virtio, source:diskFile}}}}}}}}",
+            quote(name)
+        ),
+        "end tell".to_owned(),
+    ];
+    let mut args = Vec::new();
+    for line in &lines {
+        args.push("-e");
+        args.push(line.as_str());
+    }
+    let command = CommandLine::new("osascript", &args);
+    let output = runner.output(&command)?;
+    if output.success {
+        return Ok(());
+    }
+    Err(CliError::Unreachable {
+        vm: name.into(),
+        detail: format!("UTM did not import {disk}: {}", output.stderr.trim()),
+        debug: vec!["open UTM once and allow this terminal to control it (System Settings > Privacy & Security > Automation)".into()],
+    })
+}
+
+/// Where macOS's DHCP server (vmnet's shared network, UTM's default) records
+/// the addresses it leased.
+const UTM_LEASES: &str = "/var/db/dhcpd_leases";
+
+/// The IPv4 address macOS leased the UTM VM `vm`, found by the MAC address of
+/// its first network interface (asked of UTM over `AppleScript`).
+fn utm_leased_address(vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<String> {
+    // A VM's configuration is a record: read it whole, then its first
+    // interface's address.
+    let configuration = format!(
+        "set c to configuration of virtual machine \"{}\"",
+        vm.name.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let output = runner
+        .output(&CommandLine::new(
+            "osascript",
+            &[
+                "-e",
+                "tell application \"UTM\"",
+                "-e",
+                &configuration,
+                "-e",
+                "return address of item 1 of (network interfaces of c)",
+                "-e",
+                "end tell",
+            ],
+        ))
+        .ok()
+        .filter(|output| output.success)?;
+    let leases = std::fs::read_to_string(UTM_LEASES).ok()?;
+    leased_address(&leases, output.stdout.trim())
+}
+
+/// The `ip_address` of the newest lease in `leases` (`dhcpd_leases`' format)
+/// for hardware address `mac`. macOS drops leading zeros of each octet
+/// (`6a:1c:d:58:e4:14`), so octets compare as numbers.
+fn leased_address(leases: &str, mac: &str) -> Option<String> {
+    let octets = |text: &str| -> Option<Vec<u8>> {
+        text.split(':')
+            .map(|octet| u8::from_str_radix(octet, 16).ok())
+            .collect()
+    };
+    let wanted = octets(mac).filter(|octets| octets.len() == 6)?;
+    let mut found = None;
+    for entry in leases.split('}') {
+        let field = |name: &str| {
+            entry.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix(name)?
+                    .strip_prefix('=')
+                    .map(str::trim)
+            })
+        };
+        let hardware = field("hw_address")
+            .and_then(|value| value.split_once(','))
+            .map(|(_, mac)| mac);
+        if hardware.and_then(octets).as_ref() == Some(&wanted)
+            && let Some(address) = field("ip_address")
+        {
+            // Entries run newest first.
+            found.get_or_insert_with(|| address.to_owned());
+        }
+    }
+    found
+}
+
 impl Hypervisor for Utm {
     fn name(&self) -> &'static str {
         "utm"
@@ -898,8 +1009,9 @@ impl Hypervisor for Utm {
     fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
         // No credential channel: Apple Virtualization has no SMBIOS OEM
         // strings or fw_cfg, and utmctl cannot set QEMU arguments.
-        // utmctl cannot import a disk; a human imports the published image
-        // once as a template VM in UTM, and each dev VM is a clone of it.
+        // utmctl cannot import a disk: `vm create --image` imports it once
+        // over UTM's AppleScript as the template VM ([`utm_import_template`]),
+        // and each dev VM is a clone of it.
         let template = vm
             .entry
             .template
@@ -943,16 +1055,25 @@ impl Hypervisor for Utm {
             .stdout
             .lines()
             .map(str::trim)
-            .find(|l| !l.is_empty() && !l.contains(':'));
-        match (output.success, host) {
-            (true, Some(host)) => Ok(SshEndpoint {
+            .find(|l| !l.is_empty() && !l.contains(':'))
+            .filter(|_| output.success)
+            .map(str::to_owned)
+            // `ip-address` needs the QEMU guest agent, which a Tilo image
+            // does not run: on UTM's shared network, macOS's DHCP server
+            // leased the VM its address, so find it there by the VM's MAC.
+            .or_else(|| utm_leased_address(vm, runner));
+        match host {
+            Some(host) => Ok(SshEndpoint {
                 user: "root".into(),
-                host: host.into(),
+                host,
                 port: 22,
             }),
-            _ => Err(CliError::Unreachable {
+            None => Err(CliError::Unreachable {
                 vm: vm.name.into(),
-                detail: format!("`{}` reported no IPv4 address", command.display()),
+                detail: format!(
+                    "`{}` reported no IPv4 address, and {UTM_LEASES} holds none for the VM's network interface",
+                    command.display()
+                ),
                 debug: vec![format!("tilo-vm vm serial {}", vm.name)],
             }),
         }
@@ -1440,6 +1561,22 @@ impl Hypervisor for HyperV {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_utm_vm_is_found_in_macos_dhcp_leases_by_its_mac() {
+        let leases = "{\n\tname=fedora\n\tip_address=192.168.64.7\n\thw_address=1,6a:1c:ad:58:e4:14\n\tidentifier=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea9\n}\n{\n\tip_address=192.168.64.2\n\thw_address=1,6a:1c:ad:58:e4:14\n\tlease=0x6acedea8\n}\n{\n\tip_address=192.168.64.3\n\thw_address=1,2:0:0:0:0:1\n}\n";
+        assert_eq!(
+            super::leased_address(leases, "6A:1C:AD:58:E4:14").as_deref(),
+            Some("192.168.64.7"),
+            "the newest lease of that MAC"
+        );
+        assert_eq!(
+            super::leased_address(leases, "02:00:00:00:00:01").as_deref(),
+            Some("192.168.64.3"),
+            "octets without leading zeros match"
+        );
+        assert_eq!(super::leased_address(leases, "02:00:00:00:00:02"), None);
+    }
+
     use super::*;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
@@ -1482,6 +1619,71 @@ mod tests {
                 stderr: String::new(),
             },
         )
+    }
+
+    #[test]
+    fn utm_import_uses_native_scripting_with_escaped_inputs_and_requested_resources() {
+        let mut runner = fake("");
+        utm_import_template(
+            &mut runner,
+            ("Tilo Dev (\"test\")", "/images/a\\b\"c.qcow2"),
+            (8192, 4),
+        )
+        .unwrap();
+        assert_eq!(runner.0.len(), 1);
+        let command = &runner.0[0];
+        assert_eq!(command.program, "osascript");
+        assert_eq!(
+            command.args,
+            [
+                "-e",
+                r#"set diskFile to POSIX file "/images/a\\b\"c.qcow2""#,
+                "-e",
+                "tell application \"UTM\"",
+                "-e",
+                r#"make new virtual machine with properties {backend:qemu, configuration:{name:"Tilo Dev (\"test\")", architecture:"aarch64", memory:8192, cpu cores:4, hypervisor:true, uefi:true, drives:{{interface:virtio, source:diskFile}}}}"#,
+                "-e",
+                "end tell",
+            ]
+        );
+    }
+
+    #[test]
+    fn utm_import_reports_native_automation_refusal() {
+        let mut runner = fake("");
+        runner.1.success = false;
+        runner.1.stderr = "Not authorized to send Apple events to UTM".into();
+        let error = utm_import_template(
+            &mut runner,
+            ("Tilo Dev (test)", "/images/dev.qcow2"),
+            (UTM_MEMORY_MB, UTM_CPUS),
+        )
+        .unwrap_err();
+        assert!(matches!(error, CliError::Unreachable { .. }));
+        assert!(error.to_string().contains(&runner.1.stderr));
+        assert!(runner.0[0].args[5].contains("memory:16384, cpu cores:8"));
+    }
+
+    #[test]
+    fn utm_explicit_ssh_does_not_query_the_hypervisor_or_host_leases() {
+        let entry = VmEntry {
+            ssh: Some("developer@192.0.2.4:2222".into()),
+            ..entry()
+        };
+        let mut runner = fake("");
+        let endpoint = Utm
+            .ssh_endpoint(
+                &Vm {
+                    name: "dev",
+                    entry: &entry,
+                },
+                &mut runner,
+            )
+            .unwrap();
+        assert_eq!(endpoint.user, "developer");
+        assert_eq!(endpoint.host, "192.0.2.4");
+        assert_eq!(endpoint.port, 2222);
+        assert!(runner.0.is_empty());
     }
 
     fn entry() -> VmEntry {

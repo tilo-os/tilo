@@ -65,8 +65,10 @@ fn actual_discovery_requires_selection_and_calendar_reads_the_saved_collections(
         account_root.store().is_empty(),
         "explicitly deselecting every calendar cannot report success"
     );
+    pane.finish_form_submission_for_test();
     pane.select_calendar(&holidays, true).unwrap();
     pane.submit_form_for_test();
+    assert!(pane.finish_form_submission_for_test());
     assert!(!pane.form_open());
     let loaded = calendar::account::AccountStore::load_from_settings_in(root.path());
     assert_eq!(loaded.len(), 1);
@@ -140,6 +142,7 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
         );
         // New Nextcloud calendar setup defaults to all readable collections.
         pane.submit_form_for_test();
+        assert!(pane.finish_form_submission_for_test());
         assert!(!pane.form_open());
         let stored = account_root.store();
         assert_eq!(stored.len(), 1);

@@ -27,6 +27,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy"]
 
+[resources]
+kinds = ["calendar.calendar", "tilo.accounts", "tilo.rich-text"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -70,3 +73,13 @@ mime = [
 ext  = [
     "ics",
 ]
+
+# Actions Calendar offers while it is not running: the action catalogue lists
+# them, and invoking one starts Calendar. The running app's published action
+# admits the invocation (a test checks the two agree).
+[[offers]]
+resource  = "calendar.calendar"
+action    = "show-tasks"
+label     = "Show tasks"
+kind      = "read"
+operation = "view"

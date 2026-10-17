@@ -14,7 +14,8 @@ use tilo_joined_room::testing as internals;
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 
-fn edit(
+/// A signed document edit in `room`, as the owner commits a local change.
+pub(crate) fn edit(
     owner: &NativeWorkspaceOwner,
     room: RoomId,
     key: &SigningKey,
@@ -296,6 +297,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
                 let original: NeighbourMsg = postcard::from_bytes(&original).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&original, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_some(),
@@ -333,6 +335,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[62; 32]))
         .unwrap();
     remote
+        .governance_mut()
         .publish_governed_revocations(&[revoked.clone()], &governor_key, now)
         .unwrap();
     owner
@@ -580,6 +583,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 let projected: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&projected, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_none()

@@ -15,6 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use tilo_lock::MutexRecover as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) struct ReplayTicket {
@@ -60,9 +61,7 @@ impl Authority {
     /// The bound session flag. A poisoned lock still holds a coherent
     /// `Option`, so recover it instead of propagating another thread's panic.
     fn session_guard(&self) -> std::sync::MutexGuard<'_, Option<Arc<AtomicBool>>> {
-        self.session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.session.lock_recover()
     }
     fn active(&self) -> bool {
         !self.cancelled.load(Ordering::SeqCst)
@@ -326,8 +325,7 @@ impl ReplayHandle {
                 crate::timing::window("replay.worker_wait", waiting);
                 let working = crate::timing::start();
                 let advanced = detached
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .as_mut()
                     .ok_or_else(|| error("stale replay handle"))?
                     .advance_slice(&authority, acknowledged, output_budget());
@@ -511,8 +509,7 @@ impl State {
             return Err(error("replay is not readable"));
         };
         detached
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_mut()
             .ok_or_else(|| error("stale replay handle"))?
             .advance(authority, written, budget)
@@ -539,9 +536,7 @@ impl State {
         let current = current.clone();
         #[cfg(test)]
         crate::store::test_barrier::pause(store.root(), "replay-cleanup");
-        let mut detached = current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut detached = current.lock_recover();
         let detached = detached
             .as_mut()
             .ok_or_else(|| error("stale replay handle"))?;
@@ -674,6 +669,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         };
         let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -729,6 +725,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         };
         let ticket = ReplayTicket::reserve_from(device, None, slots).unwrap();
         let handle = capture(&mut state, &ticket);
@@ -776,6 +773,7 @@ mod tests {
                 retention_candidates: Vec::new(),
                 workers: crate::persistence::isolated_test_workers(),
                 replay_worker: Arc::new(Semaphore::new(1)),
+                retaining_only: false,
             };
             let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
             let handle = capture(&mut state, &ticket);
@@ -834,6 +832,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         };
         let ticket = held.pop().unwrap();
         while matches!(state.capture_replay(&ticket.authority).unwrap(), Step::More) {}
@@ -880,6 +879,7 @@ mod tests {
             retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
+            retaining_only: false,
         };
         let tickets = (0..2)
             .map(|_| {

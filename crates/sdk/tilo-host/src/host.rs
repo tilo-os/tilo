@@ -383,6 +383,10 @@ mod tests {
                     .set_shared_text(ClipboardTarget::Clipboard, "secret"),
                 "an in-process buffer must not claim a shared copy"
             );
+            assert!(
+                !null.clipboard.set_secret_text("secret"),
+                "an in-process buffer must not claim a secret copy"
+            );
             assert_eq!(
                 null.opener
                     .open("https://example.invalid")

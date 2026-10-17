@@ -16,7 +16,7 @@
 //! decision.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
@@ -38,6 +38,7 @@ use tilo_action_policy::roles::governance;
 
 use super::authority::RoomOp;
 use super::{GovernedRoom, Rooms};
+use tilo_lock::MutexRecover as _;
 
 /// How long a grant's token admits new carrier sessions.
 const GRANT_TTL: Duration = Duration::from_secs(60);
@@ -112,7 +113,7 @@ pub(super) struct Calls {
 
 impl Calls {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn grant(&self, state: &State, id: &[u8; 32]) -> Option<VoiceGrant> {
@@ -308,7 +309,7 @@ impl Policy {
     fn read(peer: &StatePeer) -> Result<Self, String> {
         Ok(Self {
             calls: peer.validated_media_policy()?,
-            access: peer.governed_access(SystemTime::now())?,
+            access: peer.governance().governed_access(SystemTime::now())?,
         })
     }
 }
@@ -394,7 +395,9 @@ fn transition(
             channel_id,
             allowed,
         } => {
-            let binding = candidate.resolve_media_binding(app_id, record_id, channel_id)?;
+            let binding = candidate
+                .media()
+                .resolve_media_binding(app_id, record_id, channel_id)?;
             start(&mut policy, binding, *allowed)?
         }
         CallOperation::End { call, epoch }
@@ -406,7 +409,9 @@ fn transition(
         }
     };
     if current.as_ref() != Some(&policy) {
-        candidate.author_media_policy(&policy, governor, now)?;
+        candidate
+            .media_mut()
+            .author_media_policy(&policy, governor, now)?;
     }
     Ok(id)
 }
@@ -473,7 +478,7 @@ fn moderate(
             if entry.phase != CallPhaseV1::Ended {
                 return Err("the call is active".into());
             }
-            let binding = candidate.resolve_media_binding(
+            let binding = candidate.media().resolve_media_binding(
                 &entry.binding.app_id,
                 &entry.binding.record_id,
                 &entry.binding.channel_id,

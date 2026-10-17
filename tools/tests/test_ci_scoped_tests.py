@@ -44,6 +44,66 @@ class ScopedTestsTests(unittest.TestCase):
                                      "(test(/^audit::/)) and not (test(golden))"])
         self.assertEqual(scoped.command(ENTRY, "")[-1], "(test(/^audit::/))")
 
+    def test_success_without_a_scoped_report_fails_even_with_an_affected_report(self):
+        for existing in (False, True):
+            for exit_code in (0, 7):
+                with self.subTest(existing=existing, exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    report = root / "target/nextest/ci/junit.xml"
+                    if existing:
+                        report.parent.mkdir(parents=True)
+                        report.write_text(junit("affected", 2))
+                    (root / "tools").mkdir()
+                    (root / "tools/test-env.sh").write_text(f"#!/bin/sh\nexit {exit_code}\n")
+                    env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY])}
+                    result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, exit_code or 1, result.stderr)
+                    if exit_code == 0:
+                        self.assertIn("succeeded without the required JUnit report", result.stderr)
+                    if existing:
+                        self.assertEqual(ET.parse(report).getroot().get("tests"), "2")
+
+    def test_invalid_scoped_report_fails_and_preserves_other_results(self):
+        for body in ("<broken", "<unexpected/>", '<testsuites tests="0"/>',
+                     '<?xml version="1.0" encoding="unsupported-encoding"?><testsuites/>',
+                     junit("invalid", 1).replace('tests="1"', 'tests="invalid"'),
+                     junit("invalid", 1).replace('tests="1"', 'tests="-1"')):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                report = root / scoped.JUNIT
+                report.parent.mkdir(parents=True)
+                report.write_text(junit("affected", 2))
+                (root / "tools").mkdir()
+                # The first invocation produces invalid evidence; the second
+                # still runs and must survive in the combined shard report.
+                (root / "tools/test-env.sh").write_text(
+                    "#!/bin/sh\nif [ ! -f invoked ]; then\ntouch invoked\n"
+                    f"printf '%s' '{body}' > target/nextest/ci/junit.xml\nelse\n"
+                    f"printf '%s' '{junit('later', 1)}' > target/nextest/ci/junit.xml\nfi\n")
+                env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY, ENTRY])}
+                result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("Invalid scoped JUnit report", result.stderr)
+                merged = ET.parse(report).getroot()
+                self.assertEqual([suite.get("name") for suite in merged.findall("testsuite")],
+                                 ["affected", "later"])
+                self.assertEqual(merged.get("tests"), "3")
+
+    def test_success_with_a_scoped_report_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools").mkdir()
+            (root / "tools/test-env.sh").write_text(
+                "#!/bin/sh\nmkdir -p target/nextest/ci\n"
+                f"printf '%s' '{junit('tilo-ui::it', 1)}' > target/nextest/ci/junit.xml\n")
+            env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY])}
+            result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ET.parse(root / scoped.JUNIT).getroot().get("tests"), "1")
+
     def test_reports_merge_into_the_shard_report_and_failures_propagate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -4215,6 +4215,7 @@ pub(crate) mod tests {
     use automerge::AutoCommit;
     use automerge::transaction::Transactable as _;
     use ui::framework::testing::TestApp;
+    use ui::lock::MutexRecover as _;
     use ui::portal::PortalOutcome;
 
     /// Serializes tests that round-trip through the process-global system
@@ -5558,9 +5559,7 @@ pub(crate) mod tests {
     /// step.
     #[test]
     fn a_paste_is_one_change() {
-        let _clipboard = CLIP_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clipboard = CLIP_LOCK.lock_recover();
         let (mut app, mut doc) = seeded_app();
         app.grid.select_range_public((0, 1), (3, 3)); // A2:D4
         app.copy_selection(false);
@@ -5585,9 +5584,7 @@ pub(crate) mod tests {
         {
             // Copy a currency cell into an empty one; the raw and the currency
             // format both come across, and it recomputes to the same number.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2 = 1200, currency
             app.copy_selection(false);
@@ -5606,9 +5603,7 @@ pub(crate) mod tests {
             // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
             // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
             // AVERAGE, and the pasted formula recomputes against the new operands.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2
             app.copy_selection(false);
@@ -5621,9 +5616,7 @@ pub(crate) mod tests {
 
         // Case `cut_moves_cell_and_clears_source`.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 0)); // A1 = "Category"
             app.copy_selection(true); // cut
@@ -5637,9 +5630,7 @@ pub(crate) mod tests {
         // A **cut** moves a formula verbatim — its references follow the cells and
         // are *not* re-relativised (unlike a copy). The real cut→paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(true); // cut
@@ -5655,9 +5646,7 @@ pub(crate) mod tests {
         // each destination cell's relative references by its own position — the
         // real range-paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(false);

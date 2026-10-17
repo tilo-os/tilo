@@ -18,7 +18,7 @@
               now, and the stand-in daemon's methods take D-Bus arguments by value"
 )]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::{AutoCommit, ROOT, ReadDoc};
@@ -26,6 +26,7 @@ use shell::bluetooth::{PairingPromptHandle, PairingService};
 use shell::bluetooth_prompt::ENTRY_FIELD_ID;
 use shell::compositor::frame::FrameBuilder;
 use tilo_bluez::{AGENT_CAPABILITY, AGENT_PATH, BluezClient, DeviceNames, PairingPrompt};
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey, SmolStr};
@@ -42,10 +43,7 @@ const DEVICE_NAME: &str = "Studio Keyboard";
 type Calls = Arc<Mutex<Vec<String>>>;
 
 fn record(calls: &Calls, call: String) {
-    calls
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(call);
+    calls.lock_recover().push(call);
 }
 
 struct FakeAgentManager {
@@ -160,10 +158,7 @@ impl Rig {
     }
 
     fn calls(&self) -> Vec<String> {
-        self.calls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.calls.lock_recover().clone()
     }
 
     /// Call the agent as `bluetoothd` does, without waiting for the answer.

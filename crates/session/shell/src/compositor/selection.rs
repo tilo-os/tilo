@@ -60,6 +60,7 @@ use tilo_clock::unix_now_ms;
 
 #[cfg(target_os = "linux")]
 use crate::compositor::state::{ClientState, State};
+use tilo_lock::MutexRecover as _;
 
 /// Mime type the mirror understands; `text/plain`/`UTF8_STRING`/`STRING`
 /// aliases are also offered for X11-heritage clients via Xwayland.
@@ -85,9 +86,9 @@ pub const MAX_SELECTION_MIME_BYTES: usize = 128;
 /// session-private and bounded independently of the larger live selection.
 pub const MAX_CLIPBOARD_HISTORY_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_HISTORY_ITEM_BYTES: usize = 256 * 1024;
-/// Secret-capable widgets use this MIME marker to make retention impossible at
-/// the compositor boundary, even if an application accidentally offers it.
-pub const SECRET_MIME: &str = "application/x-tilo-secret";
+/// Secret copies (`ui::try_clipboard_copy_secret`) carry this MIME marker to
+/// make retention impossible at the compositor boundary.
+pub use ui::clipboard::SECRET_MIME;
 
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
@@ -307,10 +308,11 @@ pub fn selection_snapshot(store: &SharedSelection, target: Target) -> SelectionS
     )
 }
 
-/// Password managers (`1Password`, `KeePassXC`) mark a copy with this format. The
-/// copy still has to paste, so it is persisted like any other, but it is kept
-/// out of history, never logged, and wiped when the next selection replaces it.
-pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
+/// Password managers (`1Password`, `KeePassXC`) and Tilo's own secret copies
+/// mark a copy with this format. The copy still has to paste, so it is
+/// persisted like any other, but it is kept out of history, never logged, and
+/// wiped when the next selection replaces it.
+pub use ui::clipboard::PASSWORD_MANAGER_HINT_MIME;
 
 /// Whether an offer carries a marker that forbids retention beyond the live selection.
 fn is_secret_offer(mimes: &[String]) -> bool {
@@ -644,11 +646,39 @@ pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> b
     // generation. Primary selection remains ephemeral and is not retained.
     if let Ok(mut store) = store.lock() {
         let slot = store.slot_mut(target);
+        wipe_if_secret(slot);
         slot.values.clear();
         slot.mime_types.clear();
         slot.compositor_owned = false;
     }
     set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+}
+
+/// Write a secret `text` to the clipboard from chrome: the same as
+/// [`set_mirror_text`], but offered with [`SECRET_MIME`] and
+/// [`PASSWORD_MANAGER_HINT_MIME`] from the start, so it never enters
+/// history or device sync and is wiped when the next selection replaces it.
+pub fn set_mirror_secret_text(store: &SharedSelection, text: &str) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
+    let slot = store.slot_mut(Target::Clipboard);
+    wipe_if_secret(slot);
+    slot.values.clear();
+    for marker in [SECRET_MIME, PASSWORD_MANAGER_HINT_MIME] {
+        slot.values
+            .insert(marker.to_owned(), ui::clipboard::SECRET_MARKER.to_vec());
+    }
+    slot.values
+        .insert(TEXT_MIME.to_owned(), text.as_bytes().to_vec());
+    slot.mime_types = normalized_mimes(slot.values.keys().cloned());
+    slot.generation = slot.generation.wrapping_add(1).max(1);
+    slot.compositor_owned = true;
+    bump_revision(slot, &watchers, true);
+    slot.publish_pending = true;
+    slot.clear_pending = false;
+    true
 }
 
 /// Replace Tilo's pending portal offer.  There is deliberately no publication
@@ -750,6 +780,7 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
     let clipboard = target == Target::Clipboard;
     let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
+    wipe_if_secret(slot);
     slot.values.clear();
     slot.mime_types.clear();
     slot.generation = slot.generation.wrapping_add(1);
@@ -1030,10 +1061,7 @@ struct DragTransferCompletion {
 
 impl Drop for DragTransferCompletion {
     fn drop(&mut self) {
-        let mut capture = self
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut capture = self.capture.lock_recover();
         if self.uri {
             capture.uri_transfer_complete = true;
         } else {
@@ -1079,10 +1107,7 @@ pub struct DragLabel(Arc<Mutex<crate::compositor::drag_feedback::DragVisual>>);
 
 impl DragLabel {
     pub fn set(&self, label: Option<String>) {
-        let mut visual = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut visual = self.0.lock_recover();
         if label.is_none() {
             *visual = crate::compositor::drag_feedback::DragVisual::default();
         } else {
@@ -1091,25 +1116,15 @@ impl DragLabel {
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .label
-            .clone()
+        self.0.lock_recover().label.clone()
     }
 
     pub fn set_preview(&self, preview: crate::compositor::drag_feedback::DragPreview) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .preview = Some(preview);
+        self.0.lock_recover().preview = Some(preview);
     }
 
     pub fn snapshot(&self) -> crate::compositor::drag_feedback::DragVisual {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.0.lock_recover().clone()
     }
 }
 
@@ -1552,6 +1567,13 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         mirror_text(&self.store, ui_target(target))
     }
 
+    fn set_secret_text(&self, text: &str) -> bool {
+        if text.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
+            return false;
+        }
+        set_mirror_secret_text(&self.store, text)
+    }
+
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
         let Some(expected_len) = width
             .checked_mul(height)
@@ -1712,10 +1734,7 @@ fn request_dragged_name(
     // Our copy of the write end must close too, or the read below never sees
     // EOF — the client's copy closing alone isn't enough.
     drop(writer);
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .uri_transfer_complete = false;
+    capture.lock_recover().uri_transfer_complete = false;
     let completion = DragTransferCompletion {
         capture: capture.clone(),
         uri: true,
@@ -1751,10 +1770,7 @@ fn request_dragged_name(
                 if !previewable.is_empty() {
                     request_path_drag_preview(&previewable, label.clone());
                 }
-                capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .paths = Some(paths);
+                capture.lock_recover().paths = Some(paths);
             }
         });
 }
@@ -1844,14 +1860,8 @@ fn request_dragged_content(
     drop(writer);
     let suffix = drag_content_suffix(mime);
     let (max_content_bytes, wait_timeout) = drag_content_limit(mime);
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .wait_timeout = wait_timeout;
-    capture
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .raw_transfer_complete = false;
+    capture.lock_recover().wait_timeout = wait_timeout;
+    capture.lock_recover().raw_transfer_complete = false;
     let completion = DragTransferCompletion {
         capture: capture.clone(),
         uri: false,
@@ -1926,9 +1936,7 @@ fn request_dragged_content(
                         visual.set_preview(preview);
                     }
                 }
-                let mut state = capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = capture.lock_recover();
                 if state.disposition == 2 {
                     drop(state);
                     let _ = std::fs::remove_file(path);
@@ -2060,14 +2068,8 @@ impl ClientDndGrabHandler for State {
             if target.is_none()
                 && let Some(placement) = self.selection.shell_drop_placement.take()
             {
-                capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .disposition = 1;
-                let wait_timeout = capture
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .wait_timeout;
+                capture.lock_recover().disposition = 1;
+                let wait_timeout = capture.lock_recover().wait_timeout;
                 self.selection.pending_shell_drop = Some(PendingShellDrop {
                     placement,
                     wait_timeout,
@@ -2077,9 +2079,7 @@ impl ClientDndGrabHandler for State {
             } else {
                 self.selection.shell_drop_placement = None;
                 let raw = {
-                    let mut state = capture
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = capture.lock_recover();
                     state.disposition = 2;
                     state.raw_path.take()
                 };
@@ -2104,10 +2104,7 @@ pub fn pump_pending_shell_drop(
         return false;
     };
     let (paths, unused_raw) = {
-        let mut capture = pending
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut capture = pending.capture.lock_recover();
         let workspace_root = std::path::Path::new("/var/workspace").canonicalize().ok();
         let from_uri: Vec<_> = capture
             .paths
@@ -2144,12 +2141,7 @@ pub fn pump_pending_shell_drop(
                 .open_dropped_path_with_placement(path, placement);
         }
         if !changed {
-            let raw = pending
-                .capture
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .raw_path
-                .take();
+            let raw = pending.capture.lock_recover().raw_path.take();
             if let Some(path) = raw {
                 let _ = std::fs::remove_file(path);
             }
@@ -2157,10 +2149,7 @@ pub fn pump_pending_shell_drop(
         return changed;
     }
     let transfers_complete = {
-        let capture = pending
-            .capture
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capture = pending.capture.lock_recover();
         capture.uri_transfer_complete && capture.raw_transfer_complete
     };
     if transfers_complete || pending.queued_at.elapsed() > pending.wait_timeout {
@@ -2168,10 +2157,7 @@ pub fn pump_pending_shell_drop(
             return false;
         };
         let raw = {
-            let mut capture = pending
-                .capture
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut capture = pending.capture.lock_recover();
             capture.disposition = 2;
             capture.raw_path.take()
         };
@@ -2783,10 +2769,52 @@ mod tests {
         assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
     }
 
+    #[test]
+    fn a_secret_copy_from_chrome_pastes_as_text_but_never_enters_history_or_sync() {
+        let s = store();
+        let _host = ui::host::enter(&host_services(s.clone()));
+        assert!(set_mirror_text(&s, Target::Clipboard, "ordinary copy"));
+        assert!(ui::try_clipboard_copy_secret(
+            "hunter2",
+            std::time::Duration::from_secs(3600)
+        ));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("hunter2"),
+            "a plain-text paste still receives the secret"
+        );
+        for mime in [
+            TEXT_MIME,
+            "text/plain",
+            SECRET_MIME,
+            PASSWORD_MANAGER_HINT_MIME,
+        ] {
+            assert!(offered(&s).iter().any(|offered| offered == mime), "{mime}");
+        }
+        let history: Vec<_> = clipboard_history(&s)
+            .into_iter()
+            .map(|item| item.text_preview)
+            .collect();
+        assert_eq!(history, [Some("ordinary copy".to_owned())]);
+        assert!(
+            shareable_clipboard_history(&s)
+                .iter()
+                .all(|shared| shared.bytes != b"hunter2"),
+            "the device fabric is never offered the secret"
+        );
+        assert!(set_mirror_text(&s, Target::Clipboard, "next"));
+        assert!(
+            !offered(&s).iter().any(|mime| mime == SECRET_MIME),
+            "the next copy is not a secret"
+        );
+    }
+
     /// The owner announces its next selection on the tick its previous copy
     /// finished mirroring. The take-over must follow the newer owner, not
     /// install the older, complete copy over it (a text copy replacing the
     /// image copied right after it, or a cleared clipboard coming back).
+    /// Linux only: it drives the Wayland compositor state.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_complete_copy_is_not_taken_over_once_its_owner_announced_another() {
         use smithay::reexports::calloop::EventLoop;

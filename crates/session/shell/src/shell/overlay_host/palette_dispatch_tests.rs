@@ -27,7 +27,10 @@ fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::
 
 #[test]
 fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
-    let enabled = settings_store::hardware::DesktopControlsConfig { vim_mode: true };
+    let enabled = settings_store::hardware::DesktopControlsConfig {
+        vim_mode: true,
+        ..Default::default()
+    };
     let (mut persisted, _chrome) = host_with_launch_polling();
     persisted.set_desktop_controls_config(enabled);
     assert!(persisted.desktop_controls.config().vim_mode);
@@ -1683,7 +1686,9 @@ const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
 #[test]
 #[serial_test::serial(clipboard)]
 fn invite_tokens_travel_through_the_clipboard_exactly() {
-    fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
+    use crate::compositor::selection;
+
+    fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard(store: &selection::SharedSelection) {
         let (mut h, _) = host_with_chrome();
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
@@ -1710,6 +1715,17 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
                 .to_lowercase()
                 .contains("copied"),
             "a copy the user cannot see happen is a copy they will do twice"
+        );
+        assert!(
+            selection::mirror_mime_types(store, selection::Target::Clipboard)
+                .iter()
+                .any(|mime| mime == selection::SECRET_MIME),
+            "a token admits whoever pastes it: it is copied as a secret"
+        );
+        assert!(
+            selection::clipboard_history(store).is_empty()
+                && selection::shareable_clipboard_history(store).is_empty(),
+            "so it stays out of clipboard history and device sync"
         );
     }
 
@@ -1877,7 +1893,11 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         assert_eq!(h.peer_sync_snapshot().connect_input.as_deref(), Some("abc"));
     }
 
-    ctrl_c_puts_the_minted_invite_token_on_the_clipboard();
+    // The compositor's own clipboard, which in-process chrome copies through.
+    let store: selection::SharedSelection = std::sync::Arc::default();
+    let _host = ui::host::enter(&selection::host_services(store.clone()));
+
+    ctrl_c_puts_the_minted_invite_token_on_the_clipboard(&store);
     the_composer_mints_for_the_name_it_was_given_and_copies();
     ctrl_v_fills_the_connect_prompt_from_the_clipboard();
     a_pasted_token_is_stripped_of_the_whitespace_it_travelled_with();
@@ -2321,6 +2341,121 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
         }
     }
     ui::i18n::I18nManager::set_locale("en-US");
+}
+
+/// Every share sheet stays inside the window at every size from a phone to
+/// the desktop at scale 2 (1472x920 logical), its footer buttons included,
+/// and none of them is narrower than its label needs. A short window clips
+/// the form above the footer instead of pushing the sheet off screen.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one size-by-sheet matrix that reads top to bottom"
+)]
+fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
+    use crate::shell::peer_sync_overlay::PendingInvitationSummary;
+    let (mut h, _) = host_with_chrome();
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let pending: Vec<PendingInvitationSummary> = (0..3_u8)
+        .map(|i| PendingInvitationSummary {
+            id: [i; 32],
+            name: format!("Collaborator with a rather long name {i}"),
+            role: crate::network::invite::InviteRole::Editor,
+            expiry_unix_seconds: tilo_clock::unix_now().saturating_add(3_600),
+        })
+        .collect();
+    let snapshots = [
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            pending_invitations: pending,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_token: Some("tilo-invite-token".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+    ];
+    let _ = crate::shell::i18n::t("peer-sync-cancel");
+    for (vw, vh) in [
+        (360.0, 640.0),
+        (640.0, 400.0),
+        (800.0, 600.0),
+        (1280.0, 800.0),
+        (1472.0, 920.0),
+    ] {
+        let window = Rect::new(0.0, 0.0, vw, vh);
+        h.rect = window;
+        for snapshot in snapshots.clone() {
+            h.set_peer_sync_snapshot_for_tests(snapshot);
+            let mut scene = Scene::new();
+            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            assert!(
+                window.contains_rect(sheet),
+                "at {vw}x{vh} the sheet {sheet:?} leaves the window"
+            );
+            let rects = h.peer_sync_prompt_rects_for_tests();
+            assert_eq!(labels.len(), rects.len());
+            assert!(
+                rects.iter().any(|(id, _)| *id == "cancel" || *id == "copy"),
+                "at {vw}x{vh} the footer is drawn: {rects:?}"
+            );
+            for (label, (id, rect)) in labels.iter().zip(&rects) {
+                assert!(
+                    sheet.contains_rect(*rect),
+                    "at {vw}x{vh} {id} {label:?} at {rect:?} leaves the sheet {sheet:?}"
+                );
+                let footer = matches!(
+                    *id,
+                    "create"
+                        | "review"
+                        | "back"
+                        | "join"
+                        | "cancel"
+                        | "copy"
+                        | "paste"
+                        | "paste-identity"
+                        | "copy-identity"
+                );
+                if footer {
+                    let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+                        .control_size(ui::widget::ControlSize::Large);
+                    if matches!(*id, "create" | "join" | "copy") {
+                        face = face.role(ui::widget::ButtonRole::Primary);
+                    }
+                    let need = face.intrinsic_width(&mut tr, &theme);
+                    assert!(
+                        rect.width() + 0.5 >= need,
+                        "at {vw}x{vh} {label:?} is {}px wide but its face needs {need}px",
+                        rect.width()
+                    );
+                }
+            }
+            for (i, (_, a)) in rects.iter().enumerate() {
+                for (_, b) in rects.iter().skip(i.saturating_add(1)) {
+                    let o = a.intersect(*b);
+                    assert!(
+                        o.width() <= 0.0 || o.height() <= 0.0,
+                        "at {vw}x{vh} targets overlap: {a:?} and {b:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {

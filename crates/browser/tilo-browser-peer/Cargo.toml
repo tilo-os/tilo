@@ -12,6 +12,7 @@ homepage.workspace = true
 # page. The page supplies the device signer (WebCrypto) and persistence
 # (IndexedDB) through the `DeviceSigner` and `PeerStore` seams.
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", default-features = false }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
 # The iroh session client native peers reach the host with.

@@ -7,7 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use js_sys::{Function, Reflect, Uint8Array};
 use ui::application::{
@@ -27,6 +27,7 @@ use winit::window::{Window, WindowId};
 use tilo_desktop::feedback::PrivateFeedback;
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
+use tilo_lock::MutexRecover as _;
 
 thread_local! {
     static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
@@ -186,14 +187,11 @@ struct SharedGpu {
 
 impl SharedGpu {
     fn failure(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.failure.lock_recover().clone()
     }
 
     fn detach(&self, id: u64) -> bool {
-        let mut mounts = self.mounts.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut mounts = self.mounts.lock_recover();
         mounts.retain(|&m| m != id);
         mounts.is_empty()
     }
@@ -320,6 +318,45 @@ struct Desktop {
     here: tilo_desktop::here::Here,
     /// Who this page writes as, to find their own steps.
     author: String,
+    /// The name and colour each person who opened a window here had when
+    /// last seen, by user root: their windows still name them once they
+    /// left.
+    people: RefCell<HashMap<String, (String, (u8, u8, u8))>>,
+}
+
+impl Desktop {
+    /// Tell the surface who holds each window this page's person may not
+    /// close or move, on a desktop shared through a room. Whether that
+    /// changed anything.
+    fn refresh_holders(&self, in_room: bool) -> bool {
+        let holders = if in_room {
+            let here = self.here.borrow();
+            let mut people = self.people.borrow_mut();
+            let mut person = |user: &str| match here.person(user) {
+                Some(seen) => {
+                    people.insert(user.to_owned(), seen.clone());
+                    seen
+                }
+                None => people.get(user).cloned().unwrap_or_else(|| {
+                    (
+                        tilo_desktop::here::guest_label(),
+                        ui::presence::user_color(user),
+                    )
+                }),
+            };
+            self.handle.read(|tree| {
+                let room = tree
+                    .workspaces
+                    .first()
+                    .map(|workspace| workspace.name.clone())
+                    .unwrap_or_default();
+                self.shared.holders(tree, &self.author, &room, &mut person)
+            })
+        } else {
+            HashMap::new()
+        };
+        self.handle.set_holders(holders)
+    }
 }
 
 impl Mount {
@@ -880,7 +917,14 @@ impl ApplicationHandler<u64> for Runner {
                     m.semantics.borrow().due()
                 };
                 if let Some(due) = semantics_due {
-                    if due <= now {
+                    let drawable = !m.viewport.suspended() && m.gpu.is_some();
+                    if due <= now && m.frame.replayed_draws() && drawable {
+                        // The last frame replayed windows instead of drawing
+                        // them; the next one draws every window and delivers
+                        // the tree, which then needs no second draw.
+                        m.pending = true;
+                        m.window.request_redraw();
+                    } else if due <= now {
                         m.publish(id);
                     } else {
                         wake(due);
@@ -1071,6 +1115,7 @@ fn present_desktop(
             requests,
             here,
             author: config.author(),
+            people: RefCell::default(),
         }),
     })
 }
@@ -1679,7 +1724,7 @@ async fn shared_gpu(
     let failure = Arc::new(Mutex::new(None));
     let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
     let wake = move |p: &EventLoopProxy<u64>, mounts: &Mutex<Vec<u64>>| {
-        for &id in mounts.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+        for &id in mounts.lock_recover().iter() {
             let _ = p.send_event(id);
         }
     };
@@ -1687,15 +1732,14 @@ async fn shared_gpu(
     handle
         .device
         .set_device_lost_callback(move |reason, message| {
-            *lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+            *lost.lock_recover() = Some(format!(
                 "WebGPU device lost: {reason:?}: {message}; call recover"
             ));
             wake(&lost_proxy, &lost_mounts);
         });
     let (uncaptured, error_mounts) = (Arc::clone(&failure), Arc::clone(&mounts));
     handle.device.on_uncaptured_error(Arc::new(move |e| {
-        *uncaptured.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(format!("WebGPU error: {e}; call recover"));
+        *uncaptured.lock_recover() = Some(format!("WebGPU error: {e}; call recover"));
         wake(&p, &error_mounts);
     }));
     let shared = Rc::new(RefCell::new(SharedGpu {
@@ -1753,8 +1797,7 @@ async fn set_up_gpu(setup: GpuSetup) {
             Ok((shared, surface)) => {
                 if let Ok(s) = shared.try_borrow() {
                     s.mounts
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
+                        .lock_recover()
                         .push(id);
                 }
                 emit(
@@ -1952,16 +1995,17 @@ impl Mount {
             self.window.request_redraw();
             return Ok(());
         };
-        if let Some(desktop) = &self.desktop {
+        let held = self.desktop.as_ref().is_some_and(|desktop| {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
-        }
+            desktop.refresh_holders(self.peer.is_some())
+        });
         // Desktop commands and peer changes need an update even when the
         // harness itself is idle. Let a scheduled poll consume them first:
         // eagerly relayouting here and then polling animated widgets runs
         // the same frame pipeline twice before one presentation.
-        let mut host_changed = false;
+        let mut host_changed = held;
         if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
             let wakers = desktop.shared.take_wakers();
             if let Some(reasons) = &mut reasons {
@@ -1982,6 +2026,13 @@ impl Mount {
             }
             host_changed = true;
         }
+        // A frame whose semantics will be built draws every window: one it
+        // replayed instead (a pan frame may) would have to be drawn again
+        // before its tree could be read.
+        let tree_due = host_changed
+            || self.entries != self.tree_entries.get()
+            || !self.semantics.borrow().would_defer_unbuilt(ui::time::now());
+        self.frame.set_pan_replay(!tree_due);
         // Poll only after applying the new viewport, avoiding an old-size
         // layout merely to discover work.
         let stage = self.metric_start();
@@ -2149,20 +2200,15 @@ impl Mount {
         }))
     }
 
-    fn publish(&self, id: u64) {
+    fn publish(&mut self, id: u64) {
         self.publish_frame(id, false);
     }
 
-    /// Publish the status of a presented frame. `moved_only` says the frame
-    /// only moved laid-out content ([`Self::draw`]); then, while the gate
-    /// would defer a content-only change anyway, the tree is not built at
-    /// all, and the gate's deadline delivers it as it then is.
-    fn publish_frame(&self, id: u64, moved_only: bool) {
-        let ime_window = self.frame.ime_window();
-        let ime = ime_window.as_ref().map(|i| {
-            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
-        });
-        let unbuilt = if !moved_only || self.error.is_some() {
+    /// Whether a frame's tree stays unbuilt: only a frame that moved
+    /// laid-out content may leave it, while the gate would defer it or the
+    /// frame replayed windows its tree would need drawn again.
+    fn tree_unbuilt(&self, moved_only: bool, ime: Option<&ui::ime::ImeWindowState>) -> bool {
+        if !moved_only || self.error.is_some() {
             false
         } else if self.entries != self.tree_entries.get() {
             // What kept a moved frame's tree from waiting, for attribution.
@@ -2171,16 +2217,44 @@ impl Mount {
         } else if self
             .semantics
             .borrow_mut()
-            .defer_unbuilt(ime_window.as_ref(), ui::time::now())
+            .defer_unbuilt(ime, ui::time::now())
         {
+            true
+        } else if self.frame.replayed_draws()
+            && self
+                .semantics
+                .borrow_mut()
+                .hold_for_next_frame(ime, ui::time::now())
+        {
+            // The window ended on a frame that replayed windows instead of
+            // drawing them: the next frame draws every window and delivers
+            // the tree, which then needs no second draw.
+            self.metric_end("tree_held:replayed", self.metric_start());
             true
         } else {
             self.metric_end("tree_built:gate", self.metric_start());
             false
-        };
+        }
+    }
+
+    /// Publish the status of a presented frame. `moved_only` says the frame
+    /// only moved laid-out content ([`Self::draw`]); then, while the gate
+    /// would defer a content-only change anyway, the tree is not built at
+    /// all, and the gate's deadline delivers it as it then is.
+    fn publish_frame(&mut self, id: u64, moved_only: bool) {
+        let ime_window = self.frame.ime_window();
+        let ime = ime_window.as_ref().map(|i| {
+            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
+        });
+        let unbuilt = self.tree_unbuilt(moved_only, ime_window.as_ref());
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
+            // A window a pan frame replayed instead of drawing has not noted
+            // where it now paints what its semantics name.
+            let stage = self.metric_start();
+            self.frame.settle_replayed_draws();
+            self.metric_end("settle_replayed_draws", stage);
             let stage = self.metric_start();
             let semantics = self.frame.inspection();
             self.metric_end("inspection", stage);

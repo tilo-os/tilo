@@ -25,6 +25,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["files.open", "files.paths", "app-files"]
 
+[resources]
+kinds = ["vpn.vault"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

@@ -90,6 +90,9 @@ pub trait TileSource {
 
 struct Shared {
     tree: DesktopTree,
+    /// Whoever holds each window someone else opened, by tab
+    /// ([`DesktopHandle::set_holders`]).
+    holders: HashMap<TabId, ui::widget::TabHolder>,
     /// Bumped on every tree change, so a host republishes navigation only
     /// when something moved.
     revision: u64,
@@ -244,6 +247,21 @@ impl DesktopHandle {
     /// of. Hosts call this on every resize.
     pub fn set_viewport_width(&self, width: f64) {
         self.shared.borrow_mut().viewport_width = width.max(1.0);
+    }
+
+    /// On a desktop several people share: who holds each window this
+    /// desktop's person may not close or move, by tab. Those windows offer
+    /// no close, resist a drag and name their holder on hover; every other
+    /// window behaves as it always does. Applied to the windows on screen
+    /// in the next update pass, and to every window built after. Whether
+    /// that changed anything.
+    pub fn set_holders(&self, holders: HashMap<TabId, ui::widget::TabHolder>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.holders == holders {
+            return false;
+        }
+        shared.holders = holders;
+        true
     }
 
     /// Replace the tree with one changed elsewhere. The next update pass
@@ -504,6 +522,7 @@ impl DesktopSurface {
         observe_ids(&mut minter, &tree);
         let shared = Rc::new(RefCell::new(Shared {
             tree,
+            holders: HashMap::new(),
             revision: 1,
             queue: Vec::new(),
             minter,
@@ -546,6 +565,23 @@ impl DesktopSurface {
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
+    }
+
+    /// Give every live window the holders the host named
+    /// ([`DesktopHandle::set_holders`]). Whether that changed what one
+    /// offers.
+    fn apply_holders(&mut self) -> bool {
+        let shared = self.shared.borrow();
+        let mut changed = false;
+        for row in self.rows.values_mut() {
+            for group in &mut row.groups {
+                let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
+                for tab in tabs {
+                    changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
+                }
+            }
+        }
+        changed
     }
 
     /// Read workspace history from `source`: Catch up, Explore, Replay and
@@ -1606,9 +1642,10 @@ fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
         return false;
     }
     let target = offset.clamp(0.0, row.pan_max_scroll_x());
+    let now = ui::time::now();
     row.begin_strip_pan();
-    let moved = row.update_strip_pan(target - row.scroll_x());
-    row.end_strip_pan(ui::time::now());
+    let moved = row.update_strip_pan(target - row.scroll_x(), now);
+    row.end_strip_pan(now);
     if moved {
         row.hold_strip_pan();
     }
@@ -1813,8 +1850,10 @@ impl Widget for DesktopSurface {
         self.show_active_strip();
         self.build_deferred();
         self.present();
-        let changed =
-            self.shared.borrow().revision != before || search_was_open != self.search.is_open();
+        let held = self.apply_holders();
+        let changed = self.shared.borrow().revision != before
+            || search_was_open != self.search.is_open()
+            || held;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
         self.refresh_presentation();
         let activity_was_open = self.activity.is_some();

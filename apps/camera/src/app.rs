@@ -25,6 +25,10 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use tilo_clock::unix_now_i64;
 use ui::time::{Duration, Instant};
+
+/// How long a scanned Wi-Fi password stays on the clipboard: long enough to
+/// paste it into the network settings.
+const WIFI_PASSWORD_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(60);
 #[cfg(test)]
 #[cfg(test)]
 use ui::widget::Edits;
@@ -2379,8 +2383,14 @@ impl CameraApp {
                 self.toast = Some(format!("Opening {}", kind.summary(&s.raw)));
             }
             ("Copy password", CodeKind::Wifi { password, .. }) => {
-                ui::clipboard_copy(password);
-                self.toast = Some("Wi-Fi password copied".into());
+                self.toast = Some(
+                    if ui::try_clipboard_copy_secret(password, WIFI_PASSWORD_ON_CLIPBOARD_FOR) {
+                        "Wi-Fi password copied"
+                    } else {
+                        "Could not copy the Wi-Fi password"
+                    }
+                    .into(),
+                );
             }
             ("Copy network name", CodeKind::Wifi { ssid, .. }) => {
                 ui::clipboard_copy(ssid);
@@ -4926,8 +4936,16 @@ mod tests {
                 symbology: "QR Code".into(),
                 corners: [(0.0, 0.0); 4],
             });
-            app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root); // "Connect"
+            let (services, recorder) = ui::host::HostServices::recording();
+            ui::host::scoped(&services, || {
+                app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root); // "Connect"
+            });
             assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
+            assert_eq!(
+                recorder.secret_copies(),
+                ["welcome-aboard"],
+                "the password is copied as a secret, out of history and device sync"
+            );
         }
     }
 

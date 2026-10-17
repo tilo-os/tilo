@@ -1,11 +1,13 @@
 //! Discovery is a review step, not an implicit subscription to every calendar.
 
 #[cfg(test)]
+mod lane_tests;
+#[cfg(test)]
 mod tests;
 use super::{
     AccountKind, AccountsEffect, AccountsPane, Button, Effect, LiveRow, ProbeJob, Row,
-    SettingsEffect, SettingsSection, card, merge_config, note, row, rows, setting_row_described, t,
-    value_row,
+    SettingsEffect, SettingsSection, Step, card, merge_config, note, row, rows,
+    setting_row_described, t, value_row,
 };
 
 impl AccountsPane {
@@ -22,24 +24,49 @@ impl AccountsPane {
             .cloned()
             .filter(|account| account.type_id.as_str() == "nextcloud" && account.enabled)
             .ok_or("This Nextcloud account is unavailable or disabled")?;
-        let secret = self
-            .account_root
-            .vault()
-            .get(&account.id)
-            .filter(|secret| !secret.password.is_empty())
-            .ok_or("Sign in to this Nextcloud account before connecting calendars")?;
         self.cancel_form();
+        self.next_form_round();
         self.form_kind = Some(AccountKind::CalDav);
         self.form_account_id = Some(id.to_owned());
         self.calendar_source = Some(account.clone());
-        self.calendar_baseline = Some((Some(account.clone()), Some(secret.clone())));
         self.form_error = Some(t("accounts-checking"));
-        let tester = std::sync::Arc::clone(&self.account_tester);
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let _ = sender.send(tester.discover_calendars(&account, &secret));
+        self.form_saving = true;
+        let round = self.form_round;
+        let id = account.id.clone();
+        self.run_in_lane(move |_| {
+            Step::vault(
+                move |vault| Self::prepare_secret(&vault.open(), &id, ""),
+                move |pane, secret| {
+                    if pane.form_round != round {
+                        return Step::Done;
+                    }
+                    pane.form_saving = false;
+                    match secret {
+                        Ok(secret)
+                            if !secret.password.is_empty()
+                                && pane.account_root.store().get(&account.id) == Some(&account) =>
+                        {
+                            pane.calendar_baseline =
+                                Some((Some(account.clone()), Some(secret.clone())));
+                            let tester = std::sync::Arc::clone(&pane.account_tester);
+                            let (sender, receiver) = crate::channel::sync_channel(1);
+                            let _ = crate::device_read::thread(
+                                "settings-calendar-discovery",
+                                Box::new(move || {
+                                    let _ =
+                                        sender.send(tester.discover_calendars(&account, &secret));
+                                }),
+                            );
+                            pane.form_probe = Some(ProbeJob::new(receiver));
+                        }
+                        Ok(_) => pane.form_error = Some(t("accounts-calendar-details-changed")),
+                        Err(error) => pane.form_error = Some(error),
+                    }
+                    pane.changed = true;
+                    Step::Done
+                },
+            )
         });
-        self.form_probe = Some(ProbeJob::new(receiver));
         self.changed = true;
         Ok(())
     }
@@ -90,8 +117,8 @@ impl AccountsPane {
             .collect();
         serde_json::json!({
             "account": self.form_account_id,
-            "checking": self.form_probe.is_some(),
-            "error": if self.form_probe.is_none() { self.form_error.as_ref() } else { None },
+            "checking": self.form_probe.is_some() || self.form_saving,
+            "error": if self.form_probe.is_none() && !self.form_saving { self.form_error.as_ref() } else { None },
             "calendars": calendars,
         })
     }
@@ -214,19 +241,93 @@ impl AccountsPane {
     }
 
     pub(super) fn save_calendar_selection(&mut self) {
-        let result = self
-            .prepared_calendar_selection()
-            .and_then(|(account, secret)| {
-                Self::commit_account(&self.account_root, account, secret.as_ref())
-            });
-        match result {
-            Ok(()) => {
-                self.cancel_form();
-                self.reload();
-            }
-            Err(error) => self.form_error = Some(error),
+        if self.form_saving {
+            return;
         }
+        if let Err(error) = self.validate_calendar_review() {
+            self.form_error = Some(error);
+            self.changed = true;
+            return;
+        }
+        self.form_saving = true;
+        let round = self.form_round;
+        self.run_in_lane(move |pane| {
+            pane.check_calendar_credential_then(Box::new(move |pane, checked| {
+                if pane.form_round != round {
+                    return Step::Done;
+                }
+                let prepared = checked.and_then(|()| pane.prepared_calendar_selection());
+                match prepared {
+                    Ok((account, secret)) => pane.commit_calendar_then(account, secret, round),
+                    Err(error) => pane.form_saved(round, Err(error)),
+                }
+            }))
+        });
         self.changed = true;
+    }
+
+    /// A typed credential takes another worker turn to seal. Recheck the
+    /// review before publishing its metadata, and roll the seal back if the
+    /// person canceled or changed the account while that worker ran.
+    fn commit_calendar_then(
+        &mut self,
+        account: accounts::Account,
+        secret: Option<accounts::Secret>,
+        round: u64,
+    ) -> Step {
+        let Some(secret) = secret else {
+            return self.commit_then(
+                vec![(account, None)],
+                Box::new(move |pane, saved| pane.form_saved(round, saved)),
+            );
+        };
+        let root = &self.account_root;
+        if let Err(error) = root.begin_mutation(&root.store(), &root.statuses()) {
+            return self.form_saved(round, Err(error));
+        }
+        let expected = self
+            .calendar_baseline
+            .as_ref()
+            .and_then(|(_, secret)| secret.clone());
+        let id = account.id.clone();
+        Step::vault(
+            move |opener| {
+                let mut vault = opener.open();
+                if vault.recovery_error().is_some() || vault.get(&id) != expected {
+                    return Err(t("accounts-calendar-details-changed"));
+                }
+                vault.put(&id, &secret);
+                vault
+                    .try_save()
+                    .map_err(|error| format!("could not save credential: {error}"))?;
+                Ok((id, expected))
+            },
+            move |pane, sealed| {
+                let (id, previous) = match sealed {
+                    Ok(previous) => previous,
+                    Err(error) => {
+                        let _ = pane.account_root.finish_mutation();
+                        return pane.form_saved(round, Err(error));
+                    }
+                };
+                if round == pane.form_round && pane.validate_calendar_review().is_ok() {
+                    return pane.commit_metadata(
+                        vec![account],
+                        vec![(id, previous)],
+                        Box::new(move |pane, saved| pane.form_saved(round, saved)),
+                    );
+                }
+                Step::vault(
+                    move |vault| super::restore_secret(vault.open(), &id, previous.as_ref()),
+                    move |pane, restored| {
+                        if restored.is_ok() {
+                            let _ = pane.account_root.finish_mutation();
+                        }
+                        pane.form_saved(round, Err(t("accounts-calendar-details-changed")))
+                    },
+                )
+            },
+        )
     }
 
     fn calendar_base_account(
@@ -247,21 +348,21 @@ impl AccountsPane {
             {
                 return Err(t("accounts-calendar-details-changed"));
             }
-            if self
-                .account_root
-                .vault()
-                .get(&source.id)
-                .is_none_or(|secret| secret.password.is_empty())
-            {
-                return Err("Sign in to this Nextcloud account before connecting calendars".into());
-            }
             return Ok((account, None));
         }
         let draft = self
             .form_candidate
             .as_ref()
             .ok_or("Calendar setup has no pending draft")?;
-        let (account, secret) = Self::prepare_account(&self.account_root, draft)?;
+        let account = Self::prepare_metadata(&self.account_root, draft)?;
+        let mut secret = self
+            .calendar_baseline
+            .as_ref()
+            .and_then(|(_, secret)| secret.clone())
+            .unwrap_or_default();
+        if !draft.password.trim().is_empty() {
+            secret.password = draft.password.trim().to_owned();
+        }
         Ok((
             account,
             (!draft.password.trim().is_empty()).then_some(secret),
@@ -269,7 +370,7 @@ impl AccountsPane {
     }
 
     pub(super) fn validate_calendar_review(&self) -> Result<(), String> {
-        let (original, credential) = self
+        let (original, _) = self
             .calendar_baseline
             .as_ref()
             .ok_or_else(|| t("accounts-calendar-details-changed"))?;
@@ -283,9 +384,7 @@ impl AccountsPane {
                     .and_then(|draft| draft.assigned_id.as_ref())
             })
             .ok_or_else(|| t("accounts-calendar-details-changed"))?;
-        if self.account_root.store().get(id) != original.as_ref()
-            || self.account_root.vault().get(id).as_ref() != credential.as_ref()
-        {
+        if self.account_root.store().get(id) != original.as_ref() {
             return Err(t("accounts-calendar-details-changed"));
         }
         if let Some(draft) = &self.form_candidate
@@ -299,6 +398,39 @@ impl AccountsPane {
             return Err(t("accounts-calendar-details-changed"));
         }
         Ok(())
+    }
+
+    /// Read the credential only in the serialized vault lane. The metadata,
+    /// form round and draft are checked again when that read lands.
+    pub(super) fn check_calendar_credential_then(&mut self, settle: super::Settle) -> Step {
+        if let Err(error) = self.validate_calendar_review() {
+            return settle(self, Err(error));
+        }
+        let (original, credential) = self.calendar_baseline.clone().expect("validated review");
+        let id = original
+            .as_ref()
+            .map(|account| account.id.clone())
+            .or_else(|| {
+                self.form_candidate
+                    .as_ref()
+                    .and_then(|draft| draft.assigned_id.clone())
+            })
+            .expect("validated review ID");
+        let round = self.form_round;
+        Step::vault(
+            move |vault| {
+                let vault = vault.open();
+                vault.recovery_error().is_none() && vault.get(&id) == credential
+            },
+            move |pane, unchanged| {
+                let checked = if unchanged && pane.form_round == round {
+                    pane.validate_calendar_review()
+                } else {
+                    Err(t("accounts-calendar-details-changed"))
+                };
+                settle(pane, checked)
+            },
+        )
     }
 
     fn prepared_calendar_selection(

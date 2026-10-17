@@ -15,6 +15,7 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 mod cache;
 pub use cache::PreparedText;
 use cache::{CacheKey, CacheQuery, TextCache};
+use tilo_lock::RwLockRecover as _;
 
 /// Product-wide primary font families. Tilo ships these exact faces, and the
 /// renderer also assigns them to the CSS-like generic families below. Keeping
@@ -178,9 +179,7 @@ static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb
     std::sync::RwLock::new(None);
 
 fn share_host_font_database(font_system: &FontSystem) {
-    *HOST_FONT_DATABASE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+    *HOST_FONT_DATABASE.write_recover() =
         Some((font_system.locale().to_owned(), font_system.db().clone()));
 }
 
@@ -194,10 +193,7 @@ fn share_host_font_database(font_system: &FontSystem) {
 /// product names.
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    let host = HOST_FONT_DATABASE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let host = HOST_FONT_DATABASE.read_recover().clone();
     if let Some((locale, database)) = host {
         return crate::font_catalog::system_over(locale, database);
     }
@@ -3165,6 +3161,37 @@ impl TextRenderer {
                 })
             })
             .collect()
+    }
+
+    /// The ink of `text`'s first glyph, shaped as [`Self::draw_style`] shapes
+    /// it: the bounds of its outline's points around the glyph's origin, y
+    /// down, in the style's units. `None` for text without glyphs and for a
+    /// colour or bitmap glyph. What measures a face's proportions (its
+    /// x-height from an `x`) without building the glyph's path: this shares
+    /// the outline walk the clip test already uses
+    /// ([`Self::draw_rich_in_clip`]), so measuring links no outline code of
+    /// its own.
+    pub fn first_glyph_ink_bounds(&mut self, text: &str, style: &TextStyle) -> Option<Rect> {
+        if text.is_empty() {
+            return None;
+        }
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        let prepared = self.shape_buffer(text, None, style);
+        let (face, weight, glyph, size) = prepared.buffer.layout_runs().find_map(|run| {
+            run.glyphs.first().map(|glyph| {
+                (
+                    glyph.font_id,
+                    glyph.font_weight,
+                    glyph.glyph_id,
+                    glyph.font_size,
+                )
+            })
+        })?;
+        let variations = style.resolved_variations();
+        let font = self.vello_font(face, weight)?;
+        let coords = self.normalized_coords(face, &variations, weight);
+        outline_ink_bounds(&font, glyph, size, &coords)
     }
 
     /// Retain the exact face and shared bytes already used by shaping.

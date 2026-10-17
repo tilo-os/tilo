@@ -416,6 +416,7 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
   "dist/ci/tests/test_host_session_rpm_replay.py",
+  "dist/ci/tests/test_package_lane.py",
   "dist/session/tests/vm-e2e-exit-status.py",
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
@@ -529,6 +530,7 @@ suites = [
   "scripts/perf/presentation_feedback_test.py",
   "scripts/perf/render_bench_test.py",
   "scripts/perf/render_boundaries_test.py",
+  "scripts/perf/resource_bench_test.py",
   "scripts/perf/runtime_benchmark_test.py",
   "scripts/perf/scratchpad_effects_test.py",
   "scripts/perf/settings_effects_test.py",
@@ -549,14 +551,21 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/app-launch-sweep.py",
+  "scripts/headless-examples/",
   "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
+  "scripts/tests/test_headless_error_handling.py",
   "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
+
+[[group]]
+name = "vm-acceptance-tools"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/tests/test_error_paths.py"]
 
 [[group]]
 name = "ux-bench"
@@ -593,6 +602,10 @@ suites = [
   "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
   "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
 ]
+
+[[unrequired]]
+suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
+reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
 
 [[group]]
 name = "browser-runtime-web"
@@ -956,6 +969,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
+  # Workspace certification tells a windowless service from a window by its manifest.
+  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.
@@ -1025,6 +1040,8 @@ readers = [
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
+  # Workspace certification's compute-package test reads real manifests.
+  "crates/dev/tilo-app-cli/src/main.rs",
   "crates/dev/tilo-app-cli/src/native_sdk/tests.rs", "crates/dev/tilo-app-cli/tests/native_sdk.rs",
 ]
 
@@ -1039,15 +1056,34 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
+package = "settings"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+]
+readers = [
+  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings/tests/cloud_ux.rs",
+]
+
+[[cargo]]
 package = "tilo-fs"
 inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
 readers = [
   "crates/system/fs/src/main.rs", "crates/system/fs/build.rs",
   "crates/system/fs/tests/exact_share_process_fuse.rs",
+  "crates/system/fs/tests/cloud_mount.rs",
+  "crates/system/fs/tests/cloud_mount/import.rs",
 ]
 
 [[cargo]]
@@ -1097,14 +1133,26 @@ inputs = [
   "os/usr/libexec/", "os/scripts/",
   "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
   "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
+  "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
-  "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
-  "apps/imager/src/media_layout/tests.rs", "apps/imager/src/setup/account_admission.rs",
-  "apps/imager/src/setup/home_transfer/promotion/seeds_native_tests.rs",
   "apps/imager/tests/profile_transport.rs",
-  "apps/imager/src/setup/staging/handoff.rs", "apps/imager/tests/prepared_extract_cli.rs",
+  "apps/imager/tests/prepared_extract_cli.rs",
+]
+
+[[cargo]]
+package = "imager-backend"
+inputs = [
+  "os/scripts/", "os/usr/libexec/tilo-firstboot-user",
+  "crates/system/block-devices/tests/fixtures/imager.json",
+  "apps/imager/tests/fixtures/lsblk-targets.json",
+]
+readers = [
+  "crates/platform/imager-backend/src/account_admission.rs",
+  "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
+  "crates/platform/imager-backend/src/probe.rs",
 ]
 
 [[cargo]]
@@ -1153,6 +1201,11 @@ package = "tilo-font-catalog"
 # helper reads the fonts through it.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
 readers = ["crates/sdk/font-catalog/build.rs"]
+
+[[cargo]]
+package = "word-processor"
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/word-processor/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
@@ -1217,9 +1270,14 @@ inputs = [
   # The search relevance table runs over every app's manifest and keywords.
   "apps/*/tilo-app.toml",
   "apps/*/search/*.ftl",
+  # The ask-agent chord's test finds the apps that share a selection in their
+  # sources and checks each manifest asks for the shell-ui service.
+  "apps/*.rs",
 ]
 readers = [
+  "crates/session/shell/src/shell/doc_open.rs",
   "crates/session/shell/src/shell/search/relevance_tests.rs",
+  "crates/session/shell/src/shell/selection_agent.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
@@ -1321,6 +1379,10 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
+[[covered]]
+suite = "tools/ci/focused_test.py"
+by = "tools/tests/test_focused_test.py"
+
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1334,13 +1396,11 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
-reason = "needs the built web entry image"
-workflow = "web-entry.yml"
+reason = "needs the built web entry image: t's image-web-entry check runs it, and carry-web-entry on the release"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image"
-workflow = "room-service-image.yml"
+reason = "needs the built room-service image: t's image-room-service check runs it"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
@@ -1487,43 +1547,35 @@ reason = "needs rootless Podman"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
-reason = "needs the disposable root native container with Cosign"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
-reason = "needs the disposable root native container with Cosign and Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign and Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
-reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
-reason = "needs Podman, Cosign and a TLS registry"
-workflow = "ci-development-signing.yml"
+reason = "needs Podman, Cosign and a TLS registry: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -1538,13 +1590,8 @@ suite = "os/tests/fex-wine-smoke.py"
 reason = "needs a FEX runtime container"
 
 [[unrequired]]
-suite = "os/tests/fluxcast-rtsp-receiver.py"
-reason = "driver for a running FluxCast server"
-
-[[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
-reason = "needs the disposable root native container"
-workflow = "ci-development-signing.yml"
+reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -1678,8 +1725,7 @@ reason = "asserts preserved sparse holes, which the container overlay root of th
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
-reason = "needs a root-owned /usr/local/bin/tilo-crypto"
-workflow = "ci-development-signing.yml"
+reason = "needs a root-owned /usr/local/bin/tilo-crypto: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
@@ -1846,3 +1892,7 @@ package = "install"
 # Real signed runtime installation is checked against its broker service grants.
 inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
 readers = ["crates/packaging/install/tests/runtime_package.rs"]
+
+[[unrequired]]
+suite = "tools/ci/windows/wine-test.sh"
+reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary, so t's wine/windows-x86_64-tests check runs it after build/windows-x86_64-tests"

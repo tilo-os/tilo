@@ -69,6 +69,7 @@ use tilo_actions::{
 use tilo_browser_peer::{
     DocumentRoute, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::RevocationList;
 
 /// Records whose rows a catalogue naming no provider lists.
@@ -310,21 +311,13 @@ impl RoomActions {
             .name("room-actions".into())
             .spawn(move || Worker::new(link.as_ref(), catalogue(), shared).run(&jobs))
             .map_err(|error| error.to_string())?;
-        *self
-            .shared
-            .jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(sender);
+        *self.shared.jobs.lock_recover() = Some(sender);
         Ok(())
     }
 
     /// Stop the service thread; later requests are refused as unavailable.
     pub fn shutdown(&self) {
-        self.shared
-            .jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        self.shared.jobs.lock_recover().take();
     }
 
     fn authorized(&self, caller: &Caller) -> bool {
@@ -342,10 +335,7 @@ impl RoomActions {
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
-        self.shared
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.ledger.lock_recover()
     }
 
     #[allow(
@@ -353,11 +343,7 @@ impl RoomActions {
         reason = "a job the worker cannot take goes back to its sender whole"
     )]
     fn submit(&self, job: Job) -> Result<(), Job> {
-        let jobs = self
-            .shared
-            .jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let jobs = self.shared.jobs.lock_recover();
         match jobs.as_ref() {
             Some(sender) => sender.send(job).map_err(|error| error.0),
             None => Err(job),
@@ -688,7 +674,7 @@ impl Room {
         let signal = Arc::clone(&wake);
         peer.on_change(Arc::new(move || {
             let (flag, condvar) = &*signal;
-            *flag.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            *flag.lock_recover() = true;
             condvar.notify_all();
         }));
         peer.join(workspace_id)?;
@@ -890,7 +876,7 @@ impl Room {
         loop {
             {
                 let (flag, _) = &*self.wake;
-                *flag.lock().unwrap_or_else(PoisonError::into_inner) = false;
+                *flag.lock_recover() = false;
             }
             self.pump(workspace_id);
             if settled(self) {
@@ -900,7 +886,7 @@ impl Room {
                 return;
             };
             let (flag, condvar) = &*self.wake;
-            let guard = flag.lock().unwrap_or_else(PoisonError::into_inner);
+            let guard = flag.lock_recover();
             let _ = condvar
                 .wait_timeout_while(guard, left, |changed| !*changed)
                 .unwrap_or_else(PoisonError::into_inner);
@@ -999,10 +985,7 @@ impl Worker {
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
-        self.shared
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.ledger.lock_recover()
     }
 
     /// The member's view of `workspace_id`, joining the room first and

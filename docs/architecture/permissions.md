@@ -98,6 +98,20 @@ refuses a Moderator who removes or bans a Moderator or the Owner. `ban` and `unb
 are new governance actions: a ban is a removal plus the `block:<person>` Deny
 (`RoomPolicy::block`) that keeps the person out until `unban` revokes it.
 
+A room's shared desktop follows the same rule. It keeps every strip and
+window as an entry of its own, with who made it
+(`tilo_desktop_model::shared_record`), so concurrent changes merge; people
+close, move and rename what they made as an ordinary edit, and doing it to
+what someone else made (or to a strip the room itself lists) is moderation on
+that item's `moderation` node (`tilo_desktop_model::ownership`). The relay
+decides every write of the desktop against it before keeping it, and a
+desktop asks the room (`RoomsRequest::Permits`) before it offers a close or a
+drag on someone else's window.
+
+A room's administrators moderate it too: beside their governance grant they
+hold one on `room/**/moderation/*`, which outranks an Editor's Deny there, so
+an Owner or administrator need not also be named a Moderator.
+
 ## 4. Delegation
 
 An agent, a task, a Shortcut, a bot or an app acting for a person acts with
@@ -185,7 +199,7 @@ channel stewards admit devices per channel, that is per record
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`). A device is
 admitted to a record's channel only while its person reads the room and the
 same read decision allows the record (`Workspace::answer_at` on a desktop
-steward, `StatePeer::withheld_record_readers` over `check_document_read` on a
+steward, `PeerGovernance::withheld_record_readers` over `check_document_read` on a
 relay steward). So a Read Deny on a record, on its app, or on any pattern of
 records covering it withholds that record's key: the steward never admits the
 denied person's devices, and a device that already held the key is removed in

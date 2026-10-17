@@ -7,13 +7,14 @@ use std::collections::btree_map::{self, BTreeMap};
 use std::future::Future;
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::task::{Context, Poll, Waker};
 
 use tilo_clock::SystemTime;
 
 use crate::watch::{ChangeKind, Watchers};
 use crate::{Entry, FsError, Kind, LockMode, Meta, VPath};
+use tilo_lock::MutexRecover as _;
 
 /// A tree: every entry keyed by its full `/`-joined path, the root being the
 /// empty key, plus the locks held on its paths.
@@ -83,7 +84,7 @@ impl Tree {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 
@@ -340,7 +341,7 @@ impl Scope {
                 .tree
                 .released
                 .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 

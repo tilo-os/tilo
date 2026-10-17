@@ -8,7 +8,7 @@
 
 use std::cell::OnceCell;
 use std::rc::Rc;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use os_actions::printing::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState, Scanner,
@@ -19,6 +19,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Widget};
 
+use crate::channel;
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
@@ -130,8 +131,9 @@ pub(crate) fn answer(
         effect => {
             let discovered = model.borrow().discovered.clone();
             let service = Arc::clone(&model.borrow().service);
-            Ok(cx.thread(
-                move |_| carry_out(service.as_ref(), &discovered, &effect),
+            Ok(crate::device_read::job(
+                cx,
+                move || carry_out(service.as_ref(), &discovered, &effect),
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
                     let model = app.printers().model();
                     let mut model = model.borrow_mut();
@@ -408,8 +410,8 @@ pub struct PrintersModel {
     jobs: Vec<PrintJob>,
     discovered: Vec<DiscoveredPrinter>,
     scanners: Vec<Scanner>,
-    refresh_rx: Option<mpsc::Receiver<PrinterSnapshot>>,
-    discover_rx: Option<mpsc::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
+    refresh_rx: Option<channel::Receiver<PrinterSnapshot>>,
+    discover_rx: Option<channel::Receiver<Result<Vec<DiscoveredPrinter>, String>>>,
     last_refresh: Instant,
     error: Option<String>,
     /// Why each list could not be read in the last refresh. A list that
@@ -459,19 +461,19 @@ impl PrintersModel {
             return;
         }
         let service = self.service.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         self.refresh_rx = Some(rx);
 
-        if let Err(error) = std::thread::Builder::new()
-            .name("tilo-printer-status".into())
-            .spawn(move || {
+        if let Err(error) = crate::device_read::thread(
+            "tilo-printer-status",
+            Box::new(move || {
                 let _ = tx.send(PrinterSnapshot {
                     printers: service.queues(),
                     jobs: service.jobs(),
                     scanners: service.scanners(),
                 });
-            })
-        {
+            }),
+        ) {
             self.refresh_rx = None;
 
             self.error = Some(t_args(
@@ -486,15 +488,15 @@ impl PrintersModel {
             return;
         }
         let service = self.service.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = channel::channel();
         self.discover_rx = Some(rx);
 
-        if let Err(error) = std::thread::Builder::new()
-            .name("tilo-printer-discovery".into())
-            .spawn(move || {
+        if let Err(error) = crate::device_read::thread(
+            "tilo-printer-discovery",
+            Box::new(move || {
                 let _ = tx.send(service.discover());
-            })
-        {
+            }),
+        ) {
             self.discover_rx = None;
 
             self.error = Some(t_args(

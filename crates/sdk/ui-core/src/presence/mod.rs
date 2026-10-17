@@ -1185,11 +1185,18 @@ impl PresenceCtx {
         if kind == ParticipantKind::Person {
             return name.to_owned();
         }
-        if let Some(person) = self.acting_for.get(user) {
-            let person = self.names.get(person).unwrap_or(&person.0);
+        // A person the roster has not named yet is left out rather than
+        // shown as their raw key: "Claude" reads better than "Claude, for
+        // 3f9a…".
+        if let Some(person) = self
+            .acting_for
+            .get(user)
+            .and_then(|person| self.names.get(person).map(|name| (person, name)))
+            .and_then(|(person, name)| crate::history_source::human_label(name, &person.0))
+        {
             return crate::i18n::widget_format(
                 "participant-acting-for",
-                &[("name", name.into()), ("person", person.as_str().into())],
+                &[("name", name.into()), ("person", person.into())],
             );
         }
         match kind {

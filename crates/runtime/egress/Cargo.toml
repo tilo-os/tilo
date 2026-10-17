@@ -12,6 +12,7 @@ name = "tilo_egress"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The DNS stub's stop signal: an eventfd its threads block on with their socket.
 bounded-command = { path = "../../system/bounded-command" }
 # The grant grammar and the policy over it, shared with the launcher's gate.

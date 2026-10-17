@@ -8,10 +8,11 @@
 //! the model lives, and nothing leaves the device.
 
 use std::io::Cursor;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use base64::Engine as _;
+use tilo_lock::MutexRecover as _;
 use tilo_model_gateway::{NO_SEGMENTATION_MODEL, SubjectMatte, VisionImage};
 use tilo_segment::{Family, Picture, SubjectModel};
 
@@ -80,7 +81,7 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
             installed.id
         )
     })?;
-    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut loaded = LOADED.lock_recover();
     let began = Instant::now();
     if loaded
         .as_ref()

@@ -57,7 +57,7 @@ class SetupNeutralTests(unittest.TestCase):
 
     def test_private_scratch_directories_are_rejected(self) -> None:
         self.assertTrue(checker.line_violations("see `.super" + "powers/sdd/task-4.md`"))
-        self.assertEqual(checker.line_violations("docs/superpowers/specs/x.md"), [])
+        self.assertEqual(checker.line_violations("docs/notes/superpowers/x.md"), [])
         self.assertEqual(checker.line_violations("/.super" + "powers/", ignore_file=True), [])
 
     def test_tracked_text_files_are_scanned(self) -> None:

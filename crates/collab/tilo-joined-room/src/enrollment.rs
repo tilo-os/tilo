@@ -540,13 +540,16 @@ impl NativeWorkspaceOwner {
                 return Err("task command attestor is not the exact pinned workspace host".into());
             }
         }
-        let (changed, _) = candidate.peer.apply_workspace_task_command(
-            invocation,
-            binding.request_digest,
-            &authority,
-            &command,
-            now,
-        )?;
+        let (changed, _) = candidate
+            .peer
+            .workspace_mut()
+            .apply_workspace_task_command(
+                invocation,
+                binding.request_digest,
+                &authority,
+                &command,
+                now,
+            )?;
         if changed {
             candidate.record.peer = candidate.peer.durable()?;
             candidate.record.generation = candidate

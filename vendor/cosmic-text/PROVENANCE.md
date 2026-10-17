@@ -12,7 +12,8 @@
 Local changes: variable fonts are shaped at the width (`wdth`) a run asks for,
 not only at its weight, so condensed text gets condensed advances
 (`src/font/mod.rs`, `src/font/system.rs`, `src/font/fallback/mod.rs`,
-`src/shape.rs`). `TILO-PATCH.md` has the details. Only the library is
+`src/shape.rs`). The manifest also moves `skrifa` and `harfrust` to the versions the rest of
+the workspace uses. `TILO-PATCH.md` has the details. Only the library is
 vendored: the manifest drops the test, bench and example targets, and their
 files (tests, benches, sample text, fonts, screenshots, scripts, CI files,
 `CHANGELOG.md`, `Cargo.lock`) are omitted.

@@ -63,6 +63,14 @@ use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
 
+fn empty_content() -> EmptyStateContent<'static> {
+    EmptyStateContent {
+        icon: Some(Icon::FileText),
+        action_label: Some("New note"),
+        ..EmptyStateContent::new("Start your first note")
+    }
+}
+
 /// The note header's geometry in the theme the tree was built with. The note
 /// title is the page's `LargeTitle`: an editable heading pinned above the
 /// body, so there is a single clear heading per page. Every measure is a
@@ -112,10 +120,30 @@ impl Metrics {
     }
 }
 
+/// A line of body text people read comfortably: about seventy characters,
+/// measured from a pangram so it follows the font and the text scale.
+fn reading_width(theme: &Theme) -> f64 {
+    const SAMPLE: &str = "the quick brown fox jumps over the lazy dog";
+    const CHARACTERS: u32 = 70;
+    let style = theme.text(TextRole::Body);
+    let sample = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        f64::from(text.measure_style(SAMPLE, None, &style).0)
+    });
+    // `SAMPLE` is ASCII, so its byte length is its character count.
+    let per_character = sample / num::f64_of_usize(SAMPLE.len());
+    (per_character * f64::from(CHARACTERS)).max(f64::from(theme.tokens.metrics.chooser_width))
+}
+
 /// Place a child of the panel at `top`, from the text edge to the trailing
 /// gutter and as tall as its own content. The panel positions these by
 /// hand: they are absolute, so their height never sizes the panel.
-fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, top: f64) {
+fn pin_under_gutter(
+    taffy: &mut TaffyTree<()>,
+    node: NodeId,
+    metrics: &Metrics,
+    side: f64,
+    top: f64,
+) {
     let Ok(existing) = taffy.style(node).cloned() else {
         return;
     };
@@ -125,8 +153,8 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, 
             position: taffy::Position::Absolute,
             size: Size::auto(),
             inset: taffy::Rect {
-                left: length(num::f32_of_f64(metrics.text_edge)),
-                right: length(num::f32_of_f64(metrics.gutter)),
+                left: length(num::f32_of_f64(metrics.text_edge + side)),
+                right: length(num::f32_of_f64(metrics.gutter + side)),
                 top: length(num::f32_of_f64(top)),
                 bottom: taffy::LengthPercentageAuto::auto(),
             },
@@ -330,6 +358,9 @@ pub struct MainPanel {
     /// Rising-edge: a committed title edit that should rename the page. The
     /// host drains it via [`take_title_rename`](Self::take_title_rename).
     pending_rename: Option<String>,
+    /// The open title edit names a note just made: leaving it from the
+    /// keyboard puts the caret at the start of the body.
+    naming_new: bool,
     /// Durable tags assigned to the open page, rendered as quiet chips. The
     /// selection/filter around them belongs to the app and is intentionally
     /// local; this view only receives the document-derived labels.
@@ -346,6 +377,13 @@ pub struct MainPanel {
     /// Set while a new chip height is being discovered so the host rebuilds
     /// the absolute editor inset on the immediately following layout pass.
     tag_layout_dirty: bool,
+    /// How far the text column stands in from each gutter, as the last
+    /// layout found it: a wide window shows one centred column of the
+    /// reading measure rather than lines as wide as the screen.
+    column_side: f64,
+    /// The widest the text column grows: about seventy characters of body
+    /// text, measured in the theme the tree was built with.
+    reading_width: f64,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
@@ -397,6 +435,10 @@ pub struct MainPanel {
     body_presented: Option<BodyShown>,
     /// Follow an explicit reveal or keyboard edit once layout has fresh caret geometry.
     follow_caret: bool,
+    /// The block the caret goes to (at its start) when the open page binds
+    /// again, instead of where it was: the line an edit applied as an action
+    /// (a pasted picture) left for typing to go on.
+    caret_on_rebind: Option<String>,
     /// Local user's id for authorship attribution, re-applied to the
     /// editor whenever a page is (re)bound.
     local_author: Option<String>,
@@ -428,16 +470,20 @@ impl MainPanel {
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
                 .with_text_role(TextRole::LargeTitle)
+                .with_placeholder(ui::i18n!("notes-title-placeholder"))
                 .with_id("note_title")
                 .with_accessible_name("Page title"),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
+            naming_new: false,
             pending_tag_open: None,
             header: NoteHeader::default(),
             header_node: None,
             metadata_height: 0.0,
             tag_layout_dirty: false,
+            column_side: 0.0,
+            reading_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
             notebook: None,
@@ -462,6 +508,7 @@ impl MainPanel {
             body_drawing: None,
             body_presented: None,
             follow_caret: false,
+            caret_on_rebind: None,
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
@@ -484,7 +531,20 @@ impl MainPanel {
         self.title_label
             .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
         self.pending_rename = None;
+        self.naming_new = false;
         self.dirty = true;
+    }
+
+    /// End naming a new note: Enter or Escape goes on to the start of its
+    /// body; a click away leaves the caret where the click puts it.
+    fn finish_naming(&mut self, event: &WindowEvent) {
+        if std::mem::take(&mut self.naming_new)
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+        {
+            self.editor
+                .editor_mut()
+                .focus_block(0, ui::widget::CursorPlacement::Start);
+        }
     }
 
     /// Rising-edge: a committed title edit that renames the current page. The
@@ -549,8 +609,12 @@ impl MainPanel {
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
         let same_page = self.page_id == Some(page);
+        let moved = self.caret_on_rebind.take().filter(|_| same_page);
         let caret = same_page
             .then(|| {
+                if let Some(id) = moved {
+                    return Some((id, 0));
+                }
                 let editor = self.editor.editor();
                 let block = editor.blocks().get(editor.focused_index()?)?;
                 Some((block.id.clone(), block.line.cursor_pos()))
@@ -623,6 +687,10 @@ impl MainPanel {
     }
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
+    }
+    /// The title's layout node, the keyboard's target while it is edited.
+    pub(crate) fn title_node(&self) -> Option<NodeId> {
+        self.title_node
     }
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
@@ -1031,8 +1099,28 @@ impl MainPanel {
         if self.page_id.is_some() {
             self.editor.set_focus(false);
             self.title_label.begin_edit();
+            self.naming_new = false;
             self.dirty = true;
         }
+    }
+
+    /// Name a note just made: its title opens empty, the placeholder showing,
+    /// so what is typed names it, and Enter goes on to the start of its body.
+    pub fn begin_new_title_edit(&mut self) {
+        if self.page_id.is_some() {
+            self.editor.set_focus(false);
+            self.title_label.begin_blank_edit();
+            self.naming_new = true;
+            self.dirty = true;
+        }
+    }
+
+    /// How far the text column stands in from each gutter at panel `width`:
+    /// none until the text would run past the reading measure, then whatever
+    /// keeps the column at that measure, centred.
+    fn column_side_for(&self, width: f64) -> f64 {
+        let text = (width - self.metrics.text_edge - self.metrics.gutter).max(0.0);
+        ((text - self.reading_width) / 2.0).max(0.0).floor()
     }
 
     /// Where the header stands, from the layout the toolkit solved for it:
@@ -1219,6 +1307,13 @@ impl MainPanel {
             .set_tooltip_viewport(Some(viewport));
     }
 
+    /// Put the caret at the start of block `id` when the open page binds
+    /// again after an edit applied as an action, and keep it in view.
+    pub fn put_caret_on_rebind(&mut self, id: String) {
+        self.caret_on_rebind = Some(id);
+        self.follow_caret = true;
+    }
+
     /// Reveal a block without mutating the collaborative document.
     pub fn reveal_block(&mut self, index: usize) -> bool {
         if index >= self.editor.editor().blocks().len() {
@@ -1319,7 +1414,13 @@ impl MainPanel {
         self.title_label.is_editing()
     }
 
-    /// Test hook: centre of the first-note call to action after a draw pass.
+    /// Test hook: what the title's field holds while it is edited.
+    #[doc(hidden)]
+    pub fn title_draft_for_test(&self) -> String {
+        self.title_label.current_text().to_owned()
+    }
+
+    /// Test hook: centre of the first-note call to action after a layout pass.
     #[doc(hidden)]
     pub fn empty_action_center_for_test(&self) -> Option<Point> {
         (self.empty_action_rect.width() > 0.0).then(|| self.empty_action_rect.center())
@@ -1410,6 +1511,7 @@ impl Widget for MainPanel {
         self.metrics.text_edge = self.metrics.gutter + editor.handle_gutter(theme);
         self.metrics.body_inset = (self.metrics.text_edge - editor.text_inset(theme)).max(0.0);
         self.layout_theme = theme.clone();
+        self.reading_width = reading_width(theme);
         // The panel is a **leaf** in the parent's flex tree — we do
         // all internal positioning by hand in `apply_layout`. Using a
         // flex container with the editor as a child caused taffy's
@@ -1445,8 +1547,8 @@ impl Widget for MainPanel {
                         height: Dimension::auto(),
                     },
                     inset: taffy::Rect {
-                        left: length(num::f32_of_f64(self.metrics.body_inset)),
-                        right: length(num::f32_of_f64(self.metrics.gutter)),
+                        left: length(num::f32_of_f64(self.metrics.body_inset + self.column_side)),
+                        right: length(num::f32_of_f64(self.metrics.gutter + self.column_side)),
                         top: length(num::f32_of_f64(self.editor_top_inset())),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
@@ -1481,6 +1583,7 @@ impl Widget for MainPanel {
                 taffy,
                 node,
                 &self.metrics,
+                self.column_side,
                 top_inset + self.metrics.header_gap,
             );
         }
@@ -1528,11 +1631,29 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        // Input can arrive before the first paint, including after a resize.
+        self.empty_action_rect = if self.page_id.is_none() {
+            ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
+                EmptyState::layout(text, &self.layout_theme, self.rect, &empty_content())
+                    .action
+                    .unwrap_or(Rect::ZERO)
+            })
+        } else {
+            Rect::ZERO
+        };
         // A title that does not fit its line steps down one role instead of
         // eliding, so a phone at 200% text still reads the whole name. This
         // is responsive type, not cancellation of the text scale.
-        let gutter = self.metrics.gutter;
-        let text_edge = self.metrics.text_edge;
+        // The editor and header were built at the last width's column; a
+        // new width that moves the column builds them again at once.
+        let side = self.column_side_for(self.rect.width());
+        if (side - self.column_side).abs() > 0.5 {
+            self.column_side = side;
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
+        let gutter = self.metrics.gutter + side;
+        let text_edge = self.metrics.text_edge + side;
         let line_width = (self.rect.width() - text_edge - gutter).max(0.0);
         let fits = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
             let style = self.layout_theme.text(TextRole::LargeTitle);
@@ -1546,9 +1667,9 @@ impl Widget for MainPanel {
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
             self.rect.x0 + text_edge,
-            self.rect.y0 + gutter,
+            self.rect.y0 + self.metrics.gutter,
             (self.rect.x1 - gutter).max(self.rect.x0 + text_edge),
-            self.rect.y0 + gutter + self.title_height(),
+            self.rect.y0 + self.metrics.gutter + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);
         let prior_metadata = self.metadata_height;
@@ -1626,12 +1747,20 @@ impl Widget for MainPanel {
                             .blocks()
                             .first()
                             .is_some_and(|block| block.line.cursor_pos() == 0);
+                    // A caret revealed downward keeps the page's own bottom
+                    // padding under it, the room the last line has at the
+                    // end of the note: a new line never lands flush against
+                    // the window's edge or under what floats over it. A
+                    // viewport too short for that keeps the caret itself.
+                    let margin = self
+                        .body_bottom_inset()
+                        .min((viewport_h - caret.height()).max(0.0));
                     if at_document_start {
                         self.scroll_y = 0.0;
                     } else if caret.y0 - self.scroll_y < viewport_top {
                         self.scroll_y = caret.y0 - viewport_top;
-                    } else if caret.y1 - self.scroll_y > viewport_bottom {
-                        self.scroll_y = caret.y1 - viewport_bottom;
+                    } else if caret.y1 + margin - self.scroll_y > viewport_bottom {
+                        self.scroll_y = caret.y1 + margin - viewport_bottom;
                     }
                     self.follow_caret = false;
                 }
@@ -1837,17 +1966,12 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            self.empty_action_rect = EmptyState::paint(
+            EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileText),
-                    action_label: Some("New note"),
-                    ..EmptyStateContent::new("Start your first note")
-                },
+                &empty_content(),
                 self.last_pointer,
-            )
-            .unwrap_or(Rect::ZERO);
+            );
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,
@@ -1963,10 +2087,12 @@ impl Widget for MainPanel {
                 EditOutcome::Committed(new) => {
                     self.pending_rename = Some(new);
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::Cancelled => {
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::None => {}
@@ -2323,6 +2449,13 @@ impl MainPanel {
             .map_or(self.rect, |overhang| self.rect.union(overhang))
     }
 
+    /// Whether `event` is a wheel notch that only moves the body: the panel
+    /// takes every vertical wheel over the body before the editor sees it
+    /// (`handle_event`), so what the note holds (pictures, lists, code,
+    /// tables) cannot change what a notch does. Asking the block kinds here
+    /// sent every note with anything but prose down the host's full path,
+    /// which syncs the whole tree and re-projects every block's resources on
+    /// each notch.
     pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let delta = match event {
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -2340,12 +2473,6 @@ impl MainPanel {
             && self.pending_rename.is_none()
             && self.pending_tag_open.is_none()
             && self.pending_backlink_open.is_none()
-            && self.editor.blocks().iter().all(|block| {
-                matches!(
-                    block.kind,
-                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
-                )
-            })
     }
 
     pub(crate) fn has_editor_popup(&self) -> bool {

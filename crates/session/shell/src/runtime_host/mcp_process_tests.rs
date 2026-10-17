@@ -490,6 +490,7 @@ fn mcp_process_owns_and_reaps_its_children() {
                 &serde_json::to_vec(&Handshake {
                     workspace_id: session.room.clone(),
                     app_id: "so.tilo.file-explorer".into(),
+                    surface: None,
                 })
                 .unwrap(),
             )

@@ -4,6 +4,7 @@
 use super::*;
 use crate::workbook::{FIRST_SHEET_ID, Sheet};
 use ui::framework::testing::TestApp;
+use ui::lock::MutexRecover as _;
 use ui::tilo_resource::{Edit, Replica, Resource};
 
 fn sample() -> Replica<Workbook> {
@@ -146,9 +147,7 @@ fn document_scenarios_edit_through_the_dispatcher() {
     assert_eq!(raw(&fill, "C21").as_deref(), Some("Sat"));
     assert_eq!(raw(&fill, "D21").as_deref(), Some("Task 6"));
 
-    let _clipboard = crate::app::tests::CLIP_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _clipboard = crate::app::tests::CLIP_LOCK.lock_recover();
     let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
     // E2's `=SUM(B2:D2)` pasted one row down reads its own row.
     assert_eq!(raw(&paste, "E3").as_deref(), Some("=SUM(B3:D3)"));
@@ -487,4 +486,42 @@ fn history_entries_render_as_the_apps_sentences() {
             "Commented on A2: Check this",
         ]
     );
+}
+
+/// A caller with no screen reads what the cells show: the sheets, a sheet
+/// row by row with the formulas behind computed cells, and a range of it.
+#[test]
+fn the_workbook_reads_as_rows_of_what_its_cells_show() {
+    let mut book = Replica::<Workbook>::new();
+    let first = Id::from_raw(FIRST_SHEET_ID);
+    write(
+        &mut book,
+        &first,
+        &[
+            ("A1", "Item"),
+            ("B1", "Cost"),
+            ("A2", "Tea"),
+            ("B2", "3"),
+            ("A3", "Cake"),
+            ("B3", "4"),
+            ("B4", "=SUM(B2:B3)"),
+        ],
+    );
+    let state = book.state().unwrap();
+    let sheets = Workbook::read_content(&state, book.doc(), None).unwrap();
+    assert_eq!(sheets["sheets"][0]["name"], "Sheet1");
+
+    let whole = Workbook::read_content(&state, book.doc(), Some("Sheet1")).unwrap();
+    assert_eq!(whole["range"], "A1:B4");
+    assert_eq!(
+        whole["rows"],
+        serde_json::json!([["Item", "Cost"], ["Tea", "3"], ["Cake", "4"], ["", "7"]])
+    );
+    assert_eq!(whole["formulas"]["B4"], "=SUM(B2:B3)");
+
+    let part = Workbook::read_content(&state, book.doc(), Some(&format!("{FIRST_SHEET_ID}!B2:B3")))
+        .unwrap();
+    assert_eq!(part["rows"], serde_json::json!([["3"], ["4"]]));
+    assert!(Workbook::read_content(&state, book.doc(), Some("Nope")).is_err());
+    assert!(Workbook::read_content(&state, book.doc(), Some("Sheet1!ZZ")).is_err());
 }

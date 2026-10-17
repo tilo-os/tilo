@@ -17,7 +17,8 @@
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use tilo_lock::MutexRecover as _;
 
 /// Routes whose cursors stay resident per workspace. Each holds two copies of
 /// its route's selected snapshot document; routes beyond it select fully.
@@ -54,7 +55,7 @@ impl SharedTailCache {
     #[must_use]
     pub fn for_root(root: &Path) -> Self {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let mut registry = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        let mut registry = registry().lock_recover();
         registry.retain(|_, cache| cache.strong_count() > 0);
         let existing = registry.get(&root).and_then(Weak::upgrade);
         let cache = existing.unwrap_or_else(|| {
@@ -66,7 +67,7 @@ impl SharedTailCache {
         Self(cache)
     }
     fn lock(&self) -> MutexGuard<'_, TailCache> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock_recover()
     }
     /// Drop every cursor before retained history changes outside the fast
     /// path. Returns the new epoch and the wanted route keys, most recent

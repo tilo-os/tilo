@@ -1266,3 +1266,87 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     subscription.close().await;
     crate::daemon::Relay::shutdown(relay).await;
 }
+
+/// A browser handshake the host turns away says why, in a body the device
+/// decodes: a stranger is not admitted, a revoked device is revoked, and a
+/// handshake the host does not know is to be run again.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn refused_handshakes_carry_their_typed_reason() {
+    let root = SigningKey::from_bytes(&[101; 32]);
+    let (host_key, host) = device(&root, 102, DeviceCapabilities::host());
+    let (_, member) = device(&root, 103, DeviceCapabilities::member());
+    let (_, revoked) = device(&root, 104, DeviceCapabilities::member());
+    let stranger_root = SigningKey::from_bytes(&[105; 32]);
+    let (_, stranger) = device(&stranger_root, 106, DeviceCapabilities::member());
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: revoked.device_public_key,
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    let mut revocations = RevocationList::new();
+    revocations.insert(entry).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host,
+            revocations,
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let sessions = Sessions::new(relay.web_context().clone());
+    let hello = |cert: &DeviceCert| crate::auth::Hello {
+        cert: cert.clone(),
+        client_nonce: [7; 32],
+    };
+    let refusal = |error: SessionError| {
+        // On the wire the reason is the 403's postcard body.
+        let response = session_status(&error);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        match error {
+            SessionError::Denied(refusal) => refusal,
+            other => panic!("not a typed refusal: {other:?}"),
+        }
+    };
+    assert!(
+        sessions.hello(&hello(&member)).is_ok(),
+        "the owner's device"
+    );
+    assert_eq!(
+        refusal(sessions.hello(&hello(&stranger)).unwrap_err()),
+        protocol::SessionRefusal::NotAdmitted
+    );
+    assert_eq!(
+        refusal(sessions.hello(&hello(&revoked)).unwrap_err()),
+        protocol::SessionRefusal::DeviceRevoked
+    );
+    let unknown = sessions
+        .finish(
+            &[0; 16],
+            &crate::auth::HelloAck2 {
+                sig_over_server_nonce: [0; 64],
+            },
+        )
+        .map(|_| ())
+        .unwrap_err();
+    assert_eq!(refusal(unknown), protocol::SessionRefusal::Handshake);
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
+}

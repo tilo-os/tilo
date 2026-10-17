@@ -4,9 +4,11 @@
 Every graphical app must publish its current resources from the widget tree and
 describe its operations with ``ActionSpec``. The headless agent is the one
 application-model consumer: it surveys peer resources and invokes their action
-descriptors. Source rules reject bespoke command buses and applications without
-an OS-visible surface; the runtime ``--native-audit`` verifies the live
-accessibility/resource/control inventory.
+descriptors. A compute package (a ``service`` whose ``cli`` entrypoint a
+compute worker runs for another app's action) publishes nothing either: the
+action is the requesting app's. Source rules reject bespoke command buses and
+applications without an OS-visible surface; the runtime ``--native-audit``
+verifies the live accessibility/resource/control inventory.
 """
 
 from __future__ import annotations
@@ -401,6 +403,30 @@ def package_name(alias: str, specification: object) -> str:
         if isinstance(package, str):
             return package
     return alias
+
+
+def is_compute_package(app_dir: Path) -> bool:
+    """A windowless package whose `[cli]` commands a compute worker runs.
+
+    Its `tilo-app.toml` declares `kind = "service"`, a `cli` entrypoint and
+    at least one `[cli]` command. It publishes no resource or action of its
+    own: the action that runs it belongs to the app that requested the job,
+    which runs the same code locally when no worker takes it.
+    """
+    manifest_path = app_dir / "tilo-app.toml"
+    if not manifest_path.is_file():
+        return False
+    with manifest_path.open("rb") as handle:
+        manifest = tomllib.load(handle)
+    package = manifest.get("package", {})
+    entrypoint = manifest.get("entrypoint", {})
+    commands = manifest.get("cli", {}).get("commands", [])
+    return (
+        package.get("kind") == "service"
+        and entrypoint.get("type") == "cli"
+        and isinstance(commands, list)
+        and bool(commands)
+    )
 
 
 def is_ui_core_dependency(alias: str, specification: object) -> bool:
@@ -813,6 +839,24 @@ def audit_search_provider_limits(
     return found
 
 
+PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
+
+
+def headless_action_service(app_dir: Path, code: str) -> bool:
+    """Whether the app is a headless service (`kind = "service"` with a `cli`
+    entrypoint in its `tilo-app.toml`) that publishes its actions to the
+    broker itself, so it has no widget resources to audit."""
+    manifest = app_dir / "tilo-app.toml"
+    if not manifest.is_file() or PUBLISH_ACTIONS.search(code) is None:
+        return False
+    with manifest.open("rb") as handle:
+        data = tomllib.load(handle)
+    return (
+        data.get("package", {}).get("kind") == "service"
+        and data.get("entrypoint", {}).get("type") == "cli"
+    )
+
+
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
@@ -868,8 +912,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             specification for alias, specification in runtime_dependencies if alias == "ui"
         ]
         # An app model crate (`apps/*-model`) is data shared with an app and
-        # may have no UI; any `ui` it does depend on is still the facade.
-        facade_required = not manifest_path.parent.name.endswith("-model")
+        # may have no UI, nor may a compute package; any `ui` either does
+        # depend on is still the facade.
+        compute_package = is_compute_package(manifest_path.parent)
+        facade_required = not manifest_path.parent.name.endswith("-model") and not compute_package
         if (facade_required and not facades) or any(
             not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
@@ -922,7 +968,15 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         # through the broker's task-bound action surfaces. An `apps/*-model`
         # crate is a record shape apps embed (the portability rules let apps
         # depend on it), not an app: the apps embedding it publish its actions.
-        if app_name != "agent" and not app_name.endswith("-model"):
+        # A compute package runs for the action of the app that requested it.
+        # A headless service has no widget tree to publish from; it publishes
+        # its action descriptors to the broker directly.
+        if (
+            app_name != "agent"
+            and not app_name.endswith("-model")
+            and not compute_package
+            and not headless_action_service(manifest_path.parent, combined)
+        ):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None

@@ -71,8 +71,9 @@ def free_port() -> int:
 class Mcp:
     """One MCP session over the compositor's streamable HTTP endpoint."""
 
-    def __init__(self, url: str, name: str):
+    def __init__(self, url: str, name: str, token: str):
         self.url, self.name, self.sid, self.n = url, name, None, 0
+        self.token = token
         self.call("initialize", {
             "protocolVersion": PROTOCOL,
             "capabilities": {},
@@ -86,6 +87,7 @@ class Mcp:
         request = urllib.request.Request(self.url, body, {
             "content-type": "application/json",
             "accept": "application/json, text/event-stream",
+            "authorization": f"Bearer {self.token}",
         })
         if self.sid:
             request.add_header("mcp-session-id", self.sid)
@@ -109,7 +111,8 @@ class Mcp:
 
     def end(self) -> None:
         request = urllib.request.Request(
-            self.url, method="DELETE", headers={"mcp-session-id": self.sid})
+            self.url, method="DELETE", headers={
+                "mcp-session-id": self.sid, "authorization": f"Bearer {self.token}"})
         urllib.request.urlopen(request, timeout=10)
 
 
@@ -209,11 +212,17 @@ def main() -> int:
     }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
+    # Loopback is reachable by other accounts too; protect this test endpoint.
+    token = os.urandom(32).hex()
+    token_file = pathlib.Path(root) / "mcp-token"
+    token_file.touch(mode=0o600)
+    token_file.write_text(token)
     compositor_env = {
         **env,
         "TILO_AGENT_CONTROL": agent_sock,
         "TILO_TEST_CONTROL": test_sock,
         "TILO_RUNTIME_MCP_HTTP": f"127.0.0.1:{port}",
+        "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE": str(token_file),
     }
     log = open(out / "shell.log", "w")
     shell = subprocess.Popen([str(SHELL), "--backend", "headless"], env=compositor_env,
@@ -228,7 +237,7 @@ def main() -> int:
                 return 1
             time.sleep(0.3)
         time.sleep(2)
-        alpha, beta = Mcp(url, "agent-alpha"), Mcp(url, "agent-beta")
+        alpha, beta = Mcp(url, "agent-alpha", token), Mcp(url, "agent-beta", token)
 
         print("1. each agent opens a terminal, which lands in its own strip")
         for agent, name in ((alpha, "alpha"), (beta, "beta")):

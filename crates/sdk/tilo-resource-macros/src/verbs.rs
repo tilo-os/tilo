@@ -20,6 +20,7 @@ pub(crate) struct ResourceOptions {
     seed: Option<syn::Path>,
     available: Option<syn::Path>,
     read_content: Option<syn::Path>,
+    document_child: Option<syn::Path>,
     /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
     read_content_in_doc: Option<syn::Path>,
     views: Option<syn::Path>,
@@ -38,7 +39,7 @@ pub(crate) struct ResourceOptions {
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `read_content_in_doc = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
@@ -55,6 +56,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         seed: None,
         available: None,
         read_content: None,
+        document_child: None,
         read_content_in_doc: None,
         views: None,
         version: None,
@@ -103,6 +105,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
             ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
+            ("document_child", Expr::Path(path)) => {
+                options.document_child = Some(path.path.clone());
+            }
             ("read_content_in_doc", Expr::Path(path)) => {
                 options.read_content_in_doc = Some(path.path.clone());
             }
@@ -287,7 +292,9 @@ impl syn::parse::Parse for ParamOptions {
                 continue;
             }
             let key: syn::Ident = input.parse()?;
-            if key == "content" || key == "flatten" || key == "place" || key == "secret" {
+            // `place` alone is a flag; `place = "field"` names its collection.
+            let flag = key == "content" || key == "flatten" || key == "place" || key == "secret";
+            if flag && !input.peek(Token![=]) {
                 if key == "secret" {
                     options.secret = true;
                 } else if key == "content" {
@@ -399,8 +406,9 @@ struct Verb {
     item: Option<(syn::Ident, Type)>,
 }
 
-/// The rules a verb's parameters keep: a content or flattened parameter is
-/// the only one.
+/// The rules a verb's parameters keep: at most one content parameter, a
+/// `String` holding the content's hash, beside any others; a flattened
+/// parameter is the only one.
 fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
     for param in params.iter().filter(|param| param.secret) {
         if param.role != Role::Plain
@@ -414,15 +422,18 @@ fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
             ));
         }
     }
-    if params.iter().any(|param| param.role == Role::Content)
-        && !(params.len() == 1
-            && params.first().is_some_and(|param| {
-                last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
-            }))
+    let content: Vec<&Param> = params
+        .iter()
+        .filter(|param| param.role == Role::Content)
+        .collect();
+    if content.len() > 1
+        || content
+            .iter()
+            .any(|param| last_ident(&param.ty).is_none_or(|(name, _)| name != "String"))
     {
         return Err(syn::Error::new(
             span,
-            "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
+            "a verb takes at most one `#[param(content)]`, a `String` holding the content's hash",
         ));
     }
     if params.iter().any(|param| param.role == Role::Flatten) && params.len() != 1 {
@@ -613,6 +624,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, true) => quote!(#krate::__private::PlaceIn::Record),
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
+    let content = param.role == Role::Content;
     quote! {
         #krate::__private::ParamDecl {
             name: #name,
@@ -623,6 +635,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
             place: #place,
             example: #example,
             flat: #flat,
+            content: #content,
         }
     }
 }
@@ -1246,29 +1259,36 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 })
             },
         };
-        let (collects, prompted, content) =
-            match verb.params.iter().find(|param| param.role == Role::Content) {
-                Some(param) => {
-                    let description = &param.description;
-                    let public = &param.public;
-                    (
-                        quote!(::core::option::Option::Some(#description)),
-                        quote! {
-                            if let ::core::option::Option::Some(hash) =
-                                arguments.remove(#krate::__private::PROMPTED_PARAM)
-                            {
-                                arguments.insert(::std::string::String::from(#public), hash);
-                            }
-                        },
-                        quote!(::core::option::Option::Some(#public)),
-                    )
-                }
-                None => (
-                    quote!(::core::option::Option::None),
-                    quote!(),
-                    quote!(::core::option::Option::None),
-                ),
-            };
+        // A verb whose one input is content is published as collecting it
+        // (its callers carry the hash in); one that takes content beside
+        // other parameters publishes them all, the content one marked.
+        let only_content = verb.params.len() == 1;
+        let (collects, prompted, content) = match verb
+            .params
+            .iter()
+            .find(|param| param.role == Role::Content && only_content)
+        {
+            Some(param) => {
+                let description = &param.description;
+                let public = &param.public;
+                (
+                    quote!(::core::option::Option::Some(#description)),
+                    quote! {
+                        if let ::core::option::Option::Some(hash) =
+                            arguments.remove(#krate::__private::PROMPTED_PARAM)
+                        {
+                            arguments.insert(::std::string::String::from(#public), hash);
+                        }
+                    },
+                    quote!(::core::option::Option::Some(#public)),
+                )
+            }
+            None => (
+                quote!(::core::option::Option::None),
+                quote!(),
+                quote!(::core::option::Option::None),
+            ),
+        };
         let description = &verb.description;
         let field = verb.options.field.as_deref().map_or_else(
             || quote!(::core::option::Option::None),
@@ -1572,6 +1592,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             ) -> ::core::result::Result<#krate::__private::serde_json::Value, ::std::string::String> {
                 let item = item.map(#krate::Id::from_raw);
                 #path(state, doc, item.as_ref())
+            }
+        }
+    });
+    let document_child = options.document_child.as_ref().map(|path| {
+        quote! {
+            fn document_child(state: &Self, id: &str) -> bool {
+                #path(state, id)
             }
         }
     });
@@ -1971,6 +1998,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #locate
             #availability
             #read_content
+            #document_child
             #views
             #field_fn
 

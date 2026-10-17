@@ -97,6 +97,49 @@ fn read_is_published_as_the_notebooks_document_read() {
     assert!(read.contract.reads_document());
 }
 
+#[test]
+fn note_and_body_reads_are_bound_document_projections() {
+    fn find<'a>(
+        resources: &'a [tilo_actions::Resource],
+        id: &str,
+    ) -> Option<&'a tilo_actions::Resource> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource)
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", json!({"title": "Public note"}))
+        .unwrap();
+    app.settle();
+    let id = crate::framework_support::shown(&app).pages()[0].id;
+    let resources = app.harness().resources();
+    for id in [
+        notes::actions::page_resource_id(id),
+        notes::actions::body_resource_id(id),
+    ] {
+        let resource = find(&resources, &id).expect("published document child");
+        let read = resource
+            .actions
+            .iter()
+            .find(|a| a.id == "read")
+            .expect("child read");
+        assert!(read.contract.reads_document());
+        let encoded = read.build_json(&serde_json::Map::new()).unwrap();
+        let payload: serde_json::Value = tilo_actions::decode_json(&encoded.payload).unwrap();
+        assert_eq!(payload["item"], id);
+        assert!(
+            read.build_json(json!({"item": "private-account"}).as_object().unwrap())
+                .is_err()
+        );
+        assert!(app.call("read", json!({"item": id})).is_ok());
+    }
+}
+
 fn inspect_editor(app: &mut TestApp<NotesShell>) -> serde_json::Value {
     app.call("inspect-editor", json!({}))
         .expect("the read-only editor action is published")

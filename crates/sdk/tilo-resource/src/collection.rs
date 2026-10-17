@@ -1548,7 +1548,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                 was.item_at(at),
             ) {
                 (Some(id), Some(was_id), Some(item), Some(was_item))
-                    if id == was_id && (desc.item.ops.stores_as)(desc.item, item, was_item) => {}
+                    if id == was_id
+                        && (one_item(item, was_item)
+                            || (desc.item.ops.stores_as)(desc.item, item, was_item)) => {}
                 _ => return false,
             }
         }
@@ -1579,7 +1581,9 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
             dirty,
             &EntryWrites {
                 same: &|at_now, at_was| match (now.item_at(at_now), was.item_at(at_was)) {
-                    (Some(now), Some(was)) => (item.ops.stores_as)(item, now, was),
+                    (Some(now), Some(was)) => {
+                        one_item(now, was) || (item.ops.stores_as)(item, now, was)
+                    }
                     _ => false,
                 },
                 store: &|at_now, doc, slot| match now.item_at(at_now) {
@@ -1730,6 +1734,13 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
     },
 };
 
+/// Whether two items are one item, which two clones of a collection still
+/// share: it stores as it is without being compared, however its fields
+/// compare (a value stored as JSON text compares only by writing it).
+fn one_item(item: &dyn Any, other: &dyn Any) -> bool {
+    std::ptr::addr_eq(item, other)
+}
+
 /// Whether every entry has a stored order key, each above the one before:
 /// the keys a write keeps all of.
 fn strictly_ordered_entries(entries: &dyn Entries) -> bool {
@@ -1760,6 +1771,8 @@ fn diff_entries(
             continue;
         };
         match now.find(id).and_then(|position| now.item_at(position)) {
+            // One item, which both still share: no edit.
+            Some(next) if one_item(before, next) => {}
             Some(next) => {
                 let mut path = path.to_vec();
                 path.push(Segment::Item(id.clone()));

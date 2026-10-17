@@ -25,6 +25,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Sh
 workspace = true
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(unix)'.dependencies]

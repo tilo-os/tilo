@@ -1,7 +1,7 @@
 //! The room gate decides every wire variant explicitly, and a document op
 //! from a member who may only read is refused at the gate itself.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -12,6 +12,7 @@ use crate::shell::state::{RoomId, WorkspaceTree};
 use tilo_action_policy::{ActionKind, TreePath};
 
 use super::room_gate::RoomAction;
+use tilo_lock::MutexRecover as _;
 
 /// Reading the room.
 fn read() -> RoomAction {
@@ -112,6 +113,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                 source_peer: 1,
                 encoded_h264: Vec::new(),
                 ts: 0,
+                seq: 0,
             },
             Some(change()),
         ),
@@ -373,17 +375,14 @@ struct Captured(Arc<Mutex<Vec<u8>>>);
 
 impl Captured {
     fn take(&self) -> String {
-        let mut bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut bytes = self.0.lock_recover();
         String::from_utf8_lossy(&std::mem::take(&mut *bytes)).into_owned()
     }
 }
 
 impl std::io::Write for Captured {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(bytes);
+        self.0.lock_recover().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 

@@ -896,7 +896,7 @@ pub mod by_pinning {
 
 
 pub mod runtime_progress {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type UpdateParams<> = ::capnp::capability::Params<crate::app_host_capnp::runtime_progress::update_params::Owned>;
     pub type UpdateResults<> = ::capnp::capability::Results<crate::app_host_capnp::runtime_progress::update_results::Owned>;
 
@@ -1447,7 +1447,7 @@ pub mod runtime_progress {
 
 
 pub mod app_host {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ListParams<> = ::capnp::capability::Params<crate::app_host_capnp::app_host::list_params::Owned>;
     pub type ListResults<> = ::capnp::capability::Results<crate::app_host_capnp::app_host::list_results::Owned>;
     pub type ResolveParams<> = ::capnp::capability::Params<crate::app_host_capnp::app_host::resolve_params::Owned>;

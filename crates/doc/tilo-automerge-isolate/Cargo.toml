@@ -7,6 +7,7 @@ license.workspace = true
 description = "Decode and apply untrusted Automerge bytes in memory- and time-limited worker processes"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 automerge.workspace = true
 thiserror.workspace = true
 tilo-automerge.workspace = true

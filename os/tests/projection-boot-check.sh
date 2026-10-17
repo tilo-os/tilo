@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for helper in tilo-projector tilo-doubletake tilo-fluxcast; do
+for helper in tilo-projector tilo-doubletake; do
   test -x "/usr/libexec/$helper"
 done
 

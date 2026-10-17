@@ -1431,9 +1431,13 @@ fn exercise_native_sealed_profile(
             .windows(b"fixture-profile-secret".len())
             .any(|part| part == b"fixture-profile-secret")
     );
+    // The RAM working profile is handed to the Linux launcher in /dev/shm.
+    #[cfg(target_os = "linux")]
     if include_ram {
         exercise_native_ram_profile_before_launch(account, root);
     }
+    #[cfg(not(target_os = "linux"))]
+    assert!(!include_ram, "the RAM working profile exists only on Linux");
     let mut resumed = account.open_profile(root).unwrap();
     let image = resumed.begin_use().unwrap();
     assert_eq!(
@@ -1447,6 +1451,7 @@ fn exercise_native_sealed_profile(
     assert!(account.open_profile(root).is_err());
 }
 
+#[cfg(target_os = "linux")]
 fn exercise_native_ram_profile_before_launch(
     account: &NativeSignalAccount,
     root: &std::path::Path,
@@ -1492,6 +1497,7 @@ fn exercise_native_ram_profile_before_launch(
     exercise_native_ram_profile_handoff(account, root);
 }
 
+#[cfg(target_os = "linux")]
 fn exercise_native_ram_profile_handoff(account: &NativeSignalAccount, root: &std::path::Path) {
     let root = root.join("isolated-handoff-profile");
     {
@@ -1539,6 +1545,7 @@ fn exercise_native_ram_profile_handoff(account: &NativeSignalAccount, root: &std
     assert_eq!(std::fs::read_dir(runtime.path()).unwrap().count(), 0);
 }
 
+#[cfg(target_os = "linux")]
 fn signal_profile_launch_options() -> launcher::run::RunOptions {
     launcher::run::RunOptions {
         app_id: Some("so.tilo.signal-provider".into()),
@@ -1753,9 +1760,14 @@ fn actual_session_lock_retires_visible_private_link_and_never_revives_after_unlo
     drop(rig);
 }
 
+// The first-account, SMS-first and WhatsApp-first journeys and the network
+// consent test drive Messages' Linux-only native account modules
+// (`first_account`, `network`, `sms_first`, `whatsapp_first`).
+#[cfg(target_os = "linux")]
 #[path = "messaging_first_account_tests.rs"]
 mod first_account_journey;
 
+#[cfg(target_os = "linux")]
 #[test]
 fn messaging_network_consent_requires_protected_confirmed_answer_and_retires_with_owner() {
     use crate::portal::{PromptQueueHandle, PromptResolver};
@@ -1858,6 +1870,7 @@ fn messaging_network_consent_requires_protected_confirmed_answer_and_retires_wit
     }
 }
 
+#[cfg(target_os = "linux")]
 fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::portal::PendingGrant {
     let deadline = std::time::Instant::now()
         .checked_add(ui::time::Duration::from_secs(5))
@@ -1874,10 +1887,12 @@ fn wait_network_prompt(queue: &crate::portal::PromptQueueHandle) -> crate::porta
     }
 }
 
+#[cfg(target_os = "linux")]
 #[path = "messaging_sms_first_tests.rs"]
 mod sms_first_journey;
 
 #[path = "messaging_native_first_tests.rs"]
 mod native_first_journey;
+#[cfg(target_os = "linux")]
 #[path = "messaging_whatsapp_first_tests.rs"]
 mod whatsapp_first_tests;

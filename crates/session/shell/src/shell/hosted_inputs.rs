@@ -24,12 +24,14 @@ pub struct NativeAppRegistration {
     pub opens_mime_types: &'static [&'static str],
 }
 
-/// Device-local launch data for one open hosted document.
+/// Device-local launch data for one open hosted document: which app opens
+/// which file. The app reads the file itself, so the shell never does: on
+/// the workspace mount the first read hydrates it from a peer, which the
+/// compositor loop must not wait for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedDocument {
     pub provider_id: &'static str,
     pub path: PathBuf,
-    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -396,15 +398,16 @@ impl HostedTileInputs {
             else {
                 continue;
             };
+            // Restored at startup, before any frame: whether the file is
+            // still readable text decides between the editor and a notice.
             let restored = reference
                 .path
                 .canonicalize()
-                .and_then(|path| std::fs::read_to_string(&path).map(|text| (path, text)));
+                .and_then(|path| std::fs::read_to_string(&path).map(|_| path));
             let state = match restored {
-                Ok((path, text)) => HostedDocumentState::Ready(HostedDocument {
+                Ok(path) => HostedDocumentState::Ready(HostedDocument {
                     provider_id: app.package_id,
                     path,
-                    text,
                 }),
                 Err(error) => HostedDocumentState::Unavailable {
                     provider_id: app.package_id,
@@ -640,7 +643,6 @@ mod document_lifecycle_tests {
                     HostedDocument {
                         provider_id: "org.nirios.Editor",
                         path: reference.path.clone(),
-                        text: "live document\n".into(),
                     },
                 );
                 tabs.push(tab);
@@ -696,7 +698,7 @@ mod document_lifecycle_tests {
             "stale references must be filtered before restoration"
         );
         assert!(
-            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.text == "live document\n")
+            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.path == path.canonicalize().unwrap())
         );
         let mut driver =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(reopened.host), (1280, 800));

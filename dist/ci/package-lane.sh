@@ -12,6 +12,12 @@ set -euo pipefail
 arch=${1:?usage: package-lane.sh amd64|arm64}
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
+# t runs this as a micro-VM step in the builder image, as root in a guest of its own; the
+# builder carries no container engine, so the guest installs Podman from Fedora first.
+if ! command -v docker >/dev/null && ! command -v podman >/dev/null \
+    && [[ $(id -u) == 0 ]] && command -v dnf >/dev/null; then
+  dnf -y -q install --setopt=install_weak_deps=False podman >/dev/null
+fi
 engine=docker
 if ! command -v docker >/dev/null && command -v podman >/dev/null; then
   # run-package-job.sh speaks Docker's CLI, which podman takes as it is.
@@ -32,7 +38,7 @@ if ! command -v skopeo >/dev/null; then
 #!/bin/sh
 work=${TMPDIR:-/tmp}
 exec docker run --rm --network host -v "$PWD:$PWD" -v "$work:$work" -w "$PWD" \
-  quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f "$@"
+  registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0 "$@"
 SH
   chmod +x "$shim/skopeo"
   PATH=$shim:$PATH
@@ -44,8 +50,18 @@ export RUNNER_TEMP=${RUNNER_TEMP:-$(mktemp -d "${TMPDIR:-/tmp}/package-lane.XXXX
 export GITHUB_PATH=${GITHUB_PATH:-$RUNNER_TEMP/path}
 bash dist/ci/fetch-package-env-runtime.sh
 export TILO_ENABLE_REMOTE_CACHE=0 TILO_CARGO_JOBS=${TILO_CARGO_JOBS:-6}
-while IFS='|' read -r distro image revision; do
+# The target list arrives on its own descriptor and each job reads no stdin: a container
+# engine attached to the job reads whatever stdin holds, so the first target used to swallow
+# the rest of the list and the lane ended green after one userspace.
+# A broken userspace does not hide the others' results: every target builds, and the lane
+# fails at the end naming each one that failed.
+failed=()
+while IFS='|' read -r -u 3 distro image revision; do
   [[ -n $distro ]] || continue
   printf '==> %s / %s\n' "$distro" "$arch"
-  dist/ci/run-package-job.sh "$distro" "$image" "$arch" "$revision"
-done < <(dist/ci/package-targets.sh "$arch")
+  dist/ci/run-package-job.sh "$distro" "$image" "$arch" "$revision" </dev/null || failed+=("$distro")
+done 3< <(dist/ci/package-targets.sh "$arch")
+if ((${#failed[@]})); then
+  printf 'package lane %s: failed userspaces: %s\n' "$arch" "${failed[*]}" >&2
+  exit 1
+fi

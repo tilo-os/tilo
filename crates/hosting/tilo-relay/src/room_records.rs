@@ -20,6 +20,7 @@ use tilo_clock::unix_now_ns;
 use crate::coedit::CoeditPayload;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
+use tilo_lock::MutexRecover as _;
 
 /// One retained document body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,9 +70,7 @@ struct Open {
 
 impl Inflight {
     fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Open>> {
-        self.open
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.open.lock_recover()
     }
 
     fn queue(self: &std::sync::Arc<Self>, workspace_id: u64) -> Ticket {

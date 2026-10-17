@@ -15,8 +15,8 @@
 //! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
-//! | `/session` | [`Hello`] | [`SessionChallenge`] |
-//! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`] |
+//! | `/session` | [`Hello`] | [`SessionChallenge`]; `403` [`SessionRefusal`] |
+//! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
@@ -48,7 +48,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Envelope;
-use crate::auth::{Hello, HelloAck, HelloAck2};
+use crate::auth::{HelloAck, HelloAck2};
 
 /// Path prefix of every browser carrier route.
 pub const API_PREFIX: &str = "/peer/v1";
@@ -117,19 +117,29 @@ pub const LIVE_PATH: &str = "/moq/live";
 pub const MAX_POLL_MS: u32 = 25_000;
 /// Largest request body a route accepts.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
-/// Most envelopes one `/events` answer carries.
-pub const MAX_PAGE_ENVELOPES: usize = 256;
+/// Most envelopes one `/events` answer carries. A late join's tail is
+/// thousands of small envelopes (a few hundred bytes each), and every page
+/// costs the browser a round trip to the host: the count must let
+/// [`MAX_PAGE_BYTES`] end a page of small envelopes, not cut it short. At
+/// 256 a Lounge with ~4000 envelopes of history took 16 pages, 8 s over a
+/// 450 ms route, before the page could open.
+pub const MAX_PAGE_ENVELOPES: usize = 8192;
+// Envelopes of 128 payload bytes (plus the per-envelope allowance) fill a
+// page by bytes before by count.
+const _: () = assert!(MAX_PAGE_ENVELOPES * (128 + ENVELOPE_OVERHEAD) >= MAX_PAGE_BYTES);
 /// Payload bytes after which an `/events` answer ends (it always carries at
 /// least one envelope). A late join's checkpoint and tail, or a segmented
 /// multi-megabyte document, then stream as a series of bounded pages, each
 /// acknowledged before the next.
 pub const MAX_PAGE_BYTES: usize = 1024 * 1024;
 
+/// What [`envelope_bytes`] allows each envelope for its keys and framing.
+const ENVELOPE_OVERHEAD: usize = 160;
+
 /// Approximate wire size of `envelope`: its opaque payload plus a fixed
 /// allowance for keys and framing. Bounds pages and session buffers without
 /// encoding every envelope twice.
 pub fn envelope_bytes(envelope: &Envelope) -> usize {
-    const OVERHEAD: usize = 160;
     let payload = match envelope {
         Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
@@ -163,7 +173,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
     };
-    payload.saturating_add(OVERHEAD)
+    payload.saturating_add(ENVELOPE_OVERHEAD)
 }
 
 /// What a page needs to know about the host before it has a certificate.
@@ -201,6 +211,48 @@ pub struct SessionChallenge {
     pub ack: HelloAck,
     /// Identifies this handshake for [`SessionFinish`].
     pub handshake: [u8; 16],
+}
+
+/// Why the host turned a session handshake away: the body of a `403` from
+/// `/session` or `/session/finish`, so a device decides what to do from the
+/// host's own reason rather than from how often it was refused.
+///
+/// The handshake checks the device's certificate, the host's revocations
+/// and its live trust policy, which is one allow list for the whole host.
+/// So it tells a revoked device apart from a person the host does not admit,
+/// but not why it does not admit them: one it never knew, one it forgot (its
+/// state was reset, or it pruned them after an absence) and one a room
+/// removed or banned all read [`Self::NotAdmitted`]. Whether such a person
+/// may come back is the room's door to answer, not the handshake's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRefusal {
+    /// The host admits nobody of this device's person: joining again, where
+    /// the room lets them, admits them anew.
+    NotAdmitted,
+    /// This device is on the host's revocation list. It never comes back;
+    /// its person's other devices are unaffected.
+    DeviceRevoked,
+    /// The certificate did not verify, or was not valid at the host's time:
+    /// a newly issued certificate for the same device may be admitted.
+    CertificateInvalid,
+    /// The handshake itself failed: it was unknown or too old by its second
+    /// step, or the challenge signature did not verify. A new handshake may
+    /// succeed.
+    Handshake,
+}
+
+impl SessionRefusal {
+    /// The refusal for a failed [`crate::auth`] check.
+    #[must_use]
+    pub fn from_auth(error: &crate::auth::AuthError) -> Self {
+        use crate::auth::AuthError;
+        match error {
+            AuthError::Revoked => Self::DeviceRevoked,
+            AuthError::PolicyReject => Self::NotAdmitted,
+            AuthError::Cert(_) => Self::CertificateInvalid,
+            AuthError::BadChallengeSig | AuthError::EndpointMismatch => Self::Handshake,
+        }
+    }
 }
 
 /// The device's signature over the host's challenge.
@@ -341,9 +393,6 @@ pub fn live_room(workspace_id: u64) -> String {
     hash.update(&workspace_id.to_le_bytes());
     hex::encode(hash.finalize().as_bytes())
 }
-
-/// The first request of a session.
-pub type SessionHello = Hello;
 
 /// Route a spectator of a public room takes a channel's content keys from,
 /// to open what the room's members sealed there. Only a device of the room's

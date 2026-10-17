@@ -189,6 +189,10 @@ pub enum StoreError {
     SourceChanged(String),
     #[error("{0} has writes its host has not yet committed")]
     Pending(String),
+    /// [`DurableStore::prepare_shared`]: the store's own thread is still
+    /// opening the key.
+    #[error("{0} is still being opened")]
+    Opening(String),
     #[error("revision {0} is not awaiting acknowledgement")]
     UnknownRevision(u64),
     #[error("{context}: {message}")]
@@ -197,6 +201,10 @@ pub enum StoreError {
 
 /// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
+
+/// Called, from any thread, when work a caller declined to wait for is done
+/// (see [`DurableStore::prepare_shared`]).
+pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// A non-exclusive claim on one key, for documents several processes may
 /// write at once because readers merge what each appends. `primary` is true
@@ -282,6 +290,22 @@ pub trait DurableStore {
     /// # Errors
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
+
+    /// For a caller that must not wait on storage (a UI thread): make sure a
+    /// [`Self::lease_shared`] of `key`, and the reads that follow it, create
+    /// nothing and find what they read already fetched. `Ok` when that is
+    /// so; otherwise [`StoreError::Opening`], the work left to the store's
+    /// own thread, which calls `ready` once it is done (a later call then
+    /// returns `Ok`, or the error the work met). A store with no thread of
+    /// its own returns `Ok`, and its lease waits as it always did.
+    ///
+    /// # Errors
+    /// [`StoreError::Opening`] while the work runs; an invalid key; the
+    /// failure the work met.
+    fn prepare_shared(&self, key: &StorageKey, ready: &ReadyWake) -> Result<(), StoreError> {
+        let _ = (key, ready);
+        Ok(())
+    }
 
     /// Grant custody of `key` to exactly one `claimant`, durably: the first
     /// claim wins, and the same claimant may claim again (to resume after a

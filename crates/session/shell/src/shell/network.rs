@@ -26,10 +26,15 @@ mod native_ingress;
 mod native_replay_budget_tests;
 #[cfg(test)]
 mod paired_continuity_tests;
+mod peer_sync_worker;
 mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+#[cfg(test)]
+mod tick_bench;
+#[cfg(test)]
+mod tick_off_loop_tests;
 pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
@@ -934,7 +939,22 @@ struct RoomPush {
     /// Each room's document heads as last announced (or first seen, which
     /// announces nothing: a peer that lacks older history pulls it).
     announced: std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>,
+    /// The tree's write generation right after the last full projection.
+    /// Projection reads nothing but the tree, and every tree write bumps the
+    /// generation, so while it holds there is nothing to project.
+    projected_generation: Option<u64>,
+    /// The generation right after a check that found no trigger moved:
+    /// until it changes, only the fallback projection has anything to do.
+    checked_generation: Option<u64>,
+    /// When a tick found the tree held by another thread: the push runs
+    /// again at [`ROOM_PUSH_RETRY`] rather than waiting for the lock.
+    retry_at: Option<std::time::Instant>,
 }
+
+/// How soon a room push that found the tree held by another thread tries
+/// again: about a frame, so a change still goes out promptly, while the
+/// loop never waits on that thread's write.
+const ROOM_PUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(8);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
@@ -1358,6 +1378,7 @@ fn write_pending_invitations(path: &Path, bytes: &[u8]) {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
+    peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
@@ -2094,6 +2115,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
+            peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
@@ -2596,37 +2618,10 @@ impl ShellNetwork {
         let Ok(mut queue) = self.inbound_legacy.lock() else {
             return;
         };
-        if let NeighbourMsg::SurfaceFrame {
-            surface,
-            source_peer,
-            ts,
-            ..
-        } = &message
-        {
-            // Video is drop-oldest/latest-wins. Control and input retain
-            // ordering; only an older frame for this exact stream is removed.
-            if let Some((index, queued_ts)) =
-                queue
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, event)| match &event.message {
-                        NeighbourMsg::SurfaceFrame {
-                            surface: queued_surface,
-                            source_peer: queued_peer,
-                            ts: queued_ts,
-                            ..
-                        } if queued_surface == surface && queued_peer == source_peer => {
-                            Some((index, *queued_ts))
-                        }
-                        _ => None,
-                    })
-            {
-                if queued_ts >= *ts {
-                    return;
-                }
-                queue.remove(index);
-            }
-        }
+        // Encoded frames stay in arrival order, every one of them: a delta
+        // references the units before it, so dropping an older frame for a
+        // newer one breaks the decoder's chain until the next keyframe. The
+        // view drops stale and duplicate units by their sequence numbers.
         while queue.len() >= LEGACY_INBOX_CAP {
             let frame_index = queue
                 .iter()
@@ -3487,16 +3482,6 @@ impl ShellNetwork {
     ) -> Result<(), String> {
         let device = decode_lower_hex_32(device_hex)
             .ok_or_else(|| "device is not an enrolled device id".to_string())?;
-        let local = self
-            .personal_continuity_device
-            .as_ref()
-            .and_then(|device| decode_lower_hex_32(device.as_str()));
-        let enrolled = self.enrolled_personal_devices(local);
-        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
-            return Err("device is not an enrolled device".into());
-        }
-        let endpoint = iroh::EndpointId::from_bytes(&device)
-            .map_err(|_| "device is not an enrolled device id".to_string())?;
         // A named workspace is sent on that room's topic: the device confines
         // the caller to the room a request arrives on. Otherwise use the
         // first shared room where the device is actually present.
@@ -3504,11 +3489,7 @@ impl ShellNetwork {
             .provider
             .strip_prefix("workspace:")
             .and_then(RoomId::parse);
-        let shared = self.online_enrolled_room(endpoint, named)?;
-        let topic = room_topic_id(shared);
-        if !self.join_topic(topic) {
-            return Err("the shared workspace is not joined".into());
-        }
+        let (endpoint, _, topic) = self.enrolled_device_route(device, named)?;
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
                 on_behalf_of: None,
@@ -3527,6 +3508,78 @@ impl ShellNetwork {
         } else {
             Err("the action could not be handed to the enrolled device".into())
         }
+    }
+
+    /// Where an enrolled device is reached: its endpoint, and the shared
+    /// workspace (room and topic) it is present in — `named` when given. A
+    /// device that is not in the enrolment list is refused, so this cannot
+    /// address an arbitrary endpoint.
+    fn enrolled_device_route(
+        &self,
+        device: [u8; 32],
+        named: Option<RoomId>,
+    ) -> Result<(iroh::EndpointId, RoomId, u64), String> {
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .and_then(|device| decode_lower_hex_32(device.as_str()));
+        let enrolled = self.enrolled_personal_devices(local);
+        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
+            return Err("device is not an enrolled device".into());
+        }
+        let endpoint = iroh::EndpointId::from_bytes(&device)
+            .map_err(|_| "device is not an enrolled device id".to_string())?;
+        let shared = self.online_enrolled_room(endpoint, named)?;
+        let topic = room_topic_id(shared);
+        if !self.join_topic(topic) {
+            return Err("the shared workspace is not joined".into());
+        }
+        Ok((endpoint, shared, topic))
+    }
+
+    /// Invoke an application's action on another of this device's person's
+    /// own devices for `person`, and follow it there: the answer is the
+    /// other device's outcome, when it reports one. Nothing waits for it.
+    ///
+    /// Only the person this device belongs to reaches their devices, and
+    /// only a device that is enrolled, authenticated to this shell as one of
+    /// theirs, unexpired and unrevoked, and present in a workspace both
+    /// share. The other device decides the request for this device as its
+    /// transport authenticates it, as it does any request of the person's.
+    ///
+    /// # Errors
+    ///
+    /// Why the invocation cannot be sent.
+    pub fn invoke_own_device(
+        self: &Arc<Self>,
+        person: &str,
+        checked: &tilo_actions::remote::own_device::Checked,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>, String>
+    {
+        let user = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device holds no identity".to_string())?;
+        if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
+            return Err("only the person this device belongs to reaches their devices".into());
+        }
+        if !self
+            .authenticated_devices_of(&user)
+            .iter()
+            .any(|cert| cert.device_public_key == checked.device)
+        {
+            return Err("the device is not one of the person's authenticated devices".into());
+        }
+        let (endpoint, room, topic) = self.enrolled_device_route(checked.device, None)?;
+        let forwarded = checked.forwarded(&room.to_string(), request);
+        let peer = Arc::new(crate::shell::remote_action_link::PeerActionHost::new(
+            Arc::clone(self),
+            topic,
+            endpoint,
+        ));
+        Ok(peer
+            .invoke_until_settled(forwarded, crate::shell::remote_action_link::FOLLOW_DEADLINE)
+            .map(own_device_outcome))
     }
 
     fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
@@ -4744,7 +4797,16 @@ impl ShellNetwork {
                 }
             });
         }
-        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
+        // Asked on every boundary of every tick while the switch is off: only
+        // staged offers need the tree for writing. A write that removed
+        // nothing would still wait for any thread holding the tree, and wake
+        // every reader that watches its generation.
+        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone())
+            && {
+                let tree = tree.read();
+                !tree.continuation_tabs.is_empty() || !tree.continuation_rooms.is_empty()
+            }
+        {
             let mut tree = tree.write();
             tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
             tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
@@ -5656,26 +5718,63 @@ impl ShellNetwork {
             &crate::shell::device_fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            update(&mut snapshot.unlock, stamp);
+            Ok(())
+        })
+    }
+
+    /// Edit this device's own fabric snapshot and publish it under the next
+    /// stamp. The read, the edit and the write happen under one hold of the
+    /// fabric, so an edit never builds on a snapshot another thread (the
+    /// device fabric's pump) has replaced meanwhile, and two edits never
+    /// claim the same stamp. `edit` must not take the fabric itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this device has no fabric identity or presence
+    /// yet, `edit` refuses, or the edited snapshot is invalid.
+    fn modify_local_device_fabric(
+        &self,
+        edit: impl FnOnce(
+            &mut crate::shell::device_fabric::DeviceFabricSnapshot,
+            &crate::shell::device_fabric::FabricStamp,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
         let local = self
             .personal_continuity_device
             .clone()
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
+        let changed = {
+            let mut fabric = self.device_fabric.lock().map_err(|_| {
+                crate::shell::device_fabric::FabricError::InvalidCheckpoint.to_string()
+            })?;
+            let mut snapshot = fabric
+                .snapshots()
+                .get(&local)
+                .cloned()
+                .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
+            let stamp = crate::shell::device_fabric::FabricStamp {
+                counter: fabric.max_counter().saturating_add(1).max(1),
+                device: local,
+            };
+            edit(&mut snapshot, &stamp)?;
+            snapshot.presence.stamp = stamp;
+            snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
+            let changed = fabric.upsert(snapshot).map_err(|error| error.to_string())?;
+            if changed
+                && let Some(path) = self.device_fabric_path.as_deref()
+                && let Err(error) = self.persist_device_fabric(path, &fabric)
+            {
+                tracing::warn!(%error, "device fabric persistence failed");
+            }
+            drop(fabric);
+            changed
         };
-        update(&mut snapshot.unlock, &stamp);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        if changed {
+            self.publish_device_fabric_snapshot();
+        }
+        Ok(())
     }
 
     /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
@@ -5709,39 +5808,23 @@ impl ShellNetwork {
                 }
             }));
         }
-        let local = self
-            .personal_continuity_device
-            .clone()
-            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
         let recipients = self.certified_secret_recipients();
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
-        };
-        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
-            ssid,
-            security,
-            password,
-            &snapshot.owner,
-            recipients.iter().cloned(),
-            stamp.clone(),
-        )
-        .map_err(|error| error.to_string())?;
-        snapshot
-            .wifi
-            .retain(|saved| saved.network_id != credential.network_id);
-        snapshot.wifi.push(credential);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+                ssid,
+                security,
+                password,
+                &snapshot.owner,
+                recipients.iter().cloned(),
+                stamp.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            snapshot
+                .wifi
+                .retain(|saved| saved.network_id != credential.network_id);
+            snapshot.wifi.push(credential);
+            Ok(())
+        })
     }
 
     /// Decrypt a retained credential only for this certified device.
@@ -6307,7 +6390,10 @@ impl ShellNetwork {
     /// rename within one network round trip instead of at their next pull.
     /// At most one message per room per tick. Cheap when idle: rooms are
     /// projected only when the desktop document, the peer-merge epoch or the
-    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed.
+    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed,
+    /// and never while the tree is unwritten since the last projection.
+    /// Runs on the compositor's loop, so it never waits for the tree: held
+    /// by another thread, the push retries at [`Self::next_deadline`].
     /// A batch that landed from a peer is re-announced once, which reaches
     /// a member that missed the original; the echo changes nothing for
     /// those that already hold it, so it does not repeat.
@@ -6319,18 +6405,37 @@ impl ShellNetwork {
             return;
         };
         let now = std::time::Instant::now();
+        let generation = handle.generation();
+        let due = push
+            .last_full
+            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
+        if push.projected_generation == Some(generation)
+            || (!due && push.checked_generation == Some(generation))
+        {
+            push.retry_at = None;
+            return;
+        }
+        // Projecting writes the room documents. Another thread holding the
+        // tree (a worker, the portal, a protocol callback) would hold the
+        // loop for as long as it keeps it; the push runs again shortly
+        // instead ([`Self::next_deadline`]).
+        let Some(mut tree) = handle.try_write() else {
+            push.retry_at = Some(now.checked_add(ROOM_PUSH_RETRY).unwrap_or(now));
+            return;
+        };
+        push.retry_at = None;
+        // This guard's release is the next bump; a later one is a write
+        // made after this projection.
+        let projected = handle.generation().wrapping_add(1);
         let mut outgoing = Vec::new();
-        let mut tree = handle.write();
         let trigger = (
             tree.current_heads(),
             tree.desktop.room_epoch,
             tree.desktop.external_revision,
         );
-        let due = push
-            .last_full
-            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
         let moved = push.trigger.as_ref() != Some(&trigger);
         if !moved && !due {
+            push.checked_generation = Some(projected);
             return;
         }
         if moved {
@@ -6340,6 +6445,7 @@ impl ShellNetwork {
         }
         push.trigger = Some(trigger);
         push.last_full = Some(now);
+        push.projected_generation = Some(projected);
         let rooms = tree.rooms();
         push.announced.retain(|room, _| rooms.contains(room));
         for room in rooms {
@@ -6403,6 +6509,13 @@ impl ShellNetwork {
         self.tick_with(Admission::OffLoop);
     }
 
+    /// When [`Self::frame_tick`] must run again though nothing wakes the
+    /// loop: a room push that found the tree held by another thread retries
+    /// then.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.room_push.lock().ok().and_then(|push| push.retry_at)
+    }
+
     fn tick_with(&self, admission: Admission) {
         self.remote_action_replies.expire(std::time::Instant::now());
         self.note_session_reachability(false);
@@ -6413,7 +6526,10 @@ impl ShellNetwork {
         self.reconcile_personal_workspaces();
         self.refresh_home_peer_hosts_periodically();
         self.apply_published_home_peers();
-        self.finish_shared_rooms();
+        match admission {
+            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::OffLoop => self.finish_shared_rooms_off_loop(),
+        }
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
@@ -8189,6 +8305,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
+        peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),
@@ -8261,6 +8378,47 @@ pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
             .build()
             .expect("fixture network runtime"),
     );
+}
+
+/// How an own-device invocation ended, from the other device's last word
+/// on it: its output, or why it failed there or never ran.
+fn own_device_outcome(
+    settled: Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionHostError>,
+) -> tilo_action_broker::services::OwnDeviceOutcome {
+    use tilo_actions::InvocationUpdate;
+    let failure = |code: &str, message: String, retryable: bool| {
+        Box::new(tilo_actions::ActionFailure {
+            code: code.to_owned(),
+            message,
+            details: None,
+            retryable,
+        })
+    };
+    match settled {
+        Ok(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+        Ok(InvocationUpdate::Failed { error, .. }) => Err(Box::new(error)),
+        Ok(InvocationUpdate::Cancelled { message, .. }) => Err(failure(
+            "cancelled",
+            message.unwrap_or_else(|| "the other device cancelled the action".into()),
+            false,
+        )),
+        Ok(
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. },
+        ) => Err(failure(
+            "unsettled",
+            "the other device did not finish the action".into(),
+            true,
+        )),
+        Err(error) => {
+            let retryable = matches!(
+                error,
+                tilo_actions::remote::ActionHostError::Unavailable { .. }
+            );
+            Err(failure(error.code(), error.to_string(), retryable))
+        }
+    }
 }
 
 impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
@@ -8940,6 +9098,161 @@ mod tests {
             std::iter::from_fn(|| commands.try_recv().ok())
                 .all(|command| !matches!(command, NetCmd::PublishRemoteAction { .. }))
         );
+    }
+
+    /// An application's action reaches another device only when that device
+    /// is the person's own: enrolled, authenticated to this shell under the
+    /// person's root, unrevoked, and asked for by the person this device
+    /// belongs to. Every refusal sends nothing; the one that passes is an
+    /// ordinary invocation of the app's action in the shared room, under
+    /// the original invocation's id.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn own_device_invocations_reach_only_the_persons_own_authenticated_devices() {
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+            sign_device_cert, sign_revocation_entry,
+        };
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let user = root.verifying_key().to_bytes();
+        let device = iroh::SecretKey::from_bytes(&[0x63; 32]).public();
+        let certified = |root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.as_bytes(),
+                device_label: "Desktop".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).expect("certified device");
+            cert
+        };
+
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device.as_bytes())]).unwrap(),
+        )
+        .unwrap();
+        let room = "11111111-1111-4111-8111-111111111111";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let net = Arc::new(net);
+        assert!(net.join_default_workspace());
+        let topic = room_topic_id(RoomId::parse(room).expect("room"));
+        net.live_room_peers
+            .lock()
+            .expect("live peers")
+            .insert((topic, device));
+        while commands.try_recv().is_ok() {}
+
+        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(user);
+        let checked = tilo_actions::remote::own_device::Invocation {
+            device: hex::encode(device.as_bytes()),
+            app: "so.tilo.settings".into(),
+            resource: "settings.root".into(),
+            action: "storage-summary".into(),
+            arguments: None,
+        }
+        .check()
+        .expect("valid");
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::own_device::target(),
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let sent = |commands: &mut mpsc::Receiver<NetCmd>| {
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .filter_map(|command| match command {
+                    NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "an enrolled device that has not authenticated as the person's is refused"
+        );
+        let origin = crate::shell::state::PeerOrigin::peer(&device);
+        net.peer_identities
+            .insert(origin.clone(), certified(&stranger_root), 2)
+            .expect("stranger's device");
+        assert!(
+            net.invoke_own_device(&person, &checked, &request).is_err(),
+            "the same endpoint certified by another person is not the person's device"
+        );
+        net.peer_identities
+            .insert(origin, certified(&root), 2)
+            .expect("own device");
+        assert!(
+            net.invoke_own_device(&hex::encode([0x70; 32]), &checked, &request)
+                .is_err(),
+            "only the person this device belongs to reaches their devices"
+        );
+        let mut unenrolled = checked.clone();
+        unenrolled.device = *iroh::SecretKey::from_bytes(&[0x64; 32]).public().as_bytes();
+        assert!(
+            net.invoke_own_device(&person, &unenrolled, &request)
+                .is_err()
+        );
+        assert!(sent(&mut commands).is_empty(), "no refusal sent anything");
+
+        let _answer = net
+            .invoke_own_device(&person, &checked, &request)
+            .expect("the person's own authenticated device");
+        let delivered = sent(&mut commands);
+        let [(ws, target, NeighbourMsg::RemoteAction { frame })] = delivered.as_slice() else {
+            panic!("exactly one remote action frame, not {}", delivered.len());
+        };
+        assert_eq!((*ws, *target), (topic, device));
+        let decoded = tilo_actions::remote::RemoteActionFrame::decode(frame).expect("frame");
+        let tilo_actions::remote::RemoteActionMessage::Invoke(forwarded) = decoded.message else {
+            panic!("expected an invocation");
+        };
+        assert_eq!(forwarded.invocation, request.invocation);
+        assert_eq!(
+            tilo_actions::remote::application_provider(&forwarded.target.provider),
+            Some((room, "so.tilo.settings"))
+        );
+        assert_eq!(forwarded.target.address.action, "storage-summary");
+
+        let mut revoked = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: *device.as_bytes(),
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        let mut list = RevocationList::new();
+        list.insert(revoked).expect("listed");
+        net.peer_identities.set_revocations(user, &list);
+        let mut retry = request;
+        retry.invocation = tilo_actions::InvocationId::new();
+        assert!(
+            net.invoke_own_device(&person, &checked, &retry).is_err(),
+            "a revoked device is refused"
+        );
+        assert!(sent(&mut commands).is_empty());
     }
 
     #[test]
@@ -9678,7 +9991,7 @@ mod tests {
         );
     }
 
-    fn personal_continuity_network_for_test(
+    pub(super) fn personal_continuity_network_for_test(
         user_public_key: [u8; 32],
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         let (mut net, commands) =
@@ -11989,7 +12302,7 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn legacy_inbox_and_tick_bound_and_order_actor_work() {
-        fn legacy_inbox_coalesces_frames_but_keeps_control_order() {
+        fn legacy_inbox_keeps_every_frame_and_control_in_order() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _commands) = shell_network_for_test(tree, 99);
             let start = NeighbourMsg::SurfaceStreamStart {
@@ -12015,11 +12328,12 @@ mod tests {
                         source_peer: 5,
                         encoded_h264: vec![u8::try_from(ts).unwrap_or_default()],
                         ts,
+                        seq: ts,
                     },
                 );
             }
-            // Separate QUIC uni streams may complete out of order, and the host
-            // fallback may deliver an older duplicate after the direct path.
+            // The host fallback may deliver an older duplicate after the
+            // direct path; the view drops it by its sequence number.
             net.queue_legacy_message(
                 42,
                 NeighbourMsg::SurfaceFrame {
@@ -12027,6 +12341,7 @@ mod tests {
                     source_peer: 5,
                     encoded_h264: vec![19],
                     ts: 19,
+                    seq: 19,
                 },
             );
             net.queue_legacy_message(
@@ -12039,18 +12354,25 @@ mod tests {
             );
 
             let drained = net.take_inbound_legacy();
-            assert_eq!(drained.len(), 3);
             assert_eq!(drained[0].workspace_topic, 42);
             assert!(matches!(
                 drained[0].message,
                 NeighbourMsg::SurfaceStreamStart { .. }
             ));
+            let frames: Vec<u64> = drained[1..drained.len() - 1]
+                .iter()
+                .map(|event| match event.message {
+                    NeighbourMsg::SurfaceFrame { seq, .. } => seq,
+                    _ => panic!("frames between the start and the end"),
+                })
+                .collect();
+            assert_eq!(
+                frames,
+                (2..=20).chain([19]).collect::<Vec<_>>(),
+                "no encoded unit is dropped for a newer one"
+            );
             assert!(matches!(
-                drained[1].message,
-                NeighbourMsg::SurfaceFrame { ts: 20, .. }
-            ));
-            assert!(matches!(
-                drained[2].message,
+                drained[drained.len() - 1].message,
                 NeighbourMsg::SurfaceStreamEnd { .. }
             ));
         }
@@ -12065,6 +12387,7 @@ mod tests {
                     source_peer: 99,
                     encoded_h264: vec![1],
                     ts: 1,
+                    seq: 0,
                 },
             );
             assert!(net.take_inbound_legacy().is_empty());
@@ -12103,7 +12426,7 @@ mod tests {
             net.tick();
         }
 
-        legacy_inbox_coalesces_frames_but_keeps_control_order();
+        legacy_inbox_keeps_every_frame_and_control_in_order();
         legacy_inbox_drops_local_gossip_echo();
         tick_bounds_actor_event_work_per_frame();
         tick_with_no_events_is_noop();

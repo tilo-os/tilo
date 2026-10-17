@@ -8,6 +8,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -16,6 +18,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
+use tilo_lock::MutexRecover as _;
+use tokio::sync::oneshot;
 
 use crate::RelayClient;
 use crate::compute::MAX_COMPUTE_INPUTS;
@@ -70,23 +74,75 @@ pub trait ComputePlacement: Send + Sync {
 
 /// Placement asked of the workspace's relay over its relay-v1 session.
 ///
-/// The client is this placement's own: answers are read off it, so nothing
-/// else should receive on it. It must be subscribed to every workspace it is
-/// asked about.
+/// The session must stay subscribed to every workspace it is asked about
+/// (the relay refuses a remote action from a device that is not), so the
+/// room's own traffic — deltas, presence, everything its members send —
+/// arrives on it too. A pump started with the placement drains it for as
+/// long as the session lives: it hands the one question in flight its
+/// answer and drops everything else at once, so a busy room never backs the
+/// session up, never pins its queue, and never buries an answer behind
+/// traffic placement does not read. Nothing else may receive on the client.
 pub struct RelayPlacement {
-    client: tokio::sync::Mutex<RelayClient>,
+    client: RelayClient,
     relay_device: DeviceKey,
+    /// One question at a time: answers are matched to the one in flight.
+    asking: tokio::sync::Mutex<()>,
+    answers: Arc<Mutex<Answers>>,
+    dropped: Arc<AtomicU64>,
+    _pump: AbortOnDrop,
+}
+
+/// The question the pump answers, if any, and whether it still runs.
+#[derive(Default)]
+struct Answers {
+    waiting: Option<Waiting>,
+    closed: bool,
+}
+
+/// A placement question awaiting its receipt.
+struct Waiting {
+    invocation: InvocationId,
+    answer: oneshot::Sender<Result<Placed, String>>,
+}
+
+/// Aborts a task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl RelayPlacement {
     /// Placement asked of the relay whose device key is `relay_device`,
-    /// over `client`.
+    /// over `client`, whose inbound traffic a pump on the current Tokio
+    /// runtime drains from now on.
     #[must_use]
     pub fn new(client: RelayClient, relay_device: DeviceKey) -> Self {
-        Self {
-            client: tokio::sync::Mutex::new(client),
+        let answers = Arc::new(Mutex::new(Answers::default()));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let pump = tokio::spawn(pump(
+            Arc::clone(&client.inbound),
             relay_device,
+            Arc::clone(&answers),
+            Arc::clone(&dropped),
+        ));
+        Self {
+            client,
+            relay_device,
+            asking: tokio::sync::Mutex::new(()),
+            answers,
+            dropped,
+            _pump: AbortOnDrop(pump),
         }
+    }
+
+    /// How many inbound envelopes the session drained without a question
+    /// waiting for them: the room's own traffic, and stale answers.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     async fn ask(&self, query: PlacementQuery<'_>) -> Result<Placed, String> {
@@ -129,69 +185,106 @@ impl RelayPlacement {
         }))
         .encode()
         .map_err(|error| error.to_string())?;
-        // One question at a time: answers are read off the shared session.
-        let client = self.client.lock().await;
-        let answer = exchange(&client, self.relay_device, workspace_id, invocation, frame).await;
-        drop(client);
+        let asking = self.asking.lock().await;
+        let (answer, answered) = oneshot::channel();
+        {
+            let mut answers = self.answers.lock_recover();
+            if answers.closed {
+                return Err("the relay session closed".into());
+            }
+            // A question that timed out is replaced: its answer, should it
+            // still come, is dropped as stale.
+            answers.waiting = Some(Waiting { invocation, answer });
+        }
+        self.client
+            .send(Envelope::RemoteAction {
+                workspace_id,
+                version: REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: self.relay_device,
+                // The relay stamps the authenticated sender.
+                from_device_public_key: [0; 32],
+                from_user_public_key: [0; 32],
+                frame,
+            })
+            .map_err(|_| "the relay session is closed".to_string())?;
+        let answer = answered
+            .await
+            .unwrap_or_else(|_| Err("the relay session closed".into()));
+        drop(asking);
         answer
     }
 }
 
-/// Send placement question `frame` (invocation `invocation`) to
-/// `relay_device` over `client` and read its answer.
-async fn exchange(
-    client: &RelayClient,
+/// Drain `inbound` until the session ends: hand the question waiting in
+/// `answers` its answer from `relay_device`, count and drop everything
+/// else. When the session ends the question waiting fails, and so does
+/// every later one.
+async fn pump(
+    inbound: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Envelope>>>,
     relay_device: DeviceKey,
-    workspace_id: u64,
-    invocation: InvocationId,
-    frame: Vec<u8>,
-) -> Result<Placed, String> {
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: relay_device,
-            // The relay stamps the authenticated sender.
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame,
-        })
-        .map_err(|_| "the relay session is closed".to_string())?;
-    loop {
-        let envelope = client
-            .recv()
-            .await
-            .ok_or_else(|| "the relay session closed".to_string())?;
-        match envelope {
-            Envelope::RemoteActionUndeliverable {
-                to_device_public_key,
-                reason,
-                ..
-            } if to_device_public_key == relay_device => {
-                return Err(format!("the relay refused placement: {reason}"));
-            }
-            Envelope::RemoteAction {
-                from_device_public_key,
-                frame,
-                ..
-            } if from_device_public_key == relay_device => {
-                let Ok(decoded) = RemoteActionFrame::decode(&frame) else {
-                    continue;
-                };
-                let status = match decoded.message {
-                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
-                        receipt.status
-                    }
-                    _ => continue,
-                };
-                return match status {
-                    ReceiptStatus::Completed { output } => placed(output.value.as_ref()),
-                    other => Err(format!("placement did not complete: {other:?}")),
-                };
-            }
-            _ => {}
+    answers: Arc<Mutex<Answers>>,
+    dropped: Arc<AtomicU64>,
+) {
+    let mut inbound = inbound.lock().await;
+    while let Some(envelope) = inbound.recv().await {
+        if !deliver(envelope, relay_device, &answers) {
+            dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+    drop(inbound);
+    let mut answers = answers.lock_recover();
+    answers.closed = true;
+    // Dropping its sender tells the question waiting the session closed.
+    answers.waiting = None;
+}
+
+/// Hand `envelope` to the question waiting in `answers` when it is that
+/// question's answer from `relay_device`; whether it was.
+fn deliver(envelope: Envelope, relay_device: DeviceKey, answers: &Mutex<Answers>) -> bool {
+    let (invocation, answer) = match envelope {
+        Envelope::RemoteActionUndeliverable {
+            to_device_public_key,
+            reason,
+            ..
+        } if to_device_public_key == relay_device => {
+            (None, Err(format!("the relay refused placement: {reason}")))
+        }
+        Envelope::RemoteAction {
+            from_device_public_key,
+            frame,
+            ..
+        } if from_device_public_key == relay_device => {
+            let Ok(RemoteActionFrame {
+                message: RemoteActionMessage::Receipt(receipt),
+                ..
+            }) = RemoteActionFrame::decode(&frame)
+            else {
+                return false;
+            };
+            let answer = match receipt.status {
+                ReceiptStatus::Completed { output } => placed(output.value.as_ref()),
+                other => Err(format!("placement did not complete: {other:?}")),
+            };
+            (Some(receipt.invocation), answer)
+        }
+        _ => return false,
+    };
+    let mut answers = answers.lock_recover();
+    // A receipt answers only its own question; an undeliverable names none,
+    // so it fails the question in flight.
+    if answers
+        .waiting
+        .as_ref()
+        .is_none_or(|waiting| invocation.is_some_and(|invocation| waiting.invocation != invocation))
+    {
+        return false;
+    }
+    let Some(waiting) = answers.waiting.take() else {
+        return false;
+    };
+    drop(answers);
+    let _ = waiting.answer.send(answer);
+    true
 }
 
 /// What a `compute.place` output says: the worker it names (hex, or `null`

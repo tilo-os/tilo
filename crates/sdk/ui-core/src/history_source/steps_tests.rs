@@ -474,3 +474,26 @@ fn classifying_a_change_costs_the_same_however_large_the_document() {
         "classifying one recolour took {large:?} beside 20,000 marks and {small:?} beside 50"
     );
 }
+
+/// An agent working a native workspace task stamps its steps with the task
+/// group, so undo naming that task finds them, while the person's own scope
+/// still counts them as theirs only when no agent run holds them.
+#[test]
+fn a_named_run_owns_the_steps_of_an_agent_run_or_a_workspace_task() {
+    let version = |group: Option<(&str, &str)>| Version {
+        hash: ChangeHash([0; 32]),
+        actor: ActorId::from(ALICE).to_hex_string(),
+        time_ms: 0,
+        context: group.map(|(id, kind)| ActionContext::default().with_group(id, "Tidy", kind)),
+        message: None,
+    };
+    let task = version(Some(("task:7", TASK_RUN)));
+    let agent = version(Some(("run:7", AGENT_RUN)));
+    let issue = version(Some(("issue:7", "issue")));
+    assert!(Scope::Run("task:7".into()).owns(&task));
+    assert!(Scope::Run("run:7".into()).owns(&agent));
+    assert!(!Scope::Run("task:8".into()).owns(&task));
+    assert!(!Scope::Run("issue:7".into()).owns(&issue));
+    assert!(!scope(ALICE).owns(&agent));
+    assert!(scope(ALICE).owns(&issue));
+}

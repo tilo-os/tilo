@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use tilo_lock::MutexRecover as _;
 
 pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
@@ -187,29 +188,49 @@ impl SettingsDocument {
     /// ([`flush_settings_writes`]).
     #[must_use]
     pub fn load(&self) -> Map<String, Value> {
-        let mut doc = match self {
+        self.read_with_pending(None, || match self {
             Self::Session => settings_store::load(),
             Self::File(path) => settings_store::load_at(path),
-        };
-        for change in lock_queue().pending.iter().filter(|c| c.document == *self) {
-            settings_store::merge_section(&mut doc, &change.name, change.values.clone());
-        }
-        doc
+        })
     }
 
     /// One section's keys, with the changes still on their way to it.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
-        let mut section = match self {
+        self.read_with_pending(Some(name), || match self {
             Self::Session => settings_store::load_section(name),
             Self::File(path) => settings_store::load_section_at(path, name),
-        };
-        for change in &lock_queue().pending {
-            if change.document == *self && change.name == name {
-                section.extend(change.values.clone());
+        })
+    }
+
+    fn read_with_pending(
+        &self,
+        name: Option<&str>,
+        mut read: impl FnMut() -> Map<String, Value>,
+    ) -> Map<String, Value> {
+        loop {
+            let retired = lock_queue().retired;
+            let mut values = read();
+            let queue = lock_queue();
+            // A writer may have replaced the file and removed its queued
+            // changes after we read the old file. Retry rather than lose
+            // those changes; never hold the queue lock during file I/O.
+            if queue.retired != retired {
+                continue;
             }
+            for change in queue.pending.iter().filter(|c| c.document == *self) {
+                match name {
+                    Some(name) if change.name == name => values.extend(change.values.clone()),
+                    None => settings_store::merge_section(
+                        &mut values,
+                        &change.name,
+                        change.values.clone(),
+                    ),
+                    Some(_) => {}
+                }
+            }
+            return values;
         }
-        section
     }
 
     /// Whether this process writes the document's file itself: a file, or
@@ -252,8 +273,10 @@ impl SettingsDocument {
             Ok(())
         } else {
             if file {
-                // After what a UI thread changed before, in the order made.
-                store_pending();
+                // After what a UI thread changed in this document before, in
+                // the order made. Other documents' changes keep their own
+                // order and need not wait for this write.
+                store_pending(Some(self));
             }
             match (self, origin) {
                 (Self::Session, Some(origin)) => {
@@ -295,14 +318,17 @@ struct Change {
 /// another writer held the lock, and the window waited for it on every
 /// toggle and every step of a slider. A UI thread's change is queued
 /// instead and shows at once to every reader in the process (reads apply
-/// the queue over the file). A background job stores the queue, oldest
+/// the queue over the file, retrying if a batch was retired during the
+/// read). A background job stores the queue, oldest
 /// first: every queued change to a file under one lock and one atomic
 /// replace, each merged into the file as it is then. The last change to a
 /// key wins and what other processes stored meanwhile is kept. A writer on
 /// any other thread stores the queue first, so changes land in the order
-/// they were made.
+/// they were made in that document.
 struct Queue {
     pending: Vec<Change>,
+    /// Batches removed after a store, so readers can detect a stale file.
+    retired: u64,
     /// A background job is to store the queue.
     scheduled: bool,
     /// A thread is writing the oldest changes.
@@ -314,6 +340,7 @@ struct Queue {
 
 static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
     pending: Vec::new(),
+    retired: 0,
     scheduled: false,
     writing: false,
     wake: None,
@@ -321,9 +348,7 @@ static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
 static STORED: std::sync::Condvar = std::sync::Condvar::new();
 
 fn lock_queue() -> std::sync::MutexGuard<'static, Queue> {
-    QUEUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    QUEUE.lock_recover()
 }
 
 fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'static, Queue> {
@@ -352,7 +377,7 @@ fn defer(change: Change) {
 /// The background job: store the queue until it is empty.
 fn store_queue() {
     loop {
-        store_pending();
+        store_pending(None);
         let mut queue = lock_queue();
         // A change queued after the last batch found this job scheduled.
         if queue.pending.is_empty() {
@@ -363,20 +388,28 @@ fn store_queue() {
     }
 }
 
-/// Store every queued change on this thread, oldest first, after the batch
-/// another thread may be writing.
-fn store_pending() {
+/// Store the queued changes to `only` (every queued change when `None`) on
+/// this thread, oldest first, after the batch another thread may be
+/// writing.
+fn store_pending(only: Option<&SettingsDocument>) {
+    let wanted = |change: &Change| only.is_none_or(|document| change.document == *document);
     let mut queue = lock_queue();
     loop {
         if queue.writing {
             queue = wait(queue);
             continue;
         }
-        if queue.pending.is_empty() {
+        // While `writing` is set no other thread takes changes off the
+        // queue, and new ones are only appended, so these positions hold
+        // until the batch is stored.
+        let taken: Vec<usize> = (0..queue.pending.len())
+            .filter(|&at| wanted(&queue.pending[at]))
+            .collect();
+        if taken.is_empty() {
             return;
         }
         queue.writing = true;
-        let batch = queue.pending.clone();
+        let batch: Vec<Change> = taken.iter().map(|&at| queue.pending[at].clone()).collect();
         drop(queue);
         debug_assert!(
             !crate::rt::is_ui_thread(),
@@ -405,7 +438,10 @@ fn store_pending() {
             }
         }
         queue = lock_queue();
-        queue.pending.drain(..batch.len());
+        for &at in taken.iter().rev() {
+            queue.pending.remove(at);
+        }
+        queue.retired = queue.retired.wrapping_add(1);
         queue.writing = false;
         WRITES.fetch_add(1, Ordering::AcqRel);
         if failed && let Some(wake) = queue.wake.take() {
@@ -420,7 +456,7 @@ fn store_pending() {
 /// runner does before the process ends.
 pub fn flush_settings_writes() {
     if !crate::rt::is_ui_thread() {
-        store_pending();
+        store_pending(None);
         return;
     }
     let mut queue = lock_queue();
@@ -846,6 +882,79 @@ pub fn secrets(app_id: &str) -> crate::secrets::SecretStore {
 mod tests {
     use super::*;
 
+    /// Queue and retire an update precisely after the reader has loaded
+    /// the old file, before it can overlay the queue. No timing or disk
+    /// speed assumption is needed to reproduce the background-writer race.
+    fn read_while_the_background_retires_a_change(name: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(
+            &file,
+            r#"{"playback":{"autoplay":true},"other":{"kept":1}}"#,
+        )
+        .unwrap();
+        let document = SettingsDocument::File(file.clone());
+        let work = crate::background::Pumped::new();
+        let _work = work.background().enter();
+        crate::rt::mark_ui_thread();
+        let mut reads = 0;
+        let values = document.read_with_pending(name, || {
+            let values = match name {
+                Some(name) => settings_store::load_section_at(&file, name),
+                None => settings_store::load_at(&file),
+            };
+            reads += 1;
+            if reads == 1 {
+                document
+                    .update_section(
+                        "playback",
+                        [("autoplay".into(), Value::Bool(false))]
+                            .into_iter()
+                            .collect(),
+                    )
+                    .unwrap();
+                assert_eq!(document.section("playback")["autoplay"], false);
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        // Drain even if another parallel test owns the
+                        // scheduled job for the process-wide queue.
+                        flush_settings_writes();
+                        work.run_pending();
+                    });
+                });
+                assert_eq!(
+                    settings_store::load_section_at(&file, "playback")["autoplay"],
+                    false
+                );
+                assert!(lock_queue().pending.iter().all(|c| c.document != document));
+            }
+            values
+        });
+        let playback = if name.is_some() {
+            Value::Object(values)
+        } else {
+            assert_eq!(values["other"]["kept"], 1);
+            values["playback"].clone()
+        };
+        assert_eq!(
+            playback["autoplay"], false,
+            "a persisted update must not disappear from a read"
+        );
+        assert!(reads > 1, "the stale file read must be retried");
+        assert_eq!(document.section("playback")["autoplay"], false);
+        assert_eq!(document.load()["playback"]["autoplay"], false);
+    }
+
+    #[test]
+    fn a_document_read_keeps_a_change_retired_during_the_file_read() {
+        read_while_the_background_retires_a_change(None);
+    }
+
+    #[test]
+    fn a_section_read_keeps_a_change_retired_during_the_file_read() {
+        read_while_the_background_retires_a_change(Some("playback"));
+    }
+
     #[test]
     fn a_section_update_keeps_other_sections_and_keys() {
         let dir = tempfile::tempdir().unwrap();
@@ -1038,6 +1147,60 @@ mod tests {
         assert_eq!(
             AppFiles::for_app("so.tilo.example").paths().id(),
             "so.tilo.example"
+        );
+    }
+
+    /// A write to one settings file from off a UI thread stores the changes
+    /// a UI thread queued for that file first, and leaves another file's
+    /// queued changes to the background that stores them.
+    #[test]
+    fn an_off_thread_write_stores_only_its_own_files_queued_changes() {
+        fn values(key: &str, value: i64) -> Map<String, Value> {
+            [(key.to_owned(), Value::from(value))].into_iter().collect()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mine_path, other_path) = (dir.path().join("mine.json"), dir.path().join("other.json"));
+        let mine = SettingsDocument::File(mine_path.clone());
+        let other = SettingsDocument::File(other_path.clone());
+        let work = crate::rt::background::Pumped::new();
+        let background = work.background();
+        let (queued_mine, queued_other) = (mine.clone(), other.clone());
+        std::thread::spawn(move || {
+            crate::rt::mark_ui_thread();
+            let _work = background.enter();
+            queued_mine
+                .update_section("s", values("queued", 1))
+                .unwrap();
+            queued_other
+                .update_section("s", values("queued", 2))
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+
+        other.update_section("s", values("direct", 3)).unwrap();
+        let stored = settings_store::load_section_at(&other_path, "s");
+        assert_eq!(
+            stored.get("queued"),
+            Some(&Value::from(2)),
+            "its queued change first"
+        );
+        assert_eq!(stored.get("direct"), Some(&Value::from(3)));
+        assert!(
+            settings_at(&mine_path).is_empty(),
+            "another file's queued change waits for its own background"
+        );
+        assert_eq!(
+            mine.section("s").get("queued"),
+            Some(&Value::from(1)),
+            "and reads as made"
+        );
+
+        work.run_pending();
+        assert_eq!(
+            settings_store::load_section_at(&mine_path, "s").get("queued"),
+            Some(&Value::from(1)),
+            "the background stores it"
         );
     }
 }

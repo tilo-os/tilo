@@ -79,8 +79,25 @@ def main() -> int:
         print("==> " + " ".join(argv), flush=True)
         result = subprocess.run(argv, check=False)
         if JUNIT.exists():
-            reports.append(JUNIT.with_name(f"junit-scoped-{index}.xml"))
-            shutil.move(JUNIT, reports[-1])
+            report = JUNIT.with_name(f"junit-scoped-{index}.xml")
+            shutil.move(JUNIT, report)
+            try:
+                root = ET.parse(report).getroot()
+                if root.tag != "testsuites" or root.find("testsuite/testcase") is None:
+                    raise ValueError("expected nextest test suites containing test cases")
+                for key in ("tests", "failures", "errors"):
+                    if int(root.get(key, "0")) < 0:
+                        raise ValueError(f"negative {key} count")
+            except (OSError, ET.ParseError, ValueError, LookupError) as error:
+                print(f"::error::Invalid scoped JUnit report for "
+                      f"{entry['package']}::{entry['test']} at {report}: {error}", file=sys.stderr)
+                status = status or result.returncode or 1
+            else:
+                reports.append(report)
+        elif result.returncode == 0:
+            print(f"::error::Scoped tests for {entry['package']}::{entry['test']} "
+                  f"succeeded without the required JUnit report at {JUNIT}", file=sys.stderr)
+            status = status or 1
         status = status or result.returncode
     merge(reports, JUNIT)
     return status

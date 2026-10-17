@@ -11,6 +11,7 @@ import textwrap
 import unittest
 import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("ci_suites", ROOT / "tools/ci/suites.py")
@@ -65,6 +66,19 @@ class ParseTests(unittest.TestCase):
 
 
 class SelectTests(unittest.TestCase):
+    def test_error_boundary_regressions_are_selected_for_their_inputs(self):
+        manifest = suites.load(ROOT)
+        for changed, expected in (
+            ("scripts/headless-examples/peers-cross-both-ways.py",
+             "scripts/tests/test_headless_error_handling.py"),
+            ("scripts/vm-acceptance/acceptance/core.py",
+             "scripts/vm-acceptance/tests/test_error_paths.py"),
+            ("scripts/perf/resource_bench.py",
+             "scripts/perf/resource_bench_test.py"),
+        ):
+            with self.subTest(changed=changed):
+                self.assertIn(expected, suites.select(manifest, [changed]))
+
     def setUp(self):
         self.manifest = suites.parse(MANIFEST)
 
@@ -221,6 +235,14 @@ readers = ["crates/native/tests/oracle.rs"]
                 self.assertTrue(self.audit(changed, manifest))
         files["crates/native/Cargo.toml"] += 'autotests = false\n'
         self.assertTrue(self.audit(files, manifest))
+    def test_missing_covering_suite_cannot_prove_coverage(self):
+        # Workflow text can still mention a deleted script. That mention alone
+        # is not evidence that the helper's tests are executed.
+        manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "os/tests/deleted.py"')
+        with patch.object(suites, "always_run", return_value={"os/tests/deleted.py"}):
+            problems = self.audit({}, manifest)
+        self.assertTrue(any("covering suite os/tests/deleted.py is not a tracked file on disk"
+                            in problem for problem in problems), problems)
 
     def test_production_tree_is_fully_classified(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/suites.py"), "check"],
@@ -256,6 +278,21 @@ class CargoReaderTests(unittest.TestCase):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text(text)
             return suites.audit_cargo(root, sorted(tree), suites.parse(manifest))
+
+    def test_unreadable_package_manifest_cannot_hide_an_undeclared_reader(self):
+        reader = 'const DATA: &str = include_str!("../../../os/share/data.json");\n'
+        # calc has no declared reader: losing its package mapping used to make
+        # cross_package_reads skip the source entirely and the audit pass.
+        with self.assertRaisesRegex(ValueError, "cannot audit Cargo package apps/calc/Cargo.toml"):
+            self.audit({"apps/calc/Cargo.toml": "[package", "apps/calc/src/main.rs": reader})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_bytes(b"[package]\nname = '\xff'\n")
+            with self.assertRaisesRegex(ValueError, "cannot audit Cargo package Cargo.toml"):
+                suites.audit_cargo(root, ["Cargo.toml"], suites.parse(""))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "cannot audit Cargo package Cargo.toml"):
+                suites.audit_cargo(Path(directory), ["Cargo.toml"], suites.parse(""))
 
     def test_reader_manifest_parses_strictly_and_selects_reading_package(self):
         with self.subTest(phase='parse rejects malformed entries'):
@@ -311,6 +348,23 @@ class CargoReaderTests(unittest.TestCase):
             self.assertEqual(suites.select_packages(manifest, ["apps/calc/src/main.rs"]), ["ui"])
             self.assertEqual(suites.select_packages(manifest, ["os/share/deep/x.txt"]), ["ui"])
             self.assertEqual(suites.select_packages(manifest, ["apps/calc/Cargo.toml"]), [])
+
+    def test_office_fixture_changes_select_import_consumers(self):
+        manifest = suites.load()
+        prefix = "crates/system/cloud-source-gdrive/tests/fixtures/"
+        for fixture in ("docx.rs", "xlsx.rs", "pptx.rs"):
+            with self.subTest(fixture=fixture):
+                self.assertEqual(
+                    suites.select_packages(manifest, [prefix + fixture]),
+                    ["settings", "tilo-app-cli", "tilo-fs"],
+                )
+        self.assertEqual(
+            suites.select_packages(manifest, [prefix + "empty.svg"]),
+            ["tilo-app-cli", "tilo-fs"])
+        # The CLI's existing package audit selects the provider directory;
+        # import consumers should select only the fixtures they actually read.
+        self.assertEqual(
+            suites.select_packages(manifest, [prefix + "unrelated.rs"]), ["tilo-app-cli"])
 
     def test_cross_package_readers_must_be_declared_exactly(self):
         with self.subTest(phase='a declared reader passes'):

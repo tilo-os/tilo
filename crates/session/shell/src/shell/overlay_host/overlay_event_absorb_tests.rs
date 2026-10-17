@@ -5,7 +5,7 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::osd::review_offscreen as offscreen;
-use crate::shell::state::WorkspaceTree;
+use crate::shell::state::{FreshId as _, WorkspaceTree};
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
@@ -22,6 +22,8 @@ use winit::keyboard::{Key, NamedKey};
 mod notification_header_tests;
 #[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
 mod picker_scroll_tests;
+#[path = "overlay_event_absorb_tests/quick_settings_controls_tests.rs"]
+mod quick_settings_controls_tests;
 
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
@@ -2024,7 +2026,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             assert!(visible < total, "the fixture must overflow at {vw}x{vh}");
             let panel = h.host.quick_settings_rect();
             assert!(
-                panel.y1 <= vh - 16.0,
+                panel.y1 <= vh - f64::from(Theme::dark().tokens.spacing.s2),
                 "panel must stay within the bottom inset"
             );
 
@@ -2612,7 +2614,7 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
             .borrow_mut()
             .open_workspace_settings(WsTab::General);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x0, 20.0, "lens docks to the left inset");
+        assert_eq!(lens.x0, 24.0, "lens docks to the left inset");
         assert!(lens.x1 < 900.0, "workspace remains visible beside {lens:?}");
 
         let workspace_point = Point::new(1000.0, 300.0);
@@ -2632,9 +2634,9 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
         let h = build_harness_sized(600.0, 700.0);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x0, 20.0);
-        assert_eq!(lens.x1, 580.0);
-        assert_eq!(lens.y1, 680.0);
+        assert_eq!(lens.x0, 24.0);
+        assert_eq!(lens.x1, 576.0);
+        assert_eq!(lens.y1, 676.0);
     }
 
     workspace_lens_leaves_wide_workspace_visible_and_interactive();
@@ -2722,52 +2724,254 @@ fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
     );
 }
 
+/// The window sizes every overlay is checked at: a phone-class portrait
+/// window, the small landscape ones, a laptop, and the user's 2944x1840
+/// panel at scale 2 (1472x920 logical).
+const OVERLAY_SIZES: [(f64, f64); 6] = [
+    (360.0, 640.0),
+    (640.0, 400.0),
+    (800.0, 600.0),
+    (900.0, 520.0),
+    (1280.0, 800.0),
+    (1472.0, 920.0),
+];
+
+/// One shell overlay under test: its name, how to open it on a harness, and
+/// the rect it reports for itself once laid out and painted.
+struct OverlayCase {
+    name: &'static str,
+    open: fn(&mut AbsorbHarness),
+    rect: fn(&AbsorbHarness) -> Rect,
+    /// A modal dims the whole window behind it with the scrim token.
+    modal: bool,
+}
+
+fn overlay_cases() -> [OverlayCase; 5] {
+    [
+        OverlayCase {
+            name: "shortcut-guide",
+            open: |h| {
+                let mut st = h.chrome.borrow_mut();
+                st.overlays.shortcut_help = true;
+                st.bump();
+            },
+            rect: |h| h.host.shortcut_help_panel_rect(),
+            modal: true,
+        },
+        OverlayCase {
+            name: "quick-settings",
+            open: |h| {
+                {
+                    let mut st = h.chrome.borrow_mut();
+                    st.overlays.quick_settings = true;
+                    st.bump();
+                }
+                h.host.force_quick_settings_settled();
+            },
+            rect: |h| h.host.quick_settings_rect(),
+            modal: false,
+        },
+        OverlayCase {
+            name: "workspace-lens",
+            open: |h| {
+                h.chrome
+                    .borrow_mut()
+                    .open_workspace_settings(WsTab::General);
+                h.host.force_ws_settings_settled();
+            },
+            rect: |h| h.host.ws_settings_rect(),
+            modal: true,
+        },
+        OverlayCase {
+            name: "people",
+            open: |h| {
+                let mut st = h.chrome.borrow_mut();
+                st.overlays.collaborators = true;
+                st.bump();
+            },
+            rect: |h| h.host.collaborators_overlay.panel_rect(),
+            modal: false,
+        },
+        OverlayCase {
+            name: "power-menu",
+            open: |h| h.host.force_power_menu_for_visual_test(false),
+            rect: |h| h.host.layers.power_menu.panel_rect(h.host.rect),
+            modal: false,
+        },
+    ]
+}
+
+fn assert_inside(what: &str, rect: Rect, window: Rect) {
+    assert!(
+        rect.area() > 0.0
+            && rect.x0 >= window.x0
+            && rect.x1 <= window.x1
+            && rect.y0 >= window.y0
+            && rect.y1 <= window.y1,
+        "{what} {rect:?} leaves {window:?}"
+    );
+}
+
 /// Every anchored shell overlay stays inside the window at every size from a
 /// phone-class window to the desktop: the regression net for placement that
 /// runs off a short or narrow window.
 #[test]
 fn anchored_overlays_stay_inside_the_window_at_every_size() {
-    for (vw, vh) in [
-        (640.0, 400.0),
-        (800.0, 600.0),
-        (900.0, 520.0),
-        (1280.0, 800.0),
-        (1472.0, 920.0),
-    ] {
+    for (vw, vh) in OVERLAY_SIZES {
         let window = Rect::new(0.0, 0.0, vw, vh);
-        let mut h = build_harness_sized(vw, vh);
-        {
-            let mut chrome = h.chrome.borrow_mut();
-            chrome.overlays.shortcut_help = true;
+        for case in overlay_cases() {
+            let mut h = build_harness_sized(vw, vh);
+            (case.open)(&mut h);
+            settle(&mut h, vw, vh);
+            assert_inside(
+                &format!("{} at {vw}x{vh}", case.name),
+                (case.rect)(&h),
+                window,
+            );
         }
-        settle(&mut h, vw, vh);
-        let guide = h.host.shortcut_help_panel_rect();
-        assert!(
-            guide.x0 >= window.x0
-                && guide.x1 <= window.x1
-                && guide.y0 >= window.y0
-                && guide.y1 <= window.y1,
-            "shortcut guide {guide:?} leaves {window:?}"
+        // The window menu opens at the pointer; from each corner it flips
+        // and shifts back inside the window.
+        for at in [
+            Point::new(vw - 2.0, vh - 2.0),
+            Point::new(2.0, vh - 2.0),
+            Point::new(vw - 2.0, 2.0),
+        ] {
+            let mut menu = super::tab_menu::TabMenuLayer::default();
+            menu.open(
+                super::tab_menu::TabMenuTarget {
+                    strip: crate::shell::state::StripId::new(),
+                    group: 7001,
+                    tab: 0xa1,
+                },
+                3,
+                at,
+                "Files".into(),
+                window,
+            );
+            let rect = menu.rect().expect("the window menu is open");
+            assert_inside(&format!("window menu opened at {at:?}"), rect, window);
+        }
+    }
+}
+
+/// Rendered, every overlay's ink stays inside its own panel and the window:
+/// no label, row or button runs past the panel it belongs to. Drawn at the
+/// user's 2944x1840 panel at scale 2 and at small windows, the way the
+/// compositor scales the shell's scene for a `HiDPI` output. The ink is what
+/// opening the overlay changed, at a contrast no shadow or scrim reaches.
+/// Set `TILO_OVERLAY_SHOT_DIR` to keep the renders.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one size-by-overlay render matrix that reads top to bottom"
+)]
+fn overlays_render_inside_the_window_at_the_users_scale_and_small_sizes() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    /// A channel step only ink makes: text and controls on the panel, not
+    /// the floating shadow or a modal's scrim over the empty desktop.
+    const INK: u8 = 96;
+    let shots = std::env::var_os("TILO_OVERLAY_SHOT_DIR").map(std::path::PathBuf::from);
+    if let Some(dir) = &shots {
+        std::fs::create_dir_all(dir).expect("overlay shot directory");
+    }
+    let runs = [
+        ((1472.0, 920.0), 2.0, Theme::dark()),
+        ((1472.0, 920.0), 2.0, Theme::light()),
+        ((800.0, 600.0), 1.0, Theme::dark()),
+        ((640.0, 400.0), 1.0, Theme::dark()),
+    ];
+    for ((vw, vh), scale, theme) in runs {
+        let light = theme.tokens.colors.surfaces.base.to_rgba8().r > 128;
+        let (pw, ph) = (
+            u32::try_from(ui::num::usize_of_f64(vw * scale)).expect("width"),
+            u32::try_from(ui::num::usize_of_f64(vh * scale)).expect("height"),
         );
-        h.chrome.borrow_mut().overlays.shortcut_help = false;
-        h.chrome.borrow_mut().overlays.quick_settings = true;
-        settle(&mut h, vw, vh);
-        let qs = h.host.quick_settings_rect();
-        assert!(
-            qs.x0 >= window.x0 && qs.x1 <= window.x1 && qs.y0 >= window.y0 && qs.y1 <= window.y1,
-            "quick settings {qs:?} leaves {window:?}"
-        );
-        h.chrome.borrow_mut().overlays.quick_settings = false;
-        h.chrome.borrow_mut().overlays.ws_settings = true;
-        settle(&mut h, vw, vh);
-        let lens = h.host.ws_settings_rect();
-        assert!(
-            lens.x0 >= window.x0
-                && lens.x1 <= window.x1
-                && lens.y0 >= window.y0
-                && lens.y1 <= window.y1,
-            "workspace lens {lens:?} leaves {window:?}"
-        );
+        let mut renderer = OffscreenRenderer::new(pw, ph);
+        let ground = theme.tokens.colors.surfaces.base;
+        let ground_rgb = {
+            let c = ground.to_rgba8();
+            [c.r, c.g, c.b]
+        };
+        let scaled = |h: &mut AbsorbHarness| {
+            let mut scaled = vello::Scene::new();
+            scaled.append(&paint_scene(h, &theme), Some(Affine::scale(scale)));
+            scaled
+        };
+        for case in overlay_cases() {
+            // A modal's scrim over a light desktop is itself a large step;
+            // the dark pass covers the modals.
+            if light && case.modal {
+                continue;
+            }
+            let mut h = build_harness_sized(vw, vh);
+            settle_with_theme(&mut h, vw, vh, &theme);
+            let closed = renderer.render_resilient(&scaled(&mut h), ground);
+            (case.open)(&mut h);
+            settle_with_theme(&mut h, vw, vh, &theme);
+            let open_scene = scaled(&mut h);
+            let open = renderer.render_resilient(&open_scene, ground);
+            let panel = (case.rect)(&h);
+            if let Some(dir) = &shots {
+                renderer.render_png(
+                    &open_scene,
+                    ground,
+                    dir.join(format!(
+                        "{}-{}x{}@{scale}-{}.png",
+                        case.name,
+                        vw,
+                        vh,
+                        if light { "light" } else { "dark" }
+                    )),
+                );
+            }
+            let width = usize::try_from(pw).expect("width");
+            let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0_usize, 0_usize);
+            for (i, (a, b)) in closed.chunks_exact(4).zip(open.chunks_exact(4)).enumerate() {
+                // Changed by opening, and not merely the desktop covered by
+                // the panel's shadow: ink stands off the ground as well.
+                let ink = a[..3]
+                    .iter()
+                    .zip(&b[..3])
+                    .any(|(a, b)| a.abs_diff(*b) > INK)
+                    && b[..3]
+                        .iter()
+                        .zip(ground_rgb)
+                        .any(|(b, g)| b.abs_diff(g) > INK);
+                if ink {
+                    let (x, y) = (
+                        i.checked_rem(width).expect("a non-empty row"),
+                        i.checked_div(width).expect("a non-empty row"),
+                    );
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x.saturating_add(1));
+                    y1 = y1.max(y.saturating_add(1));
+                }
+            }
+            let what = format!(
+                "{} at {vw}x{vh}@{scale} ({})",
+                case.name,
+                if light { "light" } else { "dark" }
+            );
+            assert!(x1 > x0 && y1 > y0, "{what} painted no ink");
+            let ink = Rect::new(
+                f64::from(u32::try_from(x0).expect("x0")),
+                f64::from(u32::try_from(y0).expect("y0")),
+                f64::from(u32::try_from(x1).expect("x1")),
+                f64::from(u32::try_from(y1).expect("y1")),
+            );
+            let allowed = Affine::scale(scale)
+                .transform_rect_bbox(panel)
+                .inflate(2.0, 2.0)
+                .intersect(Rect::new(0.0, 0.0, f64::from(pw), f64::from(ph)));
+            assert!(
+                ink.x0 >= allowed.x0
+                    && ink.y0 >= allowed.y0
+                    && ink.x1 <= allowed.x1
+                    && ink.y1 <= allowed.y1,
+                "{what}: ink {ink:?} spills outside its panel {allowed:?}"
+            );
+        }
     }
 }
 

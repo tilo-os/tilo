@@ -146,6 +146,21 @@ impl CapnpBrokerState {
                 .await
                 .map_err(capnp::Error::failed);
         }
+        let gate = self
+            .native_confirmation_gate(reask)
+            .await
+            .map_err(capnp::Error::failed)?;
+        let (argument, confirmation) = match gate {
+            super::native_task_confirmation::NativeGate::Proceed => (None, None),
+            super::native_task_confirmation::NativeGate::Confirmed {
+                argument,
+                confirmation,
+            } => (Some(argument), Some(confirmation)),
+        };
+        let mut target = reask.target;
+        if let Some(argument) = argument.as_deref() {
+            target.argument = Some(argument);
+        }
         let provenance = (reask.caller.clone(), reask.invocation);
         let job = self
             .start_task_action(
@@ -153,10 +168,20 @@ impl CapnpBrokerState {
                 reask.agent_id,
                 reask.run_id,
                 reask.lease,
-                reask.target,
-                Some(&provenance),
+                target,
+                (Some(&provenance), confirmation.is_some()),
             )
             .map_err(capnp::Error::failed)?;
+        if let Some(confirmation) = confirmation {
+            let run = self
+                .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+                .map_err(capnp::Error::failed)?;
+            // The child started; a failure to clear the answer only leaves
+            // the card until the run ends.
+            if let Err(error) = self.settle_native_confirmation(&run, &confirmation).await {
+                tracing::warn!(%error, "confirmed task action started but its confirmation stayed");
+            }
+        }
         let update = self.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted task action has no broker state".into())
         })?;
@@ -379,6 +404,7 @@ impl CapnpBrokerState {
         caller: &durable_local_invocation::LocalCaller,
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
+        confirmed: bool,
     ) -> Result<InvocationJob, String> {
         // Dispatch the exact contract checked by native task admission. A
         // concurrent publication must not replace it with a broader need.
@@ -387,6 +413,13 @@ impl CapnpBrokerState {
         }
         let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
         let actor = BrokerActor::agent(format!("agent:{}", run.agent_id));
+        // Admission checked the person's answer for this exact invocation;
+        // the token carries it to the dispatch, bound to these arguments.
+        let token = confirmed
+            .then(|| {
+                self.mint_confirmation_grant(target.peer_id, &offered.1, target.argument, &actor)
+            })
+            .transpose()?;
         let app = offered.0.app_id.clone();
         let _admission = self
             .admission_lock
@@ -402,7 +435,7 @@ impl CapnpBrokerState {
                 execution: None,
                 argument: target.argument,
                 actor: &actor,
-                confirmation_token: None,
+                confirmation_token: token.as_deref(),
                 context: Some(run.action_context.clone()),
             },
             AdmissionProvenance {
@@ -515,6 +548,7 @@ impl CapnpBrokerState {
                         .clone()
                         .unwrap_or_else(|| task.title.clone()),
                 ),
+                subject: task.subject.clone(),
                 run_id,
                 lease,
                 planning,
@@ -725,6 +759,12 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
+        // An agent reports acceptance and its first progress without waiting
+        // in between, and a report's command is read from the state the one
+        // before committed (progress needs the accepted run). Applied
+        // concurrently, progress read the state before acceptance landed and
+        // was refused, failing the run at its end.
+        let _order = self.native_task_report_order.lock().await;
         let binding = run.native.clone().ok_or("not a native task run")?;
         let service = self
             .native_tasks(&run.cluster_id)

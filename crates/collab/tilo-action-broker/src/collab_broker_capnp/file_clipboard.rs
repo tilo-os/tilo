@@ -363,6 +363,15 @@ impl CapnpChannelHandle {
         if !command.valid() {
             return Err(failed("invalid clipboard command".into()));
         }
+        // Whatever this command names and does not take, it releases: a
+        // handed-over object lives no longer than the request naming it.
+        let _handed = HandedRelease {
+            descriptors: self.handed_descriptors(),
+            numbers: command
+                .selected()
+                .map(|selected| selected.descriptor)
+                .collect(),
+        };
         let parent = super::observed_launch::launch_parent(parent)?;
         let action = match &command {
             Command::Publish { cut: false, .. }
@@ -393,6 +402,18 @@ impl CapnpChannelHandle {
             return Err(failed("clipboard reply exceeds bound".into()));
         }
         Ok(reply)
+    }
+}
+
+struct HandedRelease {
+    descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
+    numbers: Vec<u32>,
+}
+impl Drop for HandedRelease {
+    fn drop(&mut self) {
+        if let Some(descriptors) = &self.descriptors {
+            descriptors.discard(self.numbers.drain(..));
+        }
     }
 }
 

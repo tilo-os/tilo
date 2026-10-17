@@ -36,7 +36,6 @@ use ui::widget::{
 
 use crate::agent_tasks::{AgentComposerIntent, AgentTaskReceipt, AgentTaskView};
 use crate::app::{ChatApp, Hit, MenuTarget};
-use crate::geometry::title_beside_chip;
 use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
     Message, Presence,
@@ -475,8 +474,9 @@ fn square(centre: Point, side: f64) -> Rect {
 impl ChatApp {
     // ------------------------------------------------------- navigation header
     /// The navigation drawer's part of the window's header row: the sidebar
-    /// toggle at its top-leading corner, the workspace (or Inbox) title, how
-    /// many people are online, and the "new category" action.
+    /// toggle at its top-leading corner, the workspace (or Inbox) title and
+    /// the "new category" action. Who is here is the desktop's to show, not
+    /// the chat's.
     pub(crate) fn draw_nav_header(
         &self,
         scene: &mut Scene,
@@ -488,7 +488,6 @@ impl ChatApp {
         let nav = self.nav_rect();
         let band = Rect::new(nav.x0, nav.y0, nav.x1, nav.y0 + self.chrome.header_h);
         let sp = &theme.tokens.spacing;
-        let c = &theme.tokens.colors;
         let target = ButtonFace::height(ControlSize::Regular, theme);
         // The sidebar toggle stays in the window's header row: beside the
         // title while the drawer docks there, above it while it floats.
@@ -528,45 +527,16 @@ impl ChatApp {
                 .unwrap_or_default()
         };
         let style = theme.text(TextRole::Heading);
-        let title_w = width_of(tr, &title, &style);
-        // Presence is meaningful only when someone besides you is here.
-        let online = (!self.inbox_open && self.has_other_collaborator()).then(|| {
-            let n = self
-                .users
-                .iter()
-                .filter(|u| u.status == Presence::Online)
-                .count();
-            format!("{n} online")
-        });
-        let dot = ChipLead::Dot(c.semantic.success);
-        let chip_w = online
-            .as_deref()
-            .map_or(0.0, |s| ChipFace::intrinsic_width(s, dot, false, tr, theme));
-        let gap = f64::from(sp.s2);
-        let (title_max, show_chip) = title_beside_chip(right - title_x, title_w, chip_w, gap);
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let drawn = line_in(
+        line_in(
             &mut ctx,
             &title,
             &style,
             theme.text_primary,
             title_x,
             band,
-            title_max,
+            right - title_x,
         );
-        if show_chip && let Some(label) = online.as_deref() {
-            let h = ChipFace::height(theme);
-            let x0 = title_x + drawn + gap;
-            let chip = Rect::new(
-                x0,
-                band.center().y - h / 2.0,
-                x0 + chip_w,
-                band.center().y + h / 2.0,
-            );
-            ChipFace::new(chip, label)
-                .lead(dot)
-                .paint(scene, tf, tr, theme);
-        }
     }
 
     // ---------------------------------------------------------------- rail
@@ -2526,6 +2496,12 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let rect = self.composer_rect(tr, theme);
+        // With no channel open a draft would have nowhere to go, so there is
+        // no composer to type into.
+        if self.direct_agent.is_none() && self.channel(&self.active_channel).is_none() {
+            self.composer_main.set_focus(false);
+            return;
+        }
         if !self.can_participate() && self.direct_agent.is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);

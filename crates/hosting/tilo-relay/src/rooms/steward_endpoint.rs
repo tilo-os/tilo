@@ -112,7 +112,7 @@ impl Rooms {
         let now = SystemTime::now();
         let allowed = readers(
             room.peer(),
-            &room.peer().governed_access(now)?,
+            &room.peer().governance().governed_access(now)?,
             Some(&*steward),
             now,
         )?;

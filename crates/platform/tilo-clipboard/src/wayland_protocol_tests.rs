@@ -21,10 +21,19 @@ use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
 };
 
-use super::{ClipboardCommand, WaylandClipboard};
+use super::{ClipboardCommand, Publication, PublicationPayload, WaylandClipboard};
 use crate::ClipboardBackend as _;
 
 const PLAIN: &str = "text/plain;charset=utf-8";
+
+/// A copy queued directly, with its own deadline, as `publish` queues one.
+fn publish(
+    payload: PublicationPayload,
+    reply: mpsc::Sender<bool>,
+    deadline: tilo_clock::Instant,
+) -> ClipboardCommand {
+    ClipboardCommand::Publish(Publication::new(payload, reply, deadline))
+}
 type Held = Vec<(String, OwnedFd)>;
 type Operation = Box<dyn FnOnce(&mut Server, &DisplayHandle) + Send>;
 
@@ -44,6 +53,8 @@ struct Server {
     serial: u32,
     hold_flush: bool,
     publications: Vec<u32>,
+    /// The source of the newest client selection.
+    selection: Option<wl_data_source::WlDataSource>,
     selection_gate: Option<SelectionGate>,
 }
 
@@ -181,7 +192,7 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for Server {
                 state.seat(index).device = Some(init.init(id, ()));
             }
             wl_data_device_manager::Request::CreateDataSource { id } => {
-                init.init(id, ());
+                init.init(id, SourceMimes::default());
             }
             _ => {}
         }
@@ -270,10 +281,11 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
         _: &mut DataInit<'_, Self>,
     ) {
         if let wl_data_device::Request::SetSelection {
-            source: Some(_),
+            source: Some(source),
             serial,
         } = request
         {
+            state.selection = Some(source);
             assert!(state.seats.iter().any(|seat| seat.surface.is_some()));
             if let Some(gate) = &state.selection_gate {
                 gate.entered.store(true, Ordering::Release);
@@ -285,16 +297,23 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
         }
     }
 }
-impl Dispatch<wl_data_source::WlDataSource, ()> for Server {
+/// The MIME types a client source offered, in order.
+#[derive(Default)]
+struct SourceMimes(std::sync::Mutex<Vec<String>>);
+
+impl Dispatch<wl_data_source::WlDataSource, SourceMimes> for Server {
     fn request(
         _: &mut Self,
         _: &Client,
         _: &wl_data_source::WlDataSource,
-        _: wl_data_source::Request,
-        (): &(),
+        request: wl_data_source::Request,
+        mimes: &SourceMimes,
         _: &DisplayHandle,
         _: &mut DataInit<'_, Self>,
     ) {
+        if let wl_data_source::Request::Offer { mime_type } = request {
+            mimes.0.lock().expect("source MIMEs").push(mime_type);
+        }
     }
 }
 
@@ -510,6 +529,41 @@ impl Harness {
         self.operation(move |state, _| state.leave(index));
     }
 
+    /// The MIME types of the newest client selection.
+    fn selection_mimes(&self) -> Vec<String> {
+        self.query(|state| {
+            state
+                .selection
+                .as_ref()
+                .and_then(|source| source.data::<SourceMimes>())
+                .map(|mimes| mimes.0.lock().expect("source MIMEs").clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Ask the newest client selection for `mime`, as a pasting client does,
+    /// and read the whole answer.
+    fn selection_bytes(&self, mime: &str) -> Vec<u8> {
+        let (mut reader, writer) = std::io::pipe().expect("transfer pipe");
+        let mime = mime.to_owned();
+        self.operation(move |state, _| {
+            state
+                .selection
+                .as_ref()
+                .expect("a client selection")
+                .send(mime, OwnedFd::from(writer).as_fd());
+        });
+        let (send, receive) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut reader, &mut bytes);
+            let _ = send.send(bytes);
+        });
+        receive
+            .recv_timeout(self.remaining())
+            .expect("the source finished its transfer")
+    }
+
     fn assert_offer(&self, label: &str) {
         let html = format!("<b>{label}</b>");
         self.wait(
@@ -700,11 +754,11 @@ fn image_copy_acknowledgement_follows_server_selection() {
     let deadline = tilo_clock::now()
         .checked_add(tilo_clock::Duration::from_secs(5))
         .expect("bounded publication");
-    assert!(
-        harness
-            .backend()
-            .send_publication(ClipboardCommand::SetImage(png, reply, deadline,))
-    );
+    assert!(harness.backend().send_publication(publish(
+        PublicationPayload::Image(png),
+        reply,
+        deadline
+    )));
     harness.wait(
         || entered.load(Ordering::Acquire),
         "server receiving the image selection",
@@ -736,15 +790,11 @@ fn copy_acknowledgement_waits_for_already_sent_keyboard_focus() {
         state.enter(0, 0);
     });
     let (result_tx, result_rx) = mpsc::channel();
-    assert!(
-        harness
-            .backend()
-            .send_publication(ClipboardCommand::SetText(
-                b"caption".to_vec(),
-                result_tx,
-                super::publication_deadline()
-            ))
-    );
+    assert!(harness.backend().send_publication(publish(
+        PublicationPayload::Text(b"caption".to_vec()),
+        result_tx,
+        super::publication_deadline()
+    )));
     // Observe FIFO processing of the actual production copy command. This
     // neither dispatches nor changes the worker's focus; a protocol fence
     // would flush the very race under test before the copy is processed.
@@ -785,15 +835,11 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
         state.leave(0);
     });
     let (reply, result) = mpsc::channel();
-    assert!(
-        harness
-            .backend()
-            .send_publication(ClipboardCommand::SetText(
-                b"unfocused".to_vec(),
-                reply,
-                super::publication_deadline(),
-            ))
-    );
+    assert!(harness.backend().send_publication(publish(
+        PublicationPayload::Text(b"unfocused".to_vec()),
+        reply,
+        super::publication_deadline(),
+    )));
     let (processed, observed) = mpsc::channel();
     harness
         .backend()
@@ -829,15 +875,11 @@ fn expired_copy_does_not_publish_on_current_or_later_focus() {
     harness.enter(0, 0);
     harness.fence();
     let (reply, result) = mpsc::channel();
-    assert!(
-        harness
-            .backend()
-            .send_publication(ClipboardCommand::SetText(
-                b"expired".to_vec(),
-                reply,
-                tilo_clock::now(),
-            ))
-    );
+    assert!(harness.backend().send_publication(publish(
+        PublicationPayload::Text(b"expired".to_vec()),
+        reply,
+        tilo_clock::now(),
+    )));
     assert!(
         !result
             .recv_timeout(harness.remaining())
@@ -905,4 +947,116 @@ fn explicit_plain_paste_is_revoked_on_keyboard_leave() {
             std::io::ErrorKind::BrokenPipe
         );
     }
+}
+
+#[test]
+fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    assert!(harness.backend().set_secret_text("hunter2"));
+    let mimes = harness.selection_mimes();
+    for mime in [
+        PLAIN,
+        "text/plain",
+        crate::SECRET_MIME,
+        crate::PASSWORD_MANAGER_HINT_MIME,
+    ] {
+        assert!(
+            mimes.iter().any(|offered| offered == mime),
+            "a secret copy must offer {mime}: {mimes:?}"
+        );
+    }
+    assert_eq!(harness.selection_bytes("text/plain"), b"hunter2");
+    assert_eq!(
+        harness.selection_bytes(crate::PASSWORD_MANAGER_HINT_MIME),
+        crate::SECRET_MARKER
+    );
+
+    // The next ordinary copy is not a secret, and an image never rides along
+    // under (or keeps offering) an earlier secret.
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "next")
+    );
+    let mimes = harness.selection_mimes();
+    assert!(
+        !mimes
+            .iter()
+            .any(|mime| mime == crate::SECRET_MIME || mime == crate::PASSWORD_MANAGER_HINT_MIME),
+        "an ordinary copy must not inherit the secret markers: {mimes:?}"
+    );
+    assert!(harness.backend().set_secret_text("hunter3"));
+    assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
+    assert_eq!(harness.selection_mimes(), ["image/png"]);
+}
+
+/// Tilo's compositor answers a new selection with work of its own (it mirrors
+/// the selection, takes it over, repaints) in the iteration that confirms it.
+/// A copy whose confirmation comes back after the copy's budget was still
+/// published, and must be reported as copied: an app that said "could not
+/// copy" would leave a secret on the clipboard with no clear scheduled.
+#[test]
+fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = SelectionGate {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    };
+    harness.operation(move |state, _| state.selection_gate = Some(gate));
+    harness.query(|state| assert!(state.selection_gate.is_some()));
+
+    std::thread::scope(|scope| {
+        let copy = scope.spawn(|| harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
+        harness.wait(
+            || entered.load(Ordering::Acquire),
+            "server receiving the image selection",
+        );
+        // Hold the confirmation past every budget the copy waits.
+        let taken = Instant::now();
+        harness.wait(
+            || taken.elapsed() > super::PUBLICATION_BUDGET * 3,
+            "the copy's budgets to pass",
+        );
+        release.store(true, Ordering::Release);
+        assert!(
+            copy.join().expect("copy thread"),
+            "a selection the compositor took was reported as a failed copy"
+        );
+    });
+    harness.wait(
+        || harness.query(|state| state.publications == [state.serial]),
+        "server-side image selection",
+    );
+}
+
+/// The other order: the caller gives up before the worker reaches the copy.
+/// The copy is reported as failed and must then never become the selection.
+#[test]
+fn a_copy_reported_as_failed_never_becomes_the_selection() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+    // The focus check's answer is held until the copy gave up on it.
+    harness.query(|state| state.hold_flush = true);
+    let started = Instant::now();
+    assert!(
+        !harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "too late"),
+        "the copy cannot be confirmed while the compositor does not answer"
+    );
+    assert!(started.elapsed() >= super::PUBLICATION_BUDGET);
+    harness.query(|state| state.hold_flush = false);
+    harness.fence();
+    assert!(
+        harness.query(|state| state.publications.is_empty()),
+        "a copy reported as failed became the selection"
+    );
 }

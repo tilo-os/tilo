@@ -1018,18 +1018,21 @@ impl Widget for SidebarWheelDisc {
             return;
         }
 
+        // A degenerate footprint (the first layout pass, or a slot tucked
+        // away by a maximize, a fullscreen or an output change) draws
+        // nothing and leaves the cache alone: the cached drawing and its
+        // fingerprint stay a pair. Emptying the scene while keeping the
+        // fingerprint made the wheel's return to the same slot replay an
+        // empty drawing, and the switcher stayed invisible until something
+        // else about it changed.
+        let Some(geom) = self.disc_geometry(theme) else {
+            return;
+        };
         // Cache miss — encode at IDENTITY, then splice with
         // `out_transform`. `mem::take` gives the encode body an
         // exclusive `&mut Scene` without aliasing `self`.
         let mut local = std::mem::take(&mut self.cached_scene);
         local.reset();
-
-        let Some(geom) = self.disc_geometry(theme) else {
-            // Restore the (empty) cache without recording a fingerprint
-            // so a zero-width rect doesn't lock the cache.
-            self.cached_scene = local;
-            return;
-        };
         let mut ctx = DrawCtx {
             scene: &mut local,
             transform: Affine::IDENTITY,
@@ -2372,6 +2375,41 @@ mod tests {
             (panned.plus_rect.x0 - (before.x0 - 4.0 * step)).abs() < 1e-9,
             "four device-pixel steps move the add row by exactly 8/3 layout pixels"
         );
+    }
+
+    /// A slot tucked away for a frame (a maximized or fullscreen window,
+    /// an output change relaying the desktop) and then given back exactly
+    /// as it was draws the whole disc again, not the empty drawing of the
+    /// tucked frame: the switcher on the user's panel vanished this way
+    /// and stayed gone while its slot was laid out on screen.
+    #[test]
+    fn a_slot_tucked_away_and_restored_draws_the_disc_again() {
+        let draws = |d: &mut SidebarWheelDisc| {
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            d.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            scene.encoding().draw_tags.len()
+        };
+        let mut d = mk(&["Home", "Work"]);
+        layout_into_slot(&mut d, live_slot());
+        let shown = draws(&mut d);
+        assert!(shown > 0, "the docked disc draws");
+        for tucked in [Rect::ZERO, Rect::new(0.0, 40.0, 234.0, 40.0)] {
+            d.rect = tucked;
+            assert_eq!(draws(&mut d), 0, "a tucked slot {tucked:?} draws nothing");
+            layout_into_slot(&mut d, live_slot());
+            assert_eq!(
+                draws(&mut d),
+                shown,
+                "the restored slot draws the disc again after {tucked:?}"
+            );
+        }
     }
 
     #[test]

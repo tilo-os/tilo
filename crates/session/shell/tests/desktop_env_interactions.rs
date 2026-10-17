@@ -26,6 +26,7 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use shell::shell::tab_binding::Placement;
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::synthetic_input::PointerAction;
@@ -303,11 +304,21 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
             &layout,
             Point::new(unpainted.group.center().x, unpainted.group.y0 + 1.0),
         );
+        // A rest in the reveal band shows the bar once the dwell runs out.
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .unwrap()
+                .elapse_maximized_chrome_intent(),
+            "a rest in the band reveals the bar"
+        );
         paint_group(&mut host, &layout, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
         let restore = bounds.restore.expect("painted Restore");
         let client = bounds.client.expect("active client");
-        assert!(restore.y1 <= client.y0);
+        assert!(
+            client.contains(restore.center()),
+            "the bar stands over the client's top edge"
+        );
         assert_eq!(host.active_window_control_rects().unwrap().1, restore);
         cursor(&mut host, &layout, restore.center());
         press(&mut host, &layout);
@@ -321,6 +332,11 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
         host.tick_pending_maximize_harvest_for_tests();
         assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
 
+        // The pointer left the output, which hid the bar: reach for it again.
+        host.group_at_for_tests(strip_id, 0)
+            .unwrap()
+            .set_maximized_chrome_shown_for_tests(true);
+        paint_group(&mut host, &layout, strip_id);
         cursor(&mut host, &layout, restore.center());
         paint_group(&mut host, &layout, strip_id);
         press(&mut host, &layout);
@@ -339,6 +355,10 @@ fn painted_window_controls_survive_cancel_and_scale_changes() {
             "a scale change must cancel the old held gesture"
         );
 
+        host.group_at_for_tests(strip_id, 0)
+            .unwrap()
+            .set_maximized_chrome_shown_for_tests(true);
+        paint_group(&mut host, &scaled, strip_id);
         cursor(&mut host, &scaled, target.center());
         press(&mut host, &scaled);
         assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
@@ -797,7 +817,10 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
 
         let opened = chrome
             .borrow_mut()
-            .handle_file_drop(std::path::Path::new("/tmp/layout-session.ts"))
+            .handle_file_drop_at_placement(
+                std::path::Path::new("/tmp/layout-session.ts"),
+                Placement::TabIn(100),
+            )
             .expect("file drop opens an editor tab");
         chrome.borrow_mut().bump();
         assert!(
@@ -895,10 +918,13 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
                 .len()
         };
 
-        // Drop a `.ts` file through the `WindowEvent::DroppedFile` entry.
+        // Drop a `.ts` file onto the group, as a `WindowEvent::DroppedFile` does.
         let tab_id = chrome
             .borrow_mut()
-            .handle_file_drop(std::path::Path::new("/some/where/component.ts"))
+            .handle_file_drop_at_placement(
+                std::path::Path::new("/some/where/component.ts"),
+                Placement::TabIn(100),
+            )
             .expect("a file drop must resolve to a launch intent");
 
         let st = chrome.borrow();
@@ -933,7 +959,7 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
 
         let tab_id = chrome
             .borrow_mut()
-            .handle_file_drop(&tmp)
+            .handle_file_drop_at_placement(&tmp, Placement::TabIn(100))
             .expect("folder drop resolves");
 
         let st = chrome.borrow();
@@ -1082,17 +1108,11 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
-        // The SDK owns the theme-dependent system lane policy; the hidden
-        // tab strip itself still reserves no height.
+        // The client fills the whole window: its bar hides at rest and
+        // appears over the top edge when reached for, taking no room.
         assert_eq!(
-            app,
-            vello::kurbo::Rect::new(
-                maximized.x0,
-                maximized.y0 + ui::widget::maximized_chrome_height(&layout2.theme),
-                maximized.x1,
-                maximized.y1,
-            ),
-            "the client must fill exactly the area below compact system controls",
+            app, maximized,
+            "the maximized client must fill the window: no lane above it",
         );
         assert_approx_eq!(
             group.bar_for_tests().get_rect().height(),
@@ -1100,12 +1120,34 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "the hidden tab strip must reserve no height",
         );
 
-        // Reveal through the host's pointer route at the group's actual,
-        // nonzero origin. Painting must produce a usable Restore target.
+        // At rest, with the pointer in the app, no bar is painted.
+        cursor(&mut host, &layout2, maximized.center());
+        paint_group(&mut host, &layout2, strip_id);
+        assert!(
+            host.active_window_bounds()
+                .expect("painted active group")
+                .restore
+                .is_none(),
+            "the bar hides while the pointer is in the app",
+        );
+        // A rest in the reveal band at the window's top, through the host's
+        // pointer route at the group's actual, nonzero origin, shows it once
+        // the dwell runs out. Painting must produce a usable Restore target.
         cursor(
             &mut host,
             &layout2,
             Point::new(maximized.center().x, maximized.y0 + 1.0),
+        );
+        cursor(
+            &mut host,
+            &layout2,
+            Point::new(maximized.center().x + 1.0, maximized.y0 + 2.0),
+        );
+        assert!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("maximized group")
+                .elapse_maximized_chrome_intent(),
+            "a rest in the band reveals the bar",
         );
         paint_group(&mut host, &layout2, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
@@ -1116,22 +1158,12 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "Restore must reveal below the OS top bar"
         );
         assert!(
-            restore.y0 >= maximized.y0,
-            "Restore must stay below the OS top bar",
-        );
-        assert!(
-            restore.y1 <= app.y0,
-            "Restore must stay clear of the client header",
+            restore.y0 >= maximized.y0 + ui::widget::top_edge_reveal::REVEAL_BAND_PX,
+            "Restore stands below the reveal band, never under the resting pointer",
         );
         assert!(
             restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
             "Restore must stay inside the maximized group",
-        );
-        let client_top = (restore.y1 + ui::widget::tabs::TAB_PILL_INSET_Y).ceil();
-        assert_eq!(
-            app,
-            ui::kurbo::Rect::new(maximized.x0, client_top, maximized.x1, maximized.y1),
-            "the client fills exactly the group below painted system chrome",
         );
         cursor(&mut host, &layout2, restore.center());
         press(&mut host, &layout2);
@@ -1499,8 +1531,10 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
         let active_group = tree.desktop.active_group_for(strip_id);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let _layout = lay_out_host(&mut host);
+        let t0 = std::time::Instant::now();
+        let at = |ms: u64| t0 + std::time::Duration::from_millis(ms);
 
-        assert!(host.update_active_strip_pan(320.0, true));
+        assert!(host.update_active_strip_pan(320.0, true, at(0)));
         assert_approx_eq!(
             host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
             320.0,
@@ -1516,22 +1550,181 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             .group_row_mut_for_tests(strip_id)
             .unwrap()
             .pan_max_scroll_x();
-        assert!(host.update_active_strip_pan(legal_end + 500.0, false));
+        assert!(host.update_active_strip_pan(legal_end + 500.0, false, at(500)));
         let held = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
         assert!(
             held > legal_end && held < legal_end + 500.0,
             "overpull must keep moving with resistance: legal={legal_end}, held={held}"
         );
 
-        let released = std::time::Instant::now();
-        assert!(host.end_active_strip_pan(released));
+        // Lifted after the fingers came to rest: nothing is thrown.
+        let released = at(700);
+        assert!(host.end_active_strip_pan(released, false));
         host.group_row_mut_for_tests(strip_id)
             .unwrap()
-            .tick_snap_at(released + std::time::Duration::from_millis(220));
+            .tick_snap_at(released + std::time::Duration::from_millis(600));
         assert_approx_eq!(
             host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
             legal_end,
             "release must settle the live strip to its legal trailing rest",
+        );
+    }
+}
+
+/// The live host laid out on a virtual frame clock while input arrives at
+/// its own rate: what the strip does frame by frame.
+struct PacedStrip {
+    host: ShellOverlayHost,
+    strip: StripId,
+    t0: std::time::Instant,
+}
+
+impl PacedStrip {
+    fn new(groups: &[u64]) -> Self {
+        let (tree, strip, _ids) = single_strip_tree(groups);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let _ = lay_out_host(&mut host);
+        Self {
+            host,
+            strip,
+            t0: std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(1))
+                .expect("a second from now"),
+        }
+    }
+
+    fn at(&self, ms: f64) -> std::time::Instant {
+        self.t0
+            .checked_add(std::time::Duration::from_secs_f64(ms / 1000.0))
+            .expect("within the test's span")
+    }
+
+    /// Lay the desktop out for the frame due at `ms`; how far the strip's
+    /// first window has moved left of where it started.
+    fn frame(&mut self, ms: f64) -> f64 {
+        let at = self.at(ms);
+        let host = &mut self.host;
+        ui::time::testing::with_monotonic_time(at, || {
+            // What the host's update runs before every frame: the focus a
+            // step wrote reaches the tree, and focus-follow frames it.
+            host.flush_active_tab_writeback();
+            host.tick_scroll_active_into_view_for_tests();
+            let _ = lay_out_host(host);
+        });
+        -self
+            .host
+            .group_at_for_tests(self.strip, 0)
+            .expect("first window")
+            .get_rect()
+            .x0
+    }
+}
+
+#[test]
+fn strip_motion_is_paced_by_the_frame_clock() {
+    // Phase `a_steady_three_finger_swipe_moves_the_strip_evenly_every_frame`.
+    // A 125 Hz touchpad into a 90 Hz display: showing the newest report moved
+    // the strip one report on some frames and two on others.
+    {
+        let mut paced = PacedStrip::new(&[100, 200, 300, 400, 500, 600, 700, 800]);
+        let (speed, report_dt, frame_dt) = (1200.0, 8.0, 1000.0 / 90.0);
+        let mut reports = 0_u32;
+        let mut previous = paced.frame(0.0);
+        let mut steps = Vec::new();
+        for frame in 0..36_u32 {
+            let frame_ms = frame_dt * (f64::from(frame) + 0.5);
+            // Every report the touchpad made before this frame.
+            loop {
+                let report_ms = report_dt * f64::from(reports);
+                if report_ms > frame_ms {
+                    break;
+                }
+                let travel = speed * (report_ms + report_dt) / 1000.0;
+                let at = paced.at(report_ms);
+                let _ = paced.host.update_active_strip_pan(travel, reports == 0, at);
+                reports += 1;
+            }
+            let moved = paced.frame(frame_ms);
+            if frame_ms > 30.0 {
+                steps.push(moved - previous);
+            }
+            previous = moved;
+        }
+        drop(paced);
+        let expected = speed / 90.0;
+        eprintln!("three-finger swipe, 125 Hz into 90 Hz, steps per frame: {steps:?}");
+        assert!(steps.len() > 30, "{steps:?}");
+        assert!(
+            steps
+                .iter()
+                .all(|step| (step - expected).abs() <= expected * 0.02),
+            "every frame moves the strip the fingers' {expected:.2} px: {steps:?}"
+        );
+    }
+
+    // Phase `a_spun_alt_shift_wheel_reveals_without_stalls_or_surges`. The
+    // compositor turns each notch into one window of focus
+    // (`step_focus_along_strip`), and every step retargets the reveal.
+    {
+        let mut paced = PacedStrip::new(&[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+        let (notch_dt, frame_dt) = (70.0, 1000.0 / 90.0);
+        let mut previous = paced.frame(0.0);
+        let mut notches = 0_u32;
+        let mut last_notch = 0.0;
+        let mut steps = Vec::new();
+        for frame in 1..135_u32 {
+            let ms = frame_dt * f64::from(frame);
+            // Every notch the wheel clicked before this frame.
+            loop {
+                let notch_ms = frame_dt + notch_dt * f64::from(notches);
+                if notches >= 9 || notch_ms > ms {
+                    break;
+                }
+                ui::time::testing::with_monotonic_time(paced.at(notch_ms), || {
+                    assert!(
+                        paced.host.step_focus_along_strip(1),
+                        "notch {notches} moves focus"
+                    );
+                });
+                notches += 1;
+                last_notch = notch_ms;
+            }
+            let moved = paced.frame(ms);
+            steps.push((ms, moved - previous));
+            previous = moved;
+        }
+        drop(paced);
+        eprintln!("spun wheel, a notch every 70 ms at 90 Hz, steps per frame: {steps:?}");
+        assert!(
+            steps.iter().map(|(_, step)| step).sum::<f64>() > 600.0,
+            "nine notches carry the strip several windows: {steps:?}"
+        );
+        // From the third notch on, once the reveal runs window to window
+        // (the first notches reveal only the rest of a cut window), to the
+        // last notch.
+        let third_notch = frame_dt + 2.0 * notch_dt;
+        let spinning: Vec<f64> = steps
+            .iter()
+            .skip_while(|(at, _)| *at <= third_notch)
+            .take_while(|(at, _)| *at <= last_notch)
+            .map(|&(_, step)| step)
+            .collect();
+        assert!(spinning.len() >= 10, "the spin moves the strip: {steps:?}");
+        let max = spinning.iter().copied().fold(0.0_f64, f64::max);
+        let min = spinning.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            min >= max / 3.0,
+            "no frame of a spin stalls next to a surging one: {spinning:?}"
+        );
+        let surge = spinning
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(0.0_f64, f64::max);
+        let mean = spinning.iter().sum::<f64>()
+            / f64::from(u32::try_from(spinning.len()).expect("a handful of frames"));
+        assert!(
+            surge <= mean * 0.6,
+            "no notch makes the strip lurch forward: {spinning:?}"
         );
     }
 }

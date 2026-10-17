@@ -28,6 +28,10 @@
 //            browser device of the same user in the same room, through the
 //            production peer.mjs and host.mjs
 //
+// The room is one the host governs, as a shared workspace is: the page
+// creates it and enters it as its owner's device, and the session enters it
+// as another, so its roles decide who drives the window.
+//
 // The run, in order:
 //   startup   the session starts its stream (grant, stream start) while the
 //             page shows the room's desktop: to the first presented picture
@@ -43,13 +47,18 @@
 //   converge  the window goes still: the page must end on its last frame
 //   input     --inputs clicks on the window: from the page's click to the
 //             session receiving the press
+//   accept    the acceptance cases (native_stream_acceptance.mjs): focus,
+//             paste, IME, resize, the HTTPS fallback when WebTransport fails, a
+//             viewer who watches but cannot drive, recovery from a dropped
+//             stream and typing that never reaches a stale window, with a
+//             second window, a second device of the owner and a second person
 //
 // Correctness, judged on every run (a miss exits 1, with the report): no
 // decoder error; every drawn picture's number reads back with a valid check
 // (no corrupt picture) and is the frame its timestamp names; pictures never go
 // back to an older frame; the page ends on the last frame sent; this member
 // drives the window (it is the session's own user) and every press arrives,
-// in order.
+// in order; and every acceptance case holds.
 //
 // Goals (reported; enforced only with --enforce-goals, which a hardware
 // qualification uses):
@@ -78,6 +87,7 @@ import {launch, sleep} from '../../tools/web/chrome.mjs';
 import {VIDEO_DECODER_CONFIGS} from '../../crates/browser/tilo-browser-runtime/web/legacy-windows.mjs';
 import {Invalid, RENDERERS, chromeFlags, classifyAdapter, hostState, parseViewport, stats, verifyBundle, within}
   from './browser_qualification.mjs';
+import {runAcceptance} from './native_stream_acceptance.mjs';
 
 export const GOALS = {startupMs: 1000, latencyP95Ms: 100, deliveredPercent: 99, inputP95Ms: 50};
 export const CARRIERS = ['webtransport', 'https'];
@@ -183,9 +193,38 @@ export function readCode(rows, width) {
 // Installed before the page's scripts: every picture a legacy window's canvas
 // draws (its number read back, when, whether the window was on screen), and
 // what the page's video decoders did.
+//
+// It also keeps the page's WebTransport sessions, so the harness can drop the
+// live plane under the page (`__tiloDropLive()`, as a network that loses the
+// path does), and with `__tiloBlockWebTransport` set before it (a page on a
+// network that blocks UDP), every WebTransport session goes to a port nothing
+// answers on and never becomes ready. Each canvas a window is drawn on is an
+// epoch: a window the page opens again (after its live plane came back) is
+// drawn on a new one.
 const PROBE = `(() => {
   const readCode = ${readCode.toString()};
-  const probe = globalThis.__tiloStream = {draws: [], decoder: {created: 0, configs: [], chunks: 0, keys: 0, outputs: 0, errors: []}};
+  const probe = globalThis.__tiloStream = {draws: [], decoder: {created: 0, configs: [], chunks: 0, keys: 0, outputs: 0, errors: []},
+    transport: {attempts: 0, blocked: 0, dropped: 0}, pastes: 0};
+  const transports = [];
+  const NativeTransport = globalThis.WebTransport;
+  if (NativeTransport) {
+    globalThis.WebTransport = class extends NativeTransport {
+      constructor(url, options) {
+        probe.transport.attempts++;
+        const blocked = globalThis.__tiloBlockWebTransport === true;
+        if (blocked) { const dead = new URL(url); dead.port = '9'; url = dead.href; probe.transport.blocked++; }
+        super(url, options);
+        if (!blocked) transports.push(this);
+      }
+    };
+  }
+  globalThis.__tiloDropLive = () => {
+    for (const session of transports.splice(0)) { try { session.close({closeCode: 0, reason: 'path lost'}); probe.transport.dropped++; } catch {} }
+    return probe.transport.dropped;
+  };
+  addEventListener('paste', event => { probe.pastes++; probe.pasted = event.clipboardData?.getData('text/plain') ?? null; }, true);
+  const epochs = new WeakMap();
+  let epochCount = 0;
   const Native = globalThis.VideoDecoder;
   if (Native) {
     globalThis.VideoDecoder = class extends Native {
@@ -209,8 +248,9 @@ const PROBE = `(() => {
       const y = Math.floor(pitch / 4) + Math.floor(Math.floor(pitch * 4 / 5) / 2) - 1;
       let index = null;
       try { index = readCode(this.getImageData(0, y, width, 3).data, width); } catch {}
+      if (!epochs.has(canvas)) epochs.set(canvas, ++epochCount);
       probe.draws.push({wallUs: Math.round((performance.timeOrigin + at) * 1000), tsUs: image.timestamp, index,
-        visible: canvas.style.display === 'block', width, height: canvas.height, key: canvas.dataset.key});
+        visible: canvas.style.display === 'block', width, height: canvas.height, key: canvas.dataset.key, epoch: epochs.get(canvas)});
     }
     return result;
   };
@@ -225,13 +265,38 @@ const harnessPage = () => `<!doctype html>
 try {
   const q = new URLSearchParams(location.search);
   const wasm = await import('./pkg/tilo_browser_runtime.js');
-  const {connectPeer} = await import('./peer.mjs');
+  const {connectPeer, joinWorkspace} = await import('./peer.mjs');
   await wasm.default();
-  const profile = q.get('profile');
-  const peer = globalThis.peer = await connectPeer({
-    origin: q.get('origin'), userPublicKey: q.get('user'), label: 'Stream viewer', room: q.get('room'),
-    profile, displayName: 'Stream viewer', runtime: wasm,
-  });
+  const origin = q.get('origin'), profile = q.get('profile'), label = q.get('label') || 'Stream viewer';
+  let peer;
+  // How far the page got, for a run that ends invalid while it connects.
+  const stage = name => { globalThis.harnessStage = name; };
+  if (q.get('invite')) {
+    // Another person, with a root of their own and an invitation: the
+    // room's owner admits them.
+    stage('joining');
+    const {createIdentity} = await import('./root-identity.mjs');
+    const {identity} = await createIdentity({passkey: false});
+    peer = await joinWorkspace({origin, invitation: q.get('invite'), identity, runtime: wasm, profile,
+      displayName: label, label, pollMs: 250, onProgress: progress => stage('joining: ' + progress.phase)});
+  } else {
+    // A device of the host's person, in a room the host governs (as a
+    // workspace in Tilo Cloud is): it creates the room when none is named,
+    // and enters it as its owner's device before working in it.
+    const person = {origin, userPublicKey: q.get('user'), label, displayName: label, runtime: wasm, profile};
+    let room = q.get('room');
+    stage('certifying');
+    const door = await connectPeer({...person, live: false});
+    try {
+      stage('entering the room');
+      room ||= (await door.workspaces.create('Stream qualification')).room;
+      await door.workspaces.enter(room);
+    } finally { await door.dispose(); }
+    stage('connecting to the room');
+    peer = await connectPeer({...person, room});
+  }
+  globalThis.peer = peer;
+  stage('mounting the desktop');
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {});
   globalThis.harnessReady = true;
 } catch (error) { globalThis.harnessError = String(error?.stack ?? error); }
@@ -408,6 +473,9 @@ export function formatSummary(report) {
   lines.push(k.failures.length ? `  INCORRECT: ${k.failures.join('; ')}`
     : `  correct: no decoder errors, no corrupt, misnamed or older pictures, ended on frame ${k.lastSent}, `
       + `${k.inputsArrived}/${k.inputsSent} presses arrived in order`);
+  for (const [name, found] of Object.entries(report.acceptance?.cases ?? {})) {
+    lines.push(`  ${found.failures.length ? 'FAIL' : 'PASS'} acceptance ${name}${found.failures.length ? `: ${found.failures.join('; ')}` : ''}`);
+  }
   for (const goal of report.goals) {
     lines.push(`  ${goal.met ? 'MET ' : 'MISS'} ${goal.name}: ${goal.measured} vs ${goal.target}`);
   }
@@ -416,8 +484,15 @@ export function formatSummary(report) {
 
 // --- the run --------------------------------------------------------------------
 
-async function attachPage(browser, viewport) {
-  const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank'});
+/**
+ * A page in `context` (a browser context of its own: another person's
+ * browser) or the browser's default one, in a window of its own with
+ * `window` (so every page stays visible and keeps presenting), with
+ * WebTransport made to fail with `block`.
+ */
+async function attachPage(browser, viewport, {context, window = false, block = false} = {}) {
+  const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank',
+    ...(context ? {browserContextId: context} : {}), ...(window ? {newWindow: true} : {})});
   const {result: {sessionId}} = await browser.send('Target.attachToTarget', {targetId, flatten: true});
   const errors = [];
   // The page's own errors and warnings, for an invalid run's diagnosis.
@@ -433,8 +508,11 @@ async function attachPage(browser, viewport) {
     }
   });
   const send = (method, params = {}) => browser.send(method, params, sessionId);
-  const evaluate = async (expression, ms = 60_000) => {
-    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms, 'the page');
+  // Generous: on SwiftShader one GPU process rasterizes every page's desktop,
+  // and a page waiting on it does not answer for a minute or more.
+  const evaluate = async (expression, ms = 180_000) => {
+    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms,
+      `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`);
     if (reply.error) throw Error(reply.error.message);
     if (reply.result.exceptionDetails) {
       const details = reply.result.exceptionDetails;
@@ -446,9 +524,54 @@ async function attachPage(browser, viewport) {
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
+  if (block) await send('Page.addScriptToEvaluateOnNewDocument', {source: 'globalThis.__tiloBlockWebTransport = true;'});
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PROBE});
-  return {send, evaluate, errors, console: console_};
+  const page = {send, evaluate, errors, console: console_, targetId};
+  return page;
 }
+
+/**
+ * Open the harness page `name` with `params` on a new page, and wait until
+ * its desktop presents, with its live plane up and the legacy-window layer
+ * on it.
+ */
+async function openPage(browser, {name, url, params, viewport, page: options, relay}) {
+  const page = await attachPage(browser, viewport, options);
+  page.name = name;
+  // The desktop's first frame: SwiftShader compiles its pipelines first, on a
+  // GPU process other pages may be keeping busy (`mountMs`). The desktop gives
+  // that a minute and then fails its mount; the pipelines it compiled stay in
+  // the GPU process's cache, so the page is loaded again, up to twice.
+  const mountMs = options.mountMs ?? 240_000, opened = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    await page.send('Page.navigate', {url: `${url}?${new URLSearchParams(params)}`});
+    await until(page, 'globalThis.harnessReady || globalThis.harnessError', mountMs, `the ${name} page's desktop did not mount`)
+      .catch(async error => {
+        throw new Invalid(`${error.message} (stuck ${await page.evaluate('globalThis.harnessStage ?? null', 10_000).catch(() => 'unanswered')}; `
+          + `page console: ${page.console.slice(-10).join(' | ')}; page errors: ${page.errors.slice(0, 3).join(' | ')})`);
+      });
+    const error = await page.evaluate('globalThis.harnessError ?? null');
+    if (!error) break;
+    if (attempt < 3 && /WebGPU presented no first frame/.test(error)) {
+      console.error(`the ${name} page's desktop missed its first frame on the busy GPU process; loading it again`);
+      continue;
+    }
+    throw new Invalid(`the ${name} page did not connect: ${error}`);
+  }
+  await until(page, "globalThis.tiloMount?.canvas?.parentElement?.dataset.phase === 'presented'", mountMs,
+    `the ${name} page's desktop presented no frame`);
+  await until(page, "Boolean(document.querySelector('.tilo-legacy-windows'))", 60_000,
+    `the ${name} page's desktop opened no legacy-window layer (no live plane)`);
+  await until(page, 'globalThis.peer?.live?.available === true', 120_000,
+    `the ${name} page's live plane did not come up`).catch(async error => {
+    throw new Invalid(`${error.message}: ${await page.evaluate(LIVE).catch(() => 'unavailable')}; page console: ${page.console.slice(-15).join(' | ')}; host log: ${relay.lines.slice(-30).join('\n').slice(-4000)}`);
+  });
+  console.error(`the ${name} page presented its desktop, live, in ${Math.round((Date.now() - opened) / 1000)} s`);
+  return page;
+}
+
+/** The frames a session's `--out` log says it published. */
+const readSent = log => readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
 
 /** Wait until `probe()` (in the page) is truthy, or fail with `what`. */
 async function until(page, expression, ms, what) {
@@ -505,29 +628,19 @@ async function main() {
     const host = JSON.parse(await relay.line(line => line.startsWith('{'), 120_000, 'its announcement'));
     const origin = options.carrier === 'https' ? host.plainOrigin : host.origin;
     if (!origin) throw new Invalid(`the host announced no ${options.carrier} origin`);
-    const room = randomUUID();
     // The dev host's certificate is self-signed: WebTransport pins it by
     // hash, and its HTTPS routes need the exception.
     const flags = [...chromeFlags(options.renderer, process.getuid?.()), '--ignore-certificate-errors'];
     browser = await launch({args: flags});
     const version = (await browser.send('Browser.getVersion')).result;
-    const page = await attachPage(browser, options.viewport);
-    const url = `${pages.origin}${HARNESS_PATH}?${new URLSearchParams({origin, user: host.userPublicKey, room, profile: `stream-${room}`})}`;
-    await page.send('Page.navigate', {url});
-    // The desktop's first frame: SwiftShader compiles its pipelines first.
-    await until(page, 'globalThis.harnessReady || globalThis.harnessError', 240_000, 'the desktop did not mount');
-    const error = await page.evaluate('globalThis.harnessError ?? null');
-    if (error) throw new Invalid(`the page did not connect: ${error}`);
+    const url = `${pages.origin}${HARNESS_PATH}`;
+    const open = (name, params, {viewport = options.viewport, ...page} = {}) =>
+      openPage(browser, {name, url, params: {origin, user: host.userPublicKey, profile: `stream-${randomUUID()}`, ...params}, viewport, page, relay});
     // The stream starts on a desktop already shown, with its live layer and
-    // the legacy-window layer on it, so startup is the stream's own.
-    await until(page, "globalThis.tiloMount?.canvas?.parentElement?.dataset.phase === 'presented'", 240_000,
-      'the desktop presented no frame');
-    await until(page, "Boolean(document.querySelector('.tilo-legacy-windows'))", 60_000,
-      'the desktop opened no legacy-window layer (no live plane)');
-    await until(page, 'globalThis.peer?.live?.available === true', 120_000,
-      'the page\'s live plane did not come up').catch(async error => {
-      throw new Invalid(`${error.message}: ${await page.evaluate(LIVE).catch(() => 'unavailable')}; page console: ${page.console.slice(-15).join(' | ')}; host log: ${relay.lines.slice(-30).join('\n').slice(-4000)}`);
-    });
+    // the legacy-window layer on it, so startup is the stream's own. The page
+    // creates the room, which the host governs.
+    const page = await open('first', {});
+    const room = await page.evaluate('globalThis.peer.room');
     const decodable = await page.evaluate(`(async () => (await VideoDecoder.isConfigSupported({codec: ${JSON.stringify(VIDEO_DECODER_CONFIGS[options.codec])}, optimizeForLatency: true})).supported)()`);
     if (!decodable) throw new Invalid(`${version.product} decodes no ${options.codec} with WebCodecs`);
     const adapter = await page.evaluate(`(async () => { const a = await navigator.gpu?.requestAdapter();
@@ -540,20 +653,23 @@ async function main() {
     // pictures go to its own canvas. Frames it presents meanwhile are work
     // the page does beside decoding.
     const desktopFrames = () => page.evaluate('globalThis.tiloMount?.state?.()?.frames ?? null', 300_000);
-    const startSession = async (name, surface, seconds) => {
+    const startSession = async (name, {surface, seconds, width = options.window.width, height = options.window.height, fps = options.fps, extra = []}) => {
       const log = join(scratch, `${name}.jsonl`);
       const process_ = child(name, options.source, ['--dev-state', join(scratch, 'host'), '--host', host.irohAddr,
-        '--room', room, '--out', log, '--width', String(options.window.width), '--height', String(options.window.height),
+        '--room', room, '--out', log, '--width', String(width), '--height', String(height),
         '--seconds', String(seconds), '--surface', String(surface), '--codec', options.codec,
-        ...(options.fps ? ['--fps', String(options.fps)] : [])],
+        ...(fps ? ['--fps', String(fps)] : []), ...extra],
       {RUST_LOG: process.env.STREAM_SOURCE_LOG ?? 'warn'});
       children.push(process_);
       const ready = JSON.parse(await process_.line(event('ready'), 120_000, 'its subscription'));
+      // Every acceptance case is in a room the host governs, as a workspace
+      // a person shares is: its roles decide who drives a window.
+      if (!ready.enteredRoom) throw new Invalid(`the ${name} could not enter the room as its owner's device: the host does not govern it`);
       const exited = () => within(new Promise(done => { if (process_.exited()) done(); else process_.process.on('exit', done); }),
         15_000, `the ${name}'s exit`);
       return {source: process_, session: ready, log, exited};
     };
-    const {source, session, log: framesLog, exited} = await startSession('session', 7, options.warmUp + options.seconds);
+    const {source, session, log: framesLog, exited} = await startSession('session', {surface: 7, seconds: options.warmUp + options.seconds});
     const mine = `${session.device}:`;
     const decoderBefore = await page.evaluate('JSON.parse(JSON.stringify(globalThis.__tiloStream.decoder))', 300_000);
     console.error(`session ready: ${session.encoder} at ${session.fps} fps`);
@@ -580,18 +696,18 @@ async function main() {
     const stillWindow = Math.round(((await desktopFrames()) - stillFrom) / ((performance.now() - stillStart) / 1000) * 10) / 10;
     const {presses, control} = await clickWindow(page, options.inputs);
     await sleep(2000);
+    // The timed run ends here; the acceptance cases add input of their own.
+    const timedLines = source.lines.length;
     const probe = await page.evaluate('globalThis.__tiloStream', 120_000);
     const live = JSON.parse(await page.evaluate(LIVE));
-    source.process.stdin.end();
-    await exited();
     // This session's pictures, and what the decoders did since it started
     // (a decoder error at any time counts).
     const draws = probe.draws.filter(draw => draw.key?.startsWith(mine));
     const decoder = {...probe.decoder, created: probe.decoder.created - decoderBefore.created,
       chunks: probe.decoder.chunks - decoderBefore.chunks, keys: probe.decoder.keys - decoderBefore.keys,
       outputs: probe.decoder.outputs - decoderBefore.outputs, configs: probe.decoder.configs.slice(decoderBefore.configs.length)};
-    const sent = readFileSync(framesLog, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
-    const arrivals = source.lines.map(line => { try { return JSON.parse(line); } catch { return null; } })
+    const sent = readSent(framesLog);
+    const arrivals = source.lines.slice(0, timedLines).map(line => { try { return JSON.parse(line); } catch { return null; } })
       .filter(line => line?.event === 'input' && /^PointerButton \{ button: 272, pressed: true \}$/.test(line.input))
       .map(line => line.arrivalUs);
     if (!draws.length) {
@@ -612,6 +728,22 @@ async function main() {
     analysis.counts.desktopFramesPerSecond = Number.isFinite(framesBefore) && Number.isFinite(framesAfter)
       ? Math.round((framesAfter - framesBefore) / ((stop.stopUs - measureFromUs) / 1e6) * 10) / 10 : null;
     const summary = Object.fromEntries(Object.entries(analysis.samples).map(([name, values]) => [name, stats(values)]));
+
+    // The acceptance cases (native_stream_acceptance.mjs), on the same
+    // host, room and desktop, after the timed run so they cost it nothing.
+    console.error('timed run done; acceptance cases');
+    const acceptance = await runAcceptance({
+      browser, main: page, w1: {source, session, stop, log: framesLog}, pagesOrigin: pages.origin, viewport: options.viewport, room, live: LIVE,
+      openPage: (name, params, {block = false, context = false} = {}) => (async () => open(name, params,
+        {viewport: {width: 640, height: 400, deviceScaleFactor: 1}, window: true, block, context: context ? await browser.context() : undefined,
+          mountMs: 600_000}))(),
+      startSession, readSent,
+    });
+    for (const extra of acceptance.children) { extra.source.process.stdin.end(); await extra.exited().catch(() => {}); }
+    source.process.stdin.end();
+    await exited();
+    const correctness = {...analysis.correctness, failures: [...analysis.correctness.failures,
+      ...Object.entries(acceptance.cases).flatMap(([name, found]) => found.failures.map(failure => `${name}: ${failure}`))]};
     const report = {
       schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer, adapter,
       browser: {product: version.product, userAgent: version.userAgent}, viewport: options.viewport,
@@ -621,7 +753,8 @@ async function main() {
       live: {carrier: live.live?.carrier ?? null, state: live.live?.state ?? null},
       workload: {seconds: options.seconds, inputs: options.inputs, carrier: options.carrier, codec: options.codec, warmUpSeconds: options.warmUp,
         chromeFlags: flags},
-      summary, counts: analysis.counts, correctness: analysis.correctness, goals: judgeGoals(summary, analysis.counts),
+      summary, counts: analysis.counts, correctness, goals: judgeGoals(summary, analysis.counts),
+      acceptance: {cases: acceptance.cases, pageErrors: acceptance.pageErrors},
       samples: analysis.samples,
     };
     writeFileSync(options.out, JSON.stringify(report, null, 1) + '\n');

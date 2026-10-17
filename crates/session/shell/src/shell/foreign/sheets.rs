@@ -16,6 +16,7 @@
 use vello::kurbo::Rect;
 
 use super::{ForeignFrameStore, SurfaceId};
+use tilo_lock::MutexRecover as _;
 
 /// One sheet and the toplevel it was attached to. `parent` may itself be a
 /// sheet; the tile it is drawn on is [`ForeignFrameStore::sheet_root`].
@@ -43,10 +44,7 @@ const MAX_SHEET_DEPTH: usize = 32;
 
 impl ForeignFrameStore {
     fn sheet_links(&self) -> Vec<SheetLink> {
-        self.sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.sheets.lock_recover().clone()
     }
 
     /// Show `surface` as a sheet over `parent`. Re-attaching moves it to
@@ -55,10 +53,7 @@ impl ForeignFrameStore {
         if surface == parent || self.sheet_ancestors(parent).contains(&surface) {
             return false;
         }
-        let mut links = self
-            .sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut links = self.sheets.lock_recover();
         links.retain(|link| link.surface != surface);
         links.push(SheetLink {
             surface,
@@ -71,10 +66,7 @@ impl ForeignFrameStore {
 
     /// Stop treating `surface` as a sheet, returning the link it had.
     pub fn detach_sheet(&self, surface: SurfaceId) -> Option<SheetLink> {
-        let mut links = self
-            .sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut links = self.sheets.lock_recover();
         let index = links.iter().position(|link| link.surface == surface)?;
         let link = links.remove(index);
         drop(links);
@@ -83,10 +75,7 @@ impl ForeignFrameStore {
 
     /// Record the modal hint for a sheet; `false` when `surface` is not one.
     pub fn set_sheet_modal(&self, surface: SurfaceId, modal: bool) -> bool {
-        let mut links = self
-            .sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut links = self.sheets.lock_recover();
         let Some(link) = links.iter_mut().find(|link| link.surface == surface) else {
             return false;
         };
@@ -97,8 +86,7 @@ impl ForeignFrameStore {
 
     pub fn sheet_link(&self, surface: SurfaceId) -> Option<SheetLink> {
         self.sheets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .find(|link| link.surface == surface)
             .copied()

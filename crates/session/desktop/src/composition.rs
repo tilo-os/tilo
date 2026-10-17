@@ -30,11 +30,14 @@ pub enum WorkArea {
     /// An 8 px band above and below the strips.
     #[default]
     Framed,
-    /// `top` px separate the window surfaces from the top bar and the same
-    /// margin separates them from the bottom edge, with nothing else in
-    /// between (the navigation leaves are zero-height and add no gap). A
-    /// maximized window abuts the bar and the bottom edge directly.
-    Flush { top: f32 },
+    /// `top` px separate the first strip (its windows' tab row) from the
+    /// top bar and `bottom` px separate the windows from the bottom edge,
+    /// with nothing else in between (the navigation leaves are zero-height
+    /// and add no gap). A maximized or fullscreen window abuts the bar and
+    /// the bottom edge directly. [`DesktopSurface::style_work_area`]
+    /// applies this on every frame, so a maximize reconciled into a live
+    /// surface (no rebuild) drops the margins too.
+    Flush { top: f32, bottom: f32 },
 }
 pub struct SurfaceChrome {
     pub navigation: NavigationChrome,
@@ -73,6 +76,9 @@ pub enum ReconcileOutcome {
 }
 
 pub struct DesktopSurface {
+    work_area: WorkArea,
+    /// Last fullscreen presentation a host reported to `style_work_area`.
+    fullscreen: bool,
     pub(crate) external_navigation: bool,
     column_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
@@ -237,26 +243,8 @@ impl DesktopSurface {
             WorkArea::Framed => {
                 column.with_vertical_padding(if external_navigation { 0.0 } else { 8.0 })
             }
-            WorkArea::Flush { top } => {
-                let maximized = tree.active_workspace().is_some_and(|w| {
-                    w.strips
-                        .iter()
-                        .flat_map(|s| &s.window_groups)
-                        .any(|g| g.maximized)
-                });
-                let column = column.with_vertical_padding(0.0);
-                // The zero-height navigation leaves ahead of the rows are
-                // separated by the column gap too; two stray gaps used to
-                // stack above the first strip on top of `top`.
-                let column = column.with_gap(0.0);
-                if maximized {
-                    column
-                } else {
-                    column
-                        .with_extra_top_padding(top)
-                        .with_extra_bottom_padding(top)
-                }
-            }
+            // Styled by `style_work_area` once the rows exist.
+            WorkArea::Flush { .. } => column,
         };
         if !external_navigation {
             column = column
@@ -325,6 +313,8 @@ impl DesktopSurface {
                 .filling(),
         );
         let mut surface = Self {
+            work_area: chrome.work_area,
+            fullscreen: false,
             external_navigation,
             column_index: usize::from(!external_navigation),
             navigation: crate::navigation::Navigation::default(),
@@ -363,7 +353,39 @@ impl DesktopSurface {
                 .collect(),
         };
         surface.sync_navigation(tree);
+        surface.restyle_work_area();
         surface
+    }
+    /// Space the strip column for what it shows now: a
+    /// [`WorkArea::Flush`] column keeps its margins around tiled windows
+    /// and none around a maximized or fullscreen one. Hosts that know about
+    /// a fullscreen presentation call this every frame; a maximize arrives
+    /// through `reconcile` without a rebuild, so the decision cannot be
+    /// taken once when the column is built.
+    pub fn style_work_area(&mut self, fullscreen: bool) {
+        self.fullscreen = fullscreen;
+        self.restyle_work_area();
+    }
+    fn restyle_work_area(&mut self) {
+        let WorkArea::Flush { top, bottom } = self.work_area else {
+            return;
+        };
+        let expanded = self.fullscreen
+            || self
+                .order
+                .iter()
+                .filter_map(|id| self.row(*id))
+                .any(|row| row.groups.iter().any(|g| g.maximized));
+        let (top, bottom) = if expanded { (0.0, 0.0) } else { (top, bottom) };
+        if let Some(column) = self.work_area_mut() {
+            column.set_vertical_padding(0.0);
+            // The zero-height navigation leaves ahead of the rows are
+            // separated by the column gap too; two stray gaps used to
+            // stack above the first strip on top of `top`.
+            column.set_gap(0.0);
+            column.set_extra_top_padding(top);
+            column.set_extra_bottom_padding(bottom);
+        }
     }
     /// The primary display's full top bar, when the surface draws one.
     pub fn topbar(&self) -> Option<&crate::topbar::TopBarChrome> {
@@ -379,6 +401,18 @@ impl DesktopSurface {
             .flatten()
             .and_then(Widget::as_any_mut)
             .and_then(|v| v.downcast_mut::<crate::topbar::TopBarChrome>())
+    }
+    /// The backdrop under everything, when it is the shared
+    /// [`crate::backdrop::DesktopBackdrop`].
+    pub fn backdrop(&self) -> Option<&crate::backdrop::DesktopBackdrop> {
+        child(self.root.as_ref(), &[0, 0])
+            .and_then(Widget::as_any)
+            .and_then(|v| v.downcast_ref::<crate::backdrop::DesktopBackdrop>())
+    }
+    pub fn backdrop_mut(&mut self) -> Option<&mut crate::backdrop::DesktopBackdrop> {
+        child_mut(self.root.as_mut(), &[0, 0])
+            .and_then(Widget::as_any_mut)
+            .and_then(|v| v.downcast_mut::<crate::backdrop::DesktopBackdrop>())
     }
     /// The layer [`SurfaceChrome::display_chrome`] installed.
     pub fn display_chrome(&self) -> Option<&dyn Widget> {
@@ -408,6 +442,16 @@ impl DesktopSurface {
     pub fn tab_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.tiles.keys().copied()
     }
+    /// A frame was presented: every strip's window groups may step their
+    /// width springs again ([`GroupRow::frame_presented`]).
+    pub fn frame_presented(&mut self) {
+        for id in self.strip_ids() {
+            if let Some(row) = self.row_mut(id) {
+                row.frame_presented();
+            }
+        }
+    }
+
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }
@@ -936,6 +980,7 @@ impl DesktopSurface {
         self.failures.extend(failures);
         self.close_reports.extend(reports);
         self.sync_navigation(tree);
+        self.restyle_work_area();
         if changed {
             ReconcileOutcome::Updated
         } else {
@@ -1009,6 +1054,7 @@ impl DesktopSurface {
         };
         let mut next = Self::build(tree, records, &mut retained, chrome);
         next.inherit_navigation(self);
+        next.style_work_area(self.fullscreen);
         for (_, mut host) in retained.hosts {
             next.close_reports
                 .extend(ui::component_lifecycle::close_components(&mut host));

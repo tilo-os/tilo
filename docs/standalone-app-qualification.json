@@ -1,0 +1,1424 @@
+{
+  "schema_version": 1,
+  "document_kind": "tilo_portable_host_app_qualification_inventory",
+  "source_audit": {
+    "commit": "d19f1a0ae2b1d05ec382188fd975bd5762e10704",
+    "date": "2026-09-12",
+    "map": "2026-09-12 macOS app capability map (retired; its findings are the records below)",
+    "map_sha256_at_revalidation": "aaacb4357e7210465e7192f09158630854d438a850115b4629522393c59703c7",
+    "note": "Original row-level source-audit provenance is preserved."
+  },
+  "inventory_revalidation": {
+    "commit": "a1a0402f39530b8e409a5b3a12c00b158f0abb6c",
+    "date": "2026-09-13",
+    "scope": [
+      "tracked apps/*/tilo-app.toml identities and roles",
+      "manifest-to-map identity set equality",
+      "manifest and launch-source link existence",
+      "bounded named canonical-definition/service-lifecycle token search"
+    ],
+    "excluded": [
+      "runtime qualification",
+      "web or external services",
+      "broad implementation re-audit",
+      "legacy test-result import"
+    ],
+    "manifest_count": 47,
+    "manifest_tree_fingerprint": {
+      "algorithm": "sha256",
+      "method": "path-sorted git ls-tree records for apps/*/tilo-app.toml",
+      "value": "7627838e7dd384276f88375336957da714487873e01dcd32e37a83257679f6fb"
+    },
+    "identity_result": {
+      "manifest_ids": 47,
+      "unique_manifest_ids": 47,
+      "map_rows": 47,
+      "unique_map_ids": 47,
+      "missing_from_map": [],
+      "extra_in_map": []
+    }
+  },
+  "result_semantics": {
+    "allowed": [
+      "pass",
+      "fail",
+      "not_run",
+      "not_applicable"
+    ],
+    "applicability_allowed": [
+      "applicable",
+      "unknown",
+      "not_applicable"
+    ],
+    "rule": "A provider gap is not not_applicable. Unknown applicability remains unknown and receives not_run until qualified."
+  },
+  "capability_families": {
+    "H": "Canonical component factories, instance lifecycle and wakes, capability context, resource/action routing, and framework conformance.",
+    "F": "Durable records, file grants and operations, metadata, trash, dialogs, and open-in-app routing.",
+    "I": "Identity, secret storage, accounts, authenticated collaboration, and service authorization.",
+    "N": "Scoped network/account services, cancellation, reconnection, and typed failures.",
+    "W": "Real web engine and native-child-view integration.",
+    "M": "Media decode, playback, audio input/output, capture, and encoding.",
+    "P": "Authorized process/tool launch, PTYs, lifecycle, and platform paths.",
+    "S": "Host integration umbrella; row-specific subcapabilities distinguish ordinary integration, observation, system administration, and privileged system administration.",
+    "K": "OS/ABI-aware package selection, execution bridge, and confinement."
+  },
+  "capability_family_reference_semantics": {
+    "listed": "Qualification boundary referenced by the shared contract or existing row prose; listing does not establish applicability, implementation, support, or a host result.",
+    "unlisted": "Not identified by this source audit; no applicability conclusion is inferred.",
+    "result_resolution": "Required-category applicability is resolved by required_category_applicability_profile. Per-host results, evidence, and reason are resolved by host_result_profile."
+  },
+  "named_source_check_profiles": {
+    "canonical_definition_named_search_a1_v1": {
+      "commit": "a1a0402f39530b8e409a5b3a12c00b158f0abb6c",
+      "files": [
+        "apps/*/src/main.rs",
+        "apps/*/src/lib.rs",
+        "apps/*/src/app.rs"
+      ],
+      "tokens": [
+        "ApplicationDefinition",
+        "application_definition",
+        "component_definition",
+        "service_lifecycle",
+        "ServiceLifecycle"
+      ],
+      "exact_token_matches": 0,
+      "launch_spec_main_files": 46,
+      "interpretation": "The search establishes only that it found no named canonical-definition/service-lifecycle symbol in this bounded file/token set. It does not prove absence."
+    }
+  },
+  "required_categories": [
+    "primary_user_flow_and_required_failures",
+    "live_resources_actions_and_operation_semantics",
+    "collaboration_identity_authority",
+    "presence_and_explicit_following",
+    "history_local_view_and_offline_recovery",
+    "graphical_input_accessibility_theme_scale_native_integration",
+    "headless_actions_and_persistence"
+  ],
+  "applicability_profiles": {
+    "gui_inventory_v1": {
+      "primary_user_flow_and_required_failures": "applicable",
+      "live_resources_actions_and_operation_semantics": "unknown",
+      "collaboration_identity_authority": "unknown",
+      "presence_and_explicit_following": "unknown",
+      "history_local_view_and_offline_recovery": "unknown",
+      "graphical_input_accessibility_theme_scale_native_integration": "applicable",
+      "headless_actions_and_persistence": "unknown"
+    },
+    "notes_files_milestone_v1": {
+      "primary_user_flow_and_required_failures": "applicable",
+      "live_resources_actions_and_operation_semantics": "applicable",
+      "collaboration_identity_authority": "applicable",
+      "presence_and_explicit_following": "applicable",
+      "history_local_view_and_offline_recovery": "applicable",
+      "graphical_input_accessibility_theme_scale_native_integration": "applicable",
+      "headless_actions_and_persistence": "applicable"
+    },
+    "agent_cli_service_v1": {
+      "primary_user_flow_and_required_failures": "applicable",
+      "live_resources_actions_and_operation_semantics": "applicable",
+      "collaboration_identity_authority": "applicable",
+      "presence_and_explicit_following": "unknown",
+      "history_local_view_and_offline_recovery": "unknown",
+      "graphical_input_accessibility_theme_scale_native_integration": "not_applicable",
+      "headless_actions_and_persistence": "applicable"
+    },
+    "osk_input_surface_v1": {
+      "primary_user_flow_and_required_failures": "applicable",
+      "live_resources_actions_and_operation_semantics": "unknown",
+      "collaboration_identity_authority": "unknown",
+      "presence_and_explicit_following": "unknown",
+      "history_local_view_and_offline_recovery": "unknown",
+      "graphical_input_accessibility_theme_scale_native_integration": "applicable",
+      "headless_actions_and_persistence": "unknown"
+    }
+  },
+  "host_result_profiles": {
+    "portable_host_not_run_2026_09_13": {
+      "macos": {
+        "result_for_applicable_or_unknown": "not_run",
+        "evidence": null,
+        "reason": "The 2026-09-13 inventory revalidation executed no macOS app qualification."
+      },
+      "linux": {
+        "result_for_applicable_or_unknown": "not_run",
+        "evidence": null,
+        "reason": "The 2026-09-13 inventory revalidation executed no Linux app qualification and imports no legacy Linux result."
+      },
+      "result_for_not_applicable": {
+        "result": "not_applicable",
+        "evidence": "source-established role/applicability in the original map or manifest",
+        "reason": "The corresponding feature/check does not apply to this role."
+      }
+    }
+  },
+  "records": [
+    {
+      "app_id": "so.tilo.agent",
+      "manifest_path": "apps/agent/tilo-app.toml",
+      "manifest_role": "service",
+      "entrypoint_flavour": "cli",
+      "launch_source": "apps/agent/src/main.rs",
+      "launch_adapter_observation": "cli_main_entrypoint",
+      "component_or_service_lifecycle": {
+        "expected_role": "service_lifecycle",
+        "status": "service_lifecycle_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "I",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "agent_cli_service_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 1
+    },
+    {
+      "app_id": "so.tilo.api-tester",
+      "manifest_path": "apps/api_tester/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/api_tester/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 2
+    },
+    {
+      "app_id": "so.tilo.backups",
+      "manifest_path": "apps/backups/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/backups/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 3
+    },
+    {
+      "app_id": "so.tilo.browser",
+      "manifest_path": "apps/browser/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/browser/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "N",
+        "W"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 4
+    },
+    {
+      "app_id": "so.tilo.calculator",
+      "manifest_path": "apps/calculator/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/calculator/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 5
+    },
+    {
+      "app_id": "so.tilo.calendar",
+      "manifest_path": "apps/calendar/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/calendar/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 6
+    },
+    {
+      "app_id": "so.tilo.camera",
+      "manifest_path": "apps/camera/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/camera/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "M",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "camera_device_permission",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "host_uri_opening",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 7
+    },
+    {
+      "app_id": "so.tilo.chat",
+      "manifest_path": "apps/chat/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/chat/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N",
+        "M",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "screen_capture",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "notifications",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 8
+    },
+    {
+      "app_id": "so.tilo.code-editor",
+      "manifest_path": "apps/code_editor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/code_editor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "P"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 9
+    },
+    {
+      "app_id": "so.tilo.contacts",
+      "manifest_path": "apps/contacts/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/contacts/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "notifications",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "host_contacts_unknown",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 10
+    },
+    {
+      "app_id": "so.tilo.containers",
+      "manifest_path": "apps/containers/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/containers/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "container_engine",
+          "classification": "system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 11
+    },
+    {
+      "app_id": "so.tilo.db-client",
+      "manifest_path": "apps/db_client/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/db_client/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 12
+    },
+    {
+      "app_id": "so.tilo.diffmerge",
+      "manifest_path": "apps/diffmerge/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/diffmerge/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 13
+    },
+    {
+      "app_id": "so.tilo.disks",
+      "manifest_path": "apps/disks/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/disks/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "disk_and_mount_administration",
+          "classification": "privileged_system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 14
+    },
+    {
+      "app_id": "so.tilo.ebook",
+      "manifest_path": "apps/ebook/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/ebook/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 15
+    },
+    {
+      "app_id": "so.tilo.feeds",
+      "manifest_path": "apps/feeds/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/feeds/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 16
+    },
+    {
+      "app_id": "so.tilo.file-explorer",
+      "manifest_path": "apps/file-explorer/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/file-explorer/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "notes_files_milestone_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 17
+    },
+    {
+      "app_id": "so.tilo.firewall",
+      "manifest_path": "apps/firewall/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/firewall/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "firewall_policy_administration",
+          "classification": "privileged_system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 18
+    },
+    {
+      "app_id": "so.tilo.git-client",
+      "manifest_path": "apps/git_client/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/git_client/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N",
+        "P"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 19
+    },
+    {
+      "app_id": "so.tilo.hex-editor",
+      "manifest_path": "apps/hex_editor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/hex_editor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 20
+    },
+    {
+      "app_id": "so.tilo.imager",
+      "manifest_path": "apps/imager/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/imager/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "raw_device_writing",
+          "classification": "privileged_system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 21
+    },
+    {
+      "app_id": "so.tilo.logs",
+      "manifest_path": "apps/logs/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/logs/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "host_log_stream",
+          "classification": "host_observation",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 22
+    },
+    {
+      "app_id": "so.tilo.mail",
+      "manifest_path": "apps/mail/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/mail/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "host_uri_opening",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "notifications_unknown",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 23
+    },
+    {
+      "app_id": "so.tilo.maps",
+      "manifest_path": "apps/maps/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/maps/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "N",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "location_unknown",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 24
+    },
+    {
+      "app_id": "so.tilo.monitor",
+      "manifest_path": "apps/monitor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/monitor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "system_metrics_and_process_inventory",
+          "classification": "host_observation",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 25
+    },
+    {
+      "app_id": "so.tilo.music",
+      "manifest_path": "apps/music/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/music/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N",
+        "M",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "native_media_controls",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "network_status",
+          "classification": "host_observation",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 26
+    },
+    {
+      "app_id": "so.tilo.notes",
+      "manifest_path": "apps/notes/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/notes/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "notes_files_milestone_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 27
+    },
+    {
+      "app_id": "so.tilo.osk",
+      "manifest_path": "apps/osk/tilo-app.toml",
+      "manifest_role": "service",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/osk/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "input_surface_lifecycle",
+        "status": "input_surface_lifecycle_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "input_surface_and_secure_focus",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "osk_input_surface_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 28
+    },
+    {
+      "app_id": "so.tilo.pdf-viewer",
+      "manifest_path": "apps/pdf_viewer/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/pdf_viewer/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 29
+    },
+    {
+      "app_id": "so.tilo.photos",
+      "manifest_path": "apps/photos/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/photos/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 30
+    },
+    {
+      "app_id": "so.tilo.remote",
+      "manifest_path": "apps/remote/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/remote/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "I",
+        "N",
+        "M",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "remote_frame_and_input",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 31
+    },
+    {
+      "app_id": "so.tilo.settings",
+      "manifest_path": "apps/settings/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/settings/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "I",
+        "N",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "host_settings_and_inventory",
+          "classification": "system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 32
+    },
+    {
+      "app_id": "so.tilo.sheets",
+      "manifest_path": "apps/sheets/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/sheets/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 33
+    },
+    {
+      "app_id": "so.tilo.slides",
+      "manifest_path": "apps/slides/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/slides/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "fullscreen_presentation",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 34
+    },
+    {
+      "app_id": "so.tilo.snippets",
+      "manifest_path": "apps/snippets/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/snippets/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "clipboard_or_global_text_injection_unknown",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 35
+    },
+    {
+      "app_id": "so.tilo.store",
+      "manifest_path": "apps/store/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/store/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "N",
+        "K"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 36
+    },
+    {
+      "app_id": "so.tilo.terminal",
+      "manifest_path": "apps/terminal/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/terminal/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "host_uri_opening",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 37
+    },
+    {
+      "app_id": "so.tilo.themes",
+      "manifest_path": "apps/themes/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/themes/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "theme_and_settings_broadcast",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 38
+    },
+    {
+      "app_id": "so.tilo.totp",
+      "manifest_path": "apps/totp/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/totp/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "secure_clipboard",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        },
+        {
+          "id": "wall_clock",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 39
+    },
+    {
+      "app_id": "so.tilo.tube",
+      "manifest_path": "apps/tube/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/tube/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "I",
+        "N",
+        "M"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 40
+    },
+    {
+      "app_id": "so.tilo.typst-editor",
+      "manifest_path": "apps/typst_editor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/typst_editor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "P"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 41
+    },
+    {
+      "app_id": "so.tilo.video-player",
+      "manifest_path": "apps/video-player/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/video-player/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "M"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 42
+    },
+    {
+      "app_id": "so.tilo.video-editor",
+      "manifest_path": "apps/video_editor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/video_editor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "M"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 43
+    },
+    {
+      "app_id": "so.tilo.vpn",
+      "manifest_path": "apps/vpn/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/vpn/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "I",
+        "P",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "vpn_and_network_configuration",
+          "classification": "privileged_system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 44
+    },
+    {
+      "app_id": "so.tilo.weather",
+      "manifest_path": "apps/weather/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/weather/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "N",
+        "S"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "settings_locale_and_units",
+          "classification": "host_integration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 45
+    },
+    {
+      "app_id": "so.tilo.windows",
+      "manifest_path": "apps/windows/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/windows/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F",
+        "S",
+        "K"
+      ],
+      "s_subcapabilities": [
+        {
+          "id": "compatibility_service",
+          "classification": "system_administration",
+          "source": "existing_capability_map_row_prose"
+        }
+      ],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 46
+    },
+    {
+      "app_id": "so.tilo.word-processor",
+      "manifest_path": "apps/word-processor/tilo-app.toml",
+      "manifest_role": "app",
+      "entrypoint_flavour": "gui",
+      "launch_source": "apps/word-processor/src/main.rs",
+      "launch_adapter_observation": "LaunchSpec_token_found",
+      "component_or_service_lifecycle": {
+        "expected_role": "application_component_definition",
+        "status": "canonical_definition_symbol_not_established_by_inventory_audit",
+        "named_source_check_profile": "canonical_definition_named_search_a1_v1",
+        "caution": "No absence claim: the bounded token search did not establish a canonical symbol."
+      },
+      "capability_family_references": [
+        "H",
+        "F"
+      ],
+      "s_subcapabilities": [],
+      "required_category_applicability_profile": "gui_inventory_v1",
+      "host_result_profile": "portable_host_not_run_2026_09_13",
+      "source_audit_row_ordinal": 47
+    }
+  ]
+}

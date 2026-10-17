@@ -13,8 +13,40 @@ path = "src/lib.rs"
 [[bin]]
 name = "tilo-model-gateway"
 path = "src/main.rs"
+required-features = ["service"]
+
+[[example]]
+name = "local-tool-acceptance"
+required-features = ["service"]
+
+[features]
+# The gateway daemon: the provider HTTP clients, credential custody, the
+# on-device model service and the subject model's runtime. Apps and the
+# shared app runtime depend on this crate with `default-features = false` and
+# get only the client (the wire types and the framed socket calls), so no app
+# process maps the model runtime it asks the gateway to run.
+default = ["service"]
+service = [
+    "wire-frame/tokio",
+    "dep:tilo-files",
+    "dep:tilo-clock",
+    "dep:accounts",
+    "dep:account-custody",
+    "dep:settings-store",
+    "dep:reqwest",
+    "dep:tilo-net",
+    "dep:tilo-rt",
+    "dep:tokio",
+    "dep:clap",
+    "dep:base64",
+    "dep:tilo-segment",
+    "dep:local-model-service",
+    "dep:image",
+    "dep:rustix",
+]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,30 +55,34 @@ thiserror.workspace = true
 zeroize.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 libc.workspace = true
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { path = "../../platform/tilo-files", optional = true }
 # Loopback admission of device-local models is shared with apps discovering them.
 url.workspace = true
 # The provider protocol names travel in the client's requests too.
 agent-provider-config = { path = "../provider-config" }
 
-# The gateway itself. Off the desktop the library is only the client, which
-# reports the gateway unavailable (there is no launcher descriptor to use).
+# The gateway itself (`service`). Off the desktop the library is only the
+# client, which reports the gateway unavailable (there is no launcher
+# descriptor to use).
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
-accounts = { path = "../../system/accounts" }
-reqwest = { workspace = true, features = ["json"] }
-tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
-tilo-rt.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
-clap.workspace = true
-base64.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock", optional = true }
+accounts = { path = "../../system/accounts", optional = true }
+# A provider signed in with Google (Vertex AI) has no key: custody mints and
+# refreshes its access token from the grant Settings sealed.
+account-custody = { path = "../../system/account-custody", optional = true }
+settings-store = { path = "../../system/settings-store", optional = true }
+reqwest = { workspace = true, features = ["json"], optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+tilo-rt = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"], optional = true }
+clap = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 # The subject of a picture is found here, with the segmentation model the
 # person installed, so no app holds the model or its runtime.
-tilo-segment = { path = "../../media/segment", features = ["infer"] }
-local-model-service = { path = "../local-model-service" }
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
+tilo-segment = { path = "../../media/segment", features = ["infer"], optional = true }
+local-model-service = { path = "../local-model-service", optional = true }
+image = { workspace = true, features = ["png", "jpeg", "webp"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -55,4 +91,4 @@ tempfile.workspace = true
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process"], optional = true }

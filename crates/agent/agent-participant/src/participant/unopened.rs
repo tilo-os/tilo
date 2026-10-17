@@ -69,20 +69,15 @@ pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
 /// The records bound to a tab of a shared desktop `doc`: what people have
 /// open. Reads its current value only.
 fn desktop_records(doc: &impl automerge::ReadDoc) -> HashSet<String> {
-    let Ok(Some((automerge::Value::Scalar(value), _))) = doc.get(automerge::ROOT, "desktop") else {
-        return HashSet::new();
-    };
-    let automerge::ScalarValue::Str(text) = value.as_ref() else {
-        return HashSet::new();
-    };
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|desktop| desktop.get("records").and_then(|r| r.as_array()).cloned())
+    tilo_desktop_model::shared_record::read(doc, None)
+        .map(|desktop| {
+            desktop
+                .records
+                .into_iter()
+                .map(|(_, record)| record)
+                .collect()
+        })
         .unwrap_or_default()
-        .iter()
-        .filter_map(|pair| pair.get(1).and_then(serde_json::Value::as_str))
-        .map(str::to_owned)
-        .collect()
 }
 
 /// `known` ordered for the planner: records open on the desktop first, then
@@ -417,7 +412,6 @@ impl Unopened {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable as _;
 
     fn route(app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
@@ -435,22 +429,56 @@ mod tests {
         changes: usize,
     }
 
+    /// A desktop of twenty windows, `records` naming theirs.
+    fn twenty(records: impl Fn(u64) -> String) -> tilo_desktop_model::ownership::SharedDesktop {
+        use tilo_desktop_model::{
+            Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+        };
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let mut strip = Strip::new(StripId(2), "Main");
+        let tabs: Vec<Tab> = (0..20)
+            .map(|id| Tab {
+                id: 100 + id,
+                title: "Notes".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                    note: String::new(),
+                },
+            })
+            .collect();
+        strip.window_groups.push(WindowGroup {
+            id: 3,
+            active_tab: 100,
+            tabs,
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        tilo_desktop_model::ownership::SharedDesktop {
+            tree: tilo_desktop_model::DesktopTree {
+                workspaces: vec![workspace],
+                ..tilo_desktop_model::DesktopTree::default()
+            },
+            records: (0..20).map(|id| (100 + id, records(id))).collect(),
+            authors: std::collections::BTreeMap::new(),
+        }
+    }
+
     impl Desktop {
         /// One change, its last tab bound to `last`.
         fn change(&mut self, last: &str) -> Vec<u8> {
             let index = self.changes;
             self.changes = index.saturating_add(1);
-            let mut records: Vec<String> = (0..19)
-                .map(|tab| format!("[{tab},\"rec-{index}-{tab}\"]"))
-                .collect();
-            records.push(format!("[19,\"{last}\"]"));
-            self.doc
-                .put(
-                    automerge::ROOT,
-                    "desktop",
-                    format!("{{\"tree\":{{}},\"records\":[{}]}}", records.join(",")),
-                )
-                .unwrap();
+            let desktop = twenty(|tab| {
+                if tab == 19 {
+                    last.to_owned()
+                } else {
+                    format!("rec-{index}-{tab}")
+                }
+            });
+            tilo_desktop_model::shared_record::write(&mut self.doc, &desktop).unwrap();
             self.doc.save_incremental()
         }
     }
@@ -497,15 +525,17 @@ mod tests {
     #[test]
     fn the_shared_desktop_names_its_tabs_records() {
         let mut doc = AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            "desktop",
-            r#"{"tree":{},"records":[[7,"rec-open"]]}"#,
-        )
-        .unwrap();
+        let desktop = twenty(|tab| {
+            if tab == 7 {
+                "rec-open".into()
+            } else {
+                format!("rec-{tab}")
+            }
+        });
+        tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
         let records = desktop_records(&doc);
         assert!(records.contains("rec-open"));
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 20);
     }
 
     /// The desktop's tabs come from its document as merged when its

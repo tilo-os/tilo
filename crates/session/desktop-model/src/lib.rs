@@ -21,11 +21,13 @@ pub mod grants;
 pub mod history;
 pub mod ids;
 pub mod layout;
+pub mod ownership;
 pub mod partition;
 pub mod projection;
 pub mod records;
 pub mod serde_ids;
 pub mod service_member;
+pub mod shared_record;
 pub mod shared_surfaces;
 pub mod task;
 pub mod topology;
@@ -48,6 +50,7 @@ pub use task::{
     MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, TASK_KIND, WorkspaceAgentRequest, WorkspaceEffectReceipt,
     WorkspaceTask, WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent,
+    WorkspaceTaskConfirmation, WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState,
     WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
     WorkspaceTaskExecution, WorkspaceTaskExecutionAuthority, WorkspaceTaskExecutionPhase,
     WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,

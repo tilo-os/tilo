@@ -310,16 +310,6 @@ impl WorkerEnvironments {
         }
     }
 
-    /// Hand the relay connection to whatever sends launches up it.
-    fn attach_relay(&self, connection: &iroh::endpoint::Connection) {
-        #[cfg(target_os = "linux")]
-        if let Some(route) = &self.legacy_route {
-            route.set_relay(connection.clone());
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = connection;
-    }
-
     fn hosts_anything(&self) -> bool {
         self.host.is_some() || self.legacy.is_some()
     }
@@ -526,7 +516,11 @@ pub async fn run_production_compute_worker(
         .as_ref()
         .map(|host| AbortOnDrop(host.spawn_reaper()));
     let connection = client.connection();
-    config.environments.attach_relay(&connection);
+    // Hosted environments send their legacy launches up this connection.
+    #[cfg(target_os = "linux")]
+    if let Some(route) = &config.environments.legacy_route {
+        route.set_relay(connection.clone());
+    }
     let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
 
     loop {

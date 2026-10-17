@@ -15,6 +15,7 @@ test-support = ["dep:tilo-test-env"]
 
 [dependencies]
 runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 threshold-identity = { version = "0.1.0", path = "../threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }

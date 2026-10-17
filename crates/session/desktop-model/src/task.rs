@@ -73,7 +73,7 @@ impl WorkspaceTaskRoute {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTaskResource {
     pub app_id: Option<String>,
     pub app_label: Option<String>,
@@ -83,8 +83,58 @@ pub struct WorkspaceTaskResource {
     /// Canonical direct-Chat request behind an explicitly queued agent task.
     /// The full instruction lives here rather than in the short Task Center
     /// display title, so an offline agent receives it byte-for-byte later.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub agent_request: Option<WorkspaceAgentRequest>,
+}
+
+// An absent Chat request is left out of JSON, so the room document reads as
+// it always has, but every part is written in a binary format: postcard
+// reads fields by position and cannot skip one.
+impl Serialize for WorkspaceTaskResource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename = "WorkspaceTaskResource")]
+        struct Readable<'a> {
+            app_id: Option<&'a str>,
+            app_label: Option<&'a str>,
+            id: &'a str,
+            kind: &'a str,
+            label: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_request: Option<&'a WorkspaceAgentRequest>,
+        }
+        #[derive(Serialize)]
+        #[serde(rename = "WorkspaceTaskResource")]
+        struct Positional<'a> {
+            app_id: Option<&'a str>,
+            app_label: Option<&'a str>,
+            id: &'a str,
+            kind: &'a str,
+            label: &'a str,
+            agent_request: Option<&'a WorkspaceAgentRequest>,
+        }
+        if serializer.is_human_readable() {
+            Readable {
+                app_id: self.app_id.as_deref(),
+                app_label: self.app_label.as_deref(),
+                id: &self.id,
+                kind: &self.kind,
+                label: &self.label,
+                agent_request: self.agent_request.as_ref(),
+            }
+            .serialize(serializer)
+        } else {
+            Positional {
+                app_id: self.app_id.as_deref(),
+                app_label: self.app_label.as_deref(),
+                id: &self.id,
+                kind: &self.kind,
+                label: &self.label,
+                agent_request: self.agent_request.as_ref(),
+            }
+            .serialize(serializer)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -319,6 +369,11 @@ pub enum WorkspaceTaskMutationResult {
     ExecutionBudgetSet {
         task_id: String,
     },
+    /// A confirmation was asked, answered or settled. Appended to preserve
+    /// existing encoded result indices.
+    ConfirmationRecorded {
+        task_id: String,
+    },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -357,6 +412,104 @@ pub struct WorkspaceTaskControl {
     pub directions: Vec<WorkspaceTaskDirection>,
     #[serde(default)]
     pub receipts: Vec<WorkspaceTaskMutationReceipt>,
+    /// The action of the active run that waits for the person's answer.
+    /// The run stays in progress, paused at that action, until the person
+    /// answers, the run ends, or the agent asks for something else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<WorkspaceTaskConfirmation>,
+}
+
+/// An action an agent's run would take that its person is asked about
+/// first, shown as the draft of exactly what would happen.
+///
+/// The arguments themselves are not kept: the draft shows them (secrets
+/// withheld), and the agent asks again with the same arguments, which must
+/// digest to [`Self::arguments_digest`]. What runs is those arguments with
+/// the person's edits, so a confirmation answers that one draft only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskConfirmation {
+    /// Names this request: the lowercase hex of its arguments' digest and
+    /// address.
+    pub id: String,
+    /// Names this one asking: asking again for a draft another replaced is
+    /// a new request, not a replay of the first.
+    pub asking: uuid::Uuid,
+    pub run_epoch: u64,
+    pub agent_id: String,
+    pub app: String,
+    pub resource_kind: String,
+    pub resource: String,
+    pub action: String,
+    pub kind: tilo_action_policy::ActionKind,
+    pub risk: tilo_actions::RiskLevel,
+    pub draft: tilo_actions::Draft,
+    /// [`tilo_actions::draft::arguments_digest`] of the agent's arguments.
+    pub arguments_digest: [u8; 32],
+    pub requested_at: i64,
+    pub state: WorkspaceTaskConfirmationState,
+}
+
+impl WorkspaceTaskConfirmation {
+    /// The id of the request to take `action` on `resource` with arguments
+    /// digesting to `digest`.
+    #[must_use]
+    pub fn id_for(resource: &str, action: &str, digest: &[u8; 32]) -> String {
+        let id = blake3::Hasher::new_derive_key("Tilo task confirmation id v1")
+            .update(resource.as_bytes())
+            .update(&[0])
+            .update(action.as_bytes())
+            .update(&[0])
+            .update(digest)
+            .finalize();
+        id.to_hex().chars().take(32).collect()
+    }
+
+    /// Whether it still waits for the person.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        self.state == WorkspaceTaskConfirmationState::Waiting
+    }
+
+    /// The draft as it will run: with the person's edits once they confirmed.
+    #[must_use]
+    pub fn reviewed_draft(&self) -> tilo_actions::Draft {
+        match &self.state {
+            WorkspaceTaskConfirmationState::Confirmed { edits, .. } => self.draft.edited(edits),
+            _ => self.draft.clone(),
+        }
+    }
+}
+
+/// Where a confirmation stands.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WorkspaceTaskConfirmationState {
+    Waiting,
+    /// The person confirmed the draft, as they changed it.
+    Confirmed {
+        person: String,
+        at: i64,
+        #[serde(default)]
+        edits: Vec<tilo_actions::DraftEdit>,
+    },
+    /// The person declined; the agent is told why, if they said.
+    Declined {
+        person: String,
+        at: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+}
+
+/// A person's answer to a [`WorkspaceTaskConfirmation`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskConfirmationAnswer {
+    /// Run it, with these changes to the draft's fields.
+    Confirm { edits: Vec<tilo_actions::DraftEdit> },
+    /// Do not run it.
+    Decline { reason: Option<String> },
 }
 
 /// Append-only, broker-authenticated record of an external side effect.
@@ -492,7 +645,15 @@ pub struct WorkspaceTask {
     pub assigned_agent: Option<String>,
     pub route: WorkspaceTaskRoute,
     pub status: WorkspaceTaskStatus,
+    /// The scope-narrowing attachment: a task attached to a resource runs
+    /// only within it.
     pub resource: Option<WorkspaceTaskResource>,
+    /// What the request is about, when the person asked about a selection:
+    /// the resource and exactly what was selected in it. Context only, kept
+    /// apart from [`Self::resource`] so it never narrows (or widens) what
+    /// the run may do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<tilo_actions::SelectionSubject>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
@@ -596,5 +757,78 @@ mod effect_receipt_redaction_tests {
         assert!(!json.contains("secret text"));
         assert!(!json.contains("secret words"));
         assert!(receipt.is_redacted());
+    }
+}
+
+#[cfg(test)]
+mod selection_subject_tests {
+    use super::{WorkspaceTask, WorkspaceTaskResource};
+    use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace, SelectionSubject};
+
+    fn resource() -> WorkspaceTaskResource {
+        WorkspaceTaskResource {
+            app_id: Some("so.tilo.word-processor".into()),
+            app_label: Some("Writer".into()),
+            id: "doc:1".into(),
+            kind: "word-processor.document".into(),
+            label: "Proposal".into(),
+            agent_request: None,
+        }
+    }
+
+    #[test]
+    fn an_attachment_reads_and_writes_as_it_always_has() {
+        let older = serde_json::json!({
+            "app_id": "so.tilo.word-processor", "app_label": "Writer",
+            "id": "doc:1", "kind": "word-processor.document", "label": "Proposal"
+        });
+        let read: WorkspaceTaskResource = serde_json::from_value(older.clone()).unwrap();
+        assert_eq!(read, resource());
+        assert_eq!(serde_json::to_value(&read).unwrap(), older);
+        let encoded = postcard::to_allocvec(&read).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<WorkspaceTaskResource>(&encoded).unwrap(),
+            read,
+            "a binary format writes the absent Chat request too"
+        );
+    }
+
+    #[test]
+    fn a_task_about_a_selection_keeps_it_apart_from_any_attachment() {
+        let subject = SelectionSubject {
+            app_id: "so.tilo.word-processor".into(),
+            app_label: "Writer".into(),
+            resource: ActionResource {
+                id: "doc:1".into(),
+                kind: "word-processor.document".into(),
+                label: "Proposal".into(),
+            },
+            anchor: SelectionAnchor::of_text("the second paragraph")
+                .at(SelectionPlace::range("block-7", 0, 20)),
+        };
+        let mut task: WorkspaceTask = serde_json::from_value(serde_json::json!({
+            "id": "task:1", "title": "Tighten this", "created_by": "ada",
+            "assigned_agent": "scribe", "route": "model", "status": "queued",
+            "resource": null, "created_at": 1, "updated_at": 1
+        }))
+        .unwrap();
+        assert!(task.subject.is_none(), "a task from before subjects reads");
+        assert!(
+            serde_json::to_value(&task)
+                .unwrap()
+                .get("subject")
+                .is_none(),
+            "and writes what it wrote"
+        );
+        task.subject = Some(subject.clone());
+        let read: WorkspaceTask =
+            serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
+        assert_eq!(read.subject, Some(subject));
+        assert!(read.resource.is_none(), "a selection is no attachment");
+        let context = read.action_context();
+        assert!(
+            context.resource.is_none() && context.item.is_none(),
+            "nor every change's resource or item"
+        );
     }
 }

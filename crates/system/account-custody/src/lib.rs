@@ -16,6 +16,10 @@
 //!   grant with [`Custodian::seal_oauth`] and asks
 //!   [`Custodian::oauth_access_token`] for a current access token before
 //!   each `XOAUTH2` login; refresh and resealing happen here.
+//! - **The model gateway** asks [`Custodian::oauth_access_token_with_expiry`]
+//!   for Google Vertex AI requests, from a grant Settings sealed for one
+//!   agent model provider. That grant carries only the Google Cloud scope
+//!   ([`Capability::Models`]), apart from any Mail or Files grant.
 //! - **The daemon** reads one account's short-lived credential from the
 //!   handoff store ([`accounts::handoff`]) through
 //!   [`accounts::HandoffCredentialSource`]. When it is missing, due or
@@ -30,6 +34,8 @@
 //! shows as "Sign in again".
 
 mod clients;
+#[cfg(feature = "custody")]
+pub mod cloud_projects;
 #[cfg(feature = "custody")]
 mod custodian;
 #[cfg(feature = "hints")]
@@ -53,7 +59,7 @@ pub use spotify_identity::{SpotifyIdentity, with_verified_spotify_access_token};
 pub use clients::{ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "custody")]
 pub use custodian::{
-    Custodian, CustodyError, ImportedRegistration, SIGN_IN_TIMEOUT, copied_secret,
+    Custodian, CustodyError, GrantState, ImportedRegistration, SIGN_IN_TIMEOUT, copied_secret,
     copied_source_matches, icloud_apple_id, icloud_secret, imported_oauth_matches,
     imported_oauth_secret, is_cloud_type, is_copied_secret, oauth_secret, password_credential,
     protected_grant_protocol, requires_protected_consumer,

@@ -29,6 +29,7 @@ use super::{
 };
 use crate::time::Duration;
 use crate::webview::{Frame, WebViewEvent};
+use tilo_lock::MutexRecover as _;
 
 /// Events a client has not read yet. Beyond this, a slow client loses its
 /// oldest replaceable state first.
@@ -84,10 +85,7 @@ enum Outgoing {
 
 impl Outbox {
     pub(super) fn event(&self, value: Value) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if state.closed {
             return;
         }
@@ -120,10 +118,7 @@ impl Outbox {
     }
 
     pub(super) fn frame(&self, tab: u32, frame: Frame) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if state.closed {
             return;
         }
@@ -133,10 +128,7 @@ impl Outbox {
     }
 
     fn close(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         state.closed = true;
         state.events.clear();
         state.frames.clear();
@@ -170,14 +162,7 @@ pub(super) struct Hub {
 impl Hub {
     /// Delivers a process-wide host event to every client.
     pub(super) fn broadcast(&self, value: &Value) {
-        let clients: Vec<_> = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0
-            .values()
-            .cloned()
-            .collect();
+        let clients: Vec<_> = self.clients.lock_recover().0.values().cloned().collect();
         for outbox in clients {
             outbox.event(value.clone());
         }
@@ -186,10 +171,7 @@ impl Hub {
     /// Disconnects every client and refuses new ones: the host is gone.
     pub(super) fn close_all(&self) {
         let clients: Vec<_> = {
-            let mut clients = self
-                .clients
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut clients = self.clients.lock_recover();
             clients.1 = true;
             clients.0.drain().map(|(_, outbox)| outbox).collect()
         };
@@ -199,10 +181,7 @@ impl Hub {
     }
 
     fn join(&self, id: u64, outbox: Arc<Outbox>) -> bool {
-        let mut clients = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut clients = self.clients.lock_recover();
         if clients.1 {
             return false;
         }
@@ -211,11 +190,7 @@ impl Hub {
     }
 
     fn leave(&self, id: u64) {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0
-            .remove(&id);
+        self.clients.lock_recover().0.remove(&id);
     }
 }
 
@@ -259,8 +234,7 @@ static SERVERS: Mutex<Vec<Weak<Server>>> = Mutex::new(Vec::new());
 
 fn servers() -> Vec<Arc<Server>> {
     SERVERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .filter_map(Weak::upgrade)
         .collect()
@@ -336,14 +310,17 @@ impl Claim {
             state: Mutex::default(),
             changed: Condvar::new(),
         });
+        // Published before the first client is admitted: a client that has
+        // connected finds its owner's server on the owner's runtime.
+        if let Some(runtime) = server.runtime.upgrade() {
+            let _ = runtime.server.set(server.clone());
+        }
         let weak = Arc::downgrade(&server);
         if let Err(error) = spawn_named("chromium-share", move || accept_loop(&weak)) {
             server.listener.close();
             return Err(format!("Chromium engine socket: {error}"));
         }
-        let mut servers = SERVERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut servers = SERVERS.lock_recover();
         servers.retain(|server| server.strong_count() > 0);
         servers.push(Arc::downgrade(&server));
         drop(servers);
@@ -412,9 +389,7 @@ fn refuse(mut connection: &Connection, why: &str) {
 
 impl Server {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ServerState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn admit(self: &Arc<Self>, connection: Connection) {
@@ -657,10 +632,7 @@ fn client_command(
 fn close_client_tabs(runtime: &Runtime, tabs: HashMap<u32, ClientTab>) {
     for (tab, entry) in tabs {
         let retire = {
-            let mut routes = runtime
-                .routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut routes = runtime.routes.lock_recover();
             match routes.get_mut(&tab) {
                 Some(route)
                     if route
@@ -727,11 +699,7 @@ impl ClientLink {
     }
 
     fn forget(&self, request: u64) -> bool {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&request)
-            .is_some()
+        self.pending.lock_recover().remove(&request).is_some()
     }
 
     /// Cuts the connection, as the owner's exit would.
@@ -839,10 +807,7 @@ fn receive_events(
             Ok(Some(protocol::Packet::Frame(_)) | None) | Err(_) => break,
         }
     }
-    pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    pending.lock_recover().clear();
     tx.close();
     connection.close();
     queue_download_event(
@@ -866,14 +831,11 @@ fn answer_tab(value: &Value, routes: &Routes, pending: &Pending, tx: &CommandQue
         .and_then(Value::as_u64)
         .filter(|tab| *tab > 1 && i32::try_from(*tab).is_ok())
         .and_then(|tab| u32::try_from(tab).ok());
-    let mut pending = pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut pending = pending.lock_recover();
     match (pending.remove(&request), tab) {
         (Some(waiting), Some(tab)) => {
             routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .insert(tab, Arc::downgrade(&waiting.shared));
             let _ = waiting.reply.send(Ok(tab));
         }

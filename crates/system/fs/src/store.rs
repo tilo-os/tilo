@@ -47,11 +47,12 @@ use moka::sync::Cache;
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
 #[cfg(feature = "filesystem")]
 use crate::eviction::{
-    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionPlan,
-    EvictionQueue, EvictionRequestId, ObservedBlobState, VersionPayload,
+    BackendGcAuthorizationError, BlobExtent, EvictionCatalog, EvictionObservation, EvictionQueue,
+    EvictionRequestId, ObservedBlobState, VersionPayload,
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 pub mod area;
 #[cfg(test)]
@@ -128,10 +129,6 @@ pub enum BlobRecordLookupError {
 #[derive(Debug, thiserror::Error)]
 #[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
-    #[error(
-        "a dry-run plan cannot delete blobs; enqueue it and use the freshly authorized GC bridge"
-    )]
-    ExplicitDeletionUnsupported,
     #[error(transparent)]
     Authorization(#[from] BackendGcAuthorizationError),
     #[error("reading owned blob tag {tag} failed: {message}")]
@@ -509,10 +506,7 @@ impl ContentStore {
     /// costs one sync instead of one per file. Callers end the group before
     /// anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
-        let mut deferred = self
-            .deferred
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut deferred = self.deferred.lock_recover();
         deferred.0 = deferred.0.saturating_add(1);
     }
 
@@ -533,10 +527,7 @@ impl ContentStore {
     /// pending for the next sync.
     pub async fn end_deferred_sync(&self) -> Result<()> {
         let sync = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
@@ -549,10 +540,7 @@ impl ContentStore {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if sync && let Err(error) = self.store().sync_db().await {
-            self.deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .1 = true;
+            self.deferred.lock_recover().1 = true;
             return Err(error.into());
         }
         Ok(())
@@ -870,10 +858,7 @@ impl ContentStore {
     /// group ([`Self::defer_sync`]), leave the one sync to the group's end.
     async fn sync_unless_deferred(&self) -> Result<()> {
         let deferred = {
-            let mut deferred = self
-                .deferred
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred.lock_recover();
             if deferred.0 > 0 {
                 deferred.1 = true;
             }
@@ -1147,24 +1132,6 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Refuse to execute a bare, potentially stale dry-run plan.
-    ///
-    /// Use [`EvictionQueue::enqueue`] followed by
-    /// [`Self::release_eviction_to_backend_gc`]. Keeping this API fail-closed
-    /// prevents an enqueue-time or ad-hoc plan from becoming stale deletion
-    /// authority.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`StoreEvictionError::ExplicitDeletionUnsupported`].
-    #[cfg(feature = "filesystem")]
-    pub fn execute_eviction(
-        &self,
-        _plan: &EvictionPlan,
-    ) -> std::result::Result<(), StoreEvictionError> {
-        Err(StoreEvictionError::ExplicitDeletionUnsupported)
-    }
-
     /// Freshly authorize a queued request and make exactly its approved blobs
     /// collectible by releasing Tilo-owned named tags.
     ///
@@ -1341,26 +1308,17 @@ struct GcGate {
 impl GcGate {
     /// Let the next sweeps collect everything outside `live`.
     fn authorize(&self, live: HashSet<Hash>) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        *self.live.write_recover() = Some(live);
         self.wake.notify_one();
     }
 
     /// Park the GC again once the sweep this live set was installed for is over.
     fn revoke(&self) {
-        *self
-            .live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.write_recover() = None;
     }
 
     fn snapshot(&self) -> Option<HashSet<Hash>> {
-        self.live
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.live.read_recover().clone()
     }
 
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when
@@ -1608,38 +1566,6 @@ mod tests {
                 metadata_hash: fs_protocol::ContentHash([1; 32]),
             };
             assert!(store.verify_durable_revision(&revision).await.is_err());
-        }
-        // Phase `unsupported_execution_never_claims_to_delete`.
-        {
-            use crate::eviction::{EvictionMode, EvictionPlan};
-
-            let store = ContentStore::memory();
-            let hash = store.ingest(Bytes::from_static(b"keep me")).await.unwrap();
-            let plan = EvictionPlan {
-                record_id: fs_protocol::FileRecordId::new(),
-                version_id: fs_protocol::FileVersionId::new(),
-                mode: EvictionMode::DestructiveOverride,
-                reclaimable: vec![BlobExtent {
-                    hash,
-                    locally_present: true,
-                    resident_bytes: Some(7),
-                }],
-                shared_and_protected: Vec::new(),
-                already_absent: Vec::new(),
-                reclaimable_bytes: 7,
-                unaccounted_reclaimable_blobs: 0,
-                protected_shared_bytes: 0,
-                unaccounted_protected_shared_blobs: 0,
-            };
-
-            assert!(matches!(
-                store.execute_eviction(&plan),
-                Err(StoreEvictionError::ExplicitDeletionUnsupported)
-            ));
-            assert!(
-                store.has(hash).await,
-                "an unsupported action must not mutate storage"
-            );
         }
         // Phase `eviction_observation_completes_only_for_backend_absence`.
         {

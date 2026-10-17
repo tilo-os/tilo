@@ -33,6 +33,16 @@ RUN --mount=type=bind,source=dist/ci/install-build-deps.sh,target=/tmp/install-b
        bash /tmp/install-build-deps.sh fedora test \
     && rustc --version && rust-analyzer --version && cargo nextest --version
 
+# The X11 bridge the shell's X11 clipboard tests drive: xwayland-satellite
+# built from pinned source with Tilo's patch
+# (os/external-assets/xwayland-satellite/README.md).
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-xwayland-satellite.sh,target=/tmp/install-xwayland-satellite.sh,ro \
+    --mount=type=bind,source=os/external-assets/xwayland-satellite,target=/tmp/xwayland-satellite,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    bash /tmp/install-xwayland-satellite.sh /tilo-assets /usr /tmp/tilo-assets.tsv /tmp/xwayland-satellite
+
 # CI-only workflow tooling. nodejs: actions/checkout. ripgrep, time, yt-dlp:
 # workflow and measurement tools (tools/ci/measure.sh needs GNU time). Qt
 # examples and LibreOffice are installed by the path-gated legacy-app E2E.
@@ -169,6 +179,14 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && chmod 0755 /usr/local/bin/jsign \
       && jsign --help >/dev/null; \
     fi
+
+# Native browser tests use Fedora's signed Chromium RPM, not a per-job download.
+# Bypass its desktop launcher: tests supply their own flags and fresh profiles.
+# Keep this late so browser updates do not rebuild the cross toolchains.
+ENV CHROME=/usr/lib64/chromium-browser/chromium-browser
+RUN dnf install -y --setopt=install_weak_deps=False chromium \
+    && dnf clean all && rm -rf /var/cache/dnf \
+    && test -x "$CHROME" && "$CHROME" --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.

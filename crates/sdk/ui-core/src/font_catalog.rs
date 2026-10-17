@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cosmic_text::{FontSystem, fontdb};
 #[cfg(test)]
 use tilo_font_catalog::MANIFEST;
 use tilo_font_catalog::{Asset, Face, Manifest, Scope, Trust};
+use tilo_lock::MutexRecover as _;
 
 /// The verified catalog materialized for this source build.
 pub use tilo_font_catalog::checkout_root;
@@ -662,10 +663,7 @@ type VerifiedBundles = HashMap<(PathBuf, bool), Arc<VerifiedBundle>>;
 /// once per caller.
 fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, FontCatalogError> {
     static VERIFIED: OnceLock<Mutex<VerifiedBundles>> = OnceLock::new();
-    let mut verified = VERIFIED
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut verified = VERIFIED.get_or_init(Mutex::default).lock_recover();
     let key = (root.to_path_buf(), fixtures);
     if let Some(bundle) = verified.get(&key) {
         return Ok(Arc::clone(bundle));

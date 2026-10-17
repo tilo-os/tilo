@@ -56,6 +56,7 @@ use crate::hydration::Hydrator;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
+use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
 use crate::sync::SyncHandle;
 use fs_protocol::projection::{
     RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
@@ -252,17 +253,11 @@ impl Passthrough {
     }
 
     fn hold(&self, handle: u64, id: BackingId, file: std::fs::File) {
-        self.backing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(handle, (id, file));
+        self.backing.lock_recover().insert(handle, (id, file));
     }
 
     fn release(&self, handle: u64) {
-        self.backing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&handle);
+        self.backing.lock_recover().remove(&handle);
     }
 
     fn disable(&self, error: &io::Error) {
@@ -552,14 +547,8 @@ impl PinnedPassInputs {
         registry: &Arc<Mutex<AvailabilityRegistry>>,
         enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
     ) -> Self {
-        let namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .change_token();
-        let availability = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .hydration_generation();
+        let namespace = namespace.lock_recover().change_token();
+        let availability = registry.lock_recover().hydration_generation();
         Self {
             namespace,
             acl_revision: enforcement.map_or(0, |(acl, _)| acl.revision()),
@@ -651,6 +640,7 @@ mod history_jobs;
 mod history_read;
 pub mod native_ops;
 mod write_stage;
+use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
 
@@ -665,8 +655,12 @@ pub struct QuickFS {
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
     /// Which files this mount opened when: what prediction learns from.
-    /// Local to this device and this workspace, bounded, never persisted.
-    access_history: Mutex<AccessHistory>,
+    /// Local to this device and this workspace and bounded; its
+    /// opened-together pairs survive restarts through `kept_history`.
+    access_history: Arc<Mutex<AccessHistory>>,
+    /// Keeps the opened-together pairs in the workspace's cache directory
+    /// (`None`: memory only).
+    kept_history: Option<Arc<KeptHistory>>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -778,7 +772,8 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
-            access_history: Mutex::new(AccessHistory::new()),
+            access_history: Arc::new(Mutex::new(AccessHistory::new())),
+            kept_history: None,
             document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
@@ -822,6 +817,46 @@ impl QuickFS {
         }
     }
 
+    /// Keep the opened-together history for `workspace` under `cache_root`
+    /// across restarts, and restore what was kept. See
+    /// [`crate::smart::kept_history`].
+    #[must_use]
+    pub fn with_kept_prefetch_history(
+        self,
+        cache_root: &std::path::Path,
+        workspace: uuid::Uuid,
+    ) -> Self {
+        self.with_kept_prefetch_history_after(
+            cache_root,
+            workspace,
+            crate::smart::kept_history::FLUSH_DELAY,
+        )
+    }
+
+    /// [`Self::with_kept_prefetch_history`], writing `flush_delay` after a
+    /// change.
+    #[must_use]
+    pub fn with_kept_prefetch_history_after(
+        mut self,
+        cache_root: &std::path::Path,
+        workspace: uuid::Uuid,
+        flush_delay: Duration,
+    ) -> Self {
+        let runtime = self.hydrator.runtime_handle.clone();
+        self.kept_history = Some(KeptHistory::open(
+            KeptHistorySource {
+                cache_root,
+                workspace,
+                history: Arc::clone(&self.access_history),
+                namespace: Arc::clone(&self.namespace),
+                heuristics: Arc::clone(&self.heuristics),
+            },
+            &runtime,
+            flush_delay,
+        ));
+        self
+    }
+
     #[must_use]
     pub fn without_legacy_record_migration(mut self) -> Self {
         self.allow_legacy_record_migration = false;
@@ -853,9 +888,7 @@ impl QuickFS {
     fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
         #[cfg(test)]
         self.namespace_locks.fetch_add(1, Ordering::Relaxed);
-        self.namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.namespace.lock_recover()
     }
 
     /// [`Namespace::inode_view`] under one namespace lock, with the path
@@ -871,33 +904,22 @@ impl QuickFS {
     /// The state of kernel handle `fh`, when it was opened on `ino`.
     fn open_handle(&self, ino: u64, fh: u64) -> Option<OpenFileHandleState> {
         self.open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&fh)
             .filter(|handle| handle.ino == ino)
             .cloned()
     }
 
     fn buffers(&self) -> std::sync::MutexGuard<'_, WriteStages> {
-        self.write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.write_buffers.lock_recover()
     }
 
     fn buffer_states(&self) -> std::sync::MutexGuard<'_, HashMap<u64, BufferState>> {
-        self.buffer_states
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.buffer_states.lock_recover()
     }
 
     fn commit_lock_for(&self, ino: u64) -> Arc<Mutex<()>> {
-        Arc::clone(
-            self.commit_locks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(ino)
-                .or_default(),
-        )
+        Arc::clone(self.commit_locks.lock_recover().entry(ino).or_default())
     }
 
     /// Stage unsaved bytes durably in `store` (see [`crate::unsaved`]):
@@ -970,10 +992,7 @@ impl QuickFS {
     fn drop_buffer(&self, ino: u64) {
         self.buffers().remove(&ino);
         self.buffer_states().remove(&ino);
-        self.commit_locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&ino);
+        self.commit_locks.lock_recover().remove(&ino);
     }
 
     /// Record a mutation of `ino`'s buffer. `seeded` marks a buffer that was
@@ -1006,9 +1025,7 @@ impl QuickFS {
     /// inodes' writes and reads proceed.
     fn persist_buffer(&self, ino: u64, intent: PersistIntent) -> Result<(), i32> {
         let lock = self.commit_lock_for(ino);
-        let _serialised = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serialised = lock.lock_recover();
         let Some(staged) = self.stage(ino) else {
             return Ok(());
         };
@@ -1111,11 +1128,7 @@ impl QuickFS {
 
     #[cfg(test)]
     fn pause_commit(&self, ino: u64) {
-        let pause = self
-            .commit_pause
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let pause = self.commit_pause.lock_recover().clone();
         if let Some(pause) = pause {
             pause(ino);
         }
@@ -1716,10 +1729,7 @@ impl QuickFS {
     /// `flush` did not already, then settle the buffer on the last close.
     fn release_handle(&self, ino: u64, fh: u64) -> Result<(), i32> {
         let (last_handle, released_writable) = {
-            let mut handles = self
-                .open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut handles = self.open_file_handles.lock_recover();
             let released_writable = handles
                 .remove(&fh)
                 .is_some_and(|handle| handle.ino == ino && handle.writable);
@@ -1785,8 +1795,7 @@ impl QuickFS {
             return false;
         };
         registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(record_id)
             .is_some_and(|record| !matches!(record.residency, Residency::Resident { .. }))
     }
@@ -1801,10 +1810,7 @@ impl QuickFS {
             || self.buffers().contains_key(&ino)
             || self.is_document(ino);
         let hash = self.ns().hash_for(ino);
-        let mut cached = self
-            .kernel_cached
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cached = self.kernel_cached.lock_recover();
         if volatile {
             cached.remove(&ino);
             return FopenFlags::empty();
@@ -1852,9 +1858,7 @@ impl QuickFS {
     }
 
     fn doc_export_cache(&self) -> std::sync::MutexGuard<'_, DocExports> {
-        self.doc_exports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.doc_exports.lock_recover()
     }
 
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
@@ -2018,13 +2022,10 @@ impl QuickFS {
             return;
         };
         if let Some(properties) = crate::rich_metadata::extract(&name, &prefix) {
-            self.rich_metadata
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    record_id,
-                    (fs_protocol::ContentHash(*hash.as_bytes()), properties),
-                );
+            self.rich_metadata.lock_recover().insert(
+                record_id,
+                (fs_protocol::ContentHash(*hash.as_bytes()), properties),
+            );
         }
     }
 
@@ -2054,8 +2055,7 @@ impl QuickFS {
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
         self.rich_metadata
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .insert(record_id, (hash, properties.clone()));
         Some(properties)
     }
@@ -2173,10 +2173,7 @@ impl QuickFS {
                 receipts
                     .upgrade()
                     .map_or_else(Default::default, |registry| {
-                        registry
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .held_elsewhere()
+                        registry.lock_recover().held_elsewhere()
                     })
             }));
         self.availability = Some(registry);
@@ -2204,14 +2201,8 @@ impl QuickFS {
         let enforcement = self.enforcement.clone();
         let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
         wake.send_modify(|generation| *generation = generation.wrapping_add(1));
-        let mut namespace_changes = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .subscribe_changes();
-        let mut registry_changes = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .subscribe_hydration();
+        let mut namespace_changes = namespace.lock_recover().subscribe_changes();
+        let mut registry_changes = registry.lock_recover().subscribe_hydration();
         let mut acl_changes = enforcement
             .as_ref()
             .map(|(acl, _)| acl.subscribe_revision());
@@ -2345,9 +2336,7 @@ impl QuickFS {
                 })?)?;
             let sync = self.sync.clone();
             publisher.recover_replacement_transactions(
-                &mut journal
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut journal.lock_recover(),
                 history,
                 &self.namespace,
                 &namespace_path,
@@ -2591,8 +2580,7 @@ impl QuickFS {
     ) -> fs_protocol::FileMetadataV1 {
         let properties = self
             .rich_metadata
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&snapshot.record_id)
             .filter(|(hash, _)| Some(*hash) == snapshot.content_hash)
             .map(|(_, properties)| properties.clone())
@@ -2726,9 +2714,7 @@ impl QuickFS {
         }
         history.append(version)?;
         if let Some(registry) = &self.availability {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(snapshot.record_id).cloned() {
                 record.current_version = Some(id);
                 if let Err(error) = registry.put(record) {
@@ -2807,8 +2793,7 @@ impl QuickFS {
             .as_ref()
             .map_or(0, |(acl, _)| acl.revision());
         self.acl_visible_record_index
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .filter(|index| {
                 index.source_revision == source_revision && index.acl_revision == acl_revision
@@ -2838,14 +2823,9 @@ impl QuickFS {
         retained: &Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
     ) {
         let acl_revision = enforcement.map_or(0, |(acl, _)| acl.revision());
-        let previous = retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let previous = retained.lock_recover().clone();
         let (source_revision, rows) = {
-            let namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let namespace = namespace.lock_recover();
             let source_revision = Self::record_catalog_revision_from_index(
                 namespace.indexed_record_revision(),
                 acl_revision,
@@ -2928,9 +2908,7 @@ impl QuickFS {
         // landed after releasing the namespace lock above. Its notification
         // will build the next generation; serving mixed state is never okay.
         let current_source = {
-            let namespace = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let namespace = namespace.lock_recover();
             Self::record_catalog_revision_from_index(
                 namespace.indexed_record_revision(),
                 acl_revision,
@@ -2943,9 +2921,7 @@ impl QuickFS {
         {
             return;
         }
-        let mut retained = retained
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut retained = retained.lock_recover();
         *retained = Some(index);
     }
 
@@ -3044,10 +3020,7 @@ impl QuickFS {
         offset: usize,
     ) -> String {
         let cursor = uuid::Uuid::new_v4().to_string();
-        let mut cursors = self
-            .record_index_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cursors = self.record_index_cursors.lock_recover();
         if cursors.len() >= 1024
             && let Some(evicted) = cursors.keys().next().cloned()
         {
@@ -3072,10 +3045,7 @@ impl QuickFS {
         // token stable, so polling cannot correlate hidden activity.
         let key = (index.revision.clone(), String::new(), index.acl_revision);
         let initial_cursor = {
-            let initials = self
-                .record_index_initial_cursors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let initials = self.record_index_initial_cursors.lock_recover();
             initials.get(&key).cloned()
         }
         .unwrap_or_else(|| {
@@ -3085,10 +3055,7 @@ impl QuickFS {
                 index.acl_revision,
                 0,
             );
-            let mut initials = self
-                .record_index_initial_cursors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut initials = self.record_index_initial_cursors.lock_recover();
             if initials.len() >= 128
                 && let Some(evicted) = initials.keys().next().cloned()
             {
@@ -3110,8 +3077,7 @@ impl QuickFS {
     fn record_index_page_v3(&self, revision: &str, cursor: &str) -> Option<Vec<u8>> {
         let (source_revision, acl_revision, offset) = self
             .record_index_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(cursor)
             .filter(|state| state.revision == revision)
             .map(|state| {
@@ -3332,12 +3298,7 @@ impl QuickFS {
         version_id: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         self.check_access(ino, Access::Write)?;
-        if self
-            .write_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&ino)
-        {
+        if self.write_buffers.lock_recover().contains_key(&ino) {
             return Err(EBUSY);
         }
         if self.is_document(ino) {
@@ -3475,9 +3436,7 @@ impl QuickFS {
         };
         self.publish(delta);
         if let Some(registry) = &self.availability {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut registry = registry.lock_recover();
             if let Some(mut record) = registry.get(record_id).cloned() {
                 record.current_version = Some(converged.version_id);
                 registry.put(record).map_err(|_| EIO)?;
@@ -3723,10 +3682,7 @@ impl QuickFS {
         publisher
             .execute_replacement_transaction(
                 manifest,
-                &mut runtime
-                    .journal
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut runtime.journal.lock_recover(),
                 history,
                 &self.namespace,
                 &runtime.namespace_path,
@@ -3971,10 +3927,7 @@ impl QuickFS {
         publisher
             .execute_replacement_transaction(
                 manifest,
-                &mut transaction_runtime
-                    .journal
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut transaction_runtime.journal.lock_recover(),
                 history,
                 &self.namespace,
                 &transaction_runtime.namespace_path,
@@ -4010,9 +3963,7 @@ impl QuickFS {
             (record_id, kind, parent, attr.size, ancestry)
         };
         let (mut record, effective_policy) = {
-            let registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let registry = registry.lock_recover();
             let record = registry
                 .get(record_id)
                 .cloned()
@@ -4039,16 +3990,11 @@ impl QuickFS {
             .ok()
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the policy update and persisted availability projection form one atomic state transition"
-    )]
     fn set_pin_policy(&self, ino: u64, policy: AvailabilityPolicy) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, mut ancestry) = {
+        let mut ancestry = {
             let mut ns = self.ns();
-            let record_id = ns.record_id_for(ino).ok_or(ENOENT)?;
             let mut ancestry = Vec::new();
             let mut cursor = Some(ino);
             while let Some(current_ino) = cursor {
@@ -4064,31 +4010,15 @@ impl QuickFS {
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
-            (record_id, ancestry)
+            drop(ns);
+            ancestry
         };
-        {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ancestry.reverse();
-            for (id, kind, parent) in ancestry {
-                let mut record = registry
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| RecordAvailability::new(id, kind));
-                record.kind = kind;
-                record.parent = parent;
-                if id == record_id {
-                    record.policy = policy;
-                }
-                registry.put(record).map_err(|_| EIO)?;
-            }
-            if policy == AvailabilityPolicy::Automatic {
-                registry
-                    .clear_automatic_transfer_subtree(record_id)
-                    .map_err(|_| EIO)?;
-            }
-        }
+        // From the workspace root down to the record itself.
+        ancestry.reverse();
+        registry
+            .lock_recover()
+            .set_policy_along(&ancestry, policy)
+            .map_err(|_| EIO)?;
         if let Some(worker) = &self.pinned_hydration {
             worker
                 .wake
@@ -4113,9 +4043,7 @@ impl QuickFS {
             (record_id, hash, size)
         };
         let scheduled_by_pin_worker = {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut registry = registry.lock_recover();
             let mut record = registry
                 .get(record_id)
                 .cloned()
@@ -4540,10 +4468,7 @@ impl QuickFS {
         if self.ns().getattr(ino).is_some() {
             return self.check_access(ino, access);
         }
-        let handles = self
-            .open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let handles = self.open_file_handles.lock_recover();
         let handle = handles
             .get(&fh.0)
             .filter(|handle| handle.ino == ino)
@@ -4667,14 +4592,23 @@ impl QuickFS {
             .collect();
         siblings.sort_by(|(_, a), (_, b)| natural_cmp(a.as_bytes(), b.as_bytes()));
         let order: Vec<u64> = siblings.into_iter().map(|(entry, _)| entry).collect();
-        let prediction = {
-            let mut history = self
-                .access_history
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.record(parent, ino, std::time::Instant::now());
-            history.predict(parent, ino, &order)
+        // Nothing is learned while the person has turned prefetching off.
+        let learn = self.heuristics.prefetch_enabled();
+        let (prediction, changed) = {
+            let mut history = self.access_history.lock_recover();
+            let before = history.revision();
+            if learn {
+                history.record(parent, ino, std::time::Instant::now());
+            }
+            (
+                history.predict(parent, ino, &order),
+                history.revision() != before,
+            )
         };
+        if changed && let Some(kept) = &self.kept_history {
+            // Only wakes the keeper: the request path never writes.
+            kept.changed();
+        }
         let together: Vec<u64> = prediction
             .together
             .into_iter()
@@ -4752,10 +4686,7 @@ impl QuickFS {
 
     fn publish(&self, delta: Vec<u8>) {
         {
-            let mut deferred = self
-                .deferred_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut deferred = self.deferred_deltas.lock_recover();
             if let Some(deltas) = deferred.as_mut() {
                 // Peers learn a changeset's placements only once its records
                 // are durable; the visible index is refreshed once for the
@@ -4870,10 +4801,7 @@ impl QuickFS {
         fence: Option<crate::namespace::VersionFence>,
     ) -> io::Result<()> {
         #[cfg(test)]
-        if let Some((fault_ino, errno)) = *self
-            .commit_fault
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        if let Some((fault_ino, errno)) = *self.commit_fault.lock_recover()
             && fault_ino == ino
         {
             return Err(io::Error::from_raw_os_error(errno));
@@ -5446,10 +5374,7 @@ impl QuickFS {
         publisher
             .execute_replacement_transaction(
                 manifest,
-                &mut runtime
-                    .journal
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut runtime.journal.lock_recover(),
                 history,
                 &self.namespace,
                 &runtime.namespace_path,
@@ -5644,9 +5569,7 @@ fn update_retry_state(
     record_id: fs_protocol::FileRecordId,
     update: impl FnOnce(&mut RecordAvailability),
 ) {
-    let mut registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = registry.lock_recover();
     let Some(mut record) = registry.get(record_id).cloned() else {
         return;
     };
@@ -5665,9 +5588,7 @@ fn pinned_candidates(
 ) -> Vec<PinnedCandidate> {
     let mut candidates = Vec::new();
     {
-        let namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let namespace = namespace.lock_recover();
         if let Some(record_id) = namespace.record_id_for(crate::namespace::ROOT_INO) {
             candidates.push(PinnedCandidate {
                 record_id,
@@ -5719,9 +5640,7 @@ fn update_candidate_state(
     candidate: &PinnedCandidate,
     update: impl FnOnce(&mut RecordAvailability),
 ) {
-    let mut registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = registry.lock_recover();
     let Some(mut record) = registry.get(candidate.record_id).cloned() else {
         return;
     };
@@ -5975,9 +5894,7 @@ fn commit_pinned_pass(
     probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
-    let mut registry = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = registry.lock_recover();
     let mut plan = PinnedPassPlan::default();
     let committed = registry.batch(|registry| {
         plan = plan_pinned_pass(registry, candidates, probes, observed_at);
@@ -6007,10 +5924,7 @@ async fn reconcile_pinned_hydration(
     enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
     wakes: tokio::sync::watch::Receiver<u64>,
 ) -> PinnedPassOutcome {
-    let has_pinned_policy = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .has_pinned_policy();
+    let has_pinned_policy = registry.lock_recover().has_pinned_policy();
     if !has_pinned_policy {
         return PinnedPassOutcome::default();
     }
@@ -6031,9 +5945,7 @@ async fn reconcile_pinned_hydration(
     // the chunk store so an automatic workspace does not re-walk every
     // manifest on each reconciliation.
     let pinned_files = {
-        let registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = registry.lock_recover();
         let parents = candidates
             .iter()
             .map(|candidate| (candidate.record_id, candidate.parent))
@@ -6221,16 +6133,13 @@ fn pinned_candidate_is_current(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
 ) -> bool {
     let pinned = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .effective_policy(candidate.record_id)
         .is_ok_and(|policy| policy == Some(AvailabilityPolicy::Pinned));
     if !pinned {
         return false;
     }
-    let namespace = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let namespace = namespace.lock_recover();
     let Some(ino) = namespace.ino_for_record_id(candidate.record_id) else {
         return false;
     };
@@ -6407,20 +6316,17 @@ impl Filesystem for QuickFS {
             }
         }
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
-        self.open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                handle,
-                OpenFileHandleState {
-                    ino: ino.0,
-                    opened_path,
-                    writable: matches!(
-                        flags.acc_mode(),
-                        OpenAccMode::O_WRONLY | OpenAccMode::O_RDWR
-                    ),
-                },
-            );
+        self.open_file_handles.lock_recover().insert(
+            handle,
+            OpenFileHandleState {
+                ino: ino.0,
+                opened_path,
+                writable: matches!(
+                    flags.acc_mode(),
+                    OpenAccMode::O_WRONLY | OpenAccMode::O_RDWR
+                ),
+            },
+        );
         let cache = self.open_cache_flags(ino.0);
         if flags.acc_mode() == OpenAccMode::O_RDONLY
             && let Some(backing) = self.passthrough_backing(ino.0)
@@ -6534,17 +6440,14 @@ impl Filesystem for QuickFS {
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
         if let Some(opened_path) = opened_path {
-            self.open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    handle,
-                    OpenFileHandleState {
-                        ino: attr.ino.0,
-                        opened_path,
-                        writable: true,
-                    },
-                );
+            self.open_file_handles.lock_recover().insert(
+                handle,
+                OpenFileHandleState {
+                    ino: attr.ino.0,
+                    opened_path,
+                    writable: true,
+                },
+            );
         }
         reply.created(
             &Self::ttl_for(codec.is_some()),
@@ -7186,14 +7089,8 @@ impl Filesystem for QuickFS {
             // would say nothing about a file created in a pinned folder
             // until a restart registered it.
             let ancestry = record_ancestry(&mut self.ns(), ino.0);
-            let policy = ancestry.map(|ancestry| {
-                inherited_policy(
-                    &registry
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                    &ancestry,
-                )
-            });
+            let policy =
+                ancestry.map(|ancestry| inherited_policy(&registry.lock_recover(), &ancestry));
             match policy {
                 Some(policy) => reply_xattr_bytes(
                     reply,

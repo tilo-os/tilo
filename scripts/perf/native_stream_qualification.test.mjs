@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CODE_BITS, analyse, codeCheck, codeGeometry, judgeGoals, parseArgs, readCode} from './native_stream_qualification.mjs';
 import {stats} from './browser_qualification.mjs';
+import {focusDiscipline, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
 
 /** Three RGBA rows through the number blocks of frame `index`, as the session draws them. */
 function rows(index, width, {flip} = {}) {
@@ -130,4 +131,95 @@ test('goals are judged against the summary, delivery from below', () => {
     'frames delivered (%)': false,
     'input, click to session (p95, ms)': true,
   });
+});
+
+// --- the acceptance cases' judging (native_stream_acceptance.mjs) ----------------
+
+const input = value => JSON.stringify({event: 'input', arrivalUs: 1, surface: 7, input: '', value});
+const key = (keysym, pressed) => input({Key: {keysym, pressed, modifiers: 0}});
+const focus = focused => input({KeyboardFocus: {surface: 7, focused}});
+
+test('a session\'s input is read from its event lines only', () => {
+  const lines = ['{"event":"ready"}', 'not json', key(30, true), '{"event":"stopped"}', focus(false)];
+  assert.deepEqual(inputsOf(lines).map(found => found.value), [{Key: {keysym: 30, pressed: true, modifiers: 0}},
+    {KeyboardFocus: {surface: 7, focused: false}}]);
+  assert.equal(inputsOf(lines, 3).length, 1);
+  assert.equal(inputsOf(lines, 0, 3).length, 1);
+});
+
+test('keys and pastes count as stray only while the window does not hold the keyboard', () => {
+  const held = [focus(true), key(30, true), key(30, false), input({ClipboardText: {text: 'x'}}), focus(false)];
+  assert.deepEqual(focusDiscipline(inputsOf(held)), []);
+  // Typing before any focus, or after it moved away, reached the wrong window.
+  assert.deepEqual(focusDiscipline(inputsOf([key(48, true), key(48, false)])), ['key 48']);
+  assert.deepEqual(focusDiscipline(inputsOf([...held, key(18, true), input({ClipboardText: {text: 'y'}})])), ['key 18', 'pasted text']);
+  assert.deepEqual(focusDiscipline(inputsOf([input({Text: {text: '日本'}})])), ['committed text']);
+  // Releases sent while the keyboard is let go are not typing.
+  assert.deepEqual(focusDiscipline(inputsOf([focus(true), focus(false), key(30, false)])), []);
+});
+
+/** A second window's frames: 640x360, then 800x448 from frame `resizeAt`, drawn once each on canvas `epoch` 1. */
+function second(n, resizeAt = n) {
+  const sent = Array.from({length: n}, (_, index) => ({index, captureUs: 1000 + index * 66_666,
+    width: index < resizeAt ? 640 : 800, height: index < resizeAt ? 360 : 448}));
+  const draws = sent.map(frame => ({index: frame.index, tsUs: frame.captureUs, width: frame.width, height: frame.height, epoch: 1}));
+  return {sent, draws, lastIndex: n - 1};
+}
+
+test('a resized window is judged at each frame\'s own size', () => {
+  const clean = judgeStream(second(30, 20));
+  assert.deepEqual(clean.failures, []);
+  assert.deepEqual(clean.finalSize, {width: 800, height: 448});
+  const resized = second(30, 20);
+  const stretched = judgeStream({...resized, draws: resized.draws.map(draw => draw.index === 25 ? {...draw, width: 640, height: 360} : draw)});
+  assert.match(stretched.failures.join(), /1 pictures drawn at a size other than their frame's/);
+});
+
+test('a window opened again may start over from its replayed keyframe, but never go back on one canvas', () => {
+  const window = second(30);
+  // The live plane came back: the window's new canvas replays from frame 10.
+  const reopened = [...window.draws.slice(0, 15), ...window.draws.slice(10).map(draw => ({...draw, epoch: 2}))];
+  assert.deepEqual(judgeStream({...window, draws: reopened}).failures, []);
+  assert.equal(judgeStream({...window, draws: reopened}).epochs, 2);
+  const back = [...window.draws.slice(0, 15), ...window.draws.slice(10)];
+  // Frames 10 to 13 after 14, on the same canvas.
+  assert.match(judgeStream({...window, draws: back}).failures.join(), /4 pictures went back/);
+});
+
+test('a window judged on a page that drew none, or a corrupt or unconverged one, fails', () => {
+  const window = second(10);
+  assert.match(judgeStream({...window, draws: []}).failures.join(), /no picture of the window/);
+  assert.match(judgeStream({...window, draws: [...window.draws, {...window.draws[2], index: null}]}).failures.join(), /1 corrupt/);
+  assert.match(judgeStream({...window, draws: window.draws.slice(0, -2)}).failures.join(), /ended on frame 7, not the last sent 9/);
+  assert.match(judgeStream({...window, draws: window.draws.map((draw, i) => i === 4 ? {...draw, tsUs: 1} : draw)}).failures.join(),
+    /1 pictures are not the frame/);
+});
+
+test('a paste is the text, exactly, then Control+V', () => {
+  const text = 'two\nlines ✓';
+  const clip = input({ClipboardText: {text}});
+  assert.deepEqual(judgePaste(inputsOf([key(29, true), clip, key(47, true), key(47, false), key(29, false)]), text), []);
+  assert.deepEqual(judgePaste(inputsOf([key(29, true), key(47, true)]), text), ['the pasted text did not reach the window']);
+  assert.match(judgePaste(inputsOf([key(29, true), input({ClipboardText: {text: 'two lines'}}), key(47, true)]), text).join(),
+    /offered "two lines"/);
+  assert.match(judgePaste(inputsOf([key(29, true), key(47, true), key(47, false), clip, key(29, false)]), text).join(),
+    /before the text it pastes.*no paste chord/);
+  assert.match(judgePaste(inputsOf([clip, key(47, true), key(47, false)]), text).join(), /no paste chord/);
+});
+
+test('a window pixel maps into its letterboxed box', () => {
+  // 800x400 into a 400x400 box: scale 0.5, bars of 100 px above and below.
+  assert.deepEqual(pointFor({left: 10, top: 20, width: 400, height: 400}, 800, 400, 200, 100), {x: 110, y: 170, scale: 0.5});
+  // 640x360 into 1280x1000: scale 2, bars of 140 px.
+  assert.deepEqual(pointFor({left: 0, top: 0, width: 1280, height: 1000}, 640, 360, 0, 0), {x: 0, y: 140, scale: 2});
+});
+
+test('an input method reaches the window as its committed text, once, and none of its keys', () => {
+  const text = value => input({Text: {text: value}});
+  assert.deepEqual(judgeIme(inputsOf([text('日本'), text('🙂')]), ['日本', '🙂']), []);
+  assert.match(judgeIme(inputsOf([text('日本'), text('日本'), text('🙂')]), ['日本', '🙂']).join(), /got the committed text \["日本","日本","🙂"\]/);
+  assert.match(judgeIme(inputsOf([text('に'), text('日本'), text('🙂')]), ['日本', '🙂']).join(), /not \["日本","🙂"\]/);
+  assert.match(judgeIme(inputsOf([key(49, true), key(49, false), text('日本'), text('🙂')]), ['日本', '🙂']).join(),
+    /1 keys of the composition reached the window: 49/);
+  assert.match(judgeIme(inputsOf([]), ['日本', '🙂']).join(), /got the committed text \[\]/);
 });

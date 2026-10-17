@@ -83,12 +83,35 @@ def walk(client, limit=800):
         pending += [c for c in children if c not in seen]
     return names, None
 
+def a11y_enabled():
+    reply = m.command("gdbus", "call", "--session", "--dest", "org.a11y.Bus", "--object-path",
+                      "/org/a11y/bus", "--method", "org.freedesktop.DBus.Properties.Get",
+                      "org.a11y.Status", "IsEnabled", check=False)
+    return "true" in reply
+
+def set_a11y(on):
+    m.command("busctl", "--user", "set-property", "org.a11y.Bus", "/org/a11y/bus",
+              "org.a11y.Status", "IsEnabled", "b", "true" if on else "false", check=False)
+
 deadline = time.monotonic() + timeout
 last = {"error": f"no AT-SPI connection belongs to a {program} process"}
 try:
     address = m.atspi_address()
 except Exception as e:
     print(json.dumps({"error": f"no AT-SPI bus: {e}"}))
+    sys.exit(0)
+# An app publishes its tree on the AT-SPI bus only while assistive technology
+# is on (org.a11y.Status IsEnabled), which nothing in a fresh session turns
+# on. A screen reader turns it on as it starts; so does this reader, and it
+# leaves the session as it found it, so later checks measure the session a
+# person without assistive technology has.
+was_enabled = a11y_enabled()
+if not was_enabled:
+    set_a11y(True)
+def report(result):
+    print(json.dumps({**result, "a11y_was_enabled": was_enabled}))
+    if not was_enabled:
+        set_a11y(False)
     sys.exit(0)
 while True:
     for bus, pid in m.bus_pids(address).items():
@@ -102,11 +125,9 @@ while True:
             continue
         last = {"bus": bus, "root": root_name in names, "entries": entries, "names": names[:80]}
         if last["root"] and entries:
-            print(json.dumps(last))
-            sys.exit(0)
+            report(last)
     if time.monotonic() >= deadline:
-        print(json.dumps(last))
-        sys.exit(0)
+        report(last)
     time.sleep(0.5)
 '''
 

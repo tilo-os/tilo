@@ -30,6 +30,10 @@ use crate::operation::{
     SESSION, STORAGE, disk_resource, region_resource,
 };
 
+/// How long a copied recovery key stays on the clipboard: time to paste it
+/// into a password manager. Rebooting or powering off clears it sooner.
+const RECOVERY_KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// A reason an action cannot run now: a stable code and the sentence the
 /// wizard would show.
 type Blocked = Option<(&'static str, String)>;
@@ -1481,7 +1485,9 @@ impl InstallerApp {
                 let Some(key) = &self.recovery_key else {
                     return Err("No recovery key has been generated".into());
                 };
-                ui::clipboard_copy(key);
+                if !ui::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR) {
+                    return Err("Could not copy the recovery key to the clipboard".into());
+                }
                 self.recovery_key_copied = true;
                 self.dirty_structure = true;
                 done()

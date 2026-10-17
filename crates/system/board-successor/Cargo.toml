@@ -16,7 +16,6 @@ path = "src/main.rs"
 
 [dependencies]
 # Strict base64 of attestation payloads, as base64.b64decode(validate=True).
-base64.workspace = true
 hex.workspace = true
 # sigaction for SIGTERM/SIGINT, so a stopped service kills its verifier.
 libc.workspace = true
@@ -27,7 +26,11 @@ serde_json.workspace = true
 sha2.workspace = true
 # The private 0700 directory holding the copied pull credentials.
 tempfile.workspace = true
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+base64.workspace = true

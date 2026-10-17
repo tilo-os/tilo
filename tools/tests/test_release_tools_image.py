@@ -63,7 +63,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             self.setUp()
             publish = self.checks["publish-release-tools"]
             self.assertEqual(publish["needs"], ["image-release-tools"])
-            self.assertEqual(publish["on"], ["main"])
+            self.assertEqual(publish["on"], ["main", "dispatch"])
             self.assertEqual(publish["id_token"], ["registry.tilo.so"])
             self.assertIn("registry.tilo.so/tilo/tilo-release-tools", publish["run"])
             self.assertIn("'sha-{commit}'", publish["run"])

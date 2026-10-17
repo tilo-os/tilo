@@ -19,9 +19,11 @@
 # The digest the UKI seals is the one `bootc install` computes from the pushed
 # layers. BuildKit's merged tree differs from those (sub-second directory
 # times, file capabilities; bootc#2334), so it cannot be computed in the build
-# that makes the layers. The aarch64 dev lane builds the image with a
-# placeholder digest and pushes it by digest, computes the real one from the
-# registry (target cfs-digest-out, TILO_CFS_SOURCE), and builds again with
+# that makes the layers. A board build (tools/ci/publish/os-image.sh board, or
+# os/dev/build-board-image.sh with BuildKit) builds the image with a
+# placeholder digest, computes the real one from its layers as they are pushed
+# (target cfs-digest-out, TILO_CFS_SOURCE: the image by digest in a registry,
+# or an OCI archive of it in the cfs-source context), and builds again with
 # TILO_CFS_DIGEST set: only the UKI is rebuilt, the rootfs layers are the
 # cached ones the digest was computed from.
 ARG BASE_IMAGE
@@ -37,6 +39,10 @@ FROM ${BOOTC_HELPER_IMAGE} AS bootc-helper
 # build context (--build-context board-firmware=...), so a build sends only
 # this board's firmware. Empty for a board without any.
 FROM scratch AS board-firmware
+
+# The unsealed image as an OCI archive (--build-context cfs-source=DIR), for a
+# cfs-digest build that reads it from no registry. Empty otherwise.
+FROM scratch AS cfs-source
 
 FROM scratch AS board-inputs
 ARG TILO_HARDWARE_PROFILE
@@ -148,8 +154,9 @@ RUN --mount=type=tmpfs,target=/tmp \
     bash /usr/local/bin/uki.sh
 
 # The composefs digest `bootc install` computes for TILO_CFS_SOURCE, an image
-# of this file pushed to a registry, read from its layers. Needs the
-# registry_auth secret (a containers auth file) for a private registry.
+# of this file, read from its layers: pushed to a registry (docker://NAME@sha256:...,
+# with the registry_auth secret, a containers auth file, for a private registry),
+# or the archive in the cfs-source context (oci-archive:/run/tilo-cfs-source/FILE).
 FROM uki-tools AS cfs-digest
 ARG TILO_CFS_SOURCE
 # Buildah leaves the bootc-helper mount out of the layer cache key; this ARG keys it on BOOTC_HELPER_IMAGE.
@@ -159,9 +166,10 @@ ARG BOOTC_HELPER_IMAGE
 # board's and the previous commit's are already there. Emptied past 40 GiB.
 RUN --mount=type=bind,from=bootc-helper,source=/bootc,target=/usr/local/libexec/tilo-bootc \
     --mount=type=secret,id=registry_auth,target=/run/secrets/registry_auth \
+    --mount=type=bind,from=cfs-source,target=/run/tilo-cfs-source \
     --mount=type=cache,id=tilo-board-cfs-digest,target=/var/cache/tilo-cfs,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
-    case "${TILO_CFS_SOURCE:-}" in docker://*@sha256:*) ;; *) echo 'TILO_CFS_SOURCE must be docker://NAME@sha256:...' >&2; exit 1 ;; esac \
+    case "${TILO_CFS_SOURCE:-}" in docker://*@sha256:*|oci-archive:/run/tilo-cfs-source/*) ;; *) echo 'TILO_CFS_SOURCE must be docker://NAME@sha256:... or oci-archive:/run/tilo-cfs-source/FILE' >&2; exit 1 ;; esac \
     && { [ "$(du -s --block-size=1G /var/cache/tilo-cfs | cut -f1)" -lt 40 ] || rm -rf /var/cache/tilo-cfs/repo; } \
     && mkdir -p /out \
     && REGISTRY_AUTH_FILE=/run/secrets/registry_auth BOOTC_COMPOSEFS_DIGEST_REPO=/var/cache/tilo-cfs/repo \

@@ -68,6 +68,9 @@ impl ui::clipboard::ClipboardBackend for TestClipboard {
         *self.text.lock().unwrap() = Some(text.into());
         true
     }
+    fn set_secret_text(&self, text: &str) -> bool {
+        self.set_text(ui::clipboard::ClipboardTarget::Clipboard, text)
+    }
     fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
         self.text.lock().unwrap().clone()
     }
@@ -563,14 +566,9 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         let root = temp_root("export-store");
         let out = temp_root("export");
         let mut model = crate::PasswordsModel::open_in(&root);
-        model
-            .save_login(
-                "Example",
-                "ada",
-                "export-secret",
-                Some("https://example.com"),
-            )
-            .unwrap();
+        let mut login = accounts::SecretItem::login("Example", "ada", "export-secret");
+        login.add_origin("https://example.com").unwrap();
+        model.save_item(&mut login).unwrap();
         let mut app = PasswordsSurface::new(model);
         request(&mut app, Request::Export);
         request(&mut app, Request::ConfirmExport);

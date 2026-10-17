@@ -18,6 +18,7 @@ use super::super::state::{Capability, FsMode, WorkspaceTreeHandle};
 use runtime_collab::file_clipboard::{Command, Offer as Offered, Reply, SelectedDescriptor};
 use tilo_action_broker::services::{FileClipboardContext, FileClipboardServices};
 use tilo_actions::ActionKind as Permission;
+use tilo_lock::MutexRecover as _;
 
 const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_OPERATIONS: usize = 256;
@@ -480,10 +481,7 @@ impl Compensation {
             drop(state);
         }
         drop(permit);
-        *self
-            .answer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(answer);
+        *self.answer.lock_recover() = Some(answer);
     }
     fn answer(&self) -> Result<Reply, String> {
         self.answer
@@ -1093,15 +1091,8 @@ impl Operation {
             offer: Some(self.offer.clone()),
         };
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(tree))).is_err() {
-            let completed = self
-                .records
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len();
-            *self
-                .reply
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Reply::Settled {
+            let completed = self.records.lock_recover().len();
+            *self.reply.lock_recover() = Some(Reply::Settled {
                 operation: self.id.clone(),
                 completed,
                 error: Some(

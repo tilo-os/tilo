@@ -134,7 +134,7 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// `TILO_CLOCK` pins the bar's clock, for the same reason `TILO_SHOTS_THEME`
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
-fn clock_snapshot() -> ClockSnapshot {
+pub(crate) fn clock_snapshot() -> ClockSnapshot {
     let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
@@ -211,9 +211,10 @@ impl DesktopChromeSource for NativeChrome {
                 ws_settings: state.overlays.ws_settings,
                 clock: state.overlays.clock,
             },
-            // A client-requested fullscreen owns the whole output. User
-            // maximize still fills the workspace but keeps the bar.
-            fullscreen: state.fullscreen_group().is_some() && state.is_fullscreen(),
+            // A fullscreen owns its display: over the primary one, the full
+            // bar steps aside. User maximize still fills the workspace but
+            // keeps the bar.
+            fullscreen: state.fullscreen_covers_primary(),
             notification_badge: state.notification_badge_total(),
             activity_glance: state.activity_glance.clone(),
             viewport_size: state.viewport_size(),
@@ -231,6 +232,7 @@ impl DesktopChromeSource for NativeChrome {
             topbar_widgets: Some(self.widgets.borrow().clone()),
             // The strip ribbon already places strips on this desktop.
             strip_places: None,
+            top_bar: state.top_bar_presence(),
         }
     }
 

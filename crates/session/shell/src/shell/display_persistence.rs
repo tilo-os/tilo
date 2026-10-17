@@ -6,7 +6,8 @@
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Answer {
@@ -20,7 +21,7 @@ fn wake_slot() -> &'static Mutex<Option<crate::session_runtime::Wake>> {
 }
 
 pub(crate) fn set_wake(wake: crate::session_runtime::Wake) {
-    *wake_slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+    *wake_slot().lock_recover() = Some(wake);
 }
 
 pub(crate) struct PendingAnswer {
@@ -98,11 +99,7 @@ pub(crate) fn stage_plan(
     let mut transaction = DisplayTransaction::prepare_request(set, candidate)?;
     transaction.previous = previous;
     let update = settings_store::DisplayUpdate::new(&document, section(&transaction)?, None);
-    let wake = wake_slot()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .map(Arc::clone);
+    let wake = wake_slot().lock_recover().as_ref().map(Arc::clone);
     let (sender, result) = mpsc::channel();
     super::durable_writer::global().submit_ordered(move || {
         let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -204,11 +201,7 @@ fn queue_answer(
         Answer::Revert => DisplayTransactionState::RevertRequested,
     };
     let values = section(&changed)?;
-    let wake = wake_slot()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .map(Arc::clone);
+    let wake = wake_slot().lock_recover().as_ref().map(Arc::clone);
     let (sender, result) = mpsc::channel();
     super::durable_writer::global().submit_ordered(move || {
         let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

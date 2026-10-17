@@ -181,23 +181,6 @@ impl DmabufImage {
         self.modifier == DRM_FORMAT_MOD_LINEAR || self.modifier == DRM_FORMAT_MOD_INVALID
     }
 
-    /// Whether every plane names the same underlying buffer. When true, an
-    /// importer allocates one `VkDeviceMemory` and binds each plane image at
-    /// its own offset; when false, each plane is imported separately.
-    ///
-    /// Compares every plane's fd against the first by identity (`fstat`
-    /// device + inode). An image with fewer than two planes has nothing to
-    /// disagree with and reports `true`.
-    pub fn planes_share_one_buffer(&self) -> bool {
-        // `split_first` rather than `planes[0]` / `planes[1..]`: no index is
-        // computed, so the empty case is a branch of the pattern instead of an
-        // invariant someone has to remember.
-        let Some((first, rest)) = self.planes.split_first() else {
-            return true;
-        };
-        rest.iter().all(|p| same_file(first, p))
-    }
-
     /// A short human description for logs: `NV12 1920x1080 mod=0x0 planes=2`.
     pub fn describe(&self) -> String {
         format!(
@@ -209,29 +192,6 @@ impl DmabufImage {
             self.planes.len()
         )
     }
-}
-
-/// Whether two planes' fds refer to the same underlying file description.
-/// dmabufs are anonymous, so device+inode is the only identity available.
-#[cfg(unix)]
-fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    let stat = |fd: &OwnedFd| -> Option<(u64, u64)> {
-        // Let std select the target's actual stat ABI. The temporary File owns
-        // a duplicate, so metadata inspection cannot close the producer's fd.
-        let file = std::fs::File::from(fd.try_clone().ok()?);
-        let metadata = file.metadata().ok()?;
-        Some((metadata.dev(), metadata.ino()))
-    };
-    match (stat(&a.fd), stat(&b.fd)) {
-        (Some(x), Some(y)) => x == y,
-        _ => false,
-    }
-}
-
-#[cfg(not(unix))]
-fn same_file(_a: &DmabufPlane, _b: &DmabufPlane) -> bool {
-    false
 }
 
 /// The number of bytes a dmabuf holds, from `lseek(fd, 0, SEEK_END)`. dmabufs
@@ -318,68 +278,6 @@ mod tests {
                 Some(4096),
                 "SEEK_END reports the real size"
             );
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Phase `planes_sharing_one_fd_are_detected_as_one_buffer`.
-        {
-            let dir =
-                std::env::temp_dir().join(format!("tilo-dmabuf-share-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let a = dir.join("a");
-            let b = dir.join("b");
-            std::fs::write(&a, vec![0u8; 64]).unwrap();
-            std::fs::write(&b, vec![0u8; 64]).unwrap();
-
-            let fd_a = OwnedFd::from(std::fs::File::open(&a).unwrap());
-            let fd_a2 = fd_a.try_clone().unwrap();
-            let shared = DmabufImage {
-                planes: vec![
-                    DmabufPlane {
-                        fd: fd_a,
-                        offset: 0,
-                        stride: 8,
-                    },
-                    DmabufPlane {
-                        fd: fd_a2,
-                        offset: 32,
-                        stride: 8,
-                    },
-                ],
-                fourcc: DRM_FORMAT_NV12,
-                modifier: 0,
-                width: 8,
-                height: 4,
-                colorimetry: Colorimetry::default(),
-            };
-            assert!(
-                shared.planes_share_one_buffer(),
-                "same inode → one buffer, bind at offsets"
-            );
-
-            let split = DmabufImage {
-                planes: vec![
-                    DmabufPlane {
-                        fd: OwnedFd::from(std::fs::File::open(&a).unwrap()),
-                        offset: 0,
-                        stride: 8,
-                    },
-                    DmabufPlane {
-                        fd: OwnedFd::from(std::fs::File::open(&b).unwrap()),
-                        offset: 0,
-                        stride: 8,
-                    },
-                ],
-                fourcc: DRM_FORMAT_NV12,
-                modifier: 0,
-                width: 8,
-                height: 4,
-                colorimetry: Colorimetry::default(),
-            };
-            assert!(
-                !split.planes_share_one_buffer(),
-                "distinct inodes → import each plane"
-            );
-
             std::fs::remove_dir_all(&dir).ok();
         }
     }

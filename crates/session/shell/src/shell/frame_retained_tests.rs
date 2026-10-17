@@ -13,7 +13,7 @@ use super::*;
 
 use crate::shell::render::paint::{SceneDamage, VelloDrmBridge};
 use crate::shell::test_support::{
-    DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click,
+    DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click, settled_pan_report,
 };
 
 const NATIVE_WIDTH: u32 = 3_840;
@@ -309,8 +309,17 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
             && quick_settings_bounds.y1 >= panel.y1 + shadow_reach,
         "the default settled damage bounds must include the enlarged e4 shadow"
     );
+    // The section's bounds also hold the strip rail and ribbon, which are painted before
+    // and after opening alike and so are no damage; what opening changes is the panel and
+    // its shadow.
+    let opened_extent = Rect::new(
+        panel.x0 - shadow_reach,
+        panel.y0 - shadow_reach,
+        panel.x1 + shadow_reach,
+        panel.y1 + shadow_reach,
+    );
     assert_damage_covers(
-        quick_settings_bounds,
+        opened_extent,
         open_damage,
         "large-shadow Quick Settings open",
     );
@@ -795,6 +804,7 @@ fn foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() 
     foreign_replacement_pixel_oracle(false, ui::widget::WindowWidth::Narrow, true);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn imported_foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() {
     foreign_replacement_pixel_oracle(true, ui::widget::WindowWidth::Narrow, true);
@@ -971,6 +981,13 @@ fn publish_foreign_fixture_frame(
     importing_bridge: Option<&VelloDrmBridge>,
 ) {
     let store = crate::shell::foreign::store();
+    // Importing a GPU frame goes through the Linux dmabuf capture path.
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        importing_bridge.is_none(),
+        "importing a GPU frame needs Linux"
+    );
+    #[cfg(target_os = "linux")]
     if let Some(bridge) = importing_bridge {
         let (device, queue) = bridge.gpu();
         let frame = crate::shell::gpu_frames::frame_for_test(
@@ -996,14 +1013,14 @@ fn publish_foreign_fixture_frame(
                 .is_empty(),
             "the real owned GPU frame must carry no CPU pixel blob"
         );
-    } else {
-        store.publish_rgba(
-            surface,
-            &texel.repeat(size.0 as usize * size.1 as usize),
-            size.0,
-            size.1,
-        );
+        return;
     }
+    store.publish_rgba(
+        surface,
+        &texel.repeat(size.0 as usize * size.1 as usize),
+        size.0,
+        size.1,
+    );
 }
 
 fn assert_foreign_metadata_is_strict(
@@ -1086,15 +1103,7 @@ fn assert_foreign_pixel(
     assert_eq!(&pixels[at..at + 3], &xrgb, "actual foreign interior pixels");
 }
 
-struct ForeignFilterSettings(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
-impl Drop for ForeignFilterSettings {
-    fn drop(&mut self) {
-        settings_store::install_source(self.0.take());
-    }
-}
-
-fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
-    let previous = settings_store::installed_source();
+fn foreign_filter_settings(frame: &FrameBuilder) -> crate::shell::test_support::InstalledSettings {
     let temperatures: serde_json::Map<_, _> = frame
         .chrome()
         .tree()
@@ -1115,10 +1124,12 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
             "read-only fixture settings",
         ))
     });
-    settings_store::install_source(Some(std::sync::Arc::new(source)));
-    ForeignFilterSettings(previous)
+    crate::shell::test_support::install_settings(std::sync::Arc::new(source))
 }
 
+// Exact client damage is published through the Linux capture seam
+// (`publish_damaged_rgba_for_test`).
+#[cfg(target_os = "linux")]
 #[test]
 fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels() {
     for (imported, density) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
@@ -1233,6 +1244,7 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
 /// repaints only that line of the output: the frame's damage is the line's
 /// rows across the tile, the retained render takes the sparse path and writes
 /// no pixel outside them, and the result matches a dense render of the scene.
+#[cfg(target_os = "linux")]
 #[test]
 fn one_line_of_client_damage_repaints_only_that_line() {
     let _ambient = DenyAmbientStarts::new();
@@ -1493,6 +1505,7 @@ fn assert_notes_startup_saved_of(frame: &mut PopulatedShellFixture, surfaces: us
 
 /// The strips layers of two frames hold the same drawings: what no strip
 /// carries, and every strip in canvas coordinates.
+#[cfg(target_os = "linux")]
 fn strips_drawn_alike(a: &FrameCache, b: &FrameCache) -> bool {
     a.layers.workspace.encoding_eq(&b.layers.workspace)
         && a.layers.strips.len() == b.layers.strips.len()
@@ -1578,16 +1591,21 @@ fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
             .map(|offset| offset + 121)
             .collect::<Vec<_>>()
     );
+    // The frame a pan rests on keeps the chrome the pan began with; the
+    // strip indicators show from the next one. Compare that frame, which
+    // draws them as the dense scene does, not the one before it.
+    let shown = frame.paint_with_damage();
     frame.set_retained_layer_width(None);
     acknowledge_notes_saves(&mut frame);
     let dense = frame.paint();
-    assert_layer_cpu_pixels_match(&panned.scene, &dense, SIZE);
+    assert_layer_cpu_pixels_match(&shown.scene, &dense, SIZE);
     // A policy transition restores fractional layout rather than rounding state.
     frame.host_mut().set_strip_pan_quantum(None);
     frame.relayout();
     assert_eq!(frame.host().strip_scroll_offsets()[0].1, 120.5);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
     const SIZE: (u32, u32) = (1280, 720);
@@ -1658,7 +1676,10 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     );
 
     // The scene shows the strip where it is on screen, as a scene drawn
-    // without layers does.
+    // without layers does. The frame a pan rests on keeps the chrome the pan
+    // began with and the strip indicators show from the next one, so compare
+    // that next frame: it draws them as the dense scene does.
+    let shown = frame.paint_with_damage();
     frame.set_retained_layer_width(None);
     // Encode both paths before rasterizing either: app status bubbles use
     // monotonic linger deadlines, and CPU rendering may cross a deadline.
@@ -1666,7 +1687,7 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     // historical 1,034-pixel failure; startup is already durable on both paths.
     acknowledge_notes_saves(&mut frame);
     let dense_scene = frame.paint();
-    assert_layer_cpu_pixels_match(&panned.scene, &dense_scene, SIZE);
+    assert_layer_cpu_pixels_match(&shown.scene, &dense_scene, SIZE);
 
     frame.set_retained_layer_width(Some(8192));
     let mut independent = PopulatedShellFixture::new(SIZE, Theme::dark().with_reduce_motion(true));
@@ -1683,6 +1704,8 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         fractional.cache.is_none(),
         "a pan between pixels keeps its exact screen-space drawing, not layers"
     );
+    // As above: the indicators show from the frame after the pan's rest.
+    let fractional = frame.paint_with_damage();
     let dense_scene = frame.paint();
     assert_layer_cpu_pixels_match(&fractional.scene, &dense_scene, SIZE);
 
@@ -2142,13 +2165,17 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
         let mut worst_step = 0_u8;
         let mut control_step = 0_u8;
         let mut previous_strips: Option<Vec<u8>> = None;
-        frame.host_mut().update_active_strip_pan(0.0, true);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
         // Fractional travel, as a touchpad reports it: the pans land on
         // whole device pixels, so the layers move without resampling.
         let mut travel = 0.0;
         for step in 0..24 {
             travel += if step < 16 { 23.7 } else { -31.3 };
-            frame.host_mut().update_active_strip_pan(travel, false);
+            frame
+                .host_mut()
+                .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
             frame.relayout();
             let painted = frame.paint_with_damage();
             let label = format!("{name}, pan step {step}");
@@ -2245,12 +2272,16 @@ fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_rend
     let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
     let mut layered = gpu_target(size);
     let mut dense = gpu_target(size);
-    frame.host_mut().update_active_strip_pan(0.0, true);
+    frame
+        .host_mut()
+        .update_active_strip_pan(0.0, true, settled_pan_report(0));
     let mut travel = 0.0;
     let mut composited = 0;
     for step in 0..12 {
         travel -= 37.3;
-        frame.host_mut().update_active_strip_pan(travel, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("left overpull, step {step}");
@@ -2603,11 +2634,17 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                 "{name}: drawing the layers made no frame: the next frame at rest is unchanged"
             );
             let _ = present_or_keep(&mut layered, &rest, &name);
-            frame.host_mut().update_active_strip_pan(0.0, true);
+            frame
+                .host_mut()
+                .update_active_strip_pan(0.0, true, settled_pan_report(0));
             let mut travel = 0.0;
             for step in 0..6 {
                 travel += 23.7;
-                frame.host_mut().update_active_strip_pan(travel, false);
+                frame.host_mut().update_active_strip_pan(
+                    travel,
+                    false,
+                    settled_pan_report(step + 1),
+                );
                 frame.relayout();
                 let painted = frame.paint_with_damage();
                 let label = format!("{name}, pan step {step}");
@@ -2735,8 +2772,12 @@ fn a_warm_after_the_chrome_changed_rasterises_only_the_tiles_that_changed() {
             "{theme_name}: the warm rasterises the pointer's tiles, not a layer ({rewarmed} px of \
              {output})"
         );
-        frame.host_mut().update_active_strip_pan(0.0, true);
-        frame.host_mut().update_active_strip_pan(23.7, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
+        frame
+            .host_mut()
+            .update_active_strip_pan(23.7, false, settled_pan_report(1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("{theme_name}, pan after the rewarm");
@@ -2788,18 +2829,22 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
         frame.relayout();
         let rest = frame.paint_with_damage();
         let _ = present_or_keep(&mut layered, &rest, theme_name);
-        frame.host_mut().update_active_strip_pan(0.0, true);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
         let mut travel = 0.0;
         for step in 0..6 {
             travel += 23.7;
-            frame.host_mut().update_active_strip_pan(travel, false);
+            frame
+                .host_mut()
+                .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
             frame.relayout();
             let painted = frame.paint_with_damage();
             let label = format!("{theme_name}, pan step {step}");
             let _ = present(&mut layered, &painted, &label);
             assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
         }
-        frame.host_mut().end_active_strip_pan(Instant::now());
+        frame.host_mut().end_active_strip_pan(Instant::now(), false);
         // What the last frame that came as layers rasterised.
         let mut last_layered = None;
         for step in 0..10 {
@@ -2832,8 +2877,12 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
             // The desktop changed at rest: the session warms the layers.
             let _ = warm_at_rest(&mut frame, &mut layered, &|| true, theme_name);
         }
-        frame.host_mut().update_active_strip_pan(0.0, true);
-        frame.host_mut().update_active_strip_pan(23.7, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
+        frame
+            .host_mut()
+            .update_active_strip_pan(23.7, false, settled_pan_report(1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("{theme_name}, second pan");
@@ -2877,7 +2926,7 @@ fn assert_shows_a_full_render(
 /// screen space again, with screen-space damage.
 #[cfg(target_os = "linux")]
 fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
-    frame.host_mut().end_active_strip_pan(Instant::now());
+    frame.host_mut().end_active_strip_pan(Instant::now(), false);
     for _ in 0..8 {
         frame.relayout();
         let _ = frame.paint_with_damage();
@@ -2924,11 +2973,15 @@ fn a_scaled_display_gets_strip_pans_on_device_pixels() {
         frame.relayout();
         let _ = frame.paint_with_damage();
     }
-    frame.host_mut().update_active_strip_pan(0.0, true);
+    frame
+        .host_mut()
+        .update_active_strip_pan(0.0, true, settled_pan_report(0));
     let mut travel = 0.0;
     for step in 0..6 {
         travel += 17.3;
-        frame.host_mut().update_active_strip_pan(travel, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let (id, scroll, max_scroll) = frame.host().strip_scroll_offsets()[0];

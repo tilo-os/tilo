@@ -77,18 +77,23 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
-UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
-aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
-installs the flashable disk:
+UKI, which keeps the device tree across updates. t builds and publishes one for main's
+head when asked (`publish-os-board-<board>` in `t.toml`; it builds `os-image-aarch64`,
+`os-dev-image-aarch64` and `os-board-<board>` first, a few hours from cold):
+
+```sh
+t dispatch publish-os-board-lenovo-83ed --ref main
+```
 
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
-| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
-| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The moving tag moves once the aarch64 lane has sealed and pushed the image; the
-board job then installs the disk from it.
-On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+The moving tag moves only forward along main: a build of an older commit leaves it.
+`t test os-board-lenovo-83ed` builds the image from your tree without publishing it
+(`t outputs` gives the OCI archive). The flashable disk is not on t yet: the newest is
+the one Build / OS dev installed last, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
 Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):
@@ -256,15 +261,62 @@ fails, is in `docs/measurements/`: [performance KPIs and A/B runs](docs/measurem
 
 ## Fast checks before assembly
 
-For a native integration test without a full workspace run, ask t for exactly
-that test; it runs on x86-64 in the builder image with the same caches, never
-from a stored result ([docs/t.md](docs/t.md)):
+For a native integration test without a full workspace dispatch, use
+**Dev / focused test** (`dev-focused-test.yml`). Select a full source
+commit SHA, one Cargo package, integration target and exact Rust test path. For
+example: package `shell`, target `it`, test
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
+Use operation `check-tests` with the target/name empty to compile that package's
+test targets. Both modes use `--locked` on one native x86-64 runner and share the
+normal download/compiler caches. Missing or ignored tests fail. The job records
+source SHA, workflow SHA, builder digest and exit status; its diagnostic result
+does not replace required PR checks or trigger publication.
+
+For a related group, set `target_kind=lib` (leave `test_target` empty), or keep
+`target_kind=integration` and name the integration target. Supply `test_names` as
+a JSON array of up to 32 exact paths, leaving `test_name` empty. All names must
+exist before any case runs. Every case runs even if an earlier case fails, and
+the run fails if any case fails or is ignored. One job reuses one target tree;
+there is no workspace-wide selection or per-case runner dispatch.
+
+For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
+and submit directly through the scheduler (replace the example package and SHA):
 
 ```sh
-t test test/shell --test 'concept_parity_spec::overview_add_workspace::'
-t cargo check -p shell --tests        # compile a package's test targets
-t test clippy/shell clippy/tilo-relay # CI's Clippy gate, also for crates macOS cannot build
+jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
 ```
+
+Use this structured request for lists: the installed `fgj workflow run` does not
+expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
+
+Do not reserve runners or ask another agent to allocate a slot. Each case's
+result and the exact source/workflow/builder identities appear in the run summary.
+
+Use operation `clippy` to meet CI's lint gate before pushing, including for
+the Linux-only code a Mac does not compile (`shell`, `tilo-relay`, `launcher`). It runs
+the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
+`-D warnings`, the workspace lint table), on the runner label, builder image,
+environment and checkout path of CI's `clippy` job, so the two share compiler
+cache entries and a warm package takes minutes. Name one `package`, or up to 64
+in `packages`; leave the test fields empty. A failure prints the rendered
+Clippy diagnostics; the run summary lists the compiler-cache statistics.
+
+```sh
+jq -n --arg source "$(git rev-parse HEAD)" \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+```
+
+The source commit must be pushed (any branch) so the runner can fetch it.
+
+On a Mac, `cargo check --locked -p shell --tests` and `-p tilo-relay --tests`
+compile locally. Code that needs Linux (the Wayland compositor state, `ush`,
+namespaces, netlink, `/proc`) and the tests that drive it sit behind
+`#[cfg(target_os = "linux")]`, so a passing Mac check is a quick first gate,
+not a replacement for the Linux run. A test that needs only portable code
+should stay ungated.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
@@ -588,7 +640,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
 | `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
 | `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
-| `xwayland-satellite` `Xwayland` (binaries) | `xwayland-satellite` `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge; they fail, not skip, without it |
+| `xwayland-satellite` `Xwayland` (binaries) | `tools/ci/install-xwayland-satellite.sh` (needs `xcb-util-cursor-devel` `open-sans-fonts`), `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge with Tilo's clipboard handoff patch; they fail, not skip, without it |
 
 The sandbox, language-server, and rollback mechanism tests require the binary
 tools listed above. Install them where Cargo runs, including inside a build
@@ -1599,6 +1651,52 @@ it is `vello` + `wgpu` unoptimised — so expect the nested one to feel soft.
 `--backend drm` is not an option from inside a running session: `libseat` will
 not hand you a seat the running desktop owns, and fails with `ENOSYS` (error
 code 38), which is a refusal, not an unimplemented backend.
+
+### Nested desktop with Tilo's own apps
+
+A bare `shell --backend winit` has an empty launcher: it lists only installed,
+signed `.tapp` packages. One command builds the shell and the apps on a t
+server (t.toml's `nested-session` check, downloaded with `t outputs`: the thin
+apps need the exact `libruntime_dylib.so` of their build, which `t cargo build`
+does not copy back), packages and signs the apps with a development key,
+installs them with their runtime bundle into a private store, and starts the
+nested shell beside the model gateway. The machine running it needs `t` and no
+Rust toolchain:
+
+```bash
+dist/dev/nested-session.sh                                  # core apps + agent
+dist/dev/nested-session.sh --apps "notes chat agent"        # a smaller set
+dist/dev/nested-session.sh --headless --fresh-desktop       # no window at all
+```
+
+Everything lives in `~/.local/state/tilo-nested` (`--state DIR`): a scratch
+HOME and XDG tree, the app store, the runtime, the publisher key and a
+throwaway identity (re-minted before its 24-hour expiry). The shell gets a
+private `XDG_RUNTIME_DIR` and D-Bus session, so it cannot collide with your
+desktop or another Tilo session. Re-running repackages only the apps whose
+binary, manifest or surface changed. The script prints the `tilo-control`
+command line for driving the session; logs are under `logs/` in the state
+directory. Configure a model provider in the nested Settings app before
+asking the agent to act. The browser installs without its Chromium engine and
+offers to fetch it itself. `--fresh-desktop` forgets saved workspaces and
+windows but keeps the identity and the installed apps. The window opens at
+1280x800 logical pixels at the host's scale, which leaves the task centre room
+for its cards; `TILO_WINIT_SIZE=WxH` (physical pixels) overrides it.
+
+`--headless` starts the same stack on the offscreen backend and needs no
+Wayland session: nothing appears on your desktop, and you drive it only
+through the printed `tilo-control` line (`actions invoke`, `key`, `type`,
+`click-at`, `read APP`, and `snapshot FILE`, which renders the 1280x800 output,
+or `TILO_HEADLESS_SIZE`). Use it for scripted and agent end-to-end runs.
+
+On the first start the script makes the Home workspace a native room: agent
+tasks act with a room's native authority, and the throwaway person has no
+second device to govern one. It runs the packaged-desktop governor fixture,
+which signs an invitation with the session's own device, and the shell
+redeems it at boot; `logs/native.log` says when the room is native. Later
+starts restore it from the saved desktop, and `--fresh-desktop` enrols a new
+one. Admit an agent to the room (`so.tilo.desktop` `add-agent`) before queuing
+tasks for it.
 
 ### Edit → build → log into your own build
 

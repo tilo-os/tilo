@@ -138,26 +138,76 @@ pub(crate) fn service_socket_is_live(path: &std::path::Path) -> bool {
     path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
-/// Bind the session's CRDT fan-out broker on the service socket the
-/// launcher hands to apps. `None` means a degraded session, not a normal
-/// one — every app manifest declares `collab`, so nothing collaborates
-/// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
-pub(crate) fn spawn_session_collab_broker(
-    chrome: &crate::shell::chrome_state::Chrome,
+/// The route the session's action door places offloadable actions through:
+/// the person's home relay that retains the session's rooms, over the
+/// document media the filesystem daemon keeps for them, reached as the
+/// desktop session through the invoking app's scope
+/// ([`tilo_runtime::offload::session_action_offload`]). `None` — every
+/// offloadable action runs through its app's own handler — when offload is
+/// off or no registered relay retains any of the rooms. Never blocks on the
+/// network or the daemon.
+pub(crate) fn session_action_offload(
+    membership: &crate::shell::state::WorkspaceTreeHandle,
+) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
+    let rooms: Vec<String> = membership
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| !workspace.room.is_nil())
+        .map(|workspace| workspace.room.to_string())
+        .collect();
+    let rooms: Vec<&str> = rooms.iter().map(String::as_str).collect();
+    tilo_runtime::offload::session_action_offload(&rooms, &launcher::services::blob_socket())
+}
+
+/// Why the session's broker did not come up, for the chrome to say.
+#[derive(Debug)]
+pub(crate) enum BrokerStartFailure {
+    /// The services directory could not be created.
+    ServicesRoot(String),
+    /// Another session on this `XDG_RUNTIME_DIR` is listening on the socket.
+    SocketTaken,
+    /// The broker could not start: its socket, its invocation journal.
+    Broker(String),
+}
+
+/// What binding the session's broker produced.
+pub(crate) type BrokerStart = Result<crate::shell::collab_broker::BrokerHandle, BrokerStartFailure>;
+
+/// Start binding the session's CRDT fan-out broker on the service socket
+/// the launcher hands to apps, on the session-start worker.
+///
+/// Binding blocks by nature: it opens the broker's invocation journal (a
+/// read of the whole journal and its directory and file syncs), its MLS
+/// vault (the system secret store, which waits for the keyring) and every
+/// channel's sealed state. On the compositor loop that froze the desktop
+/// for as long as the disk or keyring took, at session start and on the
+/// tick first login completes. The loop polls the returned start each tick
+/// and installs the outcome with [`finish_session_collab_broker`]; until
+/// then the session says its services are starting and holds launches.
+pub(crate) fn start_session_collab_broker(
     peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
-) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    wake: crate::session_runtime::Wake,
+) -> crate::session_runtime::PendingStart<BrokerStart> {
+    let peer_sync = peer_sync.cloned();
+    crate::session_runtime::start_on_worker(wake, move || {
+        Ok(bind_session_collab_broker(peer_sync.as_ref(), membership))
+    })
+}
+
+/// Bind the session's broker here, waiting for whatever it opens.
+fn bind_session_collab_broker(
+    peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+) -> BrokerStart {
     if let Err(e) = launcher::services::ensure_services_root() {
         tracing::error!(
             "collab: cannot create {} ({e}); apps will start without collaboration",
             launcher::services::services_root().display()
         );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t_args(
-                "collab-unavailable-services-root",
-                &[("error", e.to_string().into())],
-            ));
-        return None;
+        return Err(BrokerStartFailure::ServicesRoot(e.to_string()));
     }
 
     let capnp_path = launcher::services::collab_socket();
@@ -168,44 +218,87 @@ pub(crate) fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
-        return None;
+        return Err(BrokerStartFailure::SocketTaken);
     }
 
-    let peer_sync_owned = peer_sync.cloned();
-    let membership = chrome.borrow().tree_handle();
-    match crate::shell::collab_broker::spawn_native(
+    let network = peer_sync.cloned();
+    let action_offload = session_action_offload(&membership);
+    let spawned = crate::shell::collab_broker::spawn_native_offloading(
         capnp_path.clone(),
-        &peer_sync_owned,
+        &network,
         membership,
-    ) {
+        action_offload,
+    );
+    drop(network);
+    match spawned {
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
                 capnp_path.display(),
                 peer_sync.is_some()
             );
-            crate::shell::channel_encryption::ChannelKeyProvider::session()
-                .set(handle.channel_encryption());
-            chrome.borrow_mut().clear_collab_unavailable();
-            Some(handle)
+            Ok(handle)
         }
         Err(e) => {
             tracing::error!(
                 "collab: bind {} failed ({e}); apps will start without collaboration",
                 capnp_path.display()
             );
-            chrome
-                .borrow_mut()
-                .set_collab_unavailable(crate::shell::i18n::t_args(
-                    "collab-unavailable-broker",
-                    &[("error", e.to_string().into())],
-                ));
-            None
+            Err(BrokerStartFailure::Broker(e.to_string()))
         }
     }
+}
+
+/// Install a finished [`start_session_collab_broker`] on the loop: the
+/// session's channel keys follow the broker's encryption service, and the
+/// chrome says whether collaboration is available. `None` means a degraded
+/// session, not a normal one — every app manifest declares `collab`, so
+/// nothing collaborates until this succeeds; surfaced via
+/// `chrome_state::set_collab_unavailable`. `outcome` is an error when the
+/// start ended without one (its job panicked).
+pub(crate) fn finish_session_collab_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+    outcome: Result<BrokerStart, String>,
+) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    let failure = match outcome {
+        Ok(Ok(handle)) => {
+            crate::shell::channel_encryption::ChannelKeyProvider::session()
+                .set(handle.channel_encryption());
+            chrome.borrow_mut().clear_collab_unavailable();
+            return Some(handle);
+        }
+        Ok(Err(failure)) => failure,
+        Err(ended) => {
+            tracing::error!(%ended, "collab: the broker's start ended without an outcome; apps will start without collaboration");
+            BrokerStartFailure::Broker(ended)
+        }
+    };
+    let notice = match failure {
+        BrokerStartFailure::ServicesRoot(error) => crate::shell::i18n::t_args(
+            "collab-unavailable-services-root",
+            &[("error", error.into())],
+        ),
+        BrokerStartFailure::SocketTaken => crate::shell::i18n::t("collab-unavailable-socket-taken"),
+        BrokerStartFailure::Broker(error) => {
+            crate::shell::i18n::t_args("collab-unavailable-broker", &[("error", error.into())])
+        }
+    };
+    chrome.borrow_mut().set_collab_unavailable(notice);
+    None
+}
+
+/// Bind and install the session's broker on this thread, for tests that
+/// need it before they go on.
+#[cfg(test)]
+pub(crate) fn spawn_session_collab_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+    peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
+) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    let membership = chrome.borrow().tree_handle();
+    finish_session_collab_broker(
+        chrome,
+        Ok(bind_session_collab_broker(peer_sync, membership)),
+    )
 }
 
 #[cfg(test)]
@@ -418,5 +511,116 @@ mod tests {
             drop(second);
             drop(first);
         }
+    }
+
+    /// The person's always-on relay at `address`, registered as retaining
+    /// `room`, at `path`, as enrollment writes it.
+    fn register_home_relay(
+        path: &std::path::Path,
+        user: [u8; 32],
+        room: &str,
+        address: iroh::EndpointAddr,
+    ) {
+        let relay_device = *address.id.as_bytes();
+        let registration = tilo_relay::HomePeerRegistration {
+            schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(relay_device),
+            relay_service_node_id: hex::encode(relay_device),
+            relay_endpoint: Some(address),
+            label: "home".into(),
+            user_public_key: hex::encode(user),
+            device_cert: None,
+            relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(room).unwrap()],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
+    }
+
+    /// The compositor's broker, as the desktop session starts it, holds the
+    /// offload route its person's home relay configures — over the media
+    /// the filesystem daemon keeps — and none when offload is off or no
+    /// relay retains the session's rooms.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each broker holds the session's socket for its whole phase on purpose"
+    )]
+    fn native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures() {
+        const TEST: &str = "compositor::session_bootstrap::tests::native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures";
+        crate::shell::collab_broker_capnp::run_isolated_native_consent_test(TEST, || {
+            let config =
+                std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("config"));
+            let identity_root = std::path::PathBuf::from(
+                std::env::var_os("TILO_IDENTITY_ROOT").expect("identity root"),
+            );
+            crate::firstboot::ensure_collaboration_identity(
+                &config.join("tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(identity_root.clone()),
+            )
+            .expect("provision certified identity");
+            let chrome = FrameBuilder::new((800, 600)).chrome_handle();
+            let room = chrome.borrow().tree_handle().read().desktop.workspaces[0]
+                .room
+                .to_string();
+            let route = |chrome: &crate::shell::chrome_state::Chrome| {
+                let broker =
+                    spawn_session_collab_broker(chrome, None).expect("the session's broker binds");
+                let route = broker
+                    .app_action_broker()
+                    .expect("the native broker")
+                    .state()
+                    .action_offload()
+                    .cloned();
+                drop(broker);
+                route
+            };
+
+            // No home relay: every offloadable action runs through its
+            // app's handler, exactly as before.
+            assert!(route(&chrome).is_none(), "unconfigured: no route");
+
+            // The person's home relay retains the session's room. It never
+            // answers, so nothing can be placed elsewhere, and the route
+            // says so: the door runs the app's handler.
+            let (_, cert) = tilo_identity_host::broker::trusted_current_device(&room)
+                .expect("the session's certified device");
+            let unreachable =
+                iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+                    .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+            register_home_relay(
+                &tilo_relay::home_peer_registry_path(&identity_root),
+                cert.user_public_key,
+                &room,
+                unreachable,
+            );
+            let held = route(&chrome)
+                .expect("the configured home relay routes the session's offloadable actions");
+            let request = tilo_actions::offload::OffloadRequest {
+                room,
+                app_id: "so.tilo.photos".into(),
+                address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
+                offload: tilo_actions::Offload {
+                    app: "so.tilo.thumbnails".into(),
+                    entrypoint: "thumbnail-batch".into(),
+                    gpu: false,
+                    cpu_time_ms: 120_000,
+                    memory_bytes: 1024 * 1024 * 1024,
+                    output_bytes: 16 * 1024 * 1024,
+                },
+                inputs: vec![hex::encode([1; 32])],
+            };
+            let answer = tilo_rt::app().handle().block_on(held.offload(request));
+            let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+                panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+            };
+            assert!(reason.contains("offload route"), "{reason}");
+            drop(held);
+
+            // Turned off, the same configuration routes nothing.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(tilo_runtime::offload::OFFLOAD_ENV, "off");
+            assert!(route(&chrome).is_none(), "offload is off: no route");
+        });
     }
 }

@@ -144,6 +144,13 @@ pub enum Command {
     /// Answered by the native test transport, and only by a dev build
     /// (`compositor::dev_test_identity`); never on the agent-control socket.
     ProvisionTestIdentity,
+    /// Deadlock the compositor thread on a lock it holds, as a compositor
+    /// that read-locks its workspace tree under its own write once did. The
+    /// main-loop watchdog's end-to-end test uses it to prove a hung desktop
+    /// is recorded and ended (`compositor::watchdog`). Answered by the native
+    /// test transport of a development build only, and never: the reply is
+    /// the compositor exiting.
+    DeadlockMainLoop,
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -974,6 +981,16 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
     }
 }
 
+/// What a build without development overrides answers to
+/// `deadlock_main_loop`: it never hangs its own main loop on request.
+#[must_use]
+pub fn deadlock_main_loop_refused() -> Response {
+    Response::Err {
+        code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
+        message: "a main-loop deadlock is injected only by development builds".into(),
+    }
+}
+
 /// Dispatch a single command against the live compositor state.
 ///
 /// Returns `(response, actions)`: read-only commands return no actions; mutating commands return the [`PlannedAction`]s the transport must run before replying — keeps the dispatcher pure (no I/O, no `&mut` state).
@@ -1099,6 +1116,14 @@ pub fn dispatch_command<S: ControlState>(
             Response::Err {
                 code: "test_transport_required".to_string(),
                 message: "host activation tokens are minted by the native test transport"
+                    .to_string(),
+            },
+            Vec::new(),
+        ),
+        Command::DeadlockMainLoop => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "a main-loop deadlock is injected by the native test transport"
                     .to_string(),
             },
             Vec::new(),

@@ -943,3 +943,191 @@ fn unproved_coedit_wrapper_cannot_supply_replay_duplicate_coverage() {
     assert!(pending.exists());
     assert!(store.load_retained().unwrap().contains(&bytes));
 }
+
+/// A frame of `author` on `channel`, as `frame` makes one.
+fn authored(author: u8, channel: u8, value: u8, timestamp: u64) -> ([u8; 32], Vec<u8>) {
+    let bytes = transport::encode(&Envelope::Delta {
+        workspace_id: 7,
+        author_device_public_key: [author; 32],
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::RetainedDelta {
+            channel: [channel; 32],
+            body: vec![value; 10],
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap();
+    ([channel; 32], bytes)
+}
+
+/// The lineage directory name of `author` on `channel`.
+fn lineage_name(author: u8, channel: u8) -> OsString {
+    format!(
+        "{}-{}",
+        hex::encode([author; 32]),
+        hex::encode([channel; 32])
+    )
+    .into()
+}
+
+fn listing_hits() -> u64 {
+    LISTING_HITS.with(std::cell::Cell::get)
+}
+
+/// A capture lists each lineage once; later captures list it from memory
+/// until the owner reports it changed (or reports nothing), and list what
+/// changed from its generation again.
+#[test]
+fn captures_remember_each_lineage_until_it_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let (first, a1) = authored(1, 9, 1, 1);
+    let (second, b1) = authored(2, 8, 2, 2);
+    store.retain_delta(&first, 1, &a1).unwrap();
+    store.retain_delta(&second, 2, &b1).unwrap();
+    let before = listing_hits();
+    let mut listed = snapshot(&store);
+    assert_eq!(prepare(&store, &mut listed).total_frames, 2);
+    assert_eq!(
+        listing_hits() - before,
+        0,
+        "the first capture lists every lineage"
+    );
+    assert_eq!(
+        store.listed_lineage_names(),
+        [lineage_name(1, 9), lineage_name(2, 8)]
+    );
+
+    let mut remembered = snapshot(&store);
+    assert_eq!(prepare(&store, &mut remembered).total_frames, 2);
+    assert_eq!(listing_hits() - before, 2, "both lineages come from memory");
+
+    // The owner job retaining to the first lineage reports it.
+    let (_, a2) = authored(1, 9, 3, 3);
+    store.retain_delta(&first, 3, &a2).unwrap();
+    store.forget_listed(Some(&[lineage_name(1, 9)]));
+    let mut changed = snapshot(&store);
+    assert_eq!(prepare(&store, &mut changed).total_frames, 3);
+    assert_eq!(
+        listing_hits() - before,
+        3,
+        "only the unchanged lineage comes from memory"
+    );
+    let batch = store
+        .read_replay_batch(
+            &mut changed,
+            ReplayLimits::default(),
+            &ReplayBudget::new(1024 * 1024),
+        )
+        .unwrap();
+    let times: Vec<u64> = batch
+        .frames
+        .iter()
+        .map(|frame| match frame {
+            Envelope::Delta { authored_at_ns, .. } => *authored_at_ns,
+            _ => 0,
+        })
+        .collect();
+    assert!(times.contains(&3), "the new frame is replayed: {times:?}");
+    drop(batch);
+
+    // A job that says nothing of what it changed forgets everything.
+    store.forget_listed(None);
+    assert!(store.listed_lineage_names().is_empty());
+    let mut relisted = snapshot(&store);
+    assert_eq!(prepare(&store, &mut relisted).total_frames, 3);
+    assert_eq!(listing_hits() - before, 3);
+}
+
+/// A device's access request for a channel, framed as `author` retains it.
+fn access_request(author: &ed25519_dalek::SigningKey, timestamp: u64) -> ([u8; 32], Vec<u8>) {
+    let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        room: "room".into(),
+        request: Box::new(
+            collab_types::MlsAccessRequestV1::signed(
+                collab_types::ChannelId::new(),
+                vec![1],
+                1,
+                author,
+            )
+            .unwrap(),
+        ),
+        delivery: 0,
+    };
+    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+    let bytes = transport::encode(&Envelope::Delta {
+        workspace_id: 7,
+        author_device_public_key: author.verifying_key().to_bytes(),
+        authored_at_ns: timestamp,
+        signature: [0; 64],
+        delta: CoeditPayload::Checkpoint {
+            channel,
+            body: postcard::to_stdvec(&message).unwrap(),
+        }
+        .encode()
+        .unwrap(),
+    })
+    .unwrap();
+    (channel, bytes)
+}
+
+/// In a room its host governs (and so stewards), a capture leaves out what
+/// only the steward reads, from memory once it read a lineage, and still
+/// replays everything else; the requests stay retained. Elsewhere a capture
+/// replays them as before.
+#[test]
+fn a_governed_rooms_capture_leaves_out_what_only_its_steward_reads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let member = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+    let (channel, request) = access_request(&member, 1);
+    store.retain_checkpoint(&channel, &request).unwrap();
+    store.retain_delta(&[9; 32], 2, &frame(1, 10, 2)).unwrap();
+    let mut whole = snapshot(&store);
+    assert_eq!(
+        prepare(&store, &mut whole).total_frames,
+        2,
+        "a room this host does not govern replays every request"
+    );
+
+    store.replay_without_steward_only();
+    let mut governed = snapshot(&store);
+    assert_eq!(prepare(&store, &mut governed).total_frames, 1);
+    let batch = store
+        .read_replay_batch(
+            &mut governed,
+            ReplayLimits::default(),
+            &ReplayBudget::new(1024 * 1024),
+        )
+        .unwrap();
+    assert!(
+        batch.frames.len() == 1
+            && matches!(
+                batch.frames.front(),
+                Some(Envelope::Delta {
+                    authored_at_ns: 2,
+                    ..
+                })
+            ),
+        "only the member's edit is replayed"
+    );
+    drop(batch);
+    assert!(
+        store.load_retained().unwrap().contains(&request),
+        "the request stays retained for the steward"
+    );
+
+    // Classified once: a capture decides the lineage from memory after that,
+    // without reading what it holds now.
+    let lineage = store.root().join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode(member.verifying_key().to_bytes()),
+        hex::encode(channel)
+    ));
+    let active = retained::current(&lineage).unwrap().unwrap();
+    fs::write(active.join("checkpoint.delta"), frame(3, 10, 3)).unwrap();
+    let mut remembered = snapshot(&store);
+    assert_eq!(prepare(&store, &mut remembered).total_frames, 1);
+}

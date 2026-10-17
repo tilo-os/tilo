@@ -677,6 +677,20 @@ impl Resource for RichText {
                 Some(caret(body.id_at(index.saturating_add(1))?, 0, text))
             }
             RichTextAction::SpliceText { block, at, ins, .. } => Some(caret(block, *at, ins)),
+            RichTextAction::ReplaceBlockRange {
+                block,
+                start,
+                text,
+                markdown,
+                ..
+            } => {
+                let written = if *markdown {
+                    block_markdown::parse_inline(text).0
+                } else {
+                    text.clone()
+                };
+                Some(caret(block, *start, &written))
+            }
             RichTextAction::ReplaceSelection {
                 start_block,
                 start,
@@ -836,7 +850,12 @@ impl Resource for RichText {
                 "set-mark",
                 "Set mark",
                 vec![
-                    ActionParam::required_owned("name", ParamType::Text, "Mark name"),
+                    ActionParam::required_owned(
+                        "name",
+                        ParamType::Text,
+                        "Mark name: strong, em, underline or strike (value true), link (value: \
+                         the URL, or #name of a bookmark), highlight (value: a colour)",
+                    ),
                     ActionParam::required_owned("block", ParamType::Text, "Block id"),
                     ActionParam::required_owned("start", ParamType::Integer, "Start offset"),
                     ActionParam::required_owned("end", ParamType::Integer, "End offset"),

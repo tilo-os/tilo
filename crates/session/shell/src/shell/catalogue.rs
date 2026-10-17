@@ -20,6 +20,7 @@ pub use registry_types::catalogue::{CatalogueApp, CatalogueListing};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
 use crate::shell::state::RoomId;
+use tilo_lock::MutexRecover as _;
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
@@ -74,9 +75,7 @@ static INSTALL_PROGRESS: Mutex<Vec<(String, InstallProgress)>> = Mutex::new(Vec:
 const INSTALL_PROGRESS_POLL: Duration = Duration::from_millis(100);
 
 fn with_install_progress<T>(f: impl FnOnce(&mut Vec<(String, InstallProgress)>) -> T) -> T {
-    f(&mut INSTALL_PROGRESS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
+    f(&mut INSTALL_PROGRESS.lock_recover())
 }
 
 /// The latest progress `package_id`'s install reported, if it is under way
@@ -168,19 +167,14 @@ fn run_install_reporting(
 }
 
 fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>, Instant)>> {
-    CATALOGUE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    CATALOGUE.lock_recover()
 }
 
 /// Run `f` on the session's launches still opening, recovering from
 /// poisoning as [`lock_catalogue`] does.
 fn with_pending_launches<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
     let session = launcher::LaunchSession::current();
-    let mut pending = session
-        .opening_launches
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut pending = session.opening_launches.lock_recover();
     f(&mut pending)
 }
 

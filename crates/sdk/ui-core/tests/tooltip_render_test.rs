@@ -13,7 +13,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -25,16 +25,9 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::tooltip;
 use tilo_ui::widget::{Button, Widget};
 
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
-
 fn render_case(theme: &Theme, bg: Color, name: &str) {
     let (canvas_w, canvas_h) = (360u32, 150u32);
-    let Some(mut renderer) = try_new_renderer(canvas_w, canvas_h) else {
+    let Some(mut renderer) = OffscreenRenderer::try_new(canvas_w, canvas_h).ok() else {
         eprintln!("no wgpu adapter — skipping tooltip render ({name})");
         return;
     };

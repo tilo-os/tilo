@@ -393,6 +393,11 @@ impl FileFilter {
 /// write there is still its file grants'.
 pub const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
 
+/// Standard `FileChooser` `choices` identifier carrying an explicit writable
+/// directory request through the XDG frontend (which filters unknown options).
+/// The backend acknowledges it only after the destination chooser is accepted.
+pub const WRITABLE_DIRECTORY_CHOICE: &str = "tilo-writable-directory";
+
 /// Which chooser to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickKind {
@@ -416,6 +421,7 @@ pub struct PickRequest {
     pub(crate) kind: PickKind,
     pub(crate) max_contents_bytes: Option<usize>,
     pub(crate) initial_directory: Option<PathBuf>,
+    writable_directory: bool,
 }
 
 impl PickRequest {
@@ -435,6 +441,27 @@ impl PickRequest {
     /// filesystem browser.
     pub fn directory(title: &str, accept_label: &str) -> Self {
         Self::new(title, accept_label, PickKind::Directory)
+    }
+
+    /// Pick one existing destination folder with explicit write consent.
+    ///
+    /// The title and accept label describe the destination operation, not consent.
+    /// The portal host must display its own explicit read/write wording before
+    /// confirmation. A document portal exports only the selected directory;
+    /// the native shell chooser instead requires existing workspace write access.
+    /// Cancellation grants nothing; workspace/default grants are never widened.
+    pub fn writable_directory(title: &str, accept_label: &str) -> Self {
+        Self {
+            writable_directory: true,
+            ..Self::directory(title, accept_label)
+        }
+    }
+
+    /// Whether this directory request explicitly asks for write authority.
+    /// Hosts must preserve this distinction or refuse the request, never silently
+    /// substitute a read-only directory selection.
+    pub fn is_writable_directory(&self) -> bool {
+        self.writable_directory
     }
 
     /// A Save chooser, seeding the filename field with `suggested_name`.
@@ -457,6 +484,7 @@ impl PickRequest {
             kind,
             max_contents_bytes: None,
             initial_directory: None,
+            writable_directory: false,
         }
     }
 
@@ -1099,6 +1127,19 @@ mod tests {
         return PathBuf::from(format!("C:{s}"));
         #[cfg(not(windows))]
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn writable_directory_is_explicit_and_preserves_directory_shape() {
+        let read = PickRequest::directory("Read folder", "Choose");
+        let write = PickRequest::writable_directory("Import into folder", "Import here");
+        assert!(!read.is_writable_directory());
+        assert!(write.is_writable_directory());
+        assert!(write.is_directory());
+        assert!(!write.is_open());
+        assert!(!write.is_multiple());
+        assert_eq!(write.suggested_name(), None);
+        assert_eq!(write.accept_label(), "Import here");
     }
 
     #[test]

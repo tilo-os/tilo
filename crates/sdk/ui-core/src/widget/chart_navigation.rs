@@ -194,14 +194,22 @@ pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Optio
     }
 }
 
-/// The id among `ids` whose accessibility key an `Activate` at `keys` targets.
-pub(crate) fn activated_id<I: std::hash::Hash>(
+/// Record in `activated` the id among `ids` whose accessibility key an
+/// `Activate` at `keys` targets; whether one did.
+pub(crate) fn activate<I: std::hash::Hash + AsRef<str>>(
+    activated: &mut Option<String>,
     action: &crate::a11y::Action,
     keys: &[u64],
     ids: impl IntoIterator<Item = I>,
-) -> Option<I> {
-    let key = activated_key(action, keys)?;
-    ids.into_iter().find(|id| crate::a11y::hash_key(id) == key)
+) -> bool {
+    let Some(key) = activated_key(action, keys) else {
+        return false;
+    };
+    let Some(id) = ids.into_iter().find(|id| crate::a11y::hash_key(id) == key) else {
+        return false;
+    };
+    *activated = Some(id.as_ref().to_owned());
+    true
 }
 
 /// The pointer, hovered item and keyboard/touch state an interactive chart

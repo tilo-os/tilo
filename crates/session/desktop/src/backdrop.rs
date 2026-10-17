@@ -1,32 +1,29 @@
 //! Desktop backdrop widget — paints the desktop background behind all
-//! shell content: a diagonal gradient across the theme's ground surface
-//! ([`ground_stops`]), a 24×24 px grid of faint lines, and a tiled
-//! 64×64 procedural noise overlay that breaks banding on the gradient.
+//! shell content: the wallpaper the host supplies, cover-fitted to each
+//! display on its own, or, with no wallpaper, a diagonal gradient across
+//! the theme's ground surface ([`ground_stops`]) under a tiled 64×64
+//! procedural noise overlay that breaks banding on the gradient.
 //!
 //! Structurally a thin `Container`-style wrapper around one optional
 //! child, forwarding sync/layout/events like [`ui::widget::Container`]
-//! but with no padding or chrome — just the gradient + grid beneath it.
+//! but with no padding or chrome — just the picture beneath it.
 
 use std::sync::Arc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use ui::permissions::PermissionScope;
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TaffyTreeExt;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{
     Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush,
     ImageBrush as Image, ImageData, ImageFormat as Format,
 };
 use winit::event::WindowEvent;
-
-/// Size (in logical pixels) of one grid cell.
-const GRID_STEP: f64 = 24.0;
 
 /// High enough that the desktop reads as dark rather than blue, short
 /// of 1.0 so each theme still tints its own ground.
@@ -101,8 +98,8 @@ fn build_noise_image() -> Image {
     Image::new(data).with_extend(Extend::Repeat)
 }
 
-/// Widget that paints the nirios desktop backdrop (gradient + grid + noise)
-/// behind its single child.
+/// Widget that paints the desktop backdrop (a wallpaper, else gradient +
+/// noise) behind its single child.
 pub struct DesktopBackdrop {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -118,6 +115,15 @@ pub struct DesktopBackdrop {
     /// It never enters workspace replication or app-visible widget state.
     workspace_id: Option<String>,
     wallpaper: Option<WallpaperProvider>,
+    /// The displays' logical rectangles, in this widget's coordinates. A
+    /// wallpaper covers each one on its own, so a laptop panel and an
+    /// external monitor of another shape both show the whole picture
+    /// rather than two halves of one stretched across them. Empty: the
+    /// widget's own rect is the one display.
+    displays: Vec<Rect>,
+    /// The blob of the wallpaper last drawn, so a wallpaper the host
+    /// changes (a portal import, a choice in Settings) asks for a frame.
+    drawn_wallpaper: Option<u64>,
 }
 
 /// Host-supplied lookup from a workspace identity to its verified decoded wallpaper.
@@ -184,40 +190,6 @@ fn f64_ne(a: f64, b: f64) -> bool {
     a.to_bits() != b.to_bits()
 }
 
-/// How many grid lines spaced [`GRID_STEP`] apart, starting at
-/// `start_col * GRID_STEP`, fall strictly before `end`. A count rather
-/// than a `while` loop over the float position itself, so there is no
-/// floating-point loop counter to drift on a wide rect.
-fn grid_line_count(start_col: f64, end: f64) -> u32 {
-    let span = end - start_col * GRID_STEP;
-    if !span.is_finite() || span <= 0.0 {
-        return 0;
-    }
-    // A real screen rect never needs anywhere near u32::MAX grid lines;
-    // clamp rather than let an extreme rect panic or wrap the cast.
-    f64_to_u32_clamped((span / GRID_STEP).ceil())
-}
-
-/// Clamp `v` into `u32`'s range before converting — safe for any finite
-/// `v`, including one far outside `u32`, and for a non-finite `v`.
-fn f64_to_u32_clamped(v: f64) -> u32 {
-    if !v.is_finite() || v <= 0.0 {
-        0
-    } else if v >= f64::from(u32::MAX) {
-        u32::MAX
-    } else {
-        // Safe: v is checked into [0.0, u32::MAX] immediately above.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "v is checked into [0.0, u32::MAX] immediately above"
-        )]
-        {
-            v as u32
-        }
-    }
-}
-
 impl DesktopBackdrop {
     pub fn new() -> Self {
         Self {
@@ -229,6 +201,8 @@ impl DesktopBackdrop {
             cache_stops: None,
             workspace_id: None,
             wallpaper: None,
+            displays: Vec::new(),
+            drawn_wallpaper: None,
         }
     }
 
@@ -241,7 +215,8 @@ impl DesktopBackdrop {
         backdrop
     }
 
-    /// The host supplies verified decoded images; no native paths cross this boundary.
+    /// The host supplies verified decoded images; no native paths cross this
+    /// boundary. A backdrop with no workspace asks for the empty id.
     #[must_use]
     pub fn with_wallpaper_provider(
         mut self,
@@ -257,27 +232,53 @@ impl DesktopBackdrop {
         self
     }
 
+    /// Place the wallpaper on `displays`, each display's logical rectangle:
+    /// the picture is cover-fitted to every one of them. An empty list
+    /// covers the backdrop's own rect.
+    pub fn set_displays(&mut self, displays: &[Rect]) {
+        self.displays.clear();
+        self.displays.extend(
+            displays
+                .iter()
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+        );
+    }
+
+    /// The rectangles a wallpaper is fitted to.
+    pub fn display_rects(&self) -> Vec<Rect> {
+        if self.displays.is_empty() {
+            vec![self.rect]
+        } else {
+            self.displays.clone()
+        }
+    }
+
     /// Exposed for tests; there is no runtime consumer.
     #[cfg(test)]
     pub(crate) fn noise_bytes_len(&self) -> usize {
         self.noise.image.data.len()
     }
 
-    /// Re-encoding the gradient + ~80 grid strokes + noise every frame
-    /// dominated the at-rest `draw=` budget under `TILO_UI_PERF=1`, so
-    /// this bakes once and replays via translate.
+    fn current_wallpaper(&self) -> Option<ImageData> {
+        let provider = self.wallpaper.as_ref()?;
+        provider(self.workspace_id.as_deref().unwrap_or_default())
+            .filter(|image| image.width > 0 && image.height > 0)
+    }
+
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
-        let stops = ground_stops(theme);
-        // Kept outside the gradient/grid scene cache: a portal import updates
-        // the private wallpaper registry asynchronously and must appear
-        // without requiring an unrelated resize or theme change.
-        if let Some(image) = self
-            .workspace_id
-            .as_deref()
-            .and_then(|id| self.wallpaper.as_ref().and_then(|provider| provider(id)))
-        {
-            draw_cover_image(out_scene, out_transform, &self.rect, &image);
+        // A wallpaper is one opaque image fill per display: the picture is
+        // decoded once by the host and stays resident in the renderer's
+        // image atlas, so a frame costs its sampling and nothing else. It
+        // covers the gradient entirely, so the gradient is not drawn under it.
+        if let Some(image) = self.current_wallpaper() {
+            self.drawn_wallpaper = Some(image.data.id());
+            for display in self.display_rects() {
+                draw_cover_image(out_scene, out_transform, &display, &image);
+            }
+            return;
         }
+        self.drawn_wallpaper = None;
+        let stops = ground_stops(theme);
         // Bit-exact comparison, not "close enough": any change (even one
         // ULP, from a layout recompute) must invalidate the cached scene,
         // so a tolerant comparison would let a real resize slip through
@@ -329,20 +330,6 @@ impl DesktopBackdrop {
                 },
             ][..],
         );
-        // Keep the shell's tonal treatment above a photo, but let the
-        // imported image visibly determine the desktop. This also preserves
-        // the old appearance when no wallpaper is configured.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            if self.workspace_id.is_some() {
-                0.42
-            } else {
-                1.0
-            },
-            transform,
-            &self.rect,
-        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -350,42 +337,6 @@ impl DesktopBackdrop {
             None,
             &self.rect,
         );
-        scene.pop_layer();
-
-        // The grid is a hairline derived against the ground it sits on
-        // (HIG §9.5) — the backdrop's own first stop — so it stays faint on
-        // light and dark alike instead of a fixed mid-grey that reads darker
-        // on one and lighter on the other.
-        let line_color = ui::tokens::colors::Colors::hairline_on(stops.0, 18);
-        let stroke = Stroke::new(1.0);
-
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-
-        // Grid-line count computed up front, then each position derived
-        // fresh from an integer index (`start_col + f64::from(i)`)
-        // rather than accumulated via `x += GRID_STEP` — a float loop
-        // counter drifts by rounding error over a wide rect.
-        let start_col = (self.rect.x0 / GRID_STEP).ceil();
-        for i in 0..grid_line_count(start_col, self.rect.x1) {
-            let x = (start_col + f64::from(i)) * GRID_STEP;
-            let line = Line::new((x, self.rect.y0), (x, self.rect.y1));
-            scene.stroke(&stroke, transform, line_color, None, &line);
-        }
-
-        let start_row = (self.rect.y0 / GRID_STEP).ceil();
-        for i in 0..grid_line_count(start_row, self.rect.y1) {
-            let y = (start_row + f64::from(i)) * GRID_STEP;
-            let line = Line::new((self.rect.x0, y), (self.rect.x1, y));
-            scene.stroke(&stroke, transform, line_color, None, &line);
-        }
-
-        scene.pop_layer();
 
         // `push_layer` with `NOISE_ALPHA` dampens the already-subtle
         // per-pixel alpha further so the effect reads as grain, not dots.
@@ -410,6 +361,8 @@ impl DesktopBackdrop {
     }
 }
 
+/// Fill `rect` with `image` scaled to cover it, centred, cropping the
+/// overhang of whichever side is longer.
 fn draw_cover_image(scene: &mut Scene, transform: Affine, rect: &Rect, image: &ImageData) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 || image.width == 0 || image.height == 0 {
         return;
@@ -547,21 +500,28 @@ impl Widget for DesktopBackdrop {
         "DesktopBackdrop"
     }
 
-    fn is_focused(&self) -> bool {
-        false
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
     }
 
-    /// A pure function of `self.rect`'s size, so it never reports dirty
-    /// after the first draw; the child subtree is asked independently.
-    /// `cache_rect == ZERO` covers the pre-first-draw boot path.
+    /// Dirty before the first draw (`cache_rect == ZERO` with no wallpaper
+    /// drawn), and when the host's wallpaper is not the one last drawn; the
+    /// child subtree is asked independently.
     fn needs_redraw(&self) -> bool {
-        self.cache_rect == Rect::ZERO || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+        let first = self.cache_rect == Rect::ZERO && self.drawn_wallpaper.is_none();
+        let wallpaper_moved = self.wallpaper.is_some()
+            && self.current_wallpaper().map(|image| image.data.id()) != self.drawn_wallpaper;
+        first || wallpaper_moved || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     /// Forward layout-dirty queries to the child — the backdrop has no
@@ -580,17 +540,9 @@ impl Widget for DesktopBackdrop {
     }
 }
 
-impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-}
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {}
 
-impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-}
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
 
 #[cfg(test)]
 mod tests {

@@ -9,7 +9,7 @@
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::ProviderProtocol;
+use crate::{ProviderProfile, ProviderProtocol};
 
 /// The Anthropic Messages API version every request names.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -180,6 +180,35 @@ pub fn headers(protocol: ProviderProtocol, secret: Option<&str>) -> Result<Vec<H
     }
 }
 
+/// Every header a request to `profile` carries: [`headers`], then the
+/// billing project of a Google sign-in. A person's own Google credentials
+/// are billed to the project of the `OAuth` client that minted them unless
+/// `x-goog-user-project` names another, and Tilo's client project is not
+/// one the person can use.
+///
+/// # Errors
+///
+/// As [`headers`].
+pub fn profile_headers(
+    profile: &ProviderProfile,
+    secret: Option<&str>,
+) -> Result<Vec<Header>, String> {
+    let mut all = headers(profile.protocol, secret)?;
+    if profile.signs_in_with_google()
+        && let Some(project) = profile
+            .sign_in
+            .as_ref()
+            .and_then(|sign_in| sign_in.billing_project.as_deref())
+    {
+        all.push(Header {
+            name: "x-goog-user-project",
+            value: Zeroizing::new(project.to_string()),
+            secret: false,
+        });
+    }
+    Ok(all)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +311,34 @@ mod tests {
         assert_eq!(openai[0].value.as_str(), "Bearer k");
         assert!(openai[0].secret);
         assert!(headers(OpenAiCompatible, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_google_sign_in_bills_its_project_and_a_key_profile_nothing_extra() {
+        let vertex = ProviderProfile::google_vertex("tilo-509618", "global", "gemini-4-argon");
+        assert_eq!(
+            url(vertex.protocol, &vertex.endpoint),
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi/chat/completions"
+        );
+        let sent: Vec<_> = profile_headers(&vertex, Some("ya29.token"))
+            .unwrap()
+            .iter()
+            .map(|header| (header.name, header.value.to_string(), header.secret))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                ("authorization", "Bearer ya29.token".to_string(), true),
+                ("x-goog-user-project", "tilo-509618".to_string(), false),
+            ]
+        );
+        let keyed = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        assert_eq!(profile_headers(&keyed, Some("k")).unwrap().len(), 1);
+        let mut other = vertex;
+        other.sign_in = Some(crate::SignInCredential {
+            issuer: "elsewhere".into(),
+            billing_project: Some("p".into()),
+        });
+        assert_eq!(profile_headers(&other, Some("k")).unwrap().len(), 1);
     }
 }

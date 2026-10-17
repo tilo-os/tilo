@@ -10,7 +10,8 @@
 //! admission at a time.
 use super::ShellNetwork;
 use crate::network::actor::{HostIdentity, native_ingress};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -63,7 +64,7 @@ pub(super) fn admit(input: native_ingress::Input, identity: &HostIdentity) -> Ad
 
 fn locked(slot: &Mutex<Slot>) -> MutexGuard<'_, Slot> {
     // Nothing panics while holding it; a poisoned slot is still consistent.
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
+    slot.lock_recover()
 }
 
 /// The admission waiting in `slot` for the worker, leaving `then` in its

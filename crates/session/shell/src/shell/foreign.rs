@@ -318,6 +318,7 @@ impl CpuLayout {
 
 #[cfg(any(test, target_os = "linux"))]
 use crate::shell::hdr_surface::half_to_f32;
+use tilo_lock::MutexRecover as _;
 
 /// Append one row of a 10-bit or half-float buffer to `texels` as the
 /// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
@@ -1572,10 +1573,7 @@ fn signal_capture_barrier(barrier: &Barrier) {
 
 #[cfg(target_os = "linux")]
 fn mark_capture_complete(client: Client, completed: &Mutex<HashMap<ClientId, Client>>) {
-    completed
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(client.id(), client);
+    completed.lock_recover().insert(client.id(), client);
 }
 
 #[cfg(target_os = "linux")]
@@ -1594,11 +1592,7 @@ fn complete_capture(
 ) {
     signal_capture_barrier(barrier);
     mark_capture_complete(client, completed);
-    if let Some(ping) = ping
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-    {
+    if let Some(ping) = ping.lock_recover().as_ref() {
         ping.ping();
     }
 }
@@ -1625,16 +1619,10 @@ impl AsyncDmabufCapture {
                 let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
                 while wakes.recv().is_ok() {
                     loop {
-                        let job = worker_pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop();
+                        let job = worker_pending.lock_recover().pop();
                         let Some(job) = job else { break };
                         let rgba = scratch.entry(job.surface).or_default();
-                        let recycled = worker_recycled
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&job.surface);
+                        let recycled = worker_recycled.lock_recover().remove(&job.surface);
                         // Still drawn somewhere: whoever holds it frees it.
                         if rgba.capacity() == 0
                             && let Some(mut previous) =
@@ -1674,11 +1662,7 @@ impl AsyncDmabufCapture {
     /// A job whose buffer is still being rendered: it runs once
     /// [`dmabuf_fence_signalled`] says the client's GPU is done with it.
     fn park(&self, job: DmabufJob) {
-        let replaced = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
+        let replaced = self.awaiting_fence.lock_recover().push(job.surface, job);
         if let Some(replaced) = replaced {
             // As in `enqueue`: only the newest commit can become visible, and
             // the older one never read its buffer.
@@ -1690,10 +1674,7 @@ impl AsyncDmabufCapture {
     /// newest. `readable` is `false` when its fence could not be watched.
     fn unpark(&self, surface: SurfaceId, token: u64, readable: bool) {
         let job = {
-            let mut awaiting = self
-                .awaiting_fence
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut awaiting = self.awaiting_fence.lock_recover();
             if awaiting
                 .jobs
                 .get(&surface)
@@ -1713,19 +1694,11 @@ impl AsyncDmabufCapture {
     fn enqueue(&self, job: DmabufJob) {
         // Tokens grow with every commit, so a job still waiting for its fence
         // belongs to an older commit of this surface.
-        let parked = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(job.surface);
+        let parked = self.awaiting_fence.lock_recover().remove(job.surface);
         if let Some(parked) = parked {
             release_superseded(parked, &self.completed);
         }
-        let replaced = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(job.surface, job);
+        let replaced = self.pending.lock_recover().push(job.surface, job);
         if let Some(replaced) = replaced {
             // The newer commit is the only pending frame that can become
             // visible. Release the superseded transaction deliberately; a
@@ -1738,47 +1711,28 @@ impl AsyncDmabufCapture {
     }
 
     fn drain_completed(&self) -> Vec<Client> {
-        std::mem::take(
-            &mut *self
-                .completed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-        .into_values()
-        .collect()
+        std::mem::take(&mut *self.completed.lock_recover())
+            .into_values()
+            .collect()
     }
 
     fn recycle_pixels(&self, surface: SurfaceId, rgba: Arc<Vec<u8>>) {
         if rgba.capacity() == 0 {
             return;
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(surface, rgba);
+        self.recycled.lock_recover().insert(surface, rgba);
     }
 
     fn forget_surface(&self, surface: SurfaceId) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
+        let pending = self.pending.lock_recover().remove(surface);
         if let Some(pending) = pending {
             release_superseded(pending, &self.completed);
         }
-        let parked = self
-            .awaiting_fence
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
+        let parked = self.awaiting_fence.lock_recover().remove(surface);
         if let Some(parked) = parked {
             release_superseded(parked, &self.completed);
         }
-        self.recycled
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&surface);
+        self.recycled.lock_recover().remove(&surface);
     }
 }
 
@@ -1849,11 +1803,7 @@ impl AsyncShmCapture {
                     while let Some(job) = worker.next_job() {
                         worker.run(job);
                         SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
-                        if let Some(ping) = worker_completion_ping
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_ref()
-                        {
+                        if let Some(ping) = worker_completion_ping.lock_recover().as_ref() {
                             ping.ping();
                         }
                     }
@@ -1871,10 +1821,7 @@ impl AsyncShmCapture {
     }
 
     fn enqueue(&self, mut job: ShmJob) {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pending = self.pending.lock_recover();
         let moot = pending
             .remove(job.surface)
             .map_or_else(Vec::new, |older| job.absorb(older));
@@ -1894,8 +1841,7 @@ impl AsyncShmCapture {
     /// Bytes `surface` has queued and the worker has not taken yet.
     fn queued_bytes(&self, surface: SurfaceId) -> usize {
         self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .jobs
             .get(&surface)
             .map_or(0, ShmJob::copied_bytes)
@@ -1905,10 +1851,7 @@ impl AsyncShmCapture {
     /// holding `needed` bytes, the largest when the size is unknown, or a
     /// fresh one when none fits.
     fn take_scratch(&self, needed: Option<usize>) -> Vec<u8> {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scratch = self.scratch.lock_recover();
         let chosen = match needed {
             Some(needed) => scratch
                 .iter()
@@ -1928,16 +1871,8 @@ impl AsyncShmCapture {
     }
 
     fn forget_surface(&self, surface: SurfaceId) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(surface);
-        let built = self
-            .surfaces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&surface);
+        let pending = self.pending.lock_recover().remove(surface);
+        let built = self.surfaces.lock_recover().remove(&surface);
         drop(built);
         if let Some(job) = pending {
             recycle_shm_scratch(&self.scratch, job.patches);
@@ -1960,16 +1895,11 @@ struct ShmWorker<'a> {
 #[cfg(target_os = "linux")]
 impl ShmWorker<'_> {
     fn next_job(&self) -> Option<ShmJob> {
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
+        self.pending.lock_recover().pop()
     }
 
     fn surfaces(&self) -> std::sync::MutexGuard<'_, HashMap<SurfaceId, ShmSurface>> {
-        self.surfaces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.surfaces.lock_recover()
     }
 
     /// Build one job's frame and publish it, or record why not.
@@ -2060,10 +1990,7 @@ impl ShmWorker<'_> {
         if unanchored.is_empty() {
             return;
         }
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         let idle: Vec<SurfaceId> = unanchored
             .into_iter()
             .filter(|id| !pending.jobs.contains_key(id))
@@ -2188,9 +2115,7 @@ fn recycle_shm_scratch(scratch: &Mutex<Vec<Vec<u8>>>, patches: Vec<ShmPatch>) {
         return;
     }
     let mut dropped = Vec::new();
-    let mut kept = scratch
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut kept = scratch.lock_recover();
     for patch in patches {
         let bytes = patch.frame.into_bytes();
         if bytes.capacity() == 0 {
@@ -2266,9 +2191,7 @@ pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
     .into_iter()
     .flatten()
     {
-        *slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ping.clone());
+        *slot.lock_recover() = Some(ping.clone());
     }
 }
 
@@ -2338,22 +2261,11 @@ static BUFFER_HOLDS: std::sync::LazyLock<Mutex<BufferHolds<WlBuffer>>> =
 /// the GPU finished reading it ([`crate::shell::gpu_frames::BufferLease`]).
 #[cfg(target_os = "linux")]
 pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame) {
-    BUFFER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .hold(buffer.clone());
+    BUFFER_HOLDS.lock_recover().hold(buffer.clone());
     frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
-        BUFFER_HOLDS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .returned
-            .push(buffer);
+        BUFFER_HOLDS.lock_recover().returned.push(buffer);
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get()
-            && let Some(ping) = worker
-                .completion_ping
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
+            && let Some(ping) = worker.completion_ping.lock_recover().as_ref()
         {
             ping.ping();
         }
@@ -2364,10 +2276,7 @@ pub fn hold_buffer(buffer: WlBuffer, frame: &crate::shell::gpu_frames::GpuFrame)
 /// its client.
 #[cfg(target_os = "linux")]
 pub fn give_back_released_buffers() {
-    let free = BUFFER_HOLDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .give_back();
+    let free = BUFFER_HOLDS.lock_recover().give_back();
     for buffer in free {
         // A buffer its client already destroyed takes no event.
         buffer.release();
@@ -2452,9 +2361,7 @@ fn share_dmabuf(
     match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface, opaque) {
         Ok(frame) => Some(frame),
         Err(reason) => {
-            let mut reported = REPORTED
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut reported = REPORTED.lock_recover();
             if !reported.contains(&reason) && reported.len() < 32 {
                 eprintln!(
                     "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
@@ -2549,17 +2456,13 @@ impl ForeignFrameStore {
     #[cfg(target_os = "linux")]
     fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
         self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|entry| entry.colorimetry)
     }
 
     fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
@@ -2572,10 +2475,7 @@ impl ForeignFrameStore {
     /// The shm capture worker finished the job queued as `generation`.
     #[cfg(target_os = "linux")]
     fn note_shm_done(&self, id: SurfaceId, generation: u64) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         if let Some(entry) = guard.get_mut(&id) {
             entry.shm_done = entry.shm_done.max(generation);
         }
@@ -2585,20 +2485,14 @@ impl ForeignFrameStore {
     /// is still being captured, so its pixels are not yet what a screenshot
     /// shows. `client_index` is the high half of a [`SurfaceId`].
     pub fn capturing_for_client(&self, client_index: u32) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .iter()
             .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
     }
 
     pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let entry = entries.get(&id)?;
         let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
             .then_some(entry.seq);
@@ -2614,10 +2508,7 @@ impl ForeignFrameStore {
     /// Observe completed pixels and an exact surface's pending capture under
     /// one lock. Pending capture is neither pixels nor presentation authority.
     pub fn presentation_capture_state(&self, id: SurfaceId) -> (Option<(u64, u64)>, bool) {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let Some(entry) = entries.get(&id) else {
             return (None, false);
         };
@@ -2629,36 +2520,21 @@ impl ForeignFrameStore {
     }
 
     pub fn begin_presentation_frame(&self, viewport: Rect) {
-        *self
-            .presentation_viewport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(viewport);
-        self.painted_frames
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        *self.presentation_viewport.lock_recover() = Some(viewport);
+        self.painted_frames.lock_recover().clear();
     }
 
     pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
-        std::mem::take(
-            &mut *self
-                .painted_frames
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.painted_frames.lock_recover())
     }
 
     fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
         let visible = self
             .presentation_viewport
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
         if visible && !crate::shell::capture_protection::painting_for_capture() {
-            self.painted_frames
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(id, seq);
+            self.painted_frames.lock_recover().insert(id, seq);
         }
     }
 
@@ -2973,10 +2849,7 @@ impl ForeignFrameStore {
     /// or its frame is gone.
     #[cfg(target_os = "linux")]
     pub fn reset_shm_base(&self, id: SurfaceId) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         if let Some(entry) = guard.get_mut(&id) {
             entry.forget_shm_base();
         }
@@ -2992,10 +2865,7 @@ impl ForeignFrameStore {
     /// Those of `ids` whose next SHM commit cannot be laid over their last.
     #[cfg(target_os = "linux")]
     fn without_shm_base(&self, ids: &[SurfaceId]) -> Vec<SurfaceId> {
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         let unanchored = ids
             .iter()
             .copied()
@@ -3014,10 +2884,7 @@ impl ForeignFrameStore {
         rgba: &mut Vec<u8>,
         hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3047,10 +2914,7 @@ impl ForeignFrameStore {
         token: u64,
         frame: Arc<crate::shell::gpu_frames::GpuFrame>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3077,10 +2941,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         expected_token: u64,
     ) -> Option<CaptureOutcome> {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let entry = guard.get_mut(&id)?;
         let token = entry.capture_tokens.front().copied()?;
         if token != expected_token {
@@ -3149,6 +3010,7 @@ impl ForeignFrameStore {
 
     /// Activate a completed owned GPU copy through the ordinary capture-token path.
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_gpu_for_test(
         &self,
         id: SurfaceId,
@@ -3158,6 +3020,7 @@ impl ForeignFrameStore {
     }
 
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_damaged_gpu_for_test(
         &self,
         id: SurfaceId,
@@ -3237,10 +3100,7 @@ impl ForeignFrameStore {
         size: (u32, u32),
         gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = shm_job_entry(&mut guard, job) else {
             return false;
         };
@@ -3254,10 +3114,7 @@ impl ForeignFrameStore {
     /// job's surface went meanwhile.
     #[cfg(target_os = "linux")]
     fn note_shm_failure(&self, job: &ShmJob, reason: String) {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let released = shm_job_entry(&mut guard, job).map(|entry| entry.fail(reason));
         drop(guard);
         drop(released);
@@ -3274,10 +3131,7 @@ impl ForeignFrameStore {
         size: (u32, u32),
         generation: u64,
     ) -> bool {
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
@@ -3363,10 +3217,7 @@ impl ForeignFrameStore {
     /// windows it maps later too, so a new window is never briefly exposed.
     pub fn request_app_capture_protection(&self, connection: u64, app_id: &str, protected: bool) {
         let changed = {
-            let mut guard = self
-                .capture_protection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = self.capture_protection.lock_recover();
             if protected {
                 guard.apps.insert(connection, app_id.to_string()).as_deref() != Some(app_id)
             } else {
@@ -3390,8 +3241,7 @@ impl ForeignFrameStore {
     pub fn release_capture_protection(&self, connection: u64) {
         let released = self
             .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .apps
             .remove(&connection)
             .is_some();
@@ -3409,10 +3259,7 @@ impl ForeignFrameStore {
     /// one acquisition of the lock.
     pub fn set_surfaces_capture_protected(&self, surfaces: &[(SurfaceId, bool)]) {
         let changed = {
-            let mut guard = self
-                .capture_protection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut guard = self.capture_protection.lock_recover();
             surfaces.iter().fold(false, |changed, &(id, protected)| {
                 let flipped = if protected {
                     guard.surfaces.insert(id)
@@ -3444,10 +3291,7 @@ impl ForeignFrameStore {
     /// Whether a capture must draw surface `id`, owned by `app_id`, as a
     /// placeholder.
     pub fn is_capture_protected(&self, id: SurfaceId, app_id: &str) -> bool {
-        let guard = self
-            .capture_protection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.capture_protection.lock_recover();
         guard.surfaces.contains(&id)
             || guard.apps.values().any(|app| app == app_id)
             || crate::shell::capture_protection::holds_secrets(app_id)
@@ -3456,10 +3300,7 @@ impl ForeignFrameStore {
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
         self.set_surface_capture_protected(id, false);
-        let mut guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.entries.lock_recover();
         let forgotten = guard.remove(&id);
         drop(guard);
         if let Some(mut entry) = forgotten {
@@ -3470,10 +3311,7 @@ impl ForeignFrameStore {
             crate::shell::heap_trim::window_closed();
         }
         crate::shell::gpu_frames::forget_surface(id);
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut children = self.children.lock_recover();
         children.remove(&id);
         for tree in children.values_mut() {
             tree.retain(|child| child.surface != id);
@@ -3498,15 +3336,11 @@ impl ForeignFrameStore {
     pub fn surfaces_advanced(&self, seen: &mut HashMap<SurfaceId, u64>) -> Vec<SurfaceId> {
         let parents: HashMap<SurfaceId, SurfaceId> = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .flat_map(|(parent, children)| children.iter().map(|child| (child.surface, *parent)))
             .collect();
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = self.entries.lock_recover();
         seen.retain(|id, _| entries.contains_key(id));
         let mut moved = Vec::new();
         for (id, entry) in &*entries {
@@ -3531,15 +3365,11 @@ impl ForeignFrameStore {
     fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
         let children = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .cloned()
             .unwrap_or_default();
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let mut seq = guard.get(&id).map_or(0, |e| e.seq);
         for child in children {
             seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
@@ -3551,10 +3381,7 @@ impl ForeignFrameStore {
     /// for Wayland seat focus. Unlike [`Self::is_presented`], this does not
     /// wait for a captured frame to match the tab's configured size.
     pub fn is_mapped(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.mapped)
     }
 
@@ -3567,12 +3394,7 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
     ) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(&id)?
-            .unheld
-            .take()
+        self.entries.lock_recover().get_mut(&id)?.unheld.take()
     }
 
     /// Stop showing `frame` on `id`: its buffer could not be held, so it must
@@ -3599,8 +3421,7 @@ impl ForeignFrameStore {
     /// `root`'s subsurfaces, bottom to top.
     fn children_of(&self, root: SurfaceId) -> Vec<ChildFrame> {
         self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&root)
             .cloned()
             .unwrap_or_default()
@@ -3610,10 +3431,7 @@ impl ForeignFrameStore {
     /// flattened onto, and the window cut out of it. `None` without a frame.
     fn layout(&self, id: SurfaceId) -> Option<scale::FrameLayout> {
         let children = self.children_of(id);
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let layout = layout_of(&guard, id, &children);
         drop(guard);
         layout
@@ -3630,10 +3448,7 @@ impl ForeignFrameStore {
     )]
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
         let children = self.children_of(id);
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let e = guard.get(&id)?;
         let layout = layout_of(&guard, id, &children)?;
         let root_placed = e.buffer_placement()?;
@@ -3759,16 +3574,12 @@ impl ForeignFrameStore {
     ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
         let has_children = self
             .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .is_some_and(|children| !children.is_empty());
         if !has_children {
             let shared = {
-                let guard = self
-                    .entries
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let guard = self.entries.lock_recover();
                 guard.get(&id).and_then(|e| {
                     // A buffer that needs resampling is drawn from a snapshot.
                     let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
@@ -3812,8 +3623,7 @@ impl ForeignFrameStore {
     pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let crop = self
             .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|e| Some((e.geometry?, e.scale.density(width, height)?)))
             .and_then(|(geometry, density)| geometry.crop(width, height, density));
@@ -3847,10 +3657,7 @@ impl ForeignFrameStore {
     /// The box inside `tile` that `id`'s window is drawn into: the whole tile,
     /// or a centred box when the client's maximum size keeps it smaller.
     pub fn target_box(&self, id: SurfaceId, tile: Rect) -> Rect {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).map_or(tile, |e| e.target_box(tile))
     }
 
@@ -3898,23 +3705,12 @@ impl ForeignFrameStore {
     }
 
     pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
-        self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(root, children);
+        self.children.lock_recover().insert(root, children);
     }
 
     pub fn child_at(&self, root: SurfaceId, x: f64, y: f64) -> Option<(SurfaceId, f64, f64)> {
-        let children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&root)
-            .cloned()?;
-        let entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let children = self.children.lock_recover().get(&root).cloned()?;
+        let entries = self.entries.lock_recover();
         // Both the point and a subsurface's extent are logical, whatever
         // density its buffer is drawn at.
         children.iter().rev().find_map(|child| {
@@ -3943,10 +3739,7 @@ impl ForeignFrameStore {
     /// `frame_size` describes the cropped image; this also preserves the raw
     /// allocation and the protocol sizes that determine that crop and fit.
     pub fn frame_geometry(&self, id: SurfaceId) -> Option<serde_json::Value> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         let entry = guard.get(&id)?;
         let (width, height, configured_extent, min_size, max_size, geometry) = (
             entry.width,
@@ -3973,10 +3766,7 @@ impl ForeignFrameStore {
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
     pub fn is_presented(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
@@ -3985,10 +3775,7 @@ impl ForeignFrameStore {
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
@@ -4024,8 +3811,7 @@ impl ForeignFrameStore {
     /// the entry on destruction; layout-only restored tabs remain placeholders.
     pub fn is_adopted(&self, id: SurfaceId) -> bool {
         self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .is_some_and(|entry| entry.adopted)
     }
@@ -4034,10 +3820,7 @@ impl ForeignFrameStore {
     /// `OPENING_CONFIGURE_GRACE` since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
@@ -4045,10 +3828,7 @@ impl ForeignFrameStore {
 
     /// Reason the last capture failed, if any.
     pub fn last_error(&self, id: SurfaceId) -> Option<String> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.last_error.clone())
     }
 
@@ -4070,20 +3850,14 @@ impl ForeignFrameStore {
 
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).is_some_and(|e| e.pinned.is_some())
     }
 
     /// Where the surface is: a pinned rectangle, else the tab rectangle last
     /// published by [`Self::note_placement`].
     pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
-        let guard = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self.entries.lock_recover();
         guard.get(&id).and_then(|e| e.pinned.or(e.placement))
     }
 
@@ -4149,19 +3923,12 @@ impl ForeignFrameStore {
 
     /// Replace the sizes the person's other devices show streamed windows at.
     pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
-        *self
-            .remote_extents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = extents;
+        *self.remote_extents.lock_recover() = extents;
     }
 
     /// The size another device shows `id` at, if it is streamed to one.
     pub fn remote_extent(&self, id: SurfaceId) -> Option<(i32, i32)> {
-        self.remote_extents
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&id)
-            .copied()
+        self.remote_extents.lock_recover().get(&id).copied()
     }
 
     /// [`Self::take_pending_configure`] for a window only other devices
@@ -4684,18 +4451,6 @@ enum SharedFrame {
     ),
 }
 
-/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
-/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
-/// `Mul` is pure floating-point matrix composition and cannot panic or
-/// overflow.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
-}
-
 /// `base` composed with a translation to `(dx, dy)` and then a non-uniform
 /// scale by `(sx, sy)`. See [`translated`] for why the allow is warranted.
 #[allow(
@@ -4874,7 +4629,7 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &headline,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
@@ -4884,11 +4639,8 @@ impl Widget for ForeignSurfaceWidget {
             scene,
             &detail,
             on_card_dim,
-            translated(
-                transform,
-                cx - f64::from(dw) / 2.0,
-                y + f64::from(style.size) + 8.0,
-            ),
+            transform
+                .pre_translate((cx - f64::from(dw) / 2.0, y + f64::from(style.size) + 8.0).into()),
             None,
             &sm,
         );
@@ -4929,6 +4681,10 @@ impl Widget for ForeignSurfaceWidget {
     /// frames at the refresh rate after the app itself had gone idle.
     fn needs_animation_frame(&self) -> bool {
         self.awaiting_first_paint()
+    }
+
+    fn animation_detail(&self) -> Option<String> {
+        Some(ForeignSurfaceWidget::animation_detail(self))
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5029,131 +4785,6 @@ pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
         }
     }
     false
-}
-
-/// Reconcile the set of foreign tabs in `rendered` against `source`.
-///
-/// The compositor's protocol state and the chrome's rendered tree are
-/// separate — the chrome owns its own `WorkspaceTreeHandle` so widget
-/// state survives protocol churn. This copies foreign adoptions and teardowns across, the only direction data flows.
-///
-/// Returns `true` when `rendered` was mutated, signalling the caller to bump the chrome revision for strip resync.
-pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTree) -> bool {
-    // Both sides are read across every workspace — the two trees move
-    // their active pointers independently, so comparing only active workspaces made the mirror re-adopt a window the user walked away from.
-    let wanted = foreign_tabs_anywhere(source);
-    let present = foreign_tabs_anywhere(rendered);
-    let mut changed = false;
-
-    // Remove foreign tabs the protocol side no longer has.
-    let wanted_ids: std::collections::HashSet<SurfaceId> =
-        wanted.iter().map(|t| t.surface_id).collect();
-    for gone in present
-        .iter()
-        .filter(|t| !wanted_ids.contains(&t.surface_id))
-    {
-        if crate::shell::tab_binding::close_tab_for_destroyed_surface(rendered, gone.surface_id) {
-            changed = true;
-        }
-    }
-
-    // Collapse any surface with more than one tab: a session saved before
-    // this mirror compared whole trees carries duplicates on disk, so preventing new ones isn't enough — reopening must come back with one per window.
-    if drop_duplicate_foreign_tabs(rendered) {
-        changed = true;
-    }
-
-    // Add foreign tabs the rendered tree is missing via `adopt_toplevel`, the same production splice the protocol side uses.
-    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs_anywhere(rendered)
-        .iter()
-        .map(|t| t.surface_id)
-        .collect();
-    for add in wanted
-        .iter()
-        .filter(|t| !present_ids.contains(&t.surface_id))
-    {
-        crate::shell::tab_binding::adopt_toplevel(
-            rendered,
-            add.surface_id,
-            Some(add.app_id.clone()),
-        );
-        changed = true;
-    }
-
-    // Keep titles/app-ids in step for tabs on both sides (a client can call `set_app_id` after mapping).
-    for want in &wanted {
-        // A client may announce its toplevel before setting app-id.  The
-        // protocol tree re-homes that anonymous tab when the late identity
-        // arrives; apply the same claimed launch placement to the rendered
-        // mirror before syncing its label, otherwise the two trees can show
-        // the same surface in different groups.
-        if crate::shell::tab_binding::app_id_for_surface(rendered, want.surface_id)
-            .is_some_and(|app_id| app_id != want.app_id)
-            && crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                rendered,
-                want.surface_id,
-                &want.app_id,
-                Some(&want.title),
-            )
-        {
-            changed = true;
-        }
-        for ws in &mut rendered.desktop.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    for tab in &mut group.tabs {
-                        if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
-                            && *surface_id == want.surface_id
-                            && (*app_id != want.app_id || tab.title != want.title)
-                        {
-                            want.app_id.clone_into(app_id);
-                            want.title.clone_into(&mut tab.title);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    changed
-}
-
-/// Keep the first tab showing each surface and remove the rest.
-///
-/// One window is one tab. A second tab onto the same surface draws the
-/// client twice, offers it two sets of configures, and outlives it — a destroyed surface closes one tab, leaving the other pointing at nothing.
-///
-/// A session saved while the mirror still compared active workspaces
-/// carries duplicates on disk, so this runs every reconcile, not only at adoption. Returns whether anything was removed.
-fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
-    let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
-    // Resolve duplicates without mutating the cache during traversal.  The
-    // ordinary close primitive updates both the cache and the Automerge
-    // document and repairs active tab/group pointers.
-    // A bare `retain` here used to make the duplicate disappear for one
-    // frame while leaving it in the room document, so the next revision
-    // resurrected it.
-    let duplicate_tabs: Vec<_> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .filter_map(|tab| {
-            let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
-                return None;
-            };
-            (!seen.insert(*surface_id)).then_some(tab.id)
-        })
-        .collect();
-
-    let mut removed = false;
-    for tab in duplicate_tabs {
-        removed |= crate::shell::tab_binding::remove_tab(tree, tab);
-    }
-    removed
 }
 
 // Per-frame compositor passes
@@ -6792,9 +6423,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_published_shm_frame_is_reported_to_the_loop() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(72);
         store().forget(id);
         let _ = take_published_shm_frames();
@@ -6840,8 +6469,7 @@ mod tests {
         let tracked = |id: SurfaceId| {
             frames
                 .entries
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .get(&id)
                 .map(|entry| entry.rgba.len())
         };
@@ -6976,9 +6604,7 @@ mod tests {
         fn stored(id: SurfaceId) -> *const u8 {
             store().with_entry(id, |entry| entry.rgba.as_ptr())
         }
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(587);
         store().forget(id);
         // A 3×2 frame; wire bytes are [B, G, R, A].
@@ -7093,9 +6719,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_damaged_shm_commit_after_a_dmabuf_frame_is_never_laid_over_the_old_shm_frame() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(589);
         store().forget(id);
         let red = [0, 0, 255, 255].repeat(6);
@@ -7141,9 +6765,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn damage_after_an_unmap_or_failure_is_dropped_not_zero_filled() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(590);
         for reset in [(|id| store().clear_frame(id)) as fn(SurfaceId), |id| {
             store().note_failure(id, "test failure".into());
@@ -7175,9 +6797,7 @@ mod tests {
         let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
             panic!("the SHM capture worker must start");
         };
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(591);
         store().forget(id);
         store()
@@ -7207,9 +6827,7 @@ mod tests {
         let Ok(worker) = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn) else {
             panic!("the SHM capture worker must start");
         };
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(592);
         store().forget(id);
         store()
@@ -7246,9 +6864,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn damage_against_a_buffer_of_another_format_is_dropped() {
-        let _worker = SHM_WORKER_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _worker = SHM_WORKER_TESTS.lock_recover();
         let id = sid(593);
         store().forget(id);
         store()
@@ -7409,415 +7025,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn reconcile_carries_adoptions_teardowns_and_late_app_ids_across_trees() {
-        fn reconcile_copies_adoptions_and_teardowns_across_trees() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "two pristine trees need no mirroring"
-            );
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                4242,
-                Some("org.example.client".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let mirrored = foreign_tabs(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            assert_eq!(mirrored[0].surface_id, 4242);
-            assert_eq!(mirrored[0].app_id, "org.example.client");
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "mirroring is idempotent"
-            );
-
-            crate::shell::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert!(foreign_tabs(&rendered).is_empty());
-        }
-
-        /// The rendered mirror must follow a late app-id re-home as well as the
-        /// protocol tree.  This is the two-tree version of the Electron/GTK race:
-        /// the first anonymous adoption is visible for one tick, then the launch
-        /// note is claimed when the client finally identifies itself.
-        fn reconcile_mirrors_late_app_id_launch_placement() {
-            crate::shell::launcher::clear_pending_placements();
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = source.clone();
-            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-            crate::shell::launcher::set_pending_placement(
-                "org.example.electron",
-                crate::shell::tab_binding::Placement::TabIn(target),
-            );
-
-            crate::shell::tab_binding::adopt_toplevel(&mut source, 0x501, None);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
-
-            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                &mut source,
-                0x501,
-                "org.example.electron",
-                None,
-            ));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let mirrored = foreign_tabs_anywhere(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            let mirrored_group = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-                .expect("mirrored surface group");
-            assert_eq!(mirrored_group.id, target);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        /// Satellite can give the rendered mirror a provisional non-anonymous
-        /// class before the protocol tree receives the final `WM_CLASS`. The
-        /// mirror must re-home on that identity transition too; restricting this
-        /// path to `anon-*` leaves protocol and chrome in different groups.
-        fn reconcile_rehomes_provisional_x11_identity_to_final_launch_placement() {
-            crate::shell::launcher::clear_pending_placements();
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = source.clone();
-            let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
-            let surface = 0x502;
-            crate::shell::launcher::set_pending_placement_for_identities(
-                "chatgpt",
-                &["chatgpt".to_string()],
-                crate::shell::tab_binding::Placement::NewGroup,
-            );
-
-            crate::shell::tab_binding::adopt_toplevel_at(
-                &mut source,
-                surface,
-                Some("electron".into()),
-                crate::shell::tab_binding::Placement::TabIn(target),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert!(crate::shell::tab_binding::rebind_toplevel_for_app_id(
-                &mut source,
-                surface,
-                "Chatgpt",
-                Some("ChatGPT"),
-            ));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            let mirrored = foreign_tabs_anywhere(&rendered);
-            assert_eq!(mirrored.len(), 1);
-            assert_eq!(mirrored[0].app_id, "Chatgpt");
-            assert_eq!(mirrored[0].title, "ChatGPT");
-            let mirrored_group = rendered.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
-                .expect("mirrored provisional surface group");
-            assert_ne!(mirrored_group.id, target);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        fn reconcile_propagates_a_late_set_app_id() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            crate::shell::tab_binding::adopt_toplevel(&mut source, 77, None);
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
-
-            crate::shell::tab_binding::rename_tab_for_app_id(&mut source, 77, "io.example.late");
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            let t = &foreign_tabs(&rendered)[0];
-            assert_eq!(t.app_id, "io.example.late");
-            // The identifier propagates; the *title* is humanised from it rather than shown as a machine identifier nobody chose.
-            assert_eq!(
-                t.title, "Late",
-                "a tab wears a name, not the last segment of an app id"
-            );
-        }
-
-        reconcile_copies_adoptions_and_teardowns_across_trees();
-        reconcile_mirrors_late_app_id_launch_placement();
-        reconcile_rehomes_provisional_x11_identity_to_final_launch_placement();
-        reconcile_propagates_a_late_set_app_id();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn a_foreign_window_is_adopted_exactly_once() {
-        /// Consuming a user close removes the exact surface from the protocol
-        /// tree before reconciliation. The Wayland toplevel itself can still be
-        /// alive while processing `xdg_toplevel.close`; it must not be mirrored
-        /// back, and another window from the same application must be untouched.
-        fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            for surface in [51, 52] {
-                crate::shell::tab_binding::adopt_toplevel(
-                    &mut source,
-                    surface,
-                    Some("com.openai.chatgpt".into()),
-                );
-            }
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, 51), 1);
-            assert_eq!(tabs_for_surface(&rendered, 52), 1);
-
-            // This is the frame-loop ordering for a queued close: remove from
-            // both tree authorities, send close to the still-live toplevel, then
-            // reconcile. The application's process and app-id are irrelevant.
-            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-                &mut rendered,
-                51,
-            ));
-            assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
-                &mut source,
-                51,
-            ));
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "the consumed close leaves nothing for reconciliation to undo"
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, 51),
-                0,
-                "the still-live closing surface must not be adopted back"
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, 52),
-                1,
-                "surface identity keeps the same-app sibling exactly once"
-            );
-        }
-
-        /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
-        fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 31;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.word-processor".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the mirror should adopt the window exactly once",
-            );
-
-            // The user goes to another workspace — nothing about the window changed, it's simply no longer the one on screen.
-            let elsewhere = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .map(|w| w.id)
-                .find(|id| *id != rendered.desktop.active)
-                .expect("the demo tree has more than one workspace");
-            rendered.desktop.active = elsewhere;
-
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "switching workspaces opened a second window onto the same surface",
-            );
-
-            // And back again, which is the sequence a person actually performs.
-            rendered.desktop.active = source.desktop.active;
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "returning to the window's own workspace duplicated it",
-            );
-        }
-
-        /// A window the launcher placed in a workspace other than the active one
-        /// is already adopted, must not be adopted again — the launch path, not the switch path: a launch records where asked, and the toplevel can map later.
-        fn a_window_placed_outside_the_active_workspace_is_adopted_once() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 32;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            // Move the adopted tab into a workspace that isn't the active one, the way a recorded placement or a peer's room does.
-            let elsewhere = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .map(|w| w.id)
-                .find(|id| *id != rendered.desktop.active)
-                .expect("the demo tree has more than one workspace");
-            let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
-            let ws = rendered
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|w| w.id == elsewhere)
-                .expect("the other workspace");
-            let strip = ws.strips.first_mut().expect("the other workspace's strip");
-            strip.window_groups.push(crate::shell::state::WindowGroup {
-                id: crate::shell::state::next_id(),
-                active_tab: moved.id,
-                tabs: vec![moved],
-                width: crate::shell::state::WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            });
-
-            reconcile_foreign_tabs(&source, &mut rendered);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the window was adopted again because its tab was in another workspace",
-            );
-        }
-
-        a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling();
-        a_window_in_another_workspace_is_not_adopted_a_second_time();
-        a_window_placed_outside_the_active_workspace_is_adopted_once();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn duplicate_foreign_entries_collapse_and_stay_collapsed() {
-        /// A desktop that already has the duplicate (a session saved before the mirror compared whole trees) comes back with one window, not two.
-        fn a_duplicate_already_in_the_tree_is_collapsed() {
-            let mut source = WorkspaceTree::bootstrap_demo();
-            let mut rendered = WorkspaceTree::bootstrap_demo();
-            let surface = 33;
-
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-
-            // Stage the state a pre-fix session left behind: a second tab onto the same surface, in the same tab bar, showing the same name.
-            let twin = {
-                let one = foreign_tabs_anywhere(&rendered)
-                    .into_iter()
-                    .find(|t| t.surface_id == surface)
-                    .expect("the adopted tab");
-                crate::shell::state::Tab {
-                    id: one.tab_id + 1_000_000,
-                    title: one.title.clone(),
-                    tile: ShellTile::Foreign {
-                        app_id: one.app_id,
-                        surface_id: surface,
-                    },
-                }
-            };
-            let group = rendered
-                .desktop
-                .active_workspace_mut()
-                .and_then(|w| w.strips.first_mut())
-                .and_then(|s| s.window_groups.first_mut())
-                .expect("the group the window was adopted into");
-            group.tabs.push(twin);
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                2,
-                "the fixture is staged"
-            );
-
-            assert!(
-                reconcile_foreign_tabs(&source, &mut rendered),
-                "collapsing the duplicate is a change the chrome has to be told about",
-            );
-            assert_eq!(
-                tabs_for_surface(&rendered, surface),
-                1,
-                "the restored desktop still shows the application twice",
-            );
-
-            // And the group is still showing something that exists.
-            let group = rendered
-                .desktop
-                .active_workspace()
-                .and_then(|w| w.strips.first())
-                .and_then(|s| s.window_groups.first())
-                .expect("the group");
-            assert!(
-                group.tabs.iter().any(|t| t.id == group.active_tab),
-                "the group is pointing at a tab that is no longer there",
-            );
-        }
-
-        /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
-        /// the current frame.  A later document update previously put the second
-        /// app card back because it was never removed from the replicated list.
-        fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
-            let surface = 34;
-            let mut source = WorkspaceTree::bootstrap_demo();
-            crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
-                surface,
-                Some("so.tilo.photos".into()),
-            );
-            source.seed_doc_from_cache();
-            let mut rendered = source.clone();
-
-            let twin = foreign_tabs_anywhere(&rendered)
-                .into_iter()
-                .find(|tab| tab.surface_id == surface)
-                .expect("the source foreign tab");
-            let group = rendered
-                .desktop
-                .active_workspace_mut()
-                .and_then(|workspace| workspace.strips.first_mut())
-                .and_then(|strip| strip.window_groups.first_mut())
-                .expect("the group the tab was adopted into");
-            group.tabs.push(crate::shell::state::Tab {
-                id: twin.tab_id + 2_000_000,
-                title: twin.title,
-                tile: ShellTile::Foreign {
-                    app_id: twin.app_id,
-                    surface_id: twin.surface_id,
-                },
-            });
-            rendered.seed_doc_from_cache();
-            let mut stale_replica = rendered.clone();
-            let before_cleanup = rendered.current_heads();
-
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, surface), 1);
-
-            let deletion = rendered.export_changes_since(&before_cleanup);
-            stale_replica
-                .apply_changes(&deletion)
-                .expect("the document deletion applies to a stale replica");
-            assert_eq!(
-                tabs_for_surface(&stale_replica, surface),
-                1,
-                "a later resync must not restore the duplicate application"
-            );
-        }
-
+    fn a_stale_revision_after_a_close_keeps_one_live_app() {
         /// A real session can receive a room revision while a local external app
         /// is mapping.  The revision may have been authored from before a close,
         /// so this covers the complete ordering rather than each operation in
@@ -7892,24 +7104,18 @@ mod tests {
                 "a stale reorder must not bring the closed group back"
             );
 
-            // A conventional host application maps after that room revision.
-            // It belongs to the protocol tree, then reconciliation makes exactly
-            // one chrome tab for its surface.
+            // A conventional host application maps after that room revision
+            // and gets exactly one tab for its surface.
             let surface = 0x51_000;
             crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
+                &mut rendered,
                 surface,
                 Some("org.example.ExternalEditor".into()),
             );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
             assert_eq!(
                 tabs_for_surface(&rendered, surface),
                 1,
                 "one mapped external surface must produce exactly one tab"
-            );
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "reconciliation is idempotent once the external app is present"
             );
 
             // A state round-trip may not revive the closed group; live Wayland
@@ -7933,8 +7139,6 @@ mod tests {
             assert_active_groups_are_valid(&restarted);
         }
 
-        a_duplicate_already_in_the_tree_is_collapsed();
-        duplicate_cleanup_replicates_and_does_not_reappear_after_resync();
         stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app();
     }
 
@@ -7946,8 +7150,7 @@ mod tests {
     fn foreign_layout_lifecycle_and_visibility_follow_the_tree() {
         /// Exercise the layout as one deterministic state machine rather than a
         /// collection of isolated mutations.  This is deliberately shaped like
-        /// a busy desktop: hosted and external apps coexist, a legacy duplicate
-        /// is discovered, tabs and groups move, focus crosses workspaces, an old
+        /// a busy desktop: hosted and external apps coexist, tabs and groups move, focus crosses workspaces, an old
         /// peer revision lands, a newer revision follows it, and the compositor
         /// restarts after the external process exits.
         ///
@@ -7998,53 +7201,17 @@ mod tests {
             let close_group = group_for_tab(&rendered, close_tab);
             rendered.seed_doc_from_cache();
 
-            // Protocol and chrome start from the same layout.  A pending launch
-            // is queried independently by both trees in production; the same
-            // surface id must get the same answer rather than minting two tabs.
-            let mut source = rendered.clone();
             crate::shell::launcher::set_pending_placement(
                 "org.example.ExternalEditor",
                 Placement::TabIn(anchor),
             );
             let surface = 0x00C0_FFEE;
             crate::shell::tab_binding::adopt_toplevel(
-                &mut source,
+                &mut rendered,
                 surface,
                 Some("org.example.ExternalEditor".into()),
             );
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
             assert_eq!(tabs_for_surface(&rendered, surface), 1);
-            assert!(
-                !reconcile_foreign_tabs(&source, &mut rendered),
-                "a second frame cannot duplicate one mapped toplevel"
-            );
-
-            // Model the bad on-disk state produced by an older build.  Make the
-            // duplicate active as well, so cleanup has to repair selection, not
-            // merely shorten a background vector.
-            let original = foreign_tabs_anywhere(&rendered)
-                .into_iter()
-                .find(|tab| tab.surface_id == surface)
-                .expect("mirrored foreign tab");
-            let duplicate_id = original.tab_id.saturating_add(9_000_000);
-            let owner = group_for_tab(&rendered, original.tab_id);
-            let group = rendered
-                .desktop
-                .workspaces
-                .iter_mut()
-                .flat_map(|workspace| workspace.strips.iter_mut())
-                .flat_map(|strip| strip.window_groups.iter_mut())
-                .find(|group| group.id == owner)
-                .expect("foreign tab owner");
-            group.tabs.push(crate::shell::state::Tab {
-                id: duplicate_id,
-                title: original.title,
-                tile: ShellTile::Foreign {
-                    app_id: original.app_id,
-                    surface_id: surface,
-                },
-            });
-            group.active_tab = duplicate_id;
             rendered.seed_doc_from_cache();
             let stale_seed = rendered.export_changes_since(&[]);
             let mut stale_peer = WorkspaceTree::default();
@@ -8053,8 +7220,6 @@ mod tests {
                 .expect("stale peer accepts the shared baseline");
             let stale_base = stale_peer.current_heads();
 
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
-            assert_eq!(tabs_for_surface(&rendered, surface), 1);
             assert!(remove_tab(&mut rendered, close_tab));
             assert!(
                 rendered
@@ -8131,8 +7296,7 @@ mod tests {
             assert_active_groups_are_valid(&rendered);
 
             // A clean external exit is a protocol teardown, not a layout reset.
-            assert!(close_tab_for_destroyed_surface(&mut source, surface));
-            assert!(reconcile_foreign_tabs(&source, &mut rendered));
+            assert!(close_tab_for_destroyed_surface(&mut rendered, surface));
             assert_eq!(tabs_for_surface(&rendered, surface), 0);
             assert!(
                 rendered
@@ -8260,28 +7424,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Detach the tab showing `surface` from wherever it is, so a test can put it somewhere else.
-    fn take_foreign_tab(
-        tree: &mut WorkspaceTree,
-        surface: SurfaceId,
-    ) -> Option<crate::shell::state::Tab> {
-        for ws in &mut tree.desktop.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    if let Some(i) = group.tabs.iter().position(|t| {
-                        matches!(
-                            &t.tile,
-                            ShellTile::Foreign { surface_id, .. } if *surface_id == surface
-                        )
-                    }) {
-                        return Some(group.tabs.remove(i));
-                    }
-                }
-            }
-        }
-        None
     }
 
     /// Wait until `barrier` is signalled, failing past the hang bound.

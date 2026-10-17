@@ -24,6 +24,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, GovernedRoom, Rooms, SetMemberRoleRequest, system_time};
 use crate::host_authority::HostOperation;
+use tilo_lock::RwLockRecover as _;
 
 /// What a room administration request asks of its authority.
 #[derive(Clone, Copy, Debug)]
@@ -118,8 +119,7 @@ impl Rooms {
                 .inner
                 .host
                 .agents
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_recover()
                 .contains_key(&device.device_public_key);
         if agent {
             return Err(CollaborationError::new(
@@ -260,6 +260,7 @@ fn is_administrator(
 ) -> Result<bool, CollaborationError> {
     Ok(room
         .peer()
+        .governance()
         .governed_members(system_time(now))
         .map_err(CollaborationError::new)?
         .iter()

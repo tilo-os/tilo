@@ -356,14 +356,6 @@ impl HexModel {
         self.bytes_per_row = n.max(1);
     }
 
-    /// Cycle 16 -> 8 -> 16. The two classic layouts.
-    pub fn cycle_bytes_per_row(&mut self) {
-        self.bytes_per_row = match self.bytes_per_row {
-            16 => 8,
-            _ => 16,
-        };
-    }
-
     pub fn set_top_row(&mut self, row: usize) {
         let max = self.row_count().saturating_sub(1);
         self.top_row = row.min(max);
@@ -849,13 +841,5 @@ mod tests {
         assert_eq!(m.top_row(), 7); // 10 + 1 - 4
         m.scroll_into_view(2, 4);
         assert_eq!(m.top_row(), 2);
-
-        // Cycling bytes-per-row flips 16 <-> 8.
-        let mut m = model();
-        assert_eq!(m.bytes_per_row(), 16);
-        m.cycle_bytes_per_row();
-        assert_eq!(m.bytes_per_row(), 8);
-        m.cycle_bytes_per_row();
-        assert_eq!(m.bytes_per_row(), 16);
     }
 }

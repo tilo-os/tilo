@@ -229,3 +229,109 @@ fn a_bad_block_is_refused_by_name_and_writes_nothing() {
     assert!(format!("{refused:?}").contains("no block"), "{refused:?}");
     assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
 }
+
+#[test]
+fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
+    use notes::NotesApp;
+    use ui::widget::block_editor::{CursorPlacement, DocumentPosition};
+
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    let created = call(
+        &mut app,
+        "notes.notebook",
+        "create-page",
+        json!({ "title": "Ideas", "markdown": "# Ideas\nsee the search docs for xy\nlast line" }),
+    );
+    let resource = created["resource"].as_str().unwrap().to_owned();
+    let page = created["page"].as_str().unwrap().to_owned();
+    app.call("open-note", json!({ "page": page })).unwrap();
+    app.settle();
+    let note = read(&mut app, &resource);
+    let body = note["body"].as_str().unwrap().to_owned();
+
+    // "the search docs", selected in the open note.
+    let (selection, spanning) = app
+        .with_surface::<NotesApp, _>(|notes| {
+            let editor = notes.main_panel_mut().editor_mut();
+            let line = editor
+                .blocks()
+                .iter()
+                .position(|block| block.line.value().starts_with("see the"))
+                .expect("the line is shown");
+            editor.set_focus(true);
+            editor.focus_block(line, CursorPlacement::Byte(4));
+            editor.select_document_range(
+                DocumentPosition {
+                    block: line,
+                    byte: 4,
+                },
+                DocumentPosition {
+                    block: line,
+                    byte: 19,
+                },
+            );
+            let selection = ui::shared_selection::selection_of(notes).expect("a selection");
+            let editor = notes.main_panel_mut().editor_mut();
+            editor.select_document_range(
+                DocumentPosition {
+                    block: line,
+                    byte: 4,
+                },
+                DocumentPosition {
+                    block: line + 1,
+                    byte: 4,
+                },
+            );
+            let spanning = ui::shared_selection::selection_of(notes).expect("a selection");
+            (selection, spanning)
+        })
+        .unwrap();
+    let resource_of = selection.resource.clone().expect("the note's body");
+    assert_eq!(resource_of.id, body, "the open note's own body");
+    assert_eq!(resource_of.label, "Ideas");
+    assert_eq!(selection.anchor.excerpt.as_deref(), Some("the search docs"));
+    let place = selection.anchor.place.clone().expect("a place");
+    assert_eq!((place.start, place.end), (Some(4), Some(19)), "{place:?}");
+    assert!(selection.anchor.spanned_ranges().is_none());
+
+    // Across two blocks the place stays one block's part, and each block's
+    // part travels beside it.
+    let ranges = spanning
+        .anchor
+        .spanned_ranges()
+        .expect("both blocks' parts");
+    assert_eq!(ranges.len(), 2, "{ranges:?}");
+    assert_eq!((ranges[0].start, ranges[1].end), (4, 4));
+    let spanned_place = spanning.anchor.place.clone().expect("a place");
+    assert!(ranges.iter().any(|range| range.block == spanned_place.item));
+
+    // The agent passes the place back: exactly those words become a link.
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    let answer = call(
+        &mut app,
+        &body,
+        "replace-range",
+        json!({
+            "at": serde_json::to_value(&place).unwrap(),
+            "text": "[the search docs](https://example.org/search?q=xy)",
+            "markdown": true,
+        }),
+    );
+    assert_eq!(answer["changed"].as_array().unwrap().len(), 1, "{answer}");
+    let note = read(&mut app, &resource);
+    assert_eq!(
+        lines(&note),
+        [
+            "see [the search docs](https://example.org/search?q=xy) for xy",
+            "last line"
+        ]
+    );
+    assert_ne!(app.read_document(|doc| doc.clone().get_heads()), before);
+
+    // One undo step takes it back.
+    app.call("undo", json!({})).unwrap();
+    app.settle();
+    let note = read(&mut app, &resource);
+    assert_eq!(lines(&note), ["see the search docs for xy", "last line"]);
+}

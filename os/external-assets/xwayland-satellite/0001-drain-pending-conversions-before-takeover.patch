@@ -1,0 +1,386 @@
+From ee08cb17fa47922bb5ab9d2cdf3a13f155add60f Mon Sep 17 00:00:00 2001
+From: Quik2007 <quinten@daskju.com>
+Date: Thu, 15 Oct 2026 01:09:37 -0700
+Subject: [PATCH] fix(selection): drain pending X11 conversions before Wayland
+ takeover
+
+Keep the original X11 selection, pipes, FIFO and event routing until all already accepted conversions complete. Defer only X11 ownership acquisition, not the compositor's mirror adoption, so queued conversions cannot read the next selection's bytes. Drop deferred offers on real replacement or revocation; observe null clipboard revocation through the SCTK proxy lifetime as well as selection callbacks.
+---
+ src/lib.rs               |  2 ++
+ src/server/clientside.rs |  8 +++++
+ src/server/selection.rs  | 21 +++++++++++++-
+ src/server/tests.rs      | 47 ++++++++++++++++++++++++++++--
+ src/xstate/selection.rs  | 63 +++++++++++++++++++++++++++++++++++++++-
+ testwl/src/lib.rs        | 10 +++++++
+ 6 files changed, 146 insertions(+), 5 deletions(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 8c27f2d..dcc1448 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -237,6 +237,8 @@ pub fn main(mut data: impl RunData) -> Option<()> {
+             xstate.set_primary_selection(sel);
+         }
+ 
++        xstate.finish_selection_handoffs();
++
+         if let Some(scale) = server_state.new_global_scale() {
+             xstate.update_global_scale(scale);
+         }
+diff --git a/src/server/clientside.rs b/src/server/clientside.rs
+index 664c909..a5bc66d 100644
+--- a/src/server/clientside.rs
++++ b/src/server/clientside.rs
+@@ -16,6 +16,8 @@ use smithay_client_toolkit::{
+         selection::PrimarySelectionSourceHandler,
+     },
+ };
++use std::cell::Cell;
++use std::rc::Rc;
+ use std::sync::{Mutex, OnceLock, mpsc};
+ use wayland_client::protocol::{
+     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor,
+@@ -94,6 +96,7 @@ use xcb::x;
+ 
+ pub(super) struct SelectionEvents<T> {
+     pub offer: Option<T>,
++    pub offer_current: Rc<Cell<bool>>,
+     pub requests: Vec<(
+         String,
+         smithay_client_toolkit::data_device_manager::WritePipe,
+@@ -105,6 +108,7 @@ impl<T> Default for SelectionEvents<T> {
+     fn default() -> Self {
+         Self {
+             offer: None,
++            offer_current: Rc::new(Cell::new(true)),
+             requests: Default::default(),
+             cancelled: false,
+         }
+@@ -445,6 +449,8 @@ impl DataDeviceHandler for MyWorld {
+         data_device: &wayland_client::protocol::wl_data_device::WlDataDevice,
+     ) {
+         let data: &DataDeviceData = data_device.data().unwrap();
++        self.clipboard.offer_current.set(false);
++        self.clipboard.offer_current = Rc::new(Cell::new(true));
+         self.clipboard.offer = data.selection_offer();
+     }
+ 
+@@ -610,6 +616,8 @@ impl PrimarySelectionDeviceHandler for MyWorld {
+             return;
+         };
+ 
++        self.primary.offer_current.set(false);
++        self.primary.offer_current = Rc::new(Cell::new(true));
+         self.primary.offer = data.selection_offer();
+     }
+ }
+diff --git a/src/server/selection.rs b/src/server/selection.rs
+index bd32aaa..d791100 100644
+--- a/src/server/selection.rs
++++ b/src/server/selection.rs
+@@ -15,6 +15,7 @@ use smithay_client_toolkit::primary_selection::PrimarySelectionManagerState;
+ use smithay_client_toolkit::primary_selection::device::PrimarySelectionDevice;
+ use smithay_client_toolkit::primary_selection::offer::PrimarySelectionOffer;
+ use smithay_client_toolkit::primary_selection::selection::PrimarySelectionSource;
++use std::cell::Cell;
+ use std::io::Read;
+ use std::rc::{Rc, Weak};
+ 
+@@ -104,6 +105,7 @@ impl<S: X11Selection> InnerServerState<S> {
+                 let foreign = ForeignSelection {
+                     mime_types,
+                     inner: offer,
++                    current: Rc::clone(&events.offer_current),
+                 };
+                 state.source = Some(SelectionData::Foreign(foreign));
+             }
+@@ -149,10 +151,15 @@ impl<S: X11Selection> InnerServerState<S> {
+ pub struct ForeignSelection<T: SelectionType> {
+     pub mime_types: Box<[String]>,
+     inner: T::Offer,
++    current: Rc<Cell<bool>>,
+ }
+ 
+ #[allow(private_bounds)]
+ impl<T: SelectionType> ForeignSelection<T> {
++    pub(crate) fn is_current(&self) -> bool {
++        self.current.get() && T::offer_is_alive(&self.inner)
++    }
++
+     pub(crate) fn receive(
+         &self,
+         mime_type: String,
+@@ -196,6 +203,11 @@ pub trait SelectionType: Sized {
+     }
+ 
+     fn get_mimes(offer: &Self::Offer) -> Box<[String]>;
++    // The primary-selection wrapper does not expose its proxy; its callback
++    // reports null selections, so the generation token suffices there.
++    fn offer_is_alive(_offer: &Self::Offer) -> bool {
++        true
++    }
+ }
+ 
+ pub enum Clipboard {}
+@@ -231,7 +243,14 @@ impl SelectionType for Clipboard {
+     }
+ 
+     fn take_offer(offer: &mut Option<Self::Offer>) -> Option<Self::Offer> {
+-        offer.take().filter(|offer| offer.inner().is_alive())
++        offer.take().filter(Self::offer_is_alive)
++    }
++
++    fn offer_is_alive(offer: &Self::Offer) -> bool {
++        // SCTK destroys the proxy on a null clipboard selection without
++        // invoking DataDeviceHandler::selection. The generation alone cannot
++        // observe that revocation.
++        offer.inner().is_alive()
+     }
+ 
+     fn get_mimes(offer: &Self::Offer) -> Box<[String]> {
+diff --git a/src/server/tests.rs b/src/server/tests.rs
+index deae742..d37344e 100644
+--- a/src/server/tests.rs
++++ b/src/server/tests.rs
+@@ -1389,10 +1389,11 @@ trait SelectionTest {
+         send_data: impl SendDataForMimeFn,
+     ) -> Vec<testwl::PasteData>;
+     fn create_offer(testwl: &mut testwl::Server, data: Vec<testwl::PasteData>);
++    fn clear_offer(testwl: &mut testwl::Server);
+ }
+ 
+ macro_rules! selection_tests {
+-    ($name:ident, $selection_type:ty, $get_mime_fn:ident, $get_paste_data_fn:ident, $create_offer_fn:ident) => {
++    ($name:ident, $selection_type:ty, $get_mime_fn:ident, $get_paste_data_fn:ident, $create_offer_fn:ident, $clear_offer_fn:ident) => {
+         impl SelectionTest for $selection_type {
+             type SelectionType = $selection_type;
+             fn mimes(testwl: &mut testwl::Server) -> Vec<String> {
+@@ -1407,6 +1408,9 @@ macro_rules! selection_tests {
+             fn create_offer(testwl: &mut testwl::Server, data: Vec<testwl::PasteData>) {
+                 testwl.$create_offer_fn(data);
+             }
++            fn clear_offer(testwl: &mut testwl::Server) {
++                testwl.$clear_offer_fn();
++            }
+         }
+ 
+         mod $name {
+@@ -1425,6 +1429,11 @@ macro_rules! selection_tests {
+             fn x11_then_wayland() {
+                 super::selection_x11_then_wayland::<$selection_type>();
+             }
++
++            #[test]
++            fn deferred_offer_revoked_on_replacement_and_clear() {
++                super::deferred_offer_revoked_on_replacement_and_clear::<$selection_type>();
++            }
+         }
+     };
+ }
+@@ -1434,16 +1443,48 @@ selection_tests!(
+     Clipboard,
+     data_source_mimes,
+     clipboard_paste_data,
+-    create_data_offer
++    create_data_offer,
++    clear_data_offer
+ );
+ selection_tests!(
+     primary,
+     Primary,
+     primary_source_mimes,
+     primary_paste_data,
+-    create_primary_offer
++    create_primary_offer,
++    clear_primary_offer
+ );
+ 
++fn deferred_offer_revoked_on_replacement_and_clear<T: SelectionTest>() {
++    let (mut f, comp) = TestFixture::new_with_compositor();
++    f.create_toplevel(&comp, Window::new(1));
++    let data = vec![testwl::PasteData {
++        mime_type: "text/plain".into(),
++        data: b"copied".to_vec(),
++    }];
++    T::create_offer(&mut f.testwl, data.clone());
++    f.run();
++    let old = f.satellite.new_selection::<T::SelectionType>().unwrap();
++    assert!(old.is_current());
++
++    T::create_offer(&mut f.testwl, data);
++    f.run();
++    assert!(
++        !old.is_current(),
++        "a replacement must revoke an already extracted offer"
++    );
++    let replacement = f.satellite.new_selection::<T::SelectionType>().unwrap();
++    assert!(replacement.is_current());
++
++    T::clear_offer(&mut f.testwl);
++    f.run();
++    assert!(
++        !replacement.is_current(),
++        "a null selection must revoke a deferred offer"
++    );
++    assert!(f.satellite.new_selection::<T::SelectionType>().is_none());
++}
++
+ fn copy_from_x11<T: SelectionTest>() {
+     let (mut f, comp) = TestFixture::new_with_compositor();
+     let win = Window::new(1);
+diff --git a/src/xstate/selection.rs b/src/xstate/selection.rs
+index 8500a79..daaf6c6 100644
+--- a/src/xstate/selection.rs
++++ b/src/xstate/selection.rs
+@@ -295,6 +295,10 @@ struct SelectionData<T: SelectionType> {
+     atom: x::Atom,
+     targets_atom: x::Atom,
+     current_selection: Option<CurrentSelection<T>>,
++    // A Wayland clipboard manager can adopt our source while other receivers
++    // still have conversions queued. Keep their X11 owner and event routing
++    // until every pipe closes, not just until the manager finishes its reads.
++    deferred_selection: Option<ForeignSelection<T>>,
+ }
+ 
+ // This is a trait so that we can use &dyn
+@@ -328,6 +332,7 @@ trait SelectionDataImpl {
+     ) -> bool;
+     fn atom(&self) -> x::Atom;
+     fn selection_clear(&mut self);
++    fn source_destroyed(&mut self);
+ }
+ 
+ impl<T: SelectionType> SelectionData<T> {
+@@ -337,8 +342,37 @@ impl<T: SelectionType> SelectionData<T> {
+             atom,
+             targets_atom,
+             current_selection: None,
++            deferred_selection: None,
+         }
+     }
++
++    fn defer_selection(&mut self, selection: ForeignSelection<T>) -> Option<ForeignSelection<T>> {
++        if self
++            .x11_selection()
++            .is_some_and(|s| !s.pending.borrow().is_empty())
++        {
++            self.deferred_selection = Some(selection);
++            debug!("Deferring Wayland selection ownership until X11 conversions finish");
++            None
++        } else {
++            self.deferred_selection = None;
++            Some(selection)
++        }
++    }
++
++    fn ready_selection(&mut self) -> Option<ForeignSelection<T>> {
++        if self
++            .x11_selection()
++            .is_some_and(|s| !s.pending.borrow().is_empty())
++        {
++            None
++        } else {
++            // A null selection or focus loss also revokes a deferred offer;
++            // it must never be installed later just because the queue drained.
++            self.deferred_selection.take().filter(|s| s.is_current())
++        }
++    }
++
+     fn wayland_selection_mut(&mut self) -> Option<&mut WaylandSelection<T>> {
+         match &mut self.current_selection {
+             Some(CurrentSelection::Wayland(sel)) => Some(sel),
+@@ -387,6 +421,13 @@ impl<T: SelectionType> SelectionDataImpl for SelectionData<T> {
+     }
+ 
+     fn selection_clear(&mut self) {
++        self.deferred_selection = None;
++        self.current_selection = None;
++    }
++
++    fn source_destroyed(&mut self) {
++        // An already received Wayland mirror can outlive the X11 source.
++        // Drop its unfinished conversions, but keep a still-current offer.
+         self.current_selection = None;
+     }
+ 
+@@ -398,6 +439,10 @@ impl<T: SelectionType> SelectionDataImpl for SelectionData<T> {
+         owner: x::Window,
+         timestamp: u32,
+     ) {
++        // A genuine X11 owner change supersedes any deferred Wayland offer.
++        // Do not start queued conversions against that newer owner's bytes.
++        self.deferred_selection = None;
++        self.current_selection = None;
+         // Grab targets
+         match connection.send_and_check_request(&x::ConvertSelection {
+             requestor: wm_window,
+@@ -680,6 +725,9 @@ impl XState {
+     }
+ 
+     pub(crate) fn set_clipboard(&mut self, selection: ForeignSelection<Clipboard>) {
++        let Some(selection) = self.selection_state.clipboard.defer_selection(selection) else {
++            return;
++        };
+         let mut utf8_xwl = false;
+         let mut utf8_wl = false;
+         let mut mimes: Vec<SelectionTargetId> = selection
+@@ -732,6 +780,9 @@ impl XState {
+     }
+ 
+     pub(crate) fn set_primary_selection(&mut self, selection: ForeignSelection<Primary>) {
++        let Some(selection) = self.selection_state.primary.defer_selection(selection) else {
++            return;
++        };
+         let mut utf8_xwl = false;
+         let mut utf8_wl = false;
+         let mut mimes: Vec<SelectionTargetId> = selection
+@@ -782,6 +833,15 @@ impl XState {
+         }
+     }
+ 
++    pub(crate) fn finish_selection_handoffs(&mut self) {
++        if let Some(selection) = self.selection_state.clipboard.ready_selection() {
++            self.set_clipboard(selection);
++        }
++        if let Some(selection) = self.selection_state.primary.ready_selection() {
++            self.set_primary_selection(selection);
++        }
++    }
++
+     pub(super) fn handle_selection_event(
+         &mut self,
+         event: &xcb::Event,
+@@ -920,7 +980,8 @@ impl XState {
+                     xcb::xfixes::SelectionEvent::SelectionClientClose
+                     | xcb::xfixes::SelectionEvent::SelectionWindowDestroy => {
+                         debug!("Selection owner destroyed, selection will be unset");
+-                        self.selection_state.clipboard.current_selection = None;
++                        let data = get_selection_data!(x);
++                        data.source_destroyed();
+                     }
+                 },
+                 x if x == self.atoms.xsettings => match e.subtype() {
+diff --git a/testwl/src/lib.rs b/testwl/src/lib.rs
+index b9b5503..557f95f 100644
+--- a/testwl/src/lib.rs
++++ b/testwl/src/lib.rs
+@@ -815,6 +815,16 @@ impl Server {
+         self.display.flush_clients().unwrap();
+     }
+ 
++    pub fn clear_data_offer(&mut self) {
++        self.state.data_device.as_ref().unwrap().selection(None);
++        self.display.flush_clients().unwrap();
++    }
++
++    pub fn clear_primary_offer(&mut self) {
++        self.state.primary_device.as_ref().unwrap().selection(None);
++        self.display.flush_clients().unwrap();
++    }
++
+     #[track_caller]
+     pub fn create_primary_offer(&mut self, data: Vec<PasteData>) {
+         let Some(dev) = &self.state.primary_device else {
+-- 
+2.55.0
+

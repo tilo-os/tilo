@@ -15,6 +15,7 @@ name = "discord-worker"
 path = "src/main.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
 blake3.workspace = true
 discord-wire = { path = "../../discord-model" }
 futures-util = { workspace = true, features = ["sink"] }

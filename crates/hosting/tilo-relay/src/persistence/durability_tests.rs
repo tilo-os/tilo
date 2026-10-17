@@ -34,6 +34,7 @@ fn open(root: &Path) -> State {
         retention_candidates: Vec::new(),
         workers: isolated_test_workers(),
         replay_worker: Arc::new(Semaphore::new(1)),
+        retaining_only: false,
     }
 }
 

@@ -57,6 +57,7 @@ hex.workspace = true
 uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../../session/install-profile-model" }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 tilo-files = { path = "../../platform/tilo-files" }

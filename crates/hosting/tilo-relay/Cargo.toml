@@ -27,7 +27,7 @@ test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-desktop-model", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
 web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 # The legacy_stream_source example: a session streaming a window through the
 # production encoder (H.264, VP9 or AV1; needs the GStreamer stack). No binary uses it.
@@ -47,7 +47,7 @@ path = "src/enroll.rs"
 
 [[bin]]
 name = "tilo-home-peer-control"
-path = "src/home_peer_control.rs"
+path = "src/home_peer_control/main.rs"
 
 # A terminal's pty carried to an environment session on a relay; the
 # device's `ush` supervisor runs it for a relay environment target.
@@ -97,6 +97,7 @@ path = "src/relay_offers_cli.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -191,8 +192,9 @@ bytes = { workspace = true, optional = true }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
 agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
-# A persistent room's shared desktop starts with the strips its operator names.
-tilo-desktop-model = { path = "../../session/desktop-model", optional = true }
+# Who may close, move or rename what is on a room's shared desktop, and the
+# strips a persistent room's shared desktop starts with.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 # A persistent public room keeps its owner and spectator roots in the host's
 # secret store.
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
@@ -299,6 +301,8 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# The persistent room test's page fetches over the room's plain listener.
+hyper = { version = "1", features = ["client", "http1"] }
 
 [[test]]
 name = "it"

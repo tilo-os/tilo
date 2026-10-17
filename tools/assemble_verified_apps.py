@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Nonpublishing final collection assembly from pinned verified baseline artifacts."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import tarfile
 import tomllib
+import time
 import urllib.request
 import zipfile
 
@@ -33,26 +35,52 @@ def safe_name(name):
 
 
 def extract_tar(archive, output):
+    with extraction_destination(output):
+        count = total = 0
+        names = set()
+        with tarfile.open(archive, 'r:gz') as stream:
+            for member in stream:
+                name = member.name.rstrip('/')
+                safe_name(name)
+                count += 1
+                total += member.size
+                channel.require(count <= 4096 and 0 <= member.size and total <= MAX_EXPANDED and name not in names, 'archive resource/duplicate limit')
+                names.add(name)
+                channel.require(name in {'tapp', 'runtime', 'index.json', 'SHA256SUMS'} or name.startswith(('tapp/', 'runtime/')), 'unexpected collection path')
+                channel.require(member.isdir() or (member.isfile() and not member.issparse()), 'archive links/sparse/special rejected')
+                target = output / name
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with stream.extractfile(member) as source, target.open('xb') as destination:
+                        shutil.copyfileobj(source, destination)
+
+
+@contextmanager
+def extraction_destination(output):
+    """A rejected archive must not leave a partial tree that blocks retries."""
     output.mkdir()
-    count = total = 0
-    names = set()
-    with tarfile.open(archive, 'r:gz') as stream:
-        for member in stream:
-            name = member.name.rstrip('/')
-            safe_name(name)
-            count += 1
-            total += member.size
-            channel.require(count <= 4096 and 0 <= member.size and total <= MAX_EXPANDED and name not in names, 'archive resource/duplicate limit')
-            names.add(name)
-            channel.require(name in {'tapp', 'runtime', 'index.json', 'SHA256SUMS'} or name.startswith(('tapp/', 'runtime/')), 'unexpected collection path')
-            channel.require(member.isdir() or (member.isfile() and not member.issparse()), 'archive links/sparse/special rejected')
-            target = output / name
-            if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with stream.extractfile(member) as source, target.open('xb') as destination:
-                    shutil.copyfileobj(source, destination)
+    try:
+        yield
+    except BaseException:
+        shutil.rmtree(output)
+        raise
+
+
+@contextmanager
+def download_destination(output):
+    """Remove failed downloads without deleting a pre-existing destination."""
+    if output is None:
+        yield None
+        return
+    target = output.open('xb')
+    try:
+        with target:
+            yield target
+    except BaseException:
+        output.unlink()
+        raise
 
 
 class ReadOnlyAPI:
@@ -65,19 +93,27 @@ class ReadOnlyAPI:
             def redirect_request(self, *args, **kwargs):
                 return None
         request = urllib.request.Request(API + path, headers={'Authorization': 'Bearer ' + self.token})
+        deadline = time.monotonic() + 300
         with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
             maximum = MAX_BYTES if output else 2 * 1024**2
-            if output:
-                with output.open('xb') as target:
-                    size = 0
-                    while chunk := response.read(1024**2):
-                        size += len(chunk)
-                        channel.require(size <= maximum, 'artifact download exceeds limit')
+            length = response.headers.get('Content-Length')
+            channel.require(length is None or (length.isdigit() and int(length) <= maximum),
+                            'API response exceeds limit')
+            with download_destination(output) as target:
+                size, chunks = 0, []
+                while True:
+                    channel.require(time.monotonic() < deadline, 'API request deadline exceeded')
+                    chunk = response.read1(min(1024**2, maximum + 1 - size))
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    channel.require(size <= maximum, 'API response exceeds limit')
+                    if target is not None:
                         target.write(chunk)
-                return
-            raw = response.read(maximum + 1)
-            channel.require(len(raw) <= maximum, 'API response exceeds limit')
-            return channel.read_json(raw)
+                    else:
+                        chunks.append(chunk)
+                channel.require(length is None or size == int(length), 'API response truncated')
+                return None if target is not None else channel.read_json(b''.join(chunks))
 
 
 def baseline_tree(api, proof, expected_hash, source, builder, collection, architecture, policy_sha, work, policy):
@@ -153,7 +189,11 @@ def merge(plan, built, baseline, output, architecture, selected_apps):
         channel.require(all(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*', value) for value in (name, version)), 'unsafe package identity')
         filename = f'{name}-{version}-{architecture}.tapp'
         path = built / 'tapp' / filename
-        if not path.is_file():
+        # Reuse is valid only for absent output, not a failed or malformed
+        # current build (including a dangling symlink).
+        if path.exists() or path.is_symlink():
+            channel.require(path.is_file() and not path.is_symlink(), 'invalid current build package')
+        else:
             channel.require(name not in selected, f'selected app missing from current build: {name}')
             channel.require(baseline is not None, 'missing package without verified baseline')
             path = baseline / 'tapp' / filename

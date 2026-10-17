@@ -12,8 +12,19 @@ LABEL org.opencontainers.image.title="Tilo room service" \
       org.opencontainers.image.description="Shared Tilo rooms and persistent public Tilo workspaces" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
-RUN microdnf install -y --setopt=install_weak_deps=0 gstreamer1 gstreamer1-plugins-base glib2 \
-  && microdnf clean all
+# This stage installs from live Fedora repositories, not the frozen snapshot
+# the OS images use. Tilo never ships Cisco's OpenH264: with the base's
+# fedora-cisco-openh264 repository enabled, its `openh264` would satisfy
+# libopenh264.so ahead of Fedora's `noopenh264` stub for any package that
+# links it, so the repository goes before the install and the resolved image
+# is checked after it (os/scripts/verify-no-cisco-openh264.sh, copied into
+# the context by tools/ci/publish/room-service-context.sh).
+RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
+  rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
+  && microdnf install -y --setopt=install_weak_deps=0 gstreamer1 gstreamer1-plugins-base glib2 \
+  && microdnf clean all \
+  && command -v bash rpm grep sort tr >/dev/null \
+  && bash /run/tilo-verify-no-cisco-openh264.sh
 # Every binary the builder produced: tilo-relay, tilo-room-service and, once
 # the Discord connector ships one, its outside worker. Beside them is the
 # product font catalog (bin/fonts): app workers lay out text and a container

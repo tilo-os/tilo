@@ -116,11 +116,12 @@ fn every_client_error_has_a_deliberate_link_class() {
         iroh_link_error(ClientError::Sign("locked".into())),
         LinkError::Sign("locked".into()),
     );
-    // The host answered and turned this device away.
+    // An answer that does not decode says nothing about this device.
     assert_eq!(
         iroh_link_error(ClientError::Codec("bad ack".into())),
         LinkError::Malformed("bad ack".into()),
     );
+    // The host turned this device away without a reason.
     assert_eq!(
         iroh_link_error(ClientError::Auth(AuthError::Revoked)),
         LinkError::Refused("auth: peer device is revoked".into()),

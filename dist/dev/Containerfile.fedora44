@@ -3,11 +3,13 @@
 # target directory are mounted by distrobox, so editing source does not
 # invalidate this image and no application binaries are baked into it.
 #
-# The build context is exactly these files, flat, so callers can assemble it
+# The build context is exactly these small files, so callers can assemble it
 # without walking the repository:
 #   install-build-deps.sh  <- dist/ci/install-build-deps.sh
 #   install-pdfium.sh      <- tools/ci/install-pdfium.sh
 #   github-assets.tsv      <- os/external-assets/github-assets.tsv
+#   install-xwayland-satellite.sh <- tools/ci/install-xwayland-satellite.sh
+#   xwayland-satellite/    <- os/external-assets/xwayland-satellite/*.patch
 FROM registry.fedoraproject.org/fedora-toolbox:44
 
 # The test profile is the workspace package set the CI builder installs
@@ -38,6 +40,20 @@ RUN cd /tmp/tilo-pdfium \
  && bash install-pdfium.sh . /usr github-assets.tsv \
  && cd / && rm -rf /tmp/tilo-pdfium
 ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
+
+# xwayland-satellite for the shell's X11 clipboard tests: the pinned source
+# with Tilo's patch, built by the installer CI uses, with the
+# Rust toolchain install-build-deps.sh bootstrapped.
+COPY install-xwayland-satellite.sh github-assets.tsv /tmp/tilo-satellite/
+COPY xwayland-satellite/ /tmp/tilo-satellite/patches/
+RUN cd /tmp/tilo-satellite \
+ && export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH \
+ && asset=$(bash install-xwayland-satellite.sh --asset-name) \
+ && url=$(awk -F '\t' -v name="$asset" '$1 !~ /^#/ && $2 == name {print $3}' github-assets.tsv) \
+ && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$asset" "$url" \
+ && bash install-xwayland-satellite.sh . /usr github-assets.tsv patches \
+ && rm -rf /tmp/tilo-satellite /usr/local/cargo/registry
 
 # The OS image build (os/build.sh, os/dev/build-dev-image.sh, tilo-vm image
 # build) runs in here too: podman nested in this container, skopeo for its

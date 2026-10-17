@@ -44,9 +44,13 @@ def documents(text: str):
 
 def predicates(text: str):
     for envelope in documents(text):
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("payload"), str):
+            continue
         try:
-            statement = json.loads(base64.b64decode(envelope["payload"]))
+            statement = json.loads(base64.b64decode(envelope["payload"], validate=True))
         except (KeyError, TypeError, ValueError):
+            continue
+        if not isinstance(statement, dict):
             continue
         predicate = statement.get("predicate")
         if isinstance(predicate, dict):
@@ -56,18 +60,27 @@ def predicates(text: str):
 def environment(text: str, digest: str, architecture: str) -> str | None:
     found = set()
     for predicate in predicates(text):
-        definition = predicate.get("buildDefinition") or {}
-        if (definition.get("buildType") != BUILD_TYPE
-                or (definition.get("externalParameters") or {}).get("architecture") != architecture
-                or (definition.get("internalParameters") or {}).get("expectedReleaseDigest") != digest):
+        definition = predicate.get("buildDefinition")
+        if not isinstance(definition, dict) or definition.get("buildType") != BUILD_TYPE:
             continue
-        uris = [dependency.get("uri") for dependency in definition.get("resolvedDependencies") or []
+        external = definition.get("externalParameters")
+        internal = definition.get("internalParameters")
+        if (not isinstance(external, dict) or not isinstance(internal, dict)
+                or external.get("architecture") != architecture
+                or internal.get("expectedReleaseDigest") != digest):
+            continue
+        dependencies = definition.get("resolvedDependencies")
+        if not isinstance(dependencies, list):
+            return None
+        uris = [dependency.get("uri") for dependency in dependencies
                 if isinstance(dependency, dict) and isinstance(dependency.get("uri"), str)]
         if not any(SOURCE.fullmatch(uri) for uri in uris):
             continue
         buildroots = {uri for uri in uris if BUILDROOT.fullmatch(uri)}
+        # A matching predicate must be usable on its own. Ignoring an ambiguous
+        # one lets a second, valid predicate hide the conflict.
         if len(buildroots) != 1:
-            continue
+            return None
         found |= buildroots
     return found.pop() if len(found) == 1 else None
 

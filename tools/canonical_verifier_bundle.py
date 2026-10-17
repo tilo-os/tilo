@@ -9,6 +9,7 @@ import platform
 from pathlib import Path
 import re
 import tarfile
+import tempfile
 import urllib.request
 
 import app_channel_manifest as channel
@@ -129,16 +130,18 @@ def fetch(policy_path, policy_sha, output, builder, token, architecture=None):
         def redirect_request(self, *args, **kwargs):
             return None
     request = urllib.request.Request(expected, headers={'Authorization': 'Bearer ' + token} if token else {})
-    archive = output.with_suffix('.tar.gz')
     channel.require(type(descriptor['bytes']) is int and 0 < descriptor['bytes'] <= MAX_BYTES, 'invalid bundle size')
-    with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response, archive.open('xb') as destination:
-        size = 0
-        while data := response.read(1024**2):
-            size += len(data)
-            channel.require(size <= descriptor['bytes'], 'oversized bundle download')
-            destination.write(data)
-    materialize(archive, descriptor, output, builder, architecture)
-    archive.unlink()
+    # Own the scratch archive, not a predictable sibling of the destination.
+    # Failed or interrupted downloads must not block the next invocation.
+    with tempfile.TemporaryDirectory(prefix='tilo-verifier-download-') as temporary:
+        archive = Path(temporary) / 'bundle.tar.gz'
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response, archive.open('xb') as destination:
+            size = 0
+            while data := response.read(1024**2):
+                size += len(data)
+                channel.require(size <= descriptor['bytes'], 'oversized bundle download')
+                destination.write(data)
+        materialize(archive, descriptor, output, builder, architecture)
     return resolved
 
 

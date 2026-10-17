@@ -410,9 +410,31 @@ pub fn wait_for_saves() {
 /// [`wait_for_saves`] for a deadline that must not be missed, like the end
 /// of the session. Returns whether every save made it.
 pub fn wait_for_saves_within(limit: std::time::Duration) -> bool {
+    saves_within(
+        super::durable_writer::global(),
+        settings_store::flush_pending_writes,
+        limit,
+    )
+}
+
+/// The key the settings flush is queued under: flushing is idempotent, so a
+/// flush still queued stands for a later one.
+const SETTINGS_FLUSH_KEY: &str = "settings-store pending writes";
+
+/// Make the pending settings writes and every queued save durable on
+/// `writer`, waiting at most `limit` for both. The settings flush syncs the
+/// settings records and takes their cross-process lock, which another
+/// process may hold: it runs on the writer behind the saves queued before
+/// it, never on the caller's thread, so the suspend path on the compositor
+/// loop waits no longer than its bound.
+fn saves_within(
+    writer: &super::durable_writer::DurableWriter,
+    flush_settings: impl FnOnce() + Send + 'static,
+    limit: std::time::Duration,
+) -> bool {
     let started = std::time::Instant::now();
-    settings_store::flush_pending_writes();
-    let saved = super::durable_writer::global().flush_timeout(limit);
+    writer.submit(PathBuf::from(SETTINGS_FLUSH_KEY), flush_settings);
+    let saved = writer.flush_timeout(limit);
     if !saved {
         tracing::error!(
             waited_ms = started.elapsed().as_millis(),
@@ -739,6 +761,49 @@ fn schema_version_in(path: &Path) -> Option<u32> {
 mod tests {
     use super::*;
 
+    /// Preparing for sleep makes the settings and the queued saves durable
+    /// from the compositor loop under a 2 s bound. A settings flush stuck
+    /// on the disk, or on the records' lock another process holds, runs on
+    /// the state writer: the loop's wait ends at its bound, nothing syncs on
+    /// the loop's thread, and the flush still completes once it can.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn preparing_for_sleep_never_waits_past_its_bound_for_the_settings_flush() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::{Duration, Instant};
+        let writer = super::super::durable_writer::DurableWriter::spawn("test-state-writer");
+        let (release, stuck) = mpsc::channel::<()>();
+        let flushed_on = Arc::new(Mutex::new(None));
+        let recorded = Arc::clone(&flushed_on);
+        let (returned, waited, loop_thread) =
+            crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+                let started = Instant::now();
+                let returned = saves_within(
+                    &writer,
+                    move || {
+                        let _ = stuck.recv();
+                        *recorded.lock().unwrap() = Some(std::thread::current().id());
+                    },
+                    Duration::from_millis(100),
+                );
+                (returned, started.elapsed(), std::thread::current().id())
+            });
+        assert!(!returned, "a stuck flush is reported as not saved");
+        assert!(
+            waited < Duration::from_secs(2),
+            "the loop waited {waited:?} for a flush bounded at 100 ms"
+        );
+        assert!(
+            flushed_on.lock().unwrap().is_none(),
+            "the flush was still stuck"
+        );
+        release.send(()).unwrap();
+        writer.flush();
+        let ran_on = *flushed_on.lock().unwrap();
+        let ran_on = ran_on.expect("the flush completed");
+        assert_ne!(ran_on, loop_thread, "the flush ran on the state writer");
+    }
+
     fn foreign_tabs(tree: &WorkspaceTree) -> Vec<(u64, u64)> {
         tree.desktop
             .workspaces
@@ -1061,7 +1126,10 @@ mod tests {
                 .active_workspace()
                 .expect("active workspace")
                 .room;
-            assert!(original.note_peer_present(room, 0x11, "alice"));
+            assert!(original.admit_collaborator_in_room(
+                room,
+                Collaborator::new("alice", "alice").with_session(0x11),
+            ));
             assert!(original.admit_collaborator_in_room(
                 room,
                 Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),

@@ -390,7 +390,7 @@ export async function mountDesktop(target,options={}) {
     semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(retainedWidget(lastState),...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
 
     const hiddenKeyOwner={};
-    const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
+    const dispatchCanvasKey=(key,mods={})=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key,...mods}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key,...mods}));};
     // Canvas clicks are hit-tested by the runtime. Page chrome is outside that
     // surface, so route dismissal to the current search owner without stealing
     // focus or consuming the external control's pointer event.
@@ -415,7 +415,7 @@ export async function mountDesktop(target,options={}) {
       if(!inputScope.valid(scope))return;
       if(route.kind==='refuse'){editor.value='';report({lastInput:'beforeinput',input:'refused',error:`Text insert is too large (${route.length.toLocaleString()} characters, limit ${MAX_TEXT_INSERT.toLocaleString()}); nothing was inserted.`});}
       else if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}
-      else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}
+      else if(route.kind==='key'){dispatchCanvasKey(route.key,{ctrlKey:Boolean(route.ctrlKey)});report({lastInput:'beforeinput-key'});}
     });
     onEditor('input',()=>{if(!composition.composing)editor.value='';});
     let editorFocusScope,canvasFocusScope;

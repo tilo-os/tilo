@@ -42,6 +42,10 @@ pub(crate) struct StripIndicators {
     /// When the position last changed; `None` once the fade has finished.
     changed_at: Option<Instant>,
     hovered: bool,
+    /// A direct pan came to rest somewhere new. The frame it rests on is
+    /// composited from the layers the pan began with, so the indicators
+    /// show from the next frame on.
+    show_on_next_frame: bool,
 }
 
 impl StripIndicators {
@@ -49,7 +53,9 @@ impl StripIndicators {
     /// observation is the session's starting point, not navigation.
     pub(crate) fn observe(&mut self, position: StripPosition, now: Instant) {
         self.hovered = position.hovered;
-        if self.last.as_ref().is_some_and(|last| *last != position) {
+        if std::mem::take(&mut self.show_on_next_frame)
+            || self.last.as_ref().is_some_and(|last| *last != position)
+        {
             self.changed_at = Some(now);
         }
         self.last = Some(position);
@@ -61,15 +67,17 @@ impl StripIndicators {
         }
     }
 
-    /// Take `position` as the new resting point without showing them.
-    pub(crate) fn rebase(&mut self, position: StripPosition) {
+    /// A direct pan came to rest at `position`, on a frame that must not
+    /// change the chrome: take it as the resting point now, and if the pan
+    /// moved anything, show them from the next frame on, as any other
+    /// navigation does. Without this a touchpad pan, the commonest way along
+    /// a strip, never showed the window rail at all.
+    pub(crate) fn settle_after_pan(&mut self, position: StripPosition) {
         self.hovered = position.hovered;
+        if self.last.as_ref().is_some_and(|last| *last != position) {
+            self.show_on_next_frame = true;
+        }
         self.last = Some(position);
-    }
-
-    /// Show them now, as navigation would.
-    pub(crate) fn poke(&mut self, now: Instant) {
-        self.changed_at = Some(now);
     }
 
     /// Opacity at `now`. Under reduced motion they cut out instead of fading.
@@ -110,6 +118,10 @@ impl StripIndicators {
     /// start: an overdue deadline that only a paint could clear would spin
     /// the loop whenever nothing else asks for a paint.
     pub(crate) fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
+        // Due now: the next frame's observation shows them and clears it.
+        if self.show_on_next_frame {
+            return Some(now);
+        }
         let fade_start = self.changed_at?.checked_add(STRIP_INDICATOR_HOLD)?;
         (now < fade_start).then_some(fade_start)
     }
@@ -167,6 +179,42 @@ mod tests {
             "nothing is owed after it"
         );
         assert!(!s.needs_animation_frame_at(end));
+    }
+
+    #[test]
+    fn a_direct_pan_shows_them_from_the_frame_after_it_rests() {
+        let t0 = Instant::now();
+        let mut s = StripIndicators::default();
+        s.observe(position(0, 0), t0);
+        // The pan's frames are not observed; it rests somewhere new.
+        let rest = t0 + Duration::from_millis(400);
+        s.settle_after_pan(position(1, 900));
+        assert_eq!(
+            s.alpha_at(rest, false),
+            0.0,
+            "the frame the pan rests on keeps the chrome it began with"
+        );
+        assert_eq!(
+            s.next_wake_deadline_at(rest),
+            Some(rest),
+            "the next frame is owed at once"
+        );
+        let next = rest + Duration::from_millis(8);
+        s.observe(position(1, 900), next);
+        assert_eq!(s.alpha_at(next, false), 1.0, "the next frame shows them");
+        assert_eq!(
+            s.next_wake_deadline_at(next),
+            Some(next + STRIP_INDICATOR_HOLD),
+            "and the owed frame is paid: only the fade start remains"
+        );
+
+        // A pan that ends where it began moved nothing and shows nothing.
+        let later = next + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE;
+        s.observe(position(1, 900), later);
+        s.settle_after_pan(position(1, 900));
+        assert_eq!(s.next_wake_deadline_at(later), None);
+        s.observe(position(1, 900), later + Duration::from_millis(8));
+        assert_eq!(s.alpha_at(later + Duration::from_millis(8), false), 0.0);
     }
 
     #[test]

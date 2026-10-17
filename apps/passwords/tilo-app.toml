@@ -17,6 +17,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads"]
 
+[resources]
+kinds = ["passwords.vault", "tilo.accounts"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

@@ -770,7 +770,7 @@ pub(crate) struct ControlAvailability {
 }
 
 /// Reserved transport namespace. Domain resources never contain this rewrite.
-pub(crate) const PUBLICATION_PREFIX: &str = "tilo-ui-bound:v1:";
+pub(crate) const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
 const MAX_PUBLICATION_ALIAS: usize = 4096;
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,
@@ -1986,12 +1986,8 @@ impl OrdinaryConfirmation {
             return Err(Self::stale());
         }
         let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, _) = unique_control_spec(&resources, &address)?;
-        let context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         let snapshot = Self::snapshot(
             &resources,
             &address,
@@ -2485,6 +2481,28 @@ fn execute_document(
 }
 
 /// A resolved, encoded resource operation and the caller it runs for.
+/// Whether `actor` may run a device-only action here: the person at this
+/// device, or an agent acting for them that the broker admitted. The broker
+/// runs a device-only action for an agent only when that person's own
+/// device handed it the session, so a collaborator, a remote participant
+/// and an agent admitted elsewhere stay refused.
+pub(crate) fn runs_device_only(
+    actor: &str,
+    local_author: &str,
+    broker_admitted: bool,
+    ambient: Option<&tilo_actions::ActionContext>,
+) -> bool {
+    actor == local_author
+        || (broker_admitted
+            && ambient
+                .and_then(|context| context.invoker.as_ref())
+                .is_some_and(|invoker| {
+                    invoker.actor == actor
+                        && invoker.kind == tilo_actions::ActorKind::Agent
+                        && invoker.on_behalf_of.as_deref() == Some(local_author)
+                }))
+}
+
 pub(crate) struct ResourceOperation<'a> {
     pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
@@ -2535,7 +2553,7 @@ pub(crate) fn execute_resource_operation(
         .tags
         .iter()
         .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-        && actor != local_author
+        && !runs_device_only(actor, local_author, broker_admitted, ambient)
     {
         return Err(tilo_actions::DoorError::Unavailable {
             code: "local_device_only".into(),
@@ -2556,11 +2574,8 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
-        let mut context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let mut context =
+            spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
@@ -3132,6 +3147,10 @@ pub struct CallbackBinding {
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
+    /// Executing device supplied by the component's HostContext, never its caller.
+    pub(crate) device_id: String,
+    /// Immutable local person supplied at host preparation, not the action author.
+    pub(crate) host_person: UserId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
@@ -3910,6 +3929,13 @@ impl ActionFrame {
         if doc.pending_ops() == 0 {
             return doc.get_heads();
         }
+        tilo_resource::history::commit_stamped_with_message(doc, self.step_message());
+        doc.get_heads()
+    }
+
+    /// The change message the open step commits with: the action it belongs
+    /// to, or `None` when no action is open to name it.
+    fn step_message(&self) -> Option<String> {
         let context = if let Some(operation) = self
             .operations
             .last()
@@ -3927,11 +3953,7 @@ impl ActionFrame {
                 (None, pending) => pending.as_ref().map(|pending| pending.context.clone()),
             }
         };
-        tilo_resource::history::commit_stamped_with_message(
-            doc,
-            context.and_then(|context| context.in_step().change_message()),
-        );
-        doc.get_heads()
+        context.and_then(|context| context.in_step().change_message())
     }
 
     /// Write as `actor` from here on. What is pending was written as the
@@ -4079,6 +4101,87 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
+thread_local! {
+    static EXECUTING_HOST_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };
+    static EXECUTING_HOST_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
+    static EXECUTING_HOST_PERSON: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Identity of the checked component lifetime, not a caller-selected window ID.
+#[must_use]
+pub fn executing_host_scope() -> Option<uuid::Uuid> {
+    EXECUTING_HOST_SCOPE.with_borrow(|scope| *scope)
+}
+
+struct ExecutingHostScope(Option<uuid::Uuid>);
+impl ExecutingHostScope {
+    fn enter(scope: uuid::Uuid) -> Self {
+        Self(EXECUTING_HOST_SCOPE.replace(Some(scope)))
+    }
+}
+impl Drop for ExecutingHostScope {
+    fn drop(&mut self) {
+        EXECUTING_HOST_SCOPE.replace(self.0.take());
+    }
+}
+
+struct ExecutingHostPerson(Option<String>);
+impl ExecutingHostPerson {
+    fn enter(person: &UserId) -> Self {
+        Self(EXECUTING_HOST_PERSON.replace(Some(person.0.clone())))
+    }
+}
+impl Drop for ExecutingHostPerson {
+    fn drop(&mut self) {
+        EXECUTING_HOST_PERSON.replace(self.0.take());
+    }
+}
+
+/// The immutable local person of the executing checked component callback.
+/// Unavailable outside a callback; never derived from action context or a caller.
+#[must_use]
+pub fn executing_host_person() -> Option<String> {
+    EXECUTING_HOST_PERSON.with_borrow(Clone::clone)
+}
+
+/// Whether this callback is acting for its trusted local person. A delivered
+/// invocation must name that actual person's actor; participant identity and
+/// action attribution cannot confer access. Outside a callback access is denied.
+#[must_use]
+pub fn host_person_invocation_permitted() -> bool {
+    executing_host_person().is_some_and(|person| {
+        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.actor == person)
+    })
+}
+
+struct ExecutingHostDevice(Option<String>);
+impl ExecutingHostDevice {
+    fn enter(device: &str) -> Self {
+        Self(EXECUTING_HOST_DEVICE.replace(Some(device.to_owned())))
+    }
+}
+impl Drop for ExecutingHostDevice {
+    fn drop(&mut self) {
+        EXECUTING_HOST_DEVICE.replace(self.0.take());
+    }
+}
+
+/// The executing component's host device during a checked record callback.
+/// This is local host identity, not replicated action context or a caller's
+/// requested target device. Outside a component callback it is unavailable.
+#[must_use]
+pub fn executing_host_device() -> Option<String> {
+    EXECUTING_HOST_DEVICE.with_borrow(Clone::clone)
+}
+
+pub(crate) struct CallbackScopeGuard {
+    _wake: WakeScopeGuard,
+    _device: ExecutingHostDevice,
+    _person: ExecutingHostPerson,
+    _scope: ExecutingHostScope,
+    _actor: tilo_resource::action::RecordActorScope,
+}
+
 struct ActiveEntry;
 impl Drop for ActiveEntry {
     fn drop(&mut self) {
@@ -4356,6 +4459,56 @@ impl CallbackBinding {
     /// Immediate action boundary inside the already admitted owned frame. The
     /// explicit Doc witness is checked before any frame access; no references
     /// are recovered from ACTIVE.
+    /// [`Self::close_open_step`], but only when an open action names the
+    /// step: an unnamed change is one the identity service refuses to sign,
+    /// so a step nothing names stays open for its own boundary. Whether the
+    /// document has no unfinished edit afterwards.
+    pub(crate) fn close_named_step(
+        &self,
+        outer: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        // Edits written outside any action carry no context; entering the
+        // document's frame would commit them as they are, unnamed.
+        let nameable = self
+            .records
+            .with_action_state(&self.checkout.id, |doc, _, state| {
+                doc.pending_ops() == 0 || state.pending.is_some()
+            })
+            .map_err(BoundDispatchError::Record)?;
+        if !nameable {
+            return Ok(false);
+        }
+        self.with_document(outer, |doc, _| {
+            if doc.pending_ops() == 0 {
+                return self.finish_action_boundary(doc).map(|()| true);
+            }
+            let named = self.with_active_frame(doc, |frame| frame.step_message().is_some())?;
+            if named {
+                self.finish_action_boundary(doc)?;
+            }
+            Ok(named)
+        })?
+    }
+
+    fn with_active_frame<R>(
+        &self,
+        doc: &AutoCommit,
+        read: impl FnOnce(&ActionFrame) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        let active = self.check_record()?;
+        if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {
+            return Err(BoundDispatchError::Record(RecordOpenError::Busy));
+        }
+        let handle = ACTIVE
+            .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
+            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        let owned = handle.borrow();
+        let frame = owned
+            .as_ref()
+            .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+        Ok(read(frame))
+    }
+
     fn finish_action_boundary(&self, doc: &mut AutoCommit) -> Result<(), BoundDispatchError> {
         let active = self.check_record()?;
         if !active.is_some_and(|pointer| std::ptr::eq(pointer, doc)) {
@@ -4400,11 +4553,22 @@ impl CallbackBinding {
             None => Ok(None),
         })
     }
-    pub(crate) fn enter(&self) -> Result<WakeScopeGuard, BoundDispatchError> {
+    pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
         self.check_record()?;
-        self.lifetime
+        let wake = self
+            .lifetime
             .enter_if_open()
-            .map_err(|_| BoundDispatchError::ClosedLifetime)
+            .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+        Ok(CallbackScopeGuard {
+            _wake: wake,
+            _device: ExecutingHostDevice::enter(&self.device_id),
+            _person: ExecutingHostPerson::enter(&self.host_person),
+            _scope: ExecutingHostScope::enter(self.lifetime_id),
+            _actor: tilo_resource::action::RecordActorScope::enter(
+                crate::invocation_scope::current_invoker()
+                    .map_or_else(|| self.author.0.clone(), |invoker| invoker.actor),
+            ),
+        })
     }
     pub(crate) fn with_document<R>(
         &self,
@@ -5032,7 +5196,7 @@ pub unsafe fn invoke_bound_node<R>(
 /// Enter a retained boundary for the complete duration of a tree walk.
 pub(crate) fn enter_widget(
     widget: &dyn Widget,
-) -> Result<Option<WakeScopeGuard>, BoundDispatchError> {
+) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
     widget
         .callback_binding()
         .map(|binding| binding.enter())
@@ -5129,7 +5293,7 @@ pub(crate) unsafe fn mutate_bound_node<R>(
 /// enforce their own entry when called by an unbound legacy traversal.
 pub(crate) fn enter_traversal<const BOUND: bool>(
     widget: &dyn Widget,
-) -> Result<Option<WakeScopeGuard>, BoundDispatchError> {
+) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
     if BOUND {
         enter_widget(widget)
     } else {

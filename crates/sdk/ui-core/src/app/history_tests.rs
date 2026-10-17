@@ -3752,6 +3752,126 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
     );
 }
 
+/// A committed read that arrives while the person is mid-word must not wait
+/// for their next input: its delivery turn holds every action queued behind
+/// it, so an idle window with an unfinished word stalled the room. The merge
+/// closes the word as its own step, named by the action typing it, keeps it
+/// and applies at once. A step no action names stays open instead: committed
+/// unnamed, the identity service would refuse to sign it.
+#[cfg(feature = "broker-transport")]
+#[test]
+fn native_owned_committed_read_applies_over_an_unfinished_word() {
+    fn committed_read(
+        fixture: &RoutedOwners,
+    ) -> (
+        crate::collaboration::CommittedDocument,
+        Vec<automerge::ChangeHash>,
+    ) {
+        let id = &fixture.bindings[0].checkout.id;
+        let mut remote = fixture.records.read_checked(id, Clone::clone).unwrap();
+        let base = remote.base_heads();
+        remote.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+        remote.put(ROOT, "remote-key", "remote").unwrap();
+        remote.commit();
+        let read = crate::collaboration::CommittedDocument::for_test(
+            remote.save_after(&base),
+            Some(base.clone()),
+        );
+        (read, base)
+    }
+    fn unnamed_local_changes(fixture: &RoutedOwners, since: &[automerge::ChangeHash]) -> usize {
+        fixture
+            .records
+            .read_checked(&fixture.bindings[0].checkout.id, |doc| {
+                // Only what is committed: reading changes of a copy would
+                // commit its still-open edit first.
+                let committed = doc.base_heads();
+                doc.clone()
+                    .fork_at(&committed)
+                    .unwrap()
+                    .get_changes(since)
+                    .into_iter()
+                    .filter(|change| change.actor_id().to_bytes() != b"committed-peer")
+                    .filter(|change| {
+                        collab_types::ChangeClaim::of_change(
+                            change.hash().0,
+                            change.message(),
+                            Vec::new(),
+                        )
+                        .is_err()
+                    })
+                    .count()
+            })
+            .unwrap()
+    }
+
+    // The word is typed through its action: the merge names and closes it.
+    {
+        let mut fixture = RoutedOwners::new();
+        let route = fixture.bindings[0].broker_route().unwrap();
+        let (read, base) = committed_read(&fixture);
+        let binding = fixture.bindings[0].clone();
+        binding
+            .with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "local-draft", "unfinished").unwrap();
+            })
+            .unwrap();
+        fixture
+            .app
+            .queue_committed_document(route.clone(), read.clone());
+        assert!(
+            read.was_applied(),
+            "the committed read merged without waiting for further input"
+        );
+        assert!(fixture.app.committed_documents.is_empty());
+        assert_eq!(fixture.value(0, "remote-key").as_deref(), Some("remote"));
+        assert_eq!(
+            fixture.value(0, "local-draft").as_deref(),
+            Some("unfinished"),
+            "the unfinished word is kept"
+        );
+        fixture
+            .records
+            .read_checked(&binding.checkout.id, |doc| {
+                assert_eq!(doc.pending_ops(), 0, "the word is a finished step");
+            })
+            .unwrap();
+        assert_eq!(
+            unnamed_local_changes(&fixture, &base),
+            0,
+            "the closed word names its action"
+        );
+    }
+
+    // Nothing names the open edit: it is neither committed unnamed nor lost.
+    {
+        let mut fixture = RoutedOwners::new();
+        let id = fixture.bindings[0].checkout.id.clone();
+        let route = fixture.bindings[0].broker_route().unwrap();
+        let (read, base) = committed_read(&fixture);
+        fixture
+            .records
+            .with_action_state(&id, |doc, _, _| {
+                doc.put(ROOT, "stray-draft", "unfinished").unwrap();
+            })
+            .unwrap();
+        fixture
+            .app
+            .queue_committed_document(route.clone(), read.clone());
+        assert!(!read.was_applied());
+        assert_eq!(fixture.app.committed_documents.len(), 1);
+        fixture
+            .records
+            .read_checked(&id, |doc| assert!(doc.pending_ops() > 0))
+            .unwrap();
+        assert_eq!(unnamed_local_changes(&fixture, &base), 0);
+        assert_eq!(
+            fixture.value(0, "stray-draft").as_deref(),
+            Some("unfinished")
+        );
+    }
+}
+
 #[test]
 fn native_history_entry_pointer_captures_before_discard() {
     let probe =
@@ -5016,6 +5136,8 @@ fn component_control_root(
             search_requests: std::rc::Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
+            device_id: "test-device".into(),
+            host_person: crate::permissions::UserId("component-control-author".into()),
             records: records.clone(),
             checkout,
             permissions: std::rc::Rc::new(std::cell::RefCell::new(

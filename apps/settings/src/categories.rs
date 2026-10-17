@@ -240,6 +240,10 @@ const APPEARANCE_KEYWORDS: &[&str] = &[
     "automatic theme",
     "sunset",
     "sunrise",
+    "top bar",
+    "menu bar",
+    "auto-hide",
+    "hide",
 ];
 const ACCESSIBILITY_KEYWORDS: &[&str] = &[
     "a11y",

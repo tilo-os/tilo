@@ -59,6 +59,15 @@ class PublicReferenceTests(unittest.TestCase):
         self.git("add", "clean.md", "notes.md")
         self.assertEqual(contract.audit(self.root), ["notes.md:2: " + KEY])
 
+    def test_git_filenames_are_literal_and_delimited_without_quoting(self):
+        for name in ("notes[1].md", ":(exclude)notes.md", "notes\nsecond.md", "notes:part.md", "caf\u00e9.md", "raw-\udcff.md"):
+            with self.subTest(name=name):
+                self.write(name, "first line\nfixes " + KEY + "\n")
+                self.git("--literal-pathspecs", "add", "--", name)
+                expected = f"{name}:2: {KEY}"
+                self.assertIn(expected, contract.audit(self.root, staged=True))
+                self.assertIn(expected, contract.audit(self.root))
+
     def test_staged_mode_reads_the_index_not_the_worktree(self):
         self.write("notes.md", "fixes " + KEY + "\n")
         self.git("add", "notes.md")

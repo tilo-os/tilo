@@ -18,11 +18,17 @@
 //! ```text
 //! legacy_stream_source --dev-state DIR --host IROH_ADDR_JSON --room UUID --out FRAMES.jsonl
 //!     [--width 1280] [--height 720] [--seconds 10] [--fps N] [--surface 7] [--codec h264|vp9|av1]
+//!     [--resize-at S --resize-to WxH]
 //! ```
 //!
 //! `--codec` picks the stream's codec (H.264 by default). VP9 and AV1 are what
 //! a session without an H.264 encoder (no hardware one, no codec pack) streams
 //! once every browser member decodes them.
+//!
+//! With `--resize-at`, the window changes to `--resize-to` that many
+//! seconds into the stream, as a person resizing the native window does: the
+//! session announces the new size (`SurfaceStreamStart`) and encodes from a
+//! keyframe at it.
 //!
 //! `--dev-state` is `tilo-relay dev --state`: its `dev-identity.bin` holds
 //! the user root and the host device's keys. Protocol on stdio, one JSON
@@ -31,11 +37,17 @@
 //! - `{"event":"ready", …}` once subscribed, with the encoder chosen;
 //! - a `start` line on stdin starts the stream: `{"event":"started"}`, then
 //!   one line per frame to `--out` (`index`, `captureUs`, `encodeUs`, `bytes`,
-//!   `key`, wall-clock microseconds since the Unix epoch);
-//! - `{"event":"input", …}` for every input event the host forwards;
+//!   `key`, `width`, `height`, wall-clock microseconds since the Unix epoch);
+//! - `{"event":"input", …}` for every input event the host forwards: `input`
+//!   its debug text, `value` the event as JSON (`{"Key":{…}}`, `"Close"`);
 //! - `{"event":"stopped", …}` after `--seconds`; the window then stays as it
-//!   is (a still window sends nothing more) until stdin closes, when the
-//!   grant is revoked and the stream ends.
+//!   is (a still window sends nothing more);
+//! - an `end` line on stdin closes the window, as a person closing it does:
+//!   the grant is revoked and the stream ends (`{"event":"ended"}`), but the
+//!   session stays connected and keeps reporting any input still forwarded
+//!   to it, so a harness can tell that none is;
+//! - when stdin closes, the window closes (if `end` did not already) and the
+//!   session leaves.
 
 #![allow(
     clippy::print_stdout,
@@ -53,10 +65,17 @@ use anyhow::{Context as _, bail};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
+};
+use tilo_actions::{ActionAddress, InvocationId};
 use tilo_media::realtime::{EncoderConfig, InputFormat, InputFrame, StreamCodec};
 use tilo_relay_protocol::legacy_window::InputEvent;
-use tilo_relay_protocol::transport::Envelope;
-use tilo_relay_session::rooms::{RoomAdminClient, RoomAdminError, RoomCommand};
+use tilo_relay_protocol::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
+use tilo_relay_session::rooms::{
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+};
 use tilo_relay_session::{AttributedPresence, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -68,6 +87,9 @@ const CODE_BITS: u32 = 20;
 const BITRATE_BPS: u64 = 8_000_000;
 const HARDWARE_FPS: u32 = 60;
 const SOFTWARE_FPS: u32 = 30;
+/// A workspace of the host's person that is no room: where this device asks
+/// the host's own actions before it holds the room.
+const HOME_WORKSPACE: u64 = 0x686f_6d65;
 
 struct Args {
     dev_state: PathBuf,
@@ -80,6 +102,26 @@ struct Args {
     fps: Option<u32>,
     surface: u64,
     codec: StreamCodec,
+    /// Seconds into the stream at which the window takes `resize_to`.
+    resize_at: Option<f64>,
+    resize_to: Option<(u32, u32)>,
+}
+
+/// `WIDTHxHEIGHT`, each even and at least 320x64: what H.264 4:2:0 and the
+/// number blocks need.
+fn window_size(width: u32, height: u32) -> anyhow::Result<(u32, u32)> {
+    if width < 320 || height < 64 || width % 2 == 1 || height % 2 == 1 {
+        bail!("the window must be at least 320x64 and of even size");
+    }
+    Ok((width, height))
+}
+
+fn parse_size(text: &str) -> anyhow::Result<(u32, u32)> {
+    let (width, height) = text.split_once('x').context("a size is WIDTHxHEIGHT")?;
+    window_size(
+        width.parse().context("width")?,
+        height.parse().context("height")?,
+    )
 }
 
 fn args() -> anyhow::Result<Args> {
@@ -94,6 +136,8 @@ fn args() -> anyhow::Result<Args> {
         fps: None,
         surface: 7,
         codec: StreamCodec::H264,
+        resize_at: None,
+        resize_to: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -120,6 +164,8 @@ fn args() -> anyhow::Result<Args> {
                     })
                     .with_context(|| format!("--codec {value}: one of h264, vp9, av1"))?;
             }
+            "--resize-at" => parsed.resize_at = Some(value.parse().context("--resize-at")?),
+            "--resize-to" => parsed.resize_to = Some(parse_size(&value).context("--resize-to")?),
             other => bail!("unknown flag {other}"),
         }
     }
@@ -130,11 +176,14 @@ fn args() -> anyhow::Result<Args> {
     {
         bail!("--dev-state, --host, --room and --out are required");
     }
-    if parsed.width < 320 || parsed.height < 64 || parsed.width % 2 == 1 || parsed.height % 2 == 1 {
-        bail!("the window must be at least 320x64 and of even size");
-    }
+    window_size(parsed.width, parsed.height)?;
     if !(parsed.seconds > 0.0 && parsed.seconds <= 600.0) {
         bail!("--seconds must be in (0, 600]");
+    }
+    match (parsed.resize_at, parsed.resize_to) {
+        (None, None) => {}
+        (Some(at), Some(_)) if at > 0.0 && at < parsed.seconds => {}
+        _ => bail!("--resize-at (inside --seconds) and --resize-to go together"),
     }
     Ok(parsed)
 }
@@ -270,6 +319,8 @@ struct Room {
     client: Arc<RelayClient>,
     workspace_id: u64,
     author: [u8; 32],
+    /// The codec the window is streamed in.
+    codec: StreamCodec,
 }
 
 impl Room {
@@ -287,6 +338,55 @@ impl Room {
             })
             .map_err(|_| anyhow::anyhow!("the relay session closed"))
     }
+
+    /// Announce the window at `width`×`height`, as the share session does
+    /// when it starts streaming a window and whenever the window's size
+    /// changes.
+    fn announce(&self, surface: u64, width: u32, height: u32) -> anyhow::Result<()> {
+        self.publish(&NeighbourMsg::SurfaceStreamStart {
+            surface,
+            source_peer: tilo_peer_state::peer_handle(&self.author),
+            width,
+            height,
+            codec: self.codec.wire_label().into(),
+            ts: wall_us().saturating_mul(1000),
+            sender_monotonic_ns_at_send: 0,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 0,
+            app_id: APP.into(),
+            tab: 0,
+        })
+    }
+
+    /// Close the window: revoke the host's grant and end the stream.
+    fn close_window(&self, surface: u64, host: &[u8; 32]) -> anyhow::Result<()> {
+        self.publish(&NeighbourMsg::PermissionGrant {
+            peer: tilo_peer_state::peer_handle(host),
+            capability: format!("workspace-control:{surface}:revoked"),
+        })?;
+        self.publish(&NeighbourMsg::SurfaceStreamEnd {
+            surface,
+            source_peer: tilo_peer_state::peer_handle(&self.author),
+            ts: wall_us().saturating_mul(1000),
+        })
+    }
+}
+
+/// The production encoder with the shell's legacy-share configuration, for a
+/// window `width`×`height` in `codec`.
+fn encoder(
+    codec: StreamCodec,
+    width: u32,
+    height: u32,
+) -> anyhow::Result<tilo_media::RealtimeEncoder> {
+    let mut config = EncoderConfig::new(codec, width, height, HARDWARE_FPS);
+    config.bitrate_bps = BITRATE_BPS;
+    config.keyframe_interval = HARDWARE_FPS;
+    config.input = InputFormat::Rgba;
+    config.screen_content = true;
+    tilo_media::RealtimeEncoder::new(&config)
+        .map_err(|error| anyhow::anyhow!("no {} encoder: {error}", codec.wire_label()))
 }
 
 /// Print every input event the host forwards to this device, with the time
@@ -306,7 +406,7 @@ async fn report_input(client: Arc<RelayClient>) {
         {
             emit(&serde_json::json!({
                 "event": "input", "arrivalUs": arrival_us, "surface": surface,
-                "input": format!("{input:?}"),
+                "input": format!("{input:?}"), "value": input,
             }));
         }
     }
@@ -335,11 +435,13 @@ struct Sent {
 
 /// Capture, encode and publish frames at `fps` for `seconds`. A frame whose
 /// tick passed while the last one was being encoded is skipped, as the
-/// share session's throttle skips it.
+/// share session's throttle skips it. With `--resize-at`, the window takes
+/// its new size there: announced, then encoded from a keyframe by an
+/// encoder for that size, as the share session restarts its encoder.
 fn stream(
     room: &Room,
     args: &Args,
-    encoder: &mut tilo_media::RealtimeEncoder,
+    mut encoder: tilo_media::RealtimeEncoder,
     fps: u32,
 ) -> anyhow::Result<Sent> {
     let mut log = std::io::BufWriter::new(
@@ -347,22 +449,35 @@ fn stream(
             .with_context(|| format!("create {}", args.out.display()))?,
     );
     let source_peer = tilo_peer_state::peer_handle(&room.author);
-    let base = background(args.width, args.height);
+    let (mut width, mut height) = (args.width, args.height);
+    let mut base = background(width, height);
+    let mut resize = args.resize_at.zip(args.resize_to);
     let interval = Duration::from_secs(1) / fps;
     let start = Instant::now();
     let total = Duration::from_secs_f64(args.seconds);
     // Each submitted frame's number and capture time, by its timestamp: the
     // encoder may hand a frame back with a later call.
     let mut pending = std::collections::VecDeque::new();
+    let mut seq = 0_u64;
     let (mut tick, mut frames, mut last_index) = (0u32, 0u32, 0u16);
     while start.elapsed() < total {
         let due = interval * tick;
         if let Some(wait) = due.checked_sub(start.elapsed()) {
             std::thread::sleep(wait);
         }
+        if let Some((at, size)) = resize
+            && start.elapsed() >= Duration::from_secs_f64(at)
+        {
+            resize = None;
+            (width, height) = size;
+            room.announce(args.surface, width, height)?;
+            encoder = self::encoder(args.codec, width, height)?;
+            base = background(width, height);
+            pending.clear();
+        }
         let index = u16::try_from(frames).context("more than 65535 frames")?;
         let capture_us = wall_us();
-        let picture = frame(&base, args.width, args.height, index);
+        let picture = frame(&base, width, height, index);
         let encode_start = Instant::now();
         let pts = start.elapsed();
         pending.push_back((pts, index, capture_us));
@@ -382,12 +497,15 @@ fn stream(
                 source_peer,
                 encoded_h264: unit.data.clone(),
                 ts: capture_us.saturating_mul(1000),
+                seq,
             })?;
+            seq = seq.saturating_add(1);
             writeln!(
                 log,
                 "{}",
                 serde_json::json!({"index": index, "captureUs": capture_us, "publishUs": wall_us(),
-                    "encodeUs": encode_us, "bytes": unit.data.len(), "key": unit.keyframe})
+                    "encodeUs": encode_us, "bytes": unit.data.len(), "key": unit.keyframe,
+                    "width": width, "height": height})
             )?;
             last_index = index;
         }
@@ -406,6 +524,110 @@ fn stream(
     })
 }
 
+/// Subscribe `client` to `workspace_id` and wait until the host admits it.
+async fn subscribe(client: &RelayClient, workspace_id: u64) -> anyhow::Result<()> {
+    client
+        .send(Envelope::Subscribe { workspace_id })
+        .map_err(|_| anyhow::anyhow!("the relay session closed"))?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(envelope) = client.recv().await {
+            match envelope {
+                Envelope::Ready { .. } => return Ok(()),
+                Envelope::NotAuthorised { .. } => bail!("the host refused the subscription"),
+                _ => {}
+            }
+        }
+        bail!("the relay session closed before the subscription was ready")
+    })
+    .await
+    .context("the subscription was not ready within 30 s")?
+}
+
+/// Enter `room`, which the host governs, as one of its owner's devices: the
+/// host's `room.enter` action, asked on a workspace of the person that is no
+/// room, admits it.
+async fn enter_room(
+    endpoint: &iroh::Endpoint,
+    addr: &iroh::EndpointAddr,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    host: &[u8; 32],
+    room: &str,
+) -> anyhow::Result<()> {
+    let home = RelayClient::connect_to_pinned_host(
+        endpoint.clone(),
+        addr.clone(),
+        cert.clone(),
+        key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .context("connect to the host")?;
+    subscribe(&home, HOME_WORKSPACE).await?;
+    let mut argument = serde_json::Map::new();
+    argument.insert("room".into(), room.into());
+    let invoke = RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.into(),
+            address: ActionAddress::new(HOST_ROOMS_RESOURCE, ENTER_ROOM),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    });
+    home.send(Envelope::RemoteAction {
+        workspace_id: HOME_WORKSPACE,
+        version: REMOTE_ACTION_ENVELOPE_VERSION,
+        to_device_public_key: *host,
+        from_device_public_key: [0; 32],
+        from_user_public_key: [0; 32],
+        frame: RemoteActionFrame::new(invoke)
+            .encode()
+            .map_err(|error| anyhow::anyhow!("encode the action: {error:?}"))?,
+    })
+    .map_err(|_| anyhow::anyhow!("the relay session closed"))?;
+    let answer = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(envelope) = home.recv().await {
+            match envelope {
+                Envelope::RemoteAction { frame, .. } => {
+                    return RemoteActionFrame::decode(&frame)
+                        .map(|frame| frame.message)
+                        .map_err(|error| anyhow::anyhow!("the host's answer: {error:?}"));
+                }
+                Envelope::RemoteActionUndeliverable { reason, .. } => {
+                    bail!("the host did not take the action: {reason}")
+                }
+                _ => {}
+            }
+        }
+        bail!("the relay session closed before the host answered")
+    })
+    .await
+    .context("the host did not answer within 30 s")??;
+    let RemoteActionMessage::Receipt(receipt) = answer else {
+        bail!("the host answered the action with no receipt");
+    };
+    // Admitted: the device may subscribe to the room's workspace now. The
+    // invitation it is also handed holds the room for a device that keeps
+    // it; a session that streams one window needs no more than admission.
+    let _entered: EnteredRoom = match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value(output.value.unwrap_or_default())
+                .context("the host's answer is no entered room")?
+        }
+        other => bail!("the host refused to admit this device: {other:?}"),
+    };
+    // Dropped, not closed: closing would close the endpoint the room's
+    // session goes on to use.
+    drop(home);
+    Ok(())
+}
+
 async fn run(args: Args) -> anyhow::Result<()> {
     let (key, cert, host) = identity(&args.dev_state)?;
     let workspace_id = tilo_relay_protocol::room_workspace_id(&args.room)
@@ -421,20 +643,10 @@ async fn run(args: Args) -> anyhow::Result<()> {
     // In a room the host governs it bridges only a member's windows
     // (`legacy_writer_role`): the session enters the room as one of its
     // owner's devices, as a person's session does when it opens the room's
-    // workspace. A room the host does not govern has no members to enter.
-    let entered = match RoomAdminClient::new(endpoint.clone(), cert.clone())
-        .send(
-            addr.clone(),
-            RoomCommand::Enter {
-                room: args.room.clone(),
-            },
-        )
+    // workspace.
+    enter_room(&endpoint, &addr, &cert, &key, &host, &args.room)
         .await
-    {
-        Ok(_) => true,
-        Err(RoomAdminError::Refused(reason)) if reason.contains("does not govern") => false,
-        Err(error) => return Err(error).context("enter the room"),
-    };
+        .context("enter the room")?;
     let client = Arc::new(
         RelayClient::connect_to_pinned_host(
             endpoint,
@@ -446,26 +658,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
         .await
         .context("connect to the host")?,
     );
-    client
-        .send(Envelope::Subscribe { workspace_id })
-        .map_err(|_| anyhow::anyhow!("the relay session closed"))?;
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while let Some(envelope) = client.recv().await {
-            if matches!(envelope, Envelope::Ready { .. }) {
-                return Ok(());
-            }
-        }
-        bail!("the relay session closed before the subscription was ready")
-    })
-    .await
-    .context("the subscription was not ready within 30 s")??;
-    let mut config = EncoderConfig::new(args.codec, args.width, args.height, HARDWARE_FPS);
-    config.bitrate_bps = BITRATE_BPS;
-    config.keyframe_interval = HARDWARE_FPS;
-    config.input = InputFormat::Rgba;
-    config.screen_content = true;
-    let mut encoder = tilo_media::RealtimeEncoder::new(&config)
-        .map_err(|error| anyhow::anyhow!("no {} encoder: {error}", args.codec.wire_label()))?;
+    subscribe(&client, workspace_id).await?;
+    let encoder = encoder(args.codec, args.width, args.height)?;
     let element = encoder.element();
     let fps = args.fps.unwrap_or(if element.is_hardware() {
         HARDWARE_FPS
@@ -476,13 +670,14 @@ async fn run(args: Args) -> anyhow::Result<()> {
         client: Arc::clone(&client),
         workspace_id,
         author: cert.device_public_key,
+        codec: args.codec,
     };
     let input = tokio::spawn(report_input(Arc::clone(&client)));
     emit(&serde_json::json!({
         "event": "ready", "device": hex::encode(cert.device_public_key),
         "encoder": element.describe(), "hardware": element.is_hardware(), "fps": fps,
         "codec": args.codec.wire_label(),
-        "width": args.width, "height": args.height, "surface": args.surface, "enteredRoom": entered,
+        "width": args.width, "height": args.height, "surface": args.surface, "enteredRoom": true,
     }));
     let mut stdin = stdin_lines();
     loop {
@@ -492,43 +687,30 @@ async fn run(args: Args) -> anyhow::Result<()> {
             None => bail!("stdin closed before start"),
         }
     }
-    let host_peer = tilo_peer_state::peer_handle(&host);
-    let source_peer = tilo_peer_state::peer_handle(&cert.device_public_key);
     let start_us = wall_us();
     room.publish(&NeighbourMsg::PermissionGrant {
-        peer: host_peer,
+        peer: tilo_peer_state::peer_handle(&host),
         capability: format!("workspace-control:{}:granted", args.surface),
     })?;
-    room.publish(&NeighbourMsg::SurfaceStreamStart {
-        surface: args.surface,
-        source_peer,
-        width: args.width,
-        height: args.height,
-        codec: args.codec.wire_label().into(),
-        ts: start_us.saturating_mul(1000),
-        sender_monotonic_ns_at_send: 0,
-        colorimetry: None,
-        hdr_static_metadata: None,
-        bit_depth: 0,
-        app_id: APP.into(),
-        tab: 0,
-    })?;
+    room.announce(args.surface, args.width, args.height)?;
     emit(&serde_json::json!({"event": "started", "startUs": start_us}));
-    let sent = tokio::task::block_in_place(|| stream(&room, &args, &mut encoder, fps))?;
+    let sent = tokio::task::block_in_place(|| stream(&room, &args, encoder, fps))?;
     emit(&serde_json::json!({
         "event": "stopped", "frames": sent.frames, "lastIndex": sent.last_index,
         "seconds": sent.elapsed.as_secs_f64(), "stopUs": wall_us(),
     }));
-    while stdin.recv().await.is_some() {}
-    room.publish(&NeighbourMsg::PermissionGrant {
-        peer: host_peer,
-        capability: format!("workspace-control:{}:revoked", args.surface),
-    })?;
-    room.publish(&NeighbourMsg::SurfaceStreamEnd {
-        surface: args.surface,
-        source_peer,
-        ts: wall_us().saturating_mul(1000),
-    })?;
+    // The window stays open, and still, until `end` or the end of stdin.
+    let mut open = true;
+    while let Some(line) = stdin.recv().await {
+        if open && line.trim() == "end" {
+            open = false;
+            room.close_window(args.surface, &host)?;
+            emit(&serde_json::json!({"event": "ended", "endUs": wall_us()}));
+        }
+    }
+    if open {
+        room.close_window(args.surface, &host)?;
+    }
     tokio::time::sleep(Duration::from_millis(300)).await;
     input.abort();
     let _ = input.await;
@@ -597,5 +779,33 @@ mod tests {
                 assert_ne!(code_check(index), code_check(index ^ (1 << bit)));
             }
         }
+    }
+
+    #[test]
+    fn a_resize_names_an_even_window_the_number_blocks_fit() {
+        assert_eq!(parse_size("800x448").unwrap(), (800, 448));
+        for refused in ["801x448", "800x447", "318x64", "800", "x448", "wide x tall"] {
+            assert!(parse_size(refused).is_err(), "{refused} was accepted");
+        }
+    }
+
+    #[test]
+    fn input_reaches_the_harness_as_the_json_it_matches() {
+        let key = InputEvent::Key {
+            keysym: 30,
+            pressed: true,
+            modifiers: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&key).unwrap(),
+            serde_json::json!({"Key": {"keysym": 30, "pressed": true, "modifiers": 0}})
+        );
+        let pasted = InputEvent::ClipboardText {
+            text: "line 1\nzwei ✓".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&pasted).unwrap(),
+            serde_json::json!({"ClipboardText": {"text": "line 1\nzwei ✓"}})
+        );
     }
 }

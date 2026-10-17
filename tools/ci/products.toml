@@ -1,0 +1,1087 @@
+# What Tilo publishes as container images, one table per product. tools/ci/products.py turns
+# each into its chain of checks in t.toml (`python3 tools/ci/t_toml.py write`); the format and
+# how to add a product are in docs/publishing-on-t.md, "Products".
+
+[defaults]
+buildah = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+skopeo = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+# The release key in KMS and the role that may sign with it, for stable and v* tags only.
+signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+# The development key and the role that may sign with it, for main only (`dev_signed`).
+dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing" }
+
+# ---------------------------------------------------------------------------
+# Services, deployed by digest from a receipt.
+
+[[product]]
+family = "services"
+name = "room-service"
+about = "The room service: tested before it is published, deployed by digest from stable's receipt."
+repository = "registry.tilo.so/tilo/room-service"
+dev = ["dev-{commit}"]
+release = ["sha-{commit}"]
+
+[product.context]
+run = "bash tools/ci/publish/room-service-context.sh {dir}/context"
+inputs = ["Cargo.lock", "os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+outputs = ["{dir}/context/**"]
+# The release bundle records the commit it was built from (git rev-parse, git status).
+git = true
+cost = "heavy"
+
+[product.build]
+context = "{dir}/context"
+containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/hosting/tilo-room-service/container/test-image.sh {out}/image.oci.tar $(cat {dir}/context/source-revision)"]
+inputs = ["crates/hosting/tilo-room-service/container/test-image.sh"]
+cost = "minutes"
+
+# Stable's receipt is what cloud-deploy deploys.
+[product.publish]
+pointers = { room-service = "{dir}/receipt.json" }
+
+[[product]]
+family = "services"
+name = "web-entry"
+about = """
+The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
+stable's receipt. A release carries the version of the image production serves, so tabs open on
+it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
+what stable signs and publishes. Main's development tags are the build as it is."""
+repository = "registry.tilo.so/tilo/web-entry"
+dev = ["dev-{commit}"]
+release = ["sha-{commit}"]
+
+[product.context]
+run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
+inputs = ["Cargo.lock", "crates/browser/**", "apps/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+outputs = ["{dir}/context/**"]
+git = true
+cost = "heavy"
+
+[product.build]
+context = "{dir}/context"
+containerfile = "{dir}/context/Containerfile"
+build_args = ["--build-arg SOURCE_REVISION=$(cat {dir}/context/source-revision)"]
+test = ["bash crates/browser/tilo-browser-runtime/container/test-image.sh {out}/image.oci.tar"]
+inputs = ["crates/browser/tilo-browser-runtime/container/test-image.sh"]
+cost = "minutes"
+
+# It observes production (the image it replaces), so it runs on every release.
+[product.release_build]
+name = "carry-web-entry"
+run = "bash tools/ci/publish/web-entry-carry.sh {out} {dir}/release"
+inputs = ["crates/browser/tilo-browser-runtime/container/carry.sh", "crates/browser/tilo-browser-runtime/container/Containerfile.carry", "crates/browser/tilo-browser-runtime/container/test-image.sh"]
+outputs = ["{dir}/release/receipt-extra.json"]
+cache = false
+cost = "minutes"
+
+# Stable's receipt is what cloud-deploy deploys.
+[product.publish]
+pointers = { web-entry = "{dir}/receipt.json" }
+
+[[product]]
+family = "services"
+name = "registry-server"
+about = """
+The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
+runs in. Rust compiles inside the Containerfile; the image is tested before main publishes it
+and the GitOps repository pins the receipt's digest."""
+repository = "registry.tilo.so/tilo/tilo-registry-server"
+dev = ["sha-{commit}"]
+
+[product.build]
+run = """
+assets=$TMPDIR/github-assets
+TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile {out} --platform {platform} --build-context github-assets=$assets"""
+test = ["bash crates/packaging/registry-server/container/test-image.sh {out}/image.oci.tar"]
+inputs = ["crates/packaging/registry-server/container/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", ".cargo/**", "rust-toolchain.toml"]
+cargo_packages = ["registry-server"]
+cargo_dev_dependencies = false
+cost = "heavy"
+cpus = 8
+memory = "12G"
+
+[[product]]
+family = "services"
+name = "release-rehearsal"
+about = """
+The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
+as a release does, so the chain is proven on t without publishing anything anyone deploys.
+Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
+KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
+the reference's `release-rehearsal` pointer is set. No other check runs on such a tag."""
+repository = "registry.tilo.so/tilo/release-rehearsal"
+dev = ["dev-{commit}"]
+release = ["sha-{commit}"]
+release_on = ["dispatch", "tag:v0-rehearsal-*"]
+
+[product.build]
+context = "tools/ci/publish/rehearsal"
+containerfile = "tools/ci/publish/rehearsal/Containerfile"
+inputs = ["tools/ci/publish/rehearsal/**"]
+memory = "2G"
+
+[product.publish]
+pointers = { release-rehearsal = "{dir}/receipt.json" }
+
+# ---------------------------------------------------------------------------
+# CI tooling, not products: published from main and pinned by digest where they are used.
+
+[[product]]
+family = "ci-images"
+name = "ci-fast"
+about = """
+The fast CI images, x86_64 only: published from main, pinned by digest in tools/ci/images.toml
+by hand. image-ci-fast-smoke runs what the jobs that use them need, before either is published."""
+repository = "registry.tilo.so/tilo/ci-fast"
+dev = ["sha-{commit}"]
+gates = ["image-ci-fast-smoke"]
+
+[product.build]
+containerfile = "os/Containerfile.ci-fast"
+inputs = ["os/Containerfile.ci-fast"]
+cost = "heavy"
+# It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
+memory = "8G"
+
+[[product]]
+family = "ci-images"
+name = "ci-control"
+about = "ci-control adds the Docker client to the ci-fast image just built, not to the pinned one."
+repository = "registry.tilo.so/tilo/ci-control"
+dev = ["sha-{commit}"]
+gates = ["image-ci-fast-smoke"]
+
+[product.build]
+containerfile = "os/Containerfile.ci-control"
+build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar"]
+needs = ["image-ci-fast"]
+inputs = ["os/Containerfile.ci-control"]
+cost = "minutes"
+memory = "8G"
+
+[[product]]
+family = "ci-images"
+name = "release-tools"
+about = """
+The release tools image (os/Containerfile.release-tools): the compiler-free environment the
+release jobs run in, built and tested natively per architecture and published from main as
+one index. Its consumers pin the index by digest; jobs pull it before they can log in, so it
+must be anonymously pullable."""
+repository = "registry.tilo.so/tilo/tilo-release-tools"
+arches = ["x86_64", "aarch64"]
+index = true
+dev = ["sha-{commit}"]
+anonymous = true
+
+[product.build]
+containerfile = "os/Containerfile.release-tools"
+test = ["bash os/tests/release_tools_image.sh {out}/image.oci.tar"]
+inputs = ["os/Containerfile.release-tools", "os/tests/release_tools_image.sh"]
+cost = "minutes"
+
+[[product]]
+family = "ci-images"
+name = "ci-builder"
+about = """
+The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
+and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
+joined into one index. The canaries below run inside each candidate before anything is signed
+or published. Everyone pushes to main, so main publishes only development tags (`dev-<commit>`,
+and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
+by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
+keys/cosign.pub comes from main. Stable signs the index and both
+images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+resolve_builder.py and the Forgejo jobs follow, stays with build-ci-builder.yml until the
+cutover: stable lags main, and moving `latest` from it now would hand main's Forgejo jobs an
+older toolchain."""
+repository = "registry.tilo.so/tilo/tilo-builder"
+arches = ["x86_64", "aarch64"]
+index = true
+children = true
+dev = ["dev-{commit}"]
+release = ["{commit}", "{rust}"]
+dev_signed = true
+gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
+publish = { inputs = ["rust-toolchain.toml"] }
+
+[product.build]
+run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
+inputs = ["os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
+cost = "heavy"
+timeout_secs = 14400
+cpus = 16
+memory = "32G"
+
+# The builder's canaries, in the candidate the same run built (build-ci-builder.yml's
+# cache-cold and cache-warm steps). Two jobs prove t's compiler cache works from it: the
+# cold one compiles under a prefix nobody used and must write, the warm one, a fresh compiler
+# process in another job (on whichever node), must read that back. The candidate's key covers
+# everything that went into it, so a new image runs them again.
+[[matrix]]
+family = "ci-images"
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { requires = ["arch={arch}"], default = false }
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-cold-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+outputs = ["/target/publish/ci-builder/{arch}/canary/prefix"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "canary-ci-builder-cache-warm-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
+inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh"]
+cargo_packages = ["tilo-advisory-lock"]
+cargo_dev_dependencies = false
+needs = ["canary-ci-builder-cache-cold-{arch}"]
+cost = "minutes"
+
+# The native Chromium and the browser regressions that once broke on a builder. Their tests run
+# `npm ci` in scripts/moq-browser, inside the source tree. Only x86_64's gates publication for
+# now: on aarch64 its build directory under $TMPDIR loses files mid-build (cargo can't run
+# sccache or read dep info it just wrote), which the job sandbox there has yet to fix.
+[[matrix.check]]
+name = "canary-ci-builder-browser-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh browser"
+inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**"]
+cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
+writable_sources = true
+cost = "heavy"
+cpus = 8
+memory = "16G"
+
+# The shell's X11 clipboard tests against the candidate's own xwayland-satellite, which is built
+# from patched source (os/external-assets/xwayland-satellite/): a builder whose bridge drops a
+# paste in flight during the clipboard manager's takeover must not be published. Gates
+# publication on x86_64, like the browser canary.
+[[matrix.check]]
+name = "canary-ci-builder-x11-bridge-{arch}"
+image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
+run = "bash tools/ci/publish/ci-builder-canary.sh x11-bridge"
+inputs = ["tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/github-assets.tsv", "os/external-assets/xwayland-satellite/**"]
+cargo_packages = ["shell"]
+cost = "heavy"
+cpus = 8
+memory = "16G"
+
+# ---------------------------------------------------------------------------
+# The OS's foundations: the frozen RPM snapshot, the kernel buildroot and the kernel.
+
+[[product]]
+family = "os-base"
+name = "rpms"
+about = """
+The frozen RPM snapshot (tools/ci/publish/rpms-build.sh): every package the OS Containerfiles
+name, resolved, signature-checked and laid out as a repository image, natively per
+architecture, joined into one index. Stable signs the index and both images, attests the
+index's SLSA provenance (frozen-rpm-index/v1: both package sets and the base, which
+os/dev/resolve-rpm-snapshot.sh and the OS build verify), both with a transparency log entry,
+and publishes it as `set-<fingerprint>` once: a fingerprint already published is never moved.
+Main publishes nothing, since the snapshot is signed; until the cutover build-rpms.yml
+publishes main's."""
+repository = "registry.tilo.so/tilo/rpms"
+arches = ["x86_64", "aarch64"]
+index = true
+children = true
+tlog = true
+release = ["once:set-{fingerprint}"]
+
+[product.provenance]
+run = "bash tools/ci/publish/rpms-provenance.sh {dir}"
+inputs = ["os/dev/rpm-snapshot-fingerprint.py", "os/dev/derive-rpm-package-set.py", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/layer-rpm-snapshot.py", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["{dir}/index/fingerprint", "{dir}/x86_64/fingerprint", "{dir}/aarch64/fingerprint"]
+
+[product.build]
+run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
+inputs = ["os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+requires = ["disk-100g"]
+cpus = 8
+memory = "16G"
+timeout_secs = 10800
+
+[[product]]
+family = "os-base"
+name = "kernel-buildroot"
+about = """
+The kernel buildroot (os/Containerfile.kernel-buildroot, tools/ci/publish/kernel-buildroot.sh):
+the only build that resolves kernel build dependencies and the Fedora kernel SRPM from Fedora.
+Each architecture is built natively and audited; stable signs (with a transparency log entry,
+since build-kernel.yml verifies requiring one) and publishes both and sets the
+`kernel-buildroot` pointer. `kernel-buildroot.sh pin` commits stable's pins to
+os/kernel-buildroot-snapshot.env from a check that pushes, once build-buildroots.yml no longer
+proposes them."""
+repository = "registry.tilo.so/tilo/tilo-kernel-buildroot"
+arches = ["x86_64", "aarch64"]
+release = ["sha-{commit}-{arch}"]
+tlog = true
+after_publish = "bash tools/ci/publish/kernel-buildroot.sh pins {dir}/x86_64 {dir}/aarch64"
+
+[product.build]
+run = "bash tools/ci/publish/kernel-buildroot.sh build {arch} {out}"
+inputs = ["os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+cost = "heavy"
+
+[product.publish]
+inputs = ["os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+outputs = ["{dir}/pins.env"]
+pointers = { kernel-buildroot = "{dir}/pins.env" }
+
+[[product]]
+family = "os-base"
+name = "kernel"
+about = """
+The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
+natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
+checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
+(kernel-acceptance-<arch>). Stable
+signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
+commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
+`kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+nothing, since the OS build verifies the kernel's signature; until the cutover build-kernel.yml
+publishes and pins main's. No compiler cache reaches checks yet, so every build compiles the
+whole kernel."""
+repository = "registry.tilo.so/tilo/tilo-kernel"
+arches = ["x86_64", "aarch64"]
+release = ["sha-{commit}-{arch}"]
+tlog = true
+gates = ["kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
+after_publish = "bash tools/ci/publish/kernel.sh pins {dir}"
+
+[product.provenance]
+run = "bash tools/ci/publish/kernel.sh provenance {dir}"
+inputs = ["os/kernel-buildroot-snapshot.env"]
+
+[product.publish]
+inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c"]
+outputs = ["{dir}/pins.env"]
+pointers = { kernel = "{dir}/pins.env" }
+
+[product.build]
+run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
+inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+outputs = ["{out}/secureboot/**"]
+requires = ["disk-100g"]
+cpus = 16
+memory = "24G"
+timeout_secs = 14400
+
+# ---------------------------------------------------------------------------
+# Images the OS and its environments fetch: the relay and the Linux legacy VM guest.
+
+[[product]]
+family = "os-images"
+name = "relay"
+about = """
+The standalone relay image (os/containers/tilo-relay): built on every change from the
+mirrored base and the published frozen RPM snapshot, signed and released for version tags
+only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`."""
+repository = "registry.tilo.so/tilo/tilo-relay"
+release = ["{version}", "sha-{commit}"]
+# Version tags only (v1.2.3, v1.2.3-rc.1): a release rehearsal's tag (v0-rehearsal-<n>) is a v*
+# tag too, so the identity tokens reach it, but releases no relay.
+release_on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
+tlog = true
+
+[product.build]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
+needs = ["rpm-snapshot"]
+inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**"]
+cost = "heavy"
+cpus = 16
+memory = "24G"
+
+[[product]]
+family = "os-images"
+name = "legacy-guest"
+about = """
+The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
+the guest agent built here, the guest image built with it as root in an x86_64 micro-VM
+step, installed to a disk and booted once until the agent serves, then the whole path end to end
+(legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
+text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
+since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
+`legacy-guest` pointer; `legacy-guest.sh pin` commits it to os/legacy-guest-snapshot.env from
+a check that pushes, once build-legacy-guest.yml no longer proposes the pin."""
+repository = "registry.tilo.so/tilo/legacy-guest"
+out = "{dir}/image"
+release = ["x86_64-{commit}"]
+tlog = true
+gates = ["legacy-guest-e2e"]
+after_publish = "bash tools/ci/publish/legacy-guest.sh pins {out}"
+
+[product.build]
+run = "bash tools/ci/publish/legacy-guest.sh build {dir}/agent {out}"
+image = ""
+needs = ["legacy-guest-agent"]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
+requires = ["/dev/kvm", "disk-100g"]
+cpus = 8
+memory = "16G"
+isolation = "vm"
+writable_sources = true
+timeout_secs = 9000
+
+[product.publish]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**"]
+outputs = ["{out}/pins.env"]
+pointers = { legacy-guest = "{out}/pins.env" }
+
+[[matrix]]
+family = "windows"
+about = """
+Windows, cross-compiled and packaged on Linux (docs/publishing-on-t.md, Windows). The
+builds run cargo-xwin against the MSVC CRT and Windows SDK, which Microsoft does not let
+anyone redistribute: the windows-sdk checks download them once into t's private store
+(their only input is the pinned versions) instead of into the public builder image.
+Packaging and the Wine checks run on x86_64 because Fedora builds Wine for x86 only.
+They pin the first builder with the Windows tools until the default image above moves past it."""
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d" }
+
+[[matrix.check]]
+name = "build/windows-sdk-{arch}"
+run = "bash tools/ci/windows/build.sh sdk {arch} /target/windows/sdk"
+inputs = ["tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
+outputs = ["/target/windows/sdk/sdk-{arch}.tar.zst", "/target/windows/sdk/sdk-{arch}.tar.zst.sha256"]
+default = false
+cpus = 4
+memory = "4G"
+
+[[matrix.check]]
+name = "build/windows-{arch}"
+run = "bash tools/ci/windows/build.sh imager {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/build"
+needs = ["build/windows-sdk-{arch}"]
+inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
+outputs = ["/target/windows/{arch}/build/imager.exe", "/target/windows/{arch}/build/imager.exe.sha256"]
+cpus = 16
+memory = "24G"
+default = false
+
+[[matrix.check]]
+name = "build/windows-{arch}-tests"
+run = "bash tools/ci/windows/build.sh tests {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/tests"
+needs = ["build/windows-sdk-{arch}"]
+inputs = ["apps/imager/**", "apps/staging-handoff-model/**", "crates/**", "vendor/**", "dist/session/**", "os/tests/fixtures/**", "Cargo.toml", "Cargo.lock", "tools/ci/windows/build.sh", "tools/ci/windows/xwin-env.sh"]
+outputs = ["/target/windows/{arch}/tests/imager-tests.exe", "/target/windows/{arch}/tests/imager-tests.exe.sha256"]
+cpus = 16
+memory = "24G"
+default = false
+
+[[matrix.check]]
+name = "package/windows-{arch}"
+run = "bash apps/imager/packaging/package-windows.sh {arch} /target/windows/{arch}/build/imager.exe /target/windows/{arch}/package"
+needs = ["build/windows-{arch}"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/wine-prefix.sh"]
+outputs = ["/target/windows/{arch}/package/*"]
+requires = ["arch=x86_64"]
+default = false
+cpus = 4
+memory = "4G"
+comment = "The unsigned package: standalone EXE, zip and Inno Setup installer, each with a digest."
+
+[[matrix.check]]
+name = "sign/windows-{arch}"
+run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target/windows/{arch}/package /target/windows/{arch}/signed"
+needs = ["build/windows-{arch}", "package/windows-{arch}"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**"]
+outputs = ["/target/windows/{arch}/signed/*"]
+secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+on = ["tag:imager-v*"]
+requires = ["arch=x86_64"]
+cache = false
+cpus = 2
+memory = "4G"
+comment = """
+Authenticode, for imager release tags only: re-checks the build's digest against the one
+the package carries, then packages that executable again signing the EXE and the installer
+with a key that never leaves AWS KMS. Its secrets reach release nodes only."""
+
+[[matrix.check]]
+name = "package/windows-winget"
+run = """
+root=$TMPDIR/winget-release
+rm -rf "$root" && mkdir -p "$root"
+cp /target/windows/x86_64/package/tilo-imager-setup-windows-x86_64.exe* /target/windows/aarch64/package/tilo-imager-setup-windows-aarch64.exe* "$root/"
+python3 apps/imager/packaging/generate-winget.py "$root" --version 0.1.0 --base-url https://github.com/tilo-os/releases/releases/download/imager-v0.1.0
+python3 apps/imager/packaging/validate-winget.py "$root/winget"
+rm -rf /target/windows/winget && cp -r "$root/winget" /target/windows/winget
+"""
+needs = ["package/windows-x86_64", "package/windows-aarch64"]
+inputs = ["apps/imager/packaging/generate-winget.py", "apps/imager/packaging/validate-winget.py"]
+outputs = ["/target/windows/winget/*"]
+# Python over the two installers: the manifests are the same from any node.
+requires = ["arch=any"]
+default = false
+cpus = 1
+memory = "2G"
+comment = """
+Both installers in one WinGet manifest set, checked against WinGet's schemas (the version
+and URL are placeholders: the release generates the real set from the signed installers)."""
+
+[[matrix.check]]
+name = "wine/windows-{arch}-tests"
+run = "bash tools/ci/windows/wine-test.sh units /target/windows/{arch}/tests/imager-tests.exe"
+needs = ["build/windows-{arch}-tests"]
+inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/windows/wine-skip.txt"]
+requires = ["arch={arch}"]
+default = false
+cpus = 8
+memory = "8G"
+only = ["x86_64"]
+comment = """
+What runs without Windows, under Wine: the unit tests (less wine-skip.txt), and the
+installer installing, the installed imager rendering its UI, and the uninstaller."""
+
+[[matrix.check]]
+name = "wine/windows-{arch}-install"
+run = "bash tools/ci/windows/wine-test.sh install /target/windows/{arch}/package"
+needs = ["package/windows-{arch}"]
+inputs = ["tools/ci/windows/wine-test.sh", "tools/ci/windows/wine-prefix.sh"]
+requires = ["arch={arch}"]
+default = false
+cpus = 4
+memory = "8G"
+only = ["x86_64"]
+
+[[matrix]]
+family = "apps"
+about = """
+Apps (tools/apps/t-release.sh; docs/publishing-on-t.md). Every app of the default collection
+is built, packaged with throwaway keys and smoke-tested per architecture without credentials:
+`t test apps-build-x86_64` is what a release builds. On each new head of stable the release
+nodes sign those exact binaries with the publisher identities (sign-apps-*, which compile
+nothing), upload the tapps, collections and runtime objects with the package token
+(publish-apps, which sets the `app-collection` pointer to the collections an OS build takes:
+`reads_pointers = ["stable:app-collection"]`) and submit
+the publisher-signed registry entries (submit-apps). Main publishes no apps."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
+
+[[matrix.check]]
+name = "apps-build-{arch}"
+run = "bash tools/apps/t-release.sh build {arch} /target/apps-release/{arch}"
+outputs = ["/target/apps-release/{arch}/compiled/**"]
+requires = ["{node}"]
+timeout_secs = 10800
+cost = "heavy"
+default = false
+
+[[matrix.check]]
+name = "sign-apps-{arch}"
+run = "bash tools/apps/t-release.sh sign {arch} /target/apps-release/{arch} /target/apps-release/{arch}/signed"
+needs = ["apps-build-{arch}"]
+outputs = ["/target/apps-release/{arch}/signed/**"]
+requires = ["{node}"]
+# The release sequence is the commit's time, read without Git (t-release.sh commit_epoch): on
+# x86_64 a micro-VM step has no room for a Git disk beside its needs' outputs.
+secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "publish-apps"
+run = "bash tools/apps/t-release.sh publish /target/apps-release/channel /target/apps-release/x86_64/signed /target/apps-release/aarch64/signed"
+needs = ["sign-apps-x86_64", "sign-apps-aarch64"]
+outputs = ["/target/apps-release/channel/channel.json"]
+# The collections an OS build takes its apps from, per reference: `stable:app-collection`.
+pointers = { app-collection = "/target/apps-release/channel/channel.json" }
+requires = ["arch=x86_64"]
+# Assembles the collections under release/ and dist/app-collections/.
+writable_sources = true
+secrets = ["REGISTRY_TOKEN"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "submit-apps"
+run = "bash tools/apps/t-release.sh submit /target/apps-release/x86_64/signed /target/apps-release/aarch64/signed"
+needs = ["sign-apps-x86_64", "sign-apps-aarch64", "publish-apps"]
+requires = ["arch=x86_64"]
+writable_sources = true
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix]]
+family = "desktop"
+about = """
+Every distribution userspace of one architecture, built and install-tested in its own
+container (dist/ci/package-lane.sh): `t outputs desktop-package-amd64` gives the packages and
+the OS desktop payload. The containers need a privileged node."""
+each = [{ arch = "x86_64", deb = "amd64", node = "arch=x86_64" }, { arch = "aarch64", deb = "arm64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "desktop-package-{deb}"
+run = "bash dist/ci/package-lane.sh {deb}"
+inputs = ["dist/**", "crates/**", "apps/**", "vendor/**", "os/dev/install-cached-cosign.sh", "os/dev/fetch-env-runtime.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/Containerfile.env-runtime", "flake.nix", "flake.lock", "Cargo.toml", "Cargo.lock"]
+outputs = ["dist/ci-output/**"]
+requires = ["{node}"]
+privileged = true
+writable_sources = true
+# Packages record their source commit and time; the Nix lane reads the tree through Git.
+git = true
+timeout_secs = 14400
+cost = "heavy"
+# The lanes build one after another, TILO_CARGO_JOBS (6) compilers at a time; fat-LTO links
+# peak at several GiB each, and the guest is OOM-killed beyond what it reserves.
+cpus = 8
+memory = "32G"
+default = false
+
+[[matrix.check]]
+name = "publish-desktop-payload"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
+inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
+needs = ["desktop-package-amd64", "desktop-package-arm64"]
+outputs = ["/target/publish/desktop/payload.json"]
+pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
+secrets = ["REGISTRY_TOKEN"]
+# A check holding a secret runs as a micro-VM step, which t boots on x86_64 only for now.
+requires = ["arch=x86_64"]
+on = ["stable"]
+comment = """
+The OS desktop payload from stable: the Fedora lanes' payloads as immutable generic packages,
+and the `desktop-payload` pointer to them, which an OS build reads
+(`reads_pointers = ["stable:desktop-payload"]`)."""
+
+[[matrix]]
+family = "verifier-bundles"
+about = """
+The canonical verifier bundles (tools/ci/verifier-bundle.sh): the native tools an app
+publication verifies with, per architecture, for someone to review and upload. Nothing here
+publishes. `t dispatch verifier-bundle-x86_64` builds main's head; `t outputs
+verifier-bundle-x86_64` downloads the bundle and its descriptor. The bundle names the
+builder index the tools were built in, which is this file's `image`."""
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+
+[[matrix.check]]
+name = "verifier-bundle-{arch}"
+run = "bash tools/ci/verifier-bundle.sh {arch} \"$(git rev-parse HEAD)\" \"$(awk -F'\"' '/^image = /{print $2; exit}' t.toml)\" /target/verifier-bundle"
+inputs = ["t.toml", "tools/ci/verifier-bundle.sh", "tools/ci/python.py", "tools/canonical_verifier_bundle.py", "tools/apps/canonical_app_verifier.py", "tools/apps/app_channel_manifest.py", "crates/**", "apps/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/verifier-bundle/**"]
+git = true
+requires = ["arch={arch}"]
+on = ["dispatch"]
+cost = "heavy"
+default = false
+
+[[matrix]]
+family = "development-signing"
+about = """
+The development signing tools proven natively on both architectures (os/tests/
+development_signing_native.sh): a fixture image with private keys and a local registry,
+whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
+what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
+T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
+be dispatched."""
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+
+[[matrix.check]]
+name = "development-signing-context-{arch}"
+run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source"]
+cargo_packages = ["tilo-crypto"]
+outputs = ["/target/development-signing/{arch}/**"]
+requires = ["arch={arch}"]
+cost = "heavy"
+
+[[matrix.check]]
+name = "development-signing-{arch}"
+run = 'bash os/tests/development_signing_native.sh run /target/development-signing/{arch} "${T_INPUT_PROOF:-full}"'
+inputs = ["os/tests/development_signing_native.sh"]
+needs = ["development-signing-context-{arch}"]
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+cpus = 4
+memory = "16G"
+timeout_secs = 2700
+
+[[matrix]]
+family = "env-tools"
+about = """
+The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
+os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
+throwaway key, as root in the CI builder in a micro-VM step (the build sandbox makes user
+namespaces and mounts overlays). It proves the catalog builds; build-env-tools.yml still
+publishes it, sealed with the publisher identity."""
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+fields = { default = false }
+
+[[matrix.check]]
+name = "env-tools-binaries-{arch}"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/publish/env-tools/{arch}/bin/*"]
+requires = ["arch={arch}"]
+cost = "heavy"
+
+[[matrix.check]]
+name = "env-tools-{arch}"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["env-tools-binaries-{arch}"]
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+cpus = 8
+memory = "16G"
+timeout_secs = 9000
+
+[[matrix]]
+family = "os-base"
+about = """
+The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
+its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+micro-VM step."""
+each = [{ arch = "x86_64" }, { arch = "aarch64" }]
+
+[[matrix.check]]
+name = "kernel-acceptance-{arch}"
+run = "bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+needs = ["image-kernel-{arch}"]
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+# ---------------------------------------------------------------------------
+# Windows compatibility payloads: development candidates for Windows
+# apps on ARM, which os/dev/build-image.sh takes by digest (FEX_PAYLOAD_REF, WINDOWS_GUEST_REF)
+# from the receipts, or from the `fex-payload-candidate` and `windows-guest-candidate` pointers.
+# Building them takes long, so main publishes them only when asked: `t dispatch
+# publish-fex-payload --ref main` and `t dispatch publish-windows-guest --ref main` build each
+# chain and push it.
+
+[[product]]
+family = "windows-compat"
+name = "fex-buildroot"
+about = """
+The FEX toolchain (os/Containerfile.fex-buildroot), with the pinned NASM, built natively on
+aarch64: the image the payload compiles in."""
+repository = "registry.tilo.so/tilo/tilo-fex-buildroot-candidate"
+arches = ["aarch64"]
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-buildroot {out}"
+inputs = ["os/Containerfile.fex-buildroot", "os/base-snapshot.env", "os/tests/fex-assembler.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore"]
+cost = "heavy"
+cpus = 8
+memory = "32G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "fex-x86-sdk"
+about = """
+The x86 headers and libraries FEX's thunks compile against (os/Containerfile.fex-x86-sdk),
+installed natively on x86_64 so RPM scriptlets run."""
+repository = "registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate"
+dev = ["{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk {out}"
+inputs = ["os/Containerfile.fex-x86-sdk", "os/base-snapshot.env", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "16G"
+timeout_secs = 5400
+
+[[product]]
+family = "windows-compat"
+name = "fex-payload"
+about = """
+The portable FEX payload (os/Containerfile.fex-payload): the pinned FEX source, fetched and
+verified with its submodules, compiled offline on aarch64 in the toolchain above against the
+x86 SDK. Both are named by the digests they are published as, so publish-fex-payload pushes
+them first. A development candidate: signed with the development key, never the release key."""
+repository = "registry.tilo.so/tilo/tilo-fex-payload-candidate"
+arches = ["aarch64"]
+dev = ["{commit}"]
+dispatch = true
+dev_signed = true
+gates = ["publish-fex-buildroot", "publish-fex-x86-sdk"]
+after_publish = "sed -n 's/.*\"image\":\"\\([^\"]*\\)\".*/\\1/p' {dir}/receipt.json > {dir}/reference"
+
+[product.publish]
+outputs = ["{dir}/reference"]
+pointers = { fex-payload-candidate = "{dir}/reference" }
+
+# Its limited provenance (a development build whose runtime acceptance nothing verified),
+# attested with the development key beside the signature.
+[product.provenance]
+run = "bash tools/ci/publish/fex-provenance.sh {dir} /target/publish/fex-buildroot /target/publish/fex-x86-sdk"
+needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
+
+[product.context]
+run = "bash tools/ci/publish/windows-compat.sh fex-source {dir}/fex-source.tar"
+inputs = ["os/dev/fetch-fex-source.sh", "os/external-assets/fex-source.env"]
+outputs = ["{dir}/fex-source.tar"]
+cost = "minutes"
+
+[product.build]
+run = "bash tools/ci/publish/fex-payload.sh {out} /target/publish/fex-buildroot /target/publish/fex-x86-sdk {dir}/fex-source.tar"
+inputs = ["os/Containerfile.fex-payload", "os/base-snapshot.env", "os/external-assets/fex-source.env", "os/dev/fetch-fex-source.sh", "os/dev/build-fex-payload.sh", "os/dev/validate-fex-payload.py", "os/dev/apply-fex-patches.py", "os/external-assets/fex-patches/**", "os/dev/toolchains/**", ".containerignore"]
+needs = ["image-fex-buildroot", "image-fex-x86-sdk"]
+cost = "heavy"
+cpus = 16
+memory = "48G"
+timeout_secs = 10800
+
+[[product]]
+family = "windows-compat"
+name = "wine-tools"
+about = """
+The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
+scripts, natively on x86_64. The Wine steps below run in it as their micro-VM's userspace."""
+repository = "registry.tilo.so/tilo/wine-tools"
+dev = ["candidate-{commit}"]
+dispatch = true
+
+[product.build]
+run = "bash tools/ci/publish/windows-compat.sh wine-tools {out}"
+inputs = ["os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix]]
+family = "windows-compat"
+about = """
+The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
+(tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
+resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
+that bundle alone, offline, into the RPMs and their contract; image-wine-paired merges the two
+targets' RPMs into the pair the guest installs; image-windows-guest signs the pair with a key
+made for the run and assembles the guest (tools/ci/publish/windows-guest.sh). Every image is an
+archive named by the digest it is published with, so the contracts the steps write name what
+is published."""
+each = [{ arch = "x86_64", target = "x86_64" }, { arch = "x86_64", target = "i686" }]
+fields = { image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }, isolation = "vm", requires = ["arch=x86_64"], default = false }
+
+[[matrix.check]]
+name = "wine-source"
+run = """
+bash tools/ci/publish/wine.sh source /target/windows-compat/wine-source
+for test in os/tests/test_fetch_wine_source.py os/tests/test_wine_rpm_contract.py os/tests/test_wine_rpm_merge.py os/tests/test_wine_mock_producer.py; do python3 "$test"; done
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
+outputs = ["/target/windows-compat/wine-source/**"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "wine-resolve-{target}"
+run = "bash tools/ci/publish/wine.sh resolve {target} /target/windows-compat/wine-resolve-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-source"]
+outputs = ["/target/windows-compat/wine-resolve-{target}/bundle.tar"]
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix.check]]
+name = "wine-build-{target}"
+run = "bash tools/ci/publish/wine.sh build {target} /target/windows-compat/wine-build-{target}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-{target}"]
+outputs = ["/target/windows-compat/wine-build-{target}/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
+
+[[matrix.check]]
+name = "image-wine-paired"
+run = "bash tools/ci/publish/wine.sh pair /target/windows-compat/wine-paired"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-build-x86_64", "wine-build-i686"]
+outputs = ["/target/windows-compat/wine-paired/**"]
+cost = "minutes"
+cpus = 2
+memory = "8G"
+timeout_secs = 3600
+
+[[matrix.check]]
+name = "image-windows-guest"
+run = "bash tools/ci/publish/windows-guest.sh /target/windows-compat/windows-guest"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/windows-guest.sh", "os/Containerfile.windows-guest-tools", "os/Containerfile.windows-guest-rpms", "os/Containerfile.windows-guest", "os/dev/run-development-windows-guest.py", "os/dev/development-wine-repository.py", "os/dev/windows-guest-packages.txt", "os/dev/windows_guest_contract.py", "os/dev/resolve-windows-guest-rpms.sh", "os/dev/build-windows-guest.sh", "os/dev/validate-windows-guest.py", "os/dev/install-windows-guest-dxvk.py", "os/dev/fetch-windows-guest-assets.py", "os/dev/wine-source.json", "os/external-assets/github-assets.tsv", ".containerignore"]
+needs = ["image-wine-paired"]
+outputs = ["/target/windows-compat/windows-guest/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cost = "heavy"
+cpus = 8
+memory = "16G"
+timeout_secs = 5400
+
+[[matrix.check]]
+name = "publish-windows-guest"
+comment = """
+Pushes every image the guest names, in the order they name each other, and the guest last:
+dispatched on main only (`t dispatch publish-windows-guest --ref main`)."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = """
+set -e
+w=/target/windows-compat
+for target in x86_64 i686; do
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-resolution $w/wine-build-$target/resolution "candidate-{commit}-$target"
+  bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-rpms $w/wine-build-$target/rpms "candidate-{commit}-$target"
+done
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/wine-paired $w/wine-paired 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-wine $w/windows-guest/development-wine 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest-rpms $w/windows-guest/rpms 'candidate-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest $w/windows-guest/guest 'candidate-{commit}'
+sed -n 's/.*"image":"\\([^"]*\\)".*/\\1/p' $w/windows-guest/guest/receipt.json > $w/windows-guest/guest/reference
+"""
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["publish-wine-tools", "wine-build-x86_64", "wine-build-i686", "image-wine-paired", "image-windows-guest"]
+outputs = ["/target/windows-compat/wine-build-*/*/receipt.json", "/target/windows-compat/wine-paired/receipt.json", "/target/windows-compat/windows-guest/*/receipt.json", "/target/windows-compat/windows-guest/guest/reference"]
+pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix]]
+family = "os"
+about = """
+The OS image (os/Containerfile, tools/ci/publish/os-image.sh), built natively per architecture
+as root in a micro-VM step: `t test os-image-x86_64` builds what a development VM runs from
+your tree, as Build / OS dev did (no LTO, the apps and desktop of the commit, the image only,
+its UKI sealing a placeholder composefs digest) and leaves it as an OCI archive (`t outputs`).
+Its inputs are what os/Containerfile copies from the repository; a cold build compiles for
+about an hour without a compiler cache, so it runs only when asked."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "os-image-{arch}"
+run = "bash tools/ci/publish/os-image.sh build {arch} /target/publish/os/{arch}"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "keys/**", "docs/developers/tasks/**", "scripts/**", "tools/apps/**", "tools/policy/**", "tools/protocols/**", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/font-catalog.py", "tools/atspi_external_client.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "tools/ci/measure.sh", "tools/ci/install-xwayland-satellite.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
+outputs = ["/target/publish/os/{arch}/image.oci.tar", "/target/publish/os/{arch}/digest", "/target/publish/os/{arch}/revision"]
+# The image is labelled with its commit.
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 10800
+default = false
+
+[[matrix.check]]
+name = "os-dev-image-{arch}"
+comment = """
+The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the toolchain and the
+components with their dev features, compiled again) on os-image-{arch}."""
+run = "bash tools/ci/publish/os-image.sh dev {arch} /target/publish/os/{arch} /target/publish/os-dev/{arch}"
+inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
+needs = ["os-image-{arch}"]
+outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 12
+memory = "24G"
+timeout_secs = 7200
+default = false
+
+[[matrix]]
+family = "os"
+about = """
+Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
+firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
+since bootc takes a device tree only from one. `t dispatch publish-os-board-lenovo-83ed --ref
+main` builds main's head and pushes registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which
+`tilo-vm vm upgrade --from sha:<commit>` takes on that board, and moves tilo-vm:<board>-ci, which
+installed boards follow with `bootc upgrade` (DEVELOPMENT.md, "Board dev images on real
+hardware")."""
+each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
+
+[[matrix.check]]
+name = "os-board-{board}"
+run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore"]
+needs = ["os-dev-image-aarch64"]
+outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
+git = true
+requires = ["arch=arm64", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+default = false
+
+[[matrix.check]]
+name = "publish-os-board-{board}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh"]
+needs = ["os-board-{board}"]
+outputs = ["/target/publish/os-board/{board}/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix]]
+family = "extension-manifests"
+about = """
+Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh): every
+day, and when dispatched with `--input images=…`, each published OS image's native child
+resolves every extension inside itself, as root in a micro-VM step and without credentials;
+`publish-extension-manifests` signs the manifests with the extension-manifest key in KMS (not
+the OS release key) and publishes those that changed. Mirrors drop superseded builds and
+publishers ship updates, so nothing is served from the cache."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+fields = { dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" } }
+
+[[matrix.check]]
+name = "extension-manifests-{arch}"
+run = "bash tools/ci/publish/extension-manifests.sh resolve {arch} /target/extension-manifests/{arch}"
+inputs = ["tools/extensions/**"]
+outputs = ["/target/extension-manifests/{arch}/**"]
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cpus = 4
+memory = "8G"
+timeout_secs = 3600
+cache = false
+on = ["schedule:40 4 * * *", "dispatch"]
+default = false
+
+[[matrix.check]]
+name = "publish-extension-manifests"
+run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/x86_64 /target/extension-manifests/aarch64"
+inputs = ["tools/extensions/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/extensions.pub"]
+needs = ["extension-manifests-x86_64", "extension-manifests-aarch64"]
+# The extension-manifest key, not the OS release key: devices verify manifests only against
+# keys/extensions.pub. Its role trusts only this audience, which no other check asks for.
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
+id_token = ["tilo-extension-manifests"]
+# Generic packages take no identity token.
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["arch=any"]
+cache = false
+on = ["schedule:40 4 * * *", "dispatch"]

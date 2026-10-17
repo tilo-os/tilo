@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::smart::Heuristics;
 use crate::store::area::FileArea;
+use tilo_lock::MutexRecover as _;
 
 /// The file in the cache directory that holds the policy.
 pub const CACHE_POLICY_FILE: &str = "cache-policy.json";
@@ -89,10 +90,7 @@ impl CachePolicies {
     /// The policy in force.
     #[must_use]
     pub fn current(&self) -> CachePolicy {
-        *self
-            .current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.current.lock_recover()
     }
 
     /// Keep and apply `policy`. A smaller budget evicts down to it at once.
@@ -116,10 +114,7 @@ impl CachePolicies {
     }
 
     fn apply(&self, policy: CachePolicy) {
-        *self
-            .current
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+        *self.current.lock_recover() = policy;
         self.heuristics.set_prefetch_enabled(policy.prefetch);
         self.files
             .set_budget(policy.budget_bytes.unwrap_or(self.default_budget));

@@ -37,6 +37,7 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 use std::borrow::Borrow;
 use tilo_actions::ActionAddress;
+use tilo_lock::RwLockRecover as _;
 
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics (see [`tilo_search::fold`]).
@@ -452,10 +453,7 @@ impl SearchCatalog {
     /// other session sharing it — observing the change.
     #[must_use]
     pub fn detached(&self) -> Self {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let copy = SearchCatalogInner {
             index: inner.index.detached(),
             entries: inner.entries.clone(),
@@ -518,10 +516,7 @@ impl SearchCatalog {
                 .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
             next.insert(ordinal, resource_id, record);
         }
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         next.generation = inner
             .generation
             .checked_add(1)
@@ -575,10 +570,7 @@ impl SearchCatalog {
             }
         }
         drop(seen);
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let touched = inner.sync(records);
         drop(inner);
         touched.map(|touched| touched > 0)
@@ -587,11 +579,7 @@ impl SearchCatalog {
     /// Whether a canonical resource is currently retained by this catalogue.
     #[must_use]
     pub fn contains(&self, resource_id: &str) -> bool {
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ordinals
-            .contains_key(resource_id)
+        self.inner.read_recover().ordinals.contains_key(resource_id)
     }
 
     /// Insert or replace one durable resource. `searchable_text` may combine
@@ -622,10 +610,7 @@ impl SearchCatalog {
     /// As [`Self::upsert`].
     pub fn upsert_record(&self, record: SearchRecord) -> Result<(), SearchCatalogError> {
         validate(&record)?;
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let existing = inner.ordinals.get(record.resource_id.as_str()).copied();
         if existing.is_some_and(|ordinal| inner.same_content(ordinal, &record)) {
             return Ok(());
@@ -653,10 +638,7 @@ impl SearchCatalog {
 
     /// Remove one resource. Returns whether it existed.
     pub fn remove(&self, resource_id: &str) -> bool {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         // Returning `false` is the existing fail-closed contract for a remove
         // that was not performed. Do not mutate at MAX: keeping the row is
         // safer than making a previously-issued cursor current again.
@@ -670,10 +652,7 @@ impl SearchCatalog {
 
     #[must_use]
     pub fn stats(&self) -> SearchCatalogStats {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let stats = SearchCatalogStats {
             records: inner.entries.len(),
             body_records: inner.body_records,
@@ -687,11 +666,7 @@ impl SearchCatalog {
     #[must_use]
     pub fn index_bytes(&self) -> u64 {
         self.commit_pending();
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .index
-            .index_bytes()
+        self.inner.read_recover().index.index_bytes()
     }
 
     /// Whether a prior cursor belongs to this exact retained-index
@@ -703,17 +678,9 @@ impl SearchCatalog {
     }
 
     fn commit_pending(&self) {
-        let dirty = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .index
-            .is_dirty();
+        let dirty = self.inner.read_recover().index.is_dirty();
         if dirty {
-            self.inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .commit();
+            self.inner.write_recover().commit();
         }
     }
 
@@ -739,10 +706,7 @@ impl SearchCatalog {
         }
         let normalized_query = tilo_search::fold(query);
         self.commit_pending();
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let generation = inner.generation;
         // A catalogue edit between pages invalidates the order. Restarting
         // may repeat rows but can never skip a new or edited resource.
@@ -1692,11 +1656,7 @@ mod tests {
             catalog
                 .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
                 .unwrap();
-            catalog
-                .inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .generation = u64::MAX;
+            catalog.inner.write_recover().generation = u64::MAX;
 
             assert_eq!(
                 catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
@@ -1711,11 +1671,7 @@ mod tests {
         // phase: catalogue_refuses_browse_ordinal_reuse_without_inserting
         {
             let catalog = SearchCatalog::new("Documents");
-            catalog
-                .inner
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .next_browse_ordinal = u64::MAX;
+            catalog.inner.write_recover().next_browse_ordinal = u64::MAX;
 
             assert_eq!(
                 catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),

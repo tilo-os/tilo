@@ -61,6 +61,13 @@ const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// Center work. Keeping this fixed prevents a task title or agent id from
 /// becoming an executable/package selector.
 pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
+/// Signed headless services started beside a workspace agent, because the
+/// agent acts only by invoking published actions and these publish actions it
+/// needs (looking things up on the web) that no window offers. A service is
+/// never launched on demand, so it has to be running before a task needs it.
+/// Fixed for the same reason as [`WORKSPACE_AGENT_PACKAGE_ID`]; one that is
+/// not installed is skipped and the agent works without its actions.
+pub const AGENT_COMPANION_PACKAGE_IDS: &[&str] = &["so.tilo.web-search"];
 
 #[cfg(any(test, target_os = "linux"))]
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
@@ -1454,6 +1461,12 @@ impl LaunchSession {
     }
 
     pub(crate) fn push(&self, event: LaunchEvent) {
+        if matches!(
+            event.kind,
+            LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
+        ) {
+            super::doc_open::forget_unpresented_documents(self, &event.package_id);
+        }
         lock(&self.0.events).push(event);
     }
 
@@ -1517,9 +1530,7 @@ static PENDING_CONTINUATION_RESUME: LazyLock<
 /// could break, so continuing with whatever the poisoned thread left
 /// behind is safer than aborting the whole session over it.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 struct PendingPlacement {
@@ -1938,8 +1949,11 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 /// Resolve one canonical installed package without parsing every app's
 /// manifest on the compositor loop. Keep the registry watch armed so a real
 /// update invalidates the input-method service before its TTL fallback.
-pub(crate) fn installed_app(app_id: &str) -> Result<Option<InstalledApp>, LaunchError> {
-    let app = tilo_installed_apps::read_one_from_env(app_id).map_err(|e| {
+pub(crate) fn installed_app(
+    catalog: &package_store::Catalog,
+    app_id: &str,
+) -> Result<Option<InstalledApp>, LaunchError> {
+    let app = tilo_installed_apps::read_one(catalog, app_id).map_err(|e| {
         LaunchError::RegistryUnreadable {
             detail: e.to_string(),
         }
@@ -1965,6 +1979,49 @@ fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
     Ok((generation, apps))
+}
+
+/// [`installed_apps`] for the compositor loop: the last enumeration, fresh
+/// or stale, and never a registry read, which scans the registry and parses
+/// every manifest. One past its TTL or invalidated by the registry watch is
+/// refreshed on a worker and served until the refresh lands; before the
+/// first enumeration there is none.
+pub(crate) fn installed_apps_without_waiting() -> Vec<InstalledApp> {
+    let (apps, fresh) = {
+        let cache = lock(&APP_CACHE);
+        cache.as_ref().map_or_else(
+            || (Vec::new(), false),
+            |(apps, at)| {
+                (
+                    apps.clone(),
+                    at.is_some_and(|at| at.elapsed() < APP_CACHE_TTL),
+                )
+            },
+        )
+    };
+    if !fresh {
+        refresh_installed_apps_in_background();
+    }
+    apps
+}
+
+/// Re-read the registry on a worker, one refresh at a time.
+fn refresh_installed_apps_in_background() {
+    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("tilo-apps-refresh".into())
+        .spawn(|| {
+            if let Err(error) = installed_apps_snapshot() {
+                tracing::debug!(%error, "installed apps refresh failed; the last list stays");
+            }
+            REFRESHING.store(false, Ordering::Release);
+        });
+    if spawned.is_err() {
+        REFRESHING.store(false, Ordering::Release);
+    }
 }
 
 /// Store a registry read that started at `read_epoch` as the new baseline.
@@ -2196,6 +2253,7 @@ pub fn host_app_candidates(
                 package_id,
                 display_name: host.name.clone(),
                 resources,
+                secondary: false,
             })
         })
         .collect()
@@ -2310,6 +2368,16 @@ pub fn revalidate_resource_claim(
         .is_ok()
 }
 
+/// Whether the installed package `package_id` declares `capability` in its
+/// signed manifest, re-read now: an upgrade that drops it stops what it
+/// allowed at once, and a package that is gone declares nothing.
+pub fn package_declares_capability(package_id: &str, capability: &str) -> bool {
+    read_installed_apps().is_ok_and(|apps| {
+        apps.iter()
+            .any(|app| app.package_id == package_id && app.declares_capability(capability))
+    })
+}
+
 /// This machine's applications, as the shared workspace settings name
 /// them: running under this session, installed as packages, or host apps.
 #[derive(Clone, Copy, Debug, Default)]
@@ -2349,6 +2417,7 @@ fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::App
                         .filter_map(|scheme| desktop_policy::ResourceKind::scheme(scheme).ok()),
                 )
                 .collect(),
+            secondary: app.opens_secondary,
         })
         .collect()
 }
@@ -2484,6 +2553,38 @@ pub fn build_workspace_agent_command(
         "--task-runs".into(),
     ]);
     command.managed_agent_id = Some(agent_id.to_string());
+    command
+}
+
+/// Build the sandboxed, display-less launch of one agent companion service
+/// ([`AGENT_COMPANION_PACKAGE_IDS`]) in `room`. Like the agent it gets the
+/// workspace's identity and no capability file; unlike the agent it is an
+/// ordinary app connection, not a managed agent, so it publishes under its
+/// own package id.
+pub fn build_agent_companion_command(
+    app: &InstalledApp,
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+) -> LaunchCommand {
+    let mut command = build_launch_command_for(
+        app,
+        launcher_bin,
+        None,
+        room,
+        &LaunchExtras {
+            capabilities_file: None,
+            identity_path,
+            render_node: None,
+            document: None,
+            uri: None,
+        },
+    );
+    command.args.push("--service".into());
+    command.args.push("--".into());
+    command
+        .args
+        .extend(["--workspace".into(), room.to_string()]);
     command
 }
 
@@ -2826,9 +2927,21 @@ pub fn launch_workspace_agent(
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
         })?;
+    if !is_headless_collab_service(&app)? {
+        return Err(LaunchError::NotAManagedService {
+            package_id: app.package_id,
+        });
+    }
+    execute_workspace_agent(app, agent_id, workspace)
+}
+
+/// Whether `app`'s signed manifest describes a headless service that needs
+/// the collaboration broker: `kind = "service"`, a `cli` entrypoint and a
+/// required `collab` service — the only shape started without a window.
+fn is_headless_collab_service(app: &InstalledApp) -> Result<bool, LaunchError> {
     let manifest = launcher::manifest::read_manifest(&app.manifest_path).map_err(|error| {
         LaunchError::RegistryUnreadable {
-            detail: format!("reading the workspace-agent manifest: {error}"),
+            detail: format!("reading the {} manifest: {error}", app.package_id),
         }
     })?;
     let requires_collaboration = manifest
@@ -2836,15 +2949,9 @@ pub fn launch_workspace_agent(
         .services
         .get(launcher::services::COLLAB_SERVICE)
         .is_some_and(launcher::manifest::ServiceReq::is_required);
-    if manifest.kind != launcher::manifest::KIND_SERVICE
-        || manifest.entrypoint.cli_bin().is_none()
-        || !requires_collaboration
-    {
-        return Err(LaunchError::NotAManagedService {
-            package_id: app.package_id,
-        });
-    }
-    execute_workspace_agent(app, agent_id, workspace)
+    Ok(manifest.kind == launcher::manifest::KIND_SERVICE
+        && manifest.entrypoint.cli_bin().is_some()
+        && requires_collaboration)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -2871,17 +2978,104 @@ fn execute_workspace_agent(
     .map_err(|error| LaunchError::IdentityUnavailable {
         detail: error.to_string(),
     })?;
-    let command = build_workspace_agent_command(
+    // Companions first, and named to the agent, so it plans its first run
+    // only once their actions are published instead of without them.
+    let companions =
+        start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
+    let mut command = build_workspace_agent_command(
         &app,
         &launcher_bin,
         workspace.room,
         identity_path.as_deref(),
         agent_id,
     );
+    for companion in companions {
+        command
+            .args
+            .extend(["--companion".into(), companion.into()]);
+    }
+    if let Some(provider) = workspace_agent_provider() {
+        command.args.extend(["--provider".into(), provider]);
+    }
     if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
     Ok(app)
+}
+
+/// Start the [`AGENT_COMPANION_PACKAGE_IDS`] not already running in `room`,
+/// and answer the companions running there now: started, or already up.
+/// A companion that is missing, malformed or fails to start costs the agent
+/// its actions, not its launch, so failures are logged and skipped.
+#[cfg(target_os = "linux")]
+fn start_agent_companions(
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+) -> Vec<&'static str> {
+    let apps = match installed_apps() {
+        Ok(apps) => apps,
+        Err(error) => {
+            tracing::warn!(%error, "cannot list installed apps for the agent's companions");
+            return Vec::new();
+        }
+    };
+    let room_id = room.to_string();
+    let mut running = Vec::new();
+    for package_id in AGENT_COMPANION_PACKAGE_IDS {
+        let Some(app) = apps.iter().find(|app| app.package_id == *package_id) else {
+            continue;
+        };
+        if verified_workspaces_for_app(package_id).contains(&room_id) {
+            running.push(*package_id);
+            continue;
+        }
+        match is_headless_collab_service(app) {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    package_id,
+                    "agent companion is not a headless broker service"
+                );
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(package_id, %error, "cannot read the agent companion's manifest");
+                continue;
+            }
+        }
+        let command = build_agent_companion_command(app, launcher_bin, room, identity_path);
+        match spawn_detached(app.clone(), command, None) {
+            Ok(()) => running.push(*package_id),
+            Err(detail) => {
+                tracing::warn!(package_id, %detail, "could not start the agent companion");
+            }
+        }
+    }
+    running
+}
+
+/// The desktop's default model for a workspace agent, as the nonsecret
+/// selection the agent plans with: profile, model and protocol only. The
+/// agent cannot read Settings from its sandbox, so without this it has no
+/// model and plans by keyword alone; the model gateway keeps the endpoint
+/// and the credential.
+#[cfg(target_os = "linux")]
+fn workspace_agent_provider() -> Option<String> {
+    provider_selection(agent_provider_config::ProviderConfig::load().active_profile()?)
+}
+
+/// `profile`'s default model as the agent's `--provider` selection, or
+/// `None` while the profile names no default model to plan with.
+#[cfg(any(test, target_os = "linux"))]
+fn provider_selection(profile: &agent_provider_config::ProviderProfile) -> Option<String> {
+    let model = profile.default_model.as_ref()?;
+    serde_json::to_string(&serde_json::json!({
+        "profile_id": profile.id,
+        "model_id": model,
+        "protocol": profile.protocol,
+    }))
+    .ok()
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the
@@ -3791,6 +3985,7 @@ fn native_app_open_access(
             .permissions(certificate.device_public_key, now)?;
         let administrator = view
             .peer()
+            .workspace()
             .check_workspace_administration(certificate.device_public_key, now)
             .is_ok();
         let exists = view.peer().document(package, "").is_some();
@@ -4624,6 +4819,9 @@ fn start_launch(
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {
                         eprintln!("[app {stderr_tag} stderr] {line}");
+                        // GPU health belongs to the Linux compositor; the
+                        // test-only launches elsewhere have none to report to.
+                        #[cfg(target_os = "linux")]
                         crate::compositor::gpu_health::observe_app_line(&stderr_tag, &line);
                         if tail.len() == STDERR_TAIL_LINES {
                             tail.pop_front();
@@ -5154,6 +5352,21 @@ pub(crate) fn clear_launched_for_test() {
 /// label — closing that gap needs the client correlated back to the
 /// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
+    display_name_among(app_id, || installed_apps().unwrap_or_default())
+}
+
+/// [`display_name_for_app_id`] for the compositor loop: the installed
+/// packages as last enumerated ([`installed_apps_without_waiting`]), never
+/// a registry read. An app installed since may show its id until the
+/// refresh lands.
+pub(crate) fn display_name_for_app_id_without_waiting(app_id: &str) -> Option<String> {
+    display_name_among(app_id, installed_apps_without_waiting)
+}
+
+fn display_name_among(
+    app_id: &str,
+    installed: impl FnOnce() -> Vec<InstalledApp>,
+) -> Option<String> {
     {
         let session = LaunchSession::current();
         let launched = lock(&session.launched);
@@ -5167,12 +5380,11 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     // Not launched by this session, but the machine still has it: a
     // package's manifest name is the app's name regardless of who
     // started the window.
-    if let Ok(apps) = installed_apps()
-        && let Some(app) = apps
-            .iter()
-            .find(|a| app_id_matches_package(app_id, &a.package_id))
+    if let Some(app) = installed()
+        .into_iter()
+        .find(|a| app_id_matches_package(app_id, &a.package_id))
     {
-        return Some(app.display_name.clone());
+        return Some(app.display_name);
     }
     // Nor a package launched this session — maybe a host app started
     // another way; its `.desktop` entry gives a nicer label than the raw id.
@@ -5240,6 +5452,21 @@ pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
     lock(&LaunchSession::current().pending)
         .iter()
         .any(|note| note.matches(app_id) && note.claimed_by.is_none())
+}
+
+/// Whether any launch bound to a saved tab still waits for its window.
+/// Session restore starts the next saved window only after this clears:
+/// cold starts that run together compete for CPU, disk and memory, so
+/// every one of them comes up late. The same failure and expiry paths as
+/// [`has_unclaimed_launch`] retire a note that never maps.
+pub(crate) fn has_unclaimed_restore_launch() -> bool {
+    lock(&LaunchSession::current().pending).iter().any(|note| {
+        note.claimed_by.is_none()
+            && matches!(
+                note.placement,
+                crate::shell::tab_binding::Placement::IntoTab(_)
+            )
+    })
 }
 
 /// Saved tabs with a live placement in this session. A mapped note stays
@@ -5512,8 +5739,9 @@ pub fn expire_pending_placements() -> Vec<String> {
 }
 
 fn expire_pending_placements_at(now: Instant) -> Vec<String> {
+    let session = LaunchSession::current();
     let mut expired = Vec::new();
-    lock(&LaunchSession::current().pending).retain(|note| {
+    lock(&session.pending).retain(|note| {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
@@ -5524,12 +5752,15 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
             expired.push(note.key.clone());
         }
         if !keep {
-            lock(&LaunchSession::current().launch_history)
+            lock(&session.launch_history)
                 .event(note.launch_metric_id, launch_history::Phase::Retired);
             tilo_startup_metrics::launch_failed(note.launch_metric_id);
         }
         keep
     });
+    for package_id in &expired {
+        super::doc_open::forget_unpresented_documents(&session, package_id);
+    }
     expired
 }
 
@@ -5592,6 +5823,7 @@ pub fn spawn_launch(
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 mod tests {
@@ -6724,6 +6956,47 @@ mod tests {
         payload
     }
 
+    /// The compositor loop asks for installed apps while building tiles and
+    /// naming apps in Activity. It is served the last enumeration, stale or
+    /// not, and never reads the registry itself: a stale list is refreshed
+    /// on a worker and the refresh lands for a later ask.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        assert_eq!(initial[0].version, "1.2.3");
+
+        let manifest = payload.join("manifest.toml");
+        let changed_manifest = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed_manifest).unwrap();
+        lock(&APP_CACHE).as_mut().unwrap().1 = None;
+
+        let served = installed_apps_without_waiting();
+        assert_eq!(
+            served, initial,
+            "the stale list is served; the registry was not read here"
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let refreshed = loop {
+            let served = installed_apps_without_waiting();
+            if served.first().is_some_and(|app| app.version == "1.2.4") {
+                break served;
+            }
+            assert!(Instant::now() < deadline, "the refresh never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
+        assert_eq!(refreshed.len(), 1);
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -6967,6 +7240,8 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -7016,6 +7291,8 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -7119,6 +7396,8 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
             };
             let room = RoomId::new();
             let command = build_workspace_agent_command(
@@ -7169,12 +7448,69 @@ mod tests {
             );
         }
 
+        fn agent_companion_command_is_a_headless_service_in_the_room() {
+            let app = InstalledApp {
+                package_id: "so.tilo.web-search".into(),
+                display_name: "Web Search".into(),
+                localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
+                category: None,
+                version: "0.1.0".into(),
+                manifest_path: PathBuf::from("/apps/web-search/manifest.toml"),
+                payload_root: PathBuf::from("/apps/web-search"),
+                has_gui: false,
+                opens_extensions: Vec::new(),
+                opens_mime_types: Vec::new(),
+                opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
+            };
+            assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
+            let room = RoomId::new();
+            let command = build_agent_companion_command(
+                &app,
+                Path::new("/usr/bin/tilo-launcher"),
+                room,
+                Some(Path::new("/run/user/1000/tilo/identity.json")),
+            );
+            assert!(!command.args.iter().any(|arg| arg == "--wayland-socket"));
+            assert!(!command.args.iter().any(|arg| arg == "--capabilities"));
+            // An ordinary app connection publishing under its own id, not a
+            // second managed agent.
+            assert_eq!(command.managed_agent_id, None);
+            let separator = command
+                .args
+                .iter()
+                .position(|arg| arg == "--")
+                .expect("service argv has an explicit separator");
+            assert_eq!(
+                command
+                    .args
+                    .get(separator.wrapping_sub(1))
+                    .map(String::as_str),
+                Some("--service")
+            );
+            assert_eq!(
+                command.args.get(separator.saturating_add(1)..),
+                Some(["--workspace".to_string(), room.to_string()].as_slice())
+            );
+            let room_string = room.to_string();
+            assert_eq!(
+                command
+                    .service_identity
+                    .as_ref()
+                    .map(|identity| (identity.app_id.as_str(), identity.workspace_id.as_str())),
+                Some(("so.tilo.web-search", room_string.as_str()))
+            );
+        }
+
         launch_command_carries_manifest_payload_and_display();
         launch_command_omits_the_render_node_when_none_resolved();
         launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted();
         launch_command_names_the_capability_file_when_one_was_written();
         launch_command_names_the_workspace_selected_identity();
         workspace_agent_command_is_headless_fixed_package_service_argv();
+        agent_companion_command_is_a_headless_service_in_the_room();
     }
 
     /// What the spawned launcher's environment will say about a variable.
@@ -7413,6 +7749,8 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
             });
             // full package id, trailing component, case-insensitivity
             assert_eq!(
@@ -7452,6 +7790,8 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
+            offers: Vec::new(),
         }
     }
 
@@ -8758,6 +9098,28 @@ mod tests {
         files_launch_receives_only_the_staged_projection_path();
         #[cfg(target_os = "linux")]
         runtime_files_never_wait_for_the_disk();
+    }
+
+    /// A launched workspace agent cannot read Settings from its sandbox, so
+    /// the desktop hands it the default model as exactly the nonsecret
+    /// selection the agent accepts, and nothing while no model is chosen.
+    #[test]
+    fn a_workspace_agent_is_handed_the_default_model_selection_only() {
+        let mut profile = agent_provider_config::ProviderProfile::hosted(
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        );
+        assert_eq!(provider_selection(&profile), None);
+        profile.default_model = Some("google/gemini-4-argon".into());
+        let selection: serde_json::Value =
+            serde_json::from_str(&provider_selection(&profile).expect("a selection")).unwrap();
+        assert_eq!(
+            selection,
+            serde_json::json!({
+                "profile_id": profile.id,
+                "model_id": "google/gemini-4-argon",
+                "protocol": profile.protocol,
+            })
+        );
     }
 }
 

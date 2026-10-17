@@ -1784,6 +1784,19 @@ pub trait Widget {
         self.accessibility().is_some_and(|node| node.state.hidden)
     }
 
+    /// [`Self::accessibility`]'s own node with its `children` left empty:
+    /// its role, identity (`semantic_key`) and state. Focus capture and focus
+    /// order read only these, for every node on every frame, so a widget
+    /// whose node carries a large subtree (a document exporting its every
+    /// block) answers without building it. An override must equal
+    /// `accessibility()` with `children` cleared.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        self.accessibility().map(|mut node| {
+            node.children.clear();
+            node
+        })
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -2321,6 +2334,13 @@ pub trait Widget {
 
     fn wants_pointer_capture(&self) -> bool {
         false
+    }
+
+    /// Why this widget itself asks for animation frames, for diagnostics
+    /// that name a desktop which keeps painting. `None` when it has nothing
+    /// to add to its name and geometry.
+    fn animation_detail(&self) -> Option<String> {
+        None
     }
 
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
@@ -3071,7 +3091,8 @@ pub use nav_shell::{
     SidebarPlacement,
 };
 pub use window_header::{
-    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowHeader,
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowBar, WindowBarSlot,
+    WindowHeader,
 };
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
@@ -3114,13 +3135,15 @@ mod number_input;
 pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
+pub mod markdown_input;
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
 pub mod paint_damage;
 pub use block_editor::{
-    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
-    DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
+    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
+    DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview,
+    legacy_block_id,
 };
 mod filter_menu;
 pub use filter_menu::FilterMenu;
@@ -3133,8 +3156,11 @@ pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 mod hover_intent;
+pub use hover_intent::EdgeAim;
+pub mod top_edge_reveal;
+pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
+pub use tabs::{TabBar, TabDescriptor, TabHolder, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -3174,7 +3200,7 @@ pub mod context_menu;
 pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod context_menu_area;
-pub use context_menu_area::{ContextMenuArea, MenuEntry};
+pub use context_menu_area::{ContextMenuArea, MenuEntry, ask_agent_entry};
 pub(crate) mod block_editor_table;
 pub mod data_table;
 pub mod table {
@@ -3186,7 +3212,7 @@ pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
     WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
-    min_group_px, permille_for_px,
+    merged_controls_width, min_group_px, permille_for_px,
 };
 mod resize_handle;
 pub use resize_handle::{

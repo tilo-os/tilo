@@ -92,7 +92,6 @@ mod dropped_content_startup_tests {
             chrome.borrow().hosted_inputs.document(tab),
             Some(HostedDocumentState::Ready(opened))
                 if opened.path == document.canonicalize().unwrap()
-                    && opened.text == "carried words\n"
         ));
         let state = chrome.borrow();
         let tree = state.tree();
@@ -105,6 +104,43 @@ mod dropped_content_startup_tests {
         drop(tree);
         drop(state);
     }
+
+    /// A Wayland drop is handled on the compositor loop, and a file dropped
+    /// from the workspace mount hydrates from a peer on its first read. The
+    /// drop opens the editor on the file without reading it: a file whose
+    /// bytes never arrive (a FIFO nobody writes) still opens at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_a_file_never_reads_it_on_the_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
+            chrome
+                .borrow_mut()
+                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+        });
+        assert!(!read, "the drop read the file on the loop");
+        let tab = tab.expect("the drop opened a tab");
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+        ));
+    }
+}
+
+/// Whether a banner may surface while the person types into a window:
+/// only what is addressed to them (a message or mention from a verified
+/// person, a call, a reminder they set, an ask waiting on them), and the
+/// desktop's own must-know notices that already pierce Do Not Disturb.
+/// Everything else waits for them to pause.
+pub(crate) fn may_interrupt_typing(n: &Notification) -> bool {
+    n.addressed().is_some() || n.bypass_dnd
 }
 
 fn notification_unix_ms() -> u64 {
@@ -599,6 +635,26 @@ impl QuickSettingsState {
     }
 }
 
+/// The loop's wake, as [`ChromeState`] keeps it for its record store.
+#[derive(Clone)]
+struct RecordsWake(crate::session_runtime::Wake);
+
+impl std::fmt::Debug for RecordsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordsWake")
+    }
+}
+
+/// The display a fullscreen covers on a desktop spread across displays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FullscreenDisplay {
+    /// The compositor's id for the display.
+    pub output: u32,
+    /// Whether it is the primary display, which carries the full top bar
+    /// and the wheel.
+    pub primary: bool,
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -716,6 +772,15 @@ pub struct ChromeState {
     /// Short, bounded edge flash requested by the visual-alert accessibility
     /// setting. Local session state only; it is never synced or written back.
     visual_alert_until: Option<std::time::Instant>,
+    /// While the person types into a window, until this instant (their
+    /// last key plus the desk's pause): only banners addressed to them
+    /// surface; the rest wait in [`Self::waiting_banners`]. Set by the
+    /// overlay host from the same typing signal that sends desk widgets
+    /// away.
+    typing_until: Option<std::time::Instant>,
+    /// Banners that arrived while the person typed and were not addressed
+    /// to them, oldest first; shown once they pause.
+    waiting_banners: Vec<Notification>,
     /// Mirrored from the compositor's `SessionManager` each frame.
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
@@ -754,10 +819,18 @@ pub struct ChromeState {
     /// wiped on the next tick. Once the retained row exists, both can feed
     /// [`Self::is_fullscreen`] through `fullscreen_presentation`.
     maximized_group: Option<u64>,
+    /// Whether the full top bar is docked, or hidden by the person and
+    /// shown over the windows while reached for. The overlay host decides;
+    /// the bar and the input policy read it.
+    top_bar: tilo_desktop::chrome::TopBarPresence,
     /// Whether the retained widget tree currently owns the requested
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// On a desktop spread across displays, the display a presented
+    /// fullscreen covers. The other displays keep their chrome and their
+    /// windows. `None` on one display, where a fullscreen covers it all.
+    fullscreen_display: Option<FullscreenDisplay>,
     /// Whether the active strip alone fills the work area, the others
     /// collapsed: while agents drive this compositor, so the strip an agent
     /// works in is the whole screen it sees and clicks. NOT persisted.
@@ -774,6 +847,12 @@ pub struct ChromeState {
     records: RecordStore,
     pending_tab_records: VecDeque<PendingTabRecordCreation>,
     failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
+    /// Wakes the loop when the record store has opened a document this
+    /// thread declined to wait for ([`Self::open_records_without_waiting`]).
+    records_wake: Option<RecordsWake>,
+    /// Set by that wake: tabs refused while their document was opening ask
+    /// again on the next resync.
+    records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
@@ -834,6 +913,9 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// Banners pointing at a task whose run waits for the person's answer,
+    /// by banner, to the task they open.
+    task_confirmation_toasts: BTreeMap<u64, String>,
 }
 
 #[derive(Debug)]
@@ -950,6 +1032,8 @@ impl ChromeState {
             notification_policy_checked: None,
             presenting: false,
             visual_alert_until: None,
+            typing_until: None,
+            waiting_banners: Vec::new(),
             session_locked: false,
             active_exposures: Vec::new(),
             session_lock_requested: false,
@@ -960,7 +1044,9 @@ impl ChromeState {
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
+            top_bar: tilo_desktop::chrome::TopBarPresence::Docked,
             fullscreen_presentation: false,
+            fullscreen_display: None,
             single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
@@ -990,9 +1076,12 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            task_confirmation_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
+            records_wake: None,
+            records_opened: std::sync::Arc::default(),
         }))
     }
 
@@ -1244,6 +1333,44 @@ impl ChromeState {
         self.fullscreen_presentation = presented;
     }
 
+    /// Record which display the presented fullscreen covers, on a desktop
+    /// spread across displays; `None` when it covers the whole desktop.
+    pub(crate) fn set_fullscreen_display(&mut self, display: Option<FullscreenDisplay>) {
+        self.fullscreen_display = display;
+    }
+
+    /// The display a presented fullscreen covers on a desktop spread across
+    /// displays; `None` when it covers the whole desktop.
+    pub(crate) fn fullscreen_display(&self) -> Option<FullscreenDisplay> {
+        self.fullscreen_display
+    }
+
+    /// Whether what [`Self::is_fullscreen`] presents covers the primary
+    /// display, where the full top bar and the wheel live. A fullscreen on
+    /// another display leaves both in place.
+    pub fn presentation_covers_primary(&self) -> bool {
+        self.fullscreen_presentation
+            && self
+                .fullscreen_display
+                .is_none_or(|display| display.primary)
+    }
+
+    /// Whether a presented fullscreen (not an expanded group) covers the
+    /// primary display: the full top bar steps aside.
+    pub fn fullscreen_covers_primary(&self) -> bool {
+        self.fullscreen_group().is_some() && self.presentation_covers_primary()
+    }
+
+    /// Whether a presented fullscreen covers the display `output`, so the
+    /// chrome drawn on that display steps aside.
+    pub fn fullscreen_covers_display(&self, output: u32) -> bool {
+        self.fullscreen_group().is_some()
+            && self.fullscreen_presentation
+            && self
+                .fullscreen_display
+                .is_none_or(|display| display.output == output)
+    }
+
     pub fn maximized_group(&self) -> Option<u64> {
         self.maximized_group
     }
@@ -1251,6 +1378,21 @@ impl ChromeState {
     #[must_use]
     pub fn single_strip(&self) -> bool {
         self.single_strip
+    }
+
+    /// Docked, hidden, or shown over the windows.
+    #[must_use]
+    pub fn top_bar_presence(&self) -> tilo_desktop::chrome::TopBarPresence {
+        self.top_bar
+    }
+
+    /// Set by the overlay host's top-edge reveal; a change repaints the bar
+    /// (and, between docked and not, re-lays the column out).
+    pub fn set_top_bar_presence(&mut self, presence: tilo_desktop::chrome::TopBarPresence) {
+        if self.top_bar != presence {
+            self.top_bar = presence;
+            self.bump();
+        }
     }
 
     pub fn set_single_strip(&mut self, single: bool) {
@@ -1376,7 +1518,29 @@ impl ChromeState {
         self.pending_tab_records.clear();
         self.failed_tab_records.clear();
         self.records = records;
+        self.install_records_wake();
         self.bump();
+    }
+
+    /// Never wait on the disk to open or create a tab's record: this runs on
+    /// the compositor's loop, where a `mkdir` stuck behind the journal froze
+    /// the desktop. The store's own thread opens the document; a tab asks
+    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
+        self.records_wake = Some(RecordsWake(wake));
+        self.install_records_wake();
+    }
+
+    fn install_records_wake(&self) {
+        let Some(RecordsWake(wake)) = self.records_wake.clone() else {
+            return;
+        };
+        let opened = std::sync::Arc::clone(&self.records_opened);
+        self.records
+            .open_without_waiting(std::sync::Arc::new(move || {
+                opened.store(true, std::sync::atomic::Ordering::Release);
+                wake();
+            }));
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.
@@ -1387,7 +1551,9 @@ impl ChromeState {
         };
         match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
             Ok(()) => {}
-            Err(ui::record::RecordOpenError::Busy) => {
+            // Retried by `retry_new_tab_records`; an opening document wakes
+            // the loop for it.
+            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                 self.pending_tab_records
                     .push_back(PendingTabRecordCreation {
                         identity,
@@ -1410,6 +1576,14 @@ impl ChromeState {
             TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
         });
         let mut changed = self.failed_tab_records.len() != before;
+        // A document the store finished opening: tabs that were refused
+        // while it opened bind again on the resync this bump causes.
+        if self
+            .records_opened
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            changed = true;
+        }
         self.pending_tab_records.retain(|pending| {
             TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
                 == Some(&pending.identity)
@@ -1424,7 +1598,7 @@ impl ChromeState {
                 pending.identity.tab,
             ) {
                 Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy) => {
+                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                     self.pending_tab_records.push_back(pending);
                 }
                 Err(error) => {
@@ -1952,6 +2126,24 @@ impl ChromeState {
         true
     }
 
+    /// Tell the person a task's run paused at an action that asks them
+    /// first, without interrupting them: a banner whose Review opens Task
+    /// Center on that task, where they answer it.
+    pub fn push_task_confirmation(
+        &mut self,
+        notice: &tilo_desktop::activity::ConfirmationNotice,
+    ) -> u64 {
+        let (title, body) = (notice.title(), notice.body());
+        let mut toast = Notification::new(title, body)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Permission);
+        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+        toast.actions = vec![("default".into(), notice.review_label())];
+        self.task_confirmation_toasts
+            .insert(toast.id, notice.task_id.clone());
+        self.push_notification_full(toast)
+    }
+
     /// The deletion toast's Undo: put the workspace back where it was, on
     /// screen. The person's other devices get it back with the next list.
     pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
@@ -2024,12 +2216,6 @@ impl ChromeState {
         self.restore_closed_tab(entry?)
     }
 
-    /// Reopen one exact remembered close.
-    pub fn undo_closed_tab(&mut self, serial: u64) -> Option<crate::shell::state::TabId> {
-        let entry = self.closed_tabs.take(serial)?;
-        self.restore_closed_tab(entry)
-    }
-
     fn restore_closed_tab(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,
@@ -2046,51 +2232,11 @@ impl ChromeState {
         reopened
     }
 
-    /// Routes into the active workspace's first strip/group via
-    /// [`super::workspace_drop::apply_workspace_drop_from_path`].
-    /// Returns the new tab id, or `None` if the path has no filename.
-    pub fn handle_file_drop(&mut self, path: &std::path::Path) -> Option<u64> {
-        let tab_id = {
-            let mut tree = self.tree_mut();
-            super::workspace_drop::apply_workspace_drop_from_path(&mut tree, path)
-        };
-        if let Some(tab_id) = tab_id {
-            self.create_new_tab_record(tab_id);
-            self.bump();
-        }
-        tab_id
-    }
-
-    /// Splices the file's app into the `(strip_id, group_id)` the
-    /// pointer was over, then records a per-workspace filesystem grant.
-    /// A type an installed app declares opens in that app instead (see
-    /// [`crate::shell::doc_open`]).
-    pub fn handle_file_drop_at(
-        &mut self,
-        path: &std::path::Path,
-        strip_id: StripId,
-        group_id: GroupId,
-    ) -> Option<u64> {
-        let tab_id = {
-            let mut tree = self.tree_mut();
-            super::workspace_drop::apply_workspace_drop_at_from_path(
-                &mut tree, path, strip_id, group_id,
-            )
-        };
-        if let Some(tab_id) = tab_id {
-            self.create_new_tab_record(tab_id);
-            // A dropped file is an explicit capability grant to the app
-            // the user aimed at, keyed by the tab the drop created.
-            self.grant_dropped_file_access(path, strip_id, group_id, tab_id);
-            self.bump();
-        }
-        tab_id
-    }
-
-    /// Exact-placement sibling of [`Self::handle_file_drop_at`]. External
-    /// content and existing app tabs share the row's spatial target, so a
-    /// fallback Files/Editor tab must preserve the named tab gap or window
-    /// seam rather than collapsing it to a group id.
+    /// Open a dropped file or folder at `placement`, then record a
+    /// per-workspace filesystem grant. External content and existing app
+    /// tabs share the row's spatial target, so a fallback Files/Editor tab
+    /// must preserve the named tab gap or window seam rather than collapsing
+    /// it to a group id.
     pub fn handle_file_drop_at_placement(
         &mut self,
         path: &std::path::Path,
@@ -2113,11 +2259,13 @@ impl ChromeState {
                             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
                     });
                 if is_editor {
+                    // The size is metadata; the bytes are the editor's to
+                    // read. A drop from the workspace mount would hydrate
+                    // the file from a peer, which the loop must not wait for.
                     if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
                         return None;
                     }
-                    hosted_document =
-                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                    hosted_document = Some(canonical);
                 } else {
                     files_directory = canonical.parent().map(std::path::Path::to_path_buf);
                 }
@@ -2153,13 +2301,12 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
-        if let Some((path, text)) = hosted_document {
+        if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,
                 super::hosted_inputs::HostedDocument {
                     provider_id: "org.tilo.Editor",
                     path: path.clone(),
-                    text,
                 },
             );
             self.tree_mut().native_document_tabs.insert(
@@ -2527,6 +2674,44 @@ impl ChromeState {
     /// D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
+        if self.typing_at(std::time::Instant::now()) && !may_interrupt_typing(&n) {
+            self.waiting_banners.push(n);
+            return id;
+        }
+        self.show_notification(n)
+    }
+
+    /// The person typing into a window until `until` (`None`: not typing).
+    /// Banners held while they typed surface once it lapses, through
+    /// [`Self::release_waiting_banners`].
+    pub fn set_typing_until(&mut self, until: Option<std::time::Instant>) {
+        self.typing_until = until;
+    }
+
+    /// Whether the person is typing at `now`.
+    pub fn typing_at(&self, now: std::time::Instant) -> bool {
+        self.typing_until.is_some_and(|until| now < until)
+    }
+
+    /// The banners waiting for the person to pause.
+    pub fn waiting_banner_count(&self) -> usize {
+        self.waiting_banners.len()
+    }
+
+    /// Show the banners that waited while the person typed, once they have
+    /// paused at `now`. Returns whether any surfaced.
+    pub fn release_waiting_banners(&mut self, now: std::time::Instant) -> bool {
+        if self.typing_at(now) || self.waiting_banners.is_empty() {
+            return false;
+        }
+        for n in std::mem::take(&mut self.waiting_banners) {
+            self.show_notification(n);
+        }
+        true
+    }
+
+    fn show_notification(&mut self, n: Notification) -> u64 {
+        let id = n.id;
         if self.notifications_quiet() && !n.bypass_dnd {
             self.record_history(n);
             self.bump();
@@ -2563,6 +2748,7 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
+        self.task_confirmation_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -2639,6 +2825,14 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
+            self.record_history(removed);
+            self.open_room_activity(Some(ActivityFocus {
+                task_id: Some(task_id),
+                ..ActivityFocus::default()
+            }));
             return true;
         }
         if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {
@@ -3951,39 +4145,7 @@ mod active_tab_tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn dropped_files_create_only_new_records_and_grant_the_real_app_id() {
-        fn history_file_drop_creates_only_the_new_tabs_record() {
-            let (tree, strip, group, existing) =
-                tree_with_single_tab(TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Notes".into()),
-                    label: "Existing".into(),
-                });
-            let chrome = ChromeState::new(tree);
-            let mut state = chrome.borrow_mut();
-            let first = state
-                .handle_file_drop(std::path::Path::new("/missing/example.txt"))
-                .unwrap();
-            let second = state
-                .handle_file_drop_at(std::path::Path::new("/missing/another.txt"), strip, group)
-                .unwrap();
-            for id in [first, second] {
-                assert!(
-                    state
-                        .records()
-                        .read(&ui::RecordId::for_tab(id), |_| ())
-                        .is_some(),
-                    "a successful drop owns its newly minted scratch record"
-                );
-            }
-            assert!(
-                state
-                    .records()
-                    .read(&ui::RecordId::for_tab(existing), |_| ())
-                    .is_none(),
-                "a drop never authorizes repairing a missing persisted sibling"
-            );
-        }
-
+    fn dropped_files_grant_the_real_app_id() {
         /// Gap-2 proof: when the drop target is a real adopted Wayland client,
         /// the recorded grant is keyed by that client's actual
         /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
@@ -4064,7 +4226,6 @@ mod active_tab_tests {
             );
         }
 
-        history_file_drop_creates_only_the_new_tabs_record();
         dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id();
         dropped_file_grant_keyed_by_builtin_canonical_app_id();
     }

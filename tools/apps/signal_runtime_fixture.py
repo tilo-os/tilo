@@ -91,7 +91,9 @@ def probe(work, prefix=()):
                     reply = reader.readline(65537)
                 staging.require(len(reply) <= 65536 and reply.endswith(b"\n"), "invalid fixture reply frame")
                 decoded = json.loads(reply)
-                staging.require(decoded.get("id") == "fixture-empty" and decoded.get("result") == [],
+                staging.require(isinstance(decoded, dict) and decoded.get("jsonrpc") == "2.0"
+                                and "error" not in decoded and decoded.get("id") == "fixture-empty"
+                                and decoded.get("result") == [],
                                 "fixture must contain no authenticated accounts")
         except Exception as error:
             stderr.seek(0, os.SEEK_END)

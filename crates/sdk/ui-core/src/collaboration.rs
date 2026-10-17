@@ -851,6 +851,14 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<runtime_collab::NearbyTransferReply, String>,
     },
+    /// What a Nearby Send snapshot would show this app may have changed: a
+    /// device came or went, an offer arrived, a transfer moved on. It names
+    /// nothing; the app asks for a fresh
+    /// [`NearbyTransferCommand::Snapshot`](runtime_collab::NearbyTransferCommand::Snapshot)
+    /// instead of asking on a timer. The first arrives once the route joins,
+    /// so it also starts the app's view. Only the certified Files route
+    /// receives these.
+    NearbyTransferChanged,
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 
@@ -1817,6 +1825,12 @@ impl CollaborationManager {
 
     pub(crate) fn document_publication_failed(&self) -> bool {
         matches!(&self.backend, Backend::Transport(transport) if transport.document_publication_failed())
+    }
+
+    /// Whether publication stopped because the workspace refused a change,
+    /// not because the connection was lost.
+    pub(crate) fn document_change_refused(&self) -> bool {
+        matches!(&self.backend, Backend::Transport(transport) if transport.document_change_refused())
     }
 
     #[cfg(test)]

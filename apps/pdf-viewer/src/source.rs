@@ -42,6 +42,7 @@ use crate::model::{
     Signature, SignatureInk,
 };
 use crate::text_layer::PageText;
+use ui::lock::MutexRecover as _;
 
 /// Opening is intentionally bounded before either PDF parser sees the bytes.
 /// PDFs can expand dramatically while parsing, but rejecting unexpectedly
@@ -894,6 +895,7 @@ impl RasterBackend {
     /// The annotations the engine reads back from displayed page
     /// `display_idx` of the backing document. Used by the save round-trip
     /// tests to check that exported markup lands as real PDF annotations.
+    #[cfg(test)]
     pub fn page_annotations(&self, display_idx: usize) -> Vec<tilo_pdf::AnnotationInfo> {
         self.slot(display_idx)
             .and_then(|slot| {
@@ -1748,12 +1750,7 @@ impl RasterHandle {
     pub fn new(content: ContentStore) -> Result<Self, RasterSubmitError> {
         let queue = shared_worker_queue();
         let id = next_session_id()?;
-        queue
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .content
-            .insert(id, content);
+        queue.state.lock_recover().content.insert(id, content);
         Ok(Self {
             session: Arc::new(SessionGuard {
                 queue,
@@ -1795,12 +1792,7 @@ impl RasterHandle {
             path: Path::new("picked").join(name),
         };
         {
-            let mut state = self
-                .session
-                .queue
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.session.queue.state.lock_recover();
             let session = self.session.id;
             state
                 .open_contents
@@ -1980,12 +1972,7 @@ impl RasterHandle {
     /// frame/event turn and match only its current document/request id.
     pub fn drain_events(&self) -> Vec<RasterEvent> {
         pump_inline(&self.session.queue);
-        let mut state = self
-            .session
-            .queue
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.session.queue.state.lock_recover();
         let mut events = drain_session_events(&mut state.open_events, self.session.id);
         events.extend(drain_session_events(&mut state.events, self.session.id));
         state.event_bytes = state.events.iter().fold(0usize, |bytes, queued| {
@@ -2001,19 +1988,11 @@ impl RasterHandle {
     /// producing frames until they are drained.
     #[must_use]
     pub fn wants_frames(&self) -> bool {
-        let inline = INLINE_WORKER
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
+        let inline = INLINE_WORKER.lock_recover().is_some();
         if !inline {
             return false;
         }
-        let state = self
-            .session
-            .queue
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.session.queue.state.lock_recover();
         !(state.shutdowns.is_empty()
             && state.controls.is_empty()
             && state.open_order.is_empty()
@@ -2039,12 +2018,7 @@ impl RasterHandle {
         reason = "centralizing queue admission makes its bounded/coalescing protocol auditable"
     )]
     fn enqueue(&self, command: RasterCommand) -> Result<(), RasterSubmitError> {
-        let mut state = self
-            .session
-            .queue
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.session.queue.state.lock_recover();
         if let Some(error) = &state.start_error {
             return Err(RasterSubmitError::Unavailable(error.clone()));
         }
@@ -2287,18 +2261,13 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
         });
         if !ui::rt::available(ui::rt::Feature::Threads) {
             // A browser page: the UI thread serves the queue between frames.
-            *INLINE_WORKER
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SourceWorker::default());
+            *INLINE_WORKER.lock_recover() = Some(SourceWorker::default());
             return queue;
         }
         let worker_queue = Arc::clone(&queue);
         if let Err(error) = ui::rt::spawn_thread("pdf-source", move || source_worker(&worker_queue))
         {
-            let mut state = queue
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = queue.state.lock_recover();
             state.start_error = Some(error.to_string());
         }
         queue
@@ -2317,20 +2286,13 @@ const INLINE_BUDGET: Duration = Duration::from_millis(12);
     reason = "the inline worker stays borrowed for every command this frame serves"
 )]
 fn pump_inline(queue: &Arc<WorkerQueue>) {
-    let mut inline = INLINE_WORKER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut inline = INLINE_WORKER.lock_recover();
     let Some(worker) = inline.as_mut() else {
         return;
     };
     let started = ui::time::now();
     loop {
-        let command = next_command(
-            &mut queue
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let command = next_command(&mut queue.state.lock_recover());
         let Some(command) = command else {
             break;
         };
@@ -2342,10 +2304,7 @@ fn pump_inline(queue: &Arc<WorkerQueue>) {
 }
 
 fn close_session(queue: &WorkerQueue, session_id: u64) {
-    let mut state = queue
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = queue.state.lock_recover();
     close_session_locked(&mut state, session_id);
     drop(state);
     queue.ready.notify_one();
@@ -2447,10 +2406,7 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
     let mut worker = SourceWorker::default();
     loop {
         let command = {
-            let mut state = queue
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = queue.state.lock_recover();
             loop {
                 if let Some(command) = next_command(&mut state) {
                     break command;
@@ -2544,12 +2500,7 @@ impl SourceWorker {
         let session_id = command.session_id;
         let event = match command.command {
             RasterCommand::OpenPath(request) => {
-                let contents = queue
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .open_contents
-                    .remove(&request.id);
+                let contents = queue.state.lock_recover().open_contents.remove(&request.id);
                 let content = session_content(queue, session_id);
                 let opened = match contents {
                     Some((_, name, bytes)) => open_contents(&name, &bytes, &content),
@@ -2786,10 +2737,7 @@ impl SourceWorker {
             RasterCommand::Shutdown => {
                 active.remove(&session_id);
                 prepared_saves.retain(|(owner, _), _| *owner != session_id);
-                let mut state = queue
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = queue.state.lock_recover();
                 state.closing_sessions.remove(&session_id);
                 state.content.remove(&session_id);
                 drop(state);
@@ -2805,8 +2753,7 @@ impl SourceWorker {
 fn session_content(queue: &WorkerQueue, session_id: u64) -> ContentStore {
     queue
         .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .content
         .get(&session_id)
         .cloned()
@@ -2814,10 +2761,7 @@ fn session_content(queue: &WorkerQueue, session_id: u64) -> ContentStore {
 }
 
 fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
-    let mut state = queue
-        .state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = queue.state.lock_recover();
     if matches!(
         &event,
         RasterEvent::Opened { .. }

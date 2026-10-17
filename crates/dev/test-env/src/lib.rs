@@ -43,6 +43,8 @@ mod desktop;
 pub mod hang;
 pub mod idle;
 
+#[cfg(unix)]
+pub use capability::chown_to;
 pub use capability::{Capability, Probe, capability_unavailable};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
@@ -53,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
+use tilo_lock::MutexRecover as _;
 
 struct LockState {
     owner: Option<ThreadId>,
@@ -81,7 +84,7 @@ pub struct EnvLock {
 /// that holds it.
 pub fn lock() -> EnvLock {
     let me = thread::current().id();
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = STATE.lock_recover();
     loop {
         match state.owner {
             None => {
@@ -106,7 +109,7 @@ pub fn lock() -> EnvLock {
 
 impl Drop for EnvLock {
     fn drop(&mut self) {
-        let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = STATE.lock_recover();
         state.depth = state.depth.saturating_sub(1);
         let released = state.depth == 0;
         if released {

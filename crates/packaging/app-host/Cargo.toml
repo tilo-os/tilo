@@ -47,6 +47,7 @@ test-support = []
 dev-overrides = ["service", "package-store/dev-overrides"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command", optional = true }

@@ -187,6 +187,18 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "post-file"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "content", required = true, schema = { type = "string", content = true } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
+]
+
+[[resources.verbs]]
 id = "share-resource"
 incoming_message = true
 kind = "undoable"

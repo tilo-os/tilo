@@ -18,6 +18,7 @@ path = "src/bin/tilo-desktop-scan.rs"
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 thiserror = { workspace = true }
 url.workspace = true
 tilo-paths.workspace = true

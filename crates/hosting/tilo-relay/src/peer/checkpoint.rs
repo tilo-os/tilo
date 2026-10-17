@@ -8,8 +8,9 @@ use super::{
     ReplayCatchup, SelectedPublication, SerialCheckpointCommit, SharedWorkspace, StateCommit,
     StateSource, Step, WorkLimit, checkpoint_prefix_post_first_promotion_fault, inbound_bytes,
     mpsc, prepare_recipients, promote_checkpoint_input, publish_checkpoint_commit,
-    publish_checkpoint_commit_fenced, trace_native_publication,
+    publish_checkpoint_commit_fenced, test_point, trace_native_publication,
 };
+use tilo_lock::MutexRecover as _;
 
 pub(super) const RETENTION_PREFIX_FRAME_CAP: usize = 32;
 pub(super) const RETENTION_PREFIX_BYTE_CAP: usize = 64 * 1024 * 1024;
@@ -341,10 +342,8 @@ impl ReplayPendingWork {
             }
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }
-        #[cfg(test)]
-        if self.frame.is_some() {
-            crate::store::test_barrier::pause(state.store.root(), "replay-pending-frame-held");
-        }
+        test_point!(if self.frame.is_some()
+            => pause(state.store.root(), "replay-pending-frame-held"));
         Ok(Step::More)
     }
 }
@@ -638,10 +637,7 @@ struct CheckpointProgressStep {
 #[cfg(test)]
 impl Drop for CheckpointProgressStep {
     fn drop(&mut self) {
-        let mut observed = self
-            .observed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observed = self.observed.lock_recover();
         let entry = observed.completed.entry(self.phase.clone()).or_default();
         entry.0 = entry.0.saturating_add(1);
         entry.1 = entry.1.saturating_add(self.started.elapsed().as_micros());
@@ -750,14 +746,9 @@ pub(super) fn checkpoint_mode_for(
     CheckpointBatchMode::Serial
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each owner-state guard lives exactly for one blocking checkpoint quantum and ends with its closure"
-)]
+/// Admit a native owner's checkpoint prefix as one batch through the
+/// workspace's ordered persistence owner ([`CheckpointPrefixRun`]); a
+/// failed batch fails its source.
 pub(super) async fn enqueue_checkpoint_prefix(
     workspace: &SharedWorkspace,
     envelopes: Vec<Envelope>,
@@ -771,6 +762,44 @@ pub(super) async fn enqueue_checkpoint_prefix(
     }
     let diagnostics = crate::persistence::diagnostics();
     let admitted_at = diagnostics.then(std::time::Instant::now);
+    let (message_units, charged_size) = checkpoint_prefix_charge(&envelopes)?;
+    if diagnostics {
+        tracing::info!(
+            phase = "checkpoint_prefix_admitted",
+            inputs = message_units,
+            charged_bytes = charged_size,
+        );
+    }
+    let owner = crate::persistence::handle(workspace).await;
+    let workspace = workspace.clone();
+    let work_source = source.clone();
+    let rx = owner
+        .submit_sequence_wait(message_units, charged_size, move |state, workers| {
+            CheckpointPrefixRun {
+                workspace,
+                source: work_source,
+                metrics,
+                role,
+                diagnostics,
+                admitted_at,
+                state,
+                workers,
+            }
+            .run(envelopes, inbound_budget)
+        })
+        .await?;
+    let failure = source.clone();
+    tokio::spawn(async move {
+        if crate::persistence::receipt(rx).await.is_err() {
+            failure.failed();
+        }
+    });
+    Ok(())
+}
+
+/// A prefix's owner charge: one message unit per input, and three times
+/// each input's bytes.
+fn checkpoint_prefix_charge(envelopes: &[Envelope]) -> Result<(u32, usize), PeerError> {
     let message_units = u32::try_from(envelopes.len())
         .map_err(|_| PeerError::Protocol("checkpoint prefix is too long".into()))?;
     let charged_size = envelopes.iter().try_fold(0usize, |total, envelope| {
@@ -781,363 +810,413 @@ pub(super) async fn enqueue_checkpoint_prefix(
         };
         Ok(total.saturating_add(delta.len().saturating_add(256).saturating_mul(3)))
     })?;
-    if diagnostics {
-        tracing::info!(
-            phase = "checkpoint_prefix_admitted",
-            inputs = message_units,
-            charged_bytes = charged_size,
-        );
-    }
-    let owner = crate::persistence::handle(workspace).await;
-    let work_workspace = workspace.clone();
-    let work_source = source.clone();
-    let work_metrics = metrics.clone();
-    let rx = owner
-        .submit_sequence_wait(
-            message_units,
-            charged_size,
-            move |state, workers| async move {
-                let queue_wait_ms = admitted_at.map_or(0, |started| started.elapsed().as_millis());
-                let projection_started = diagnostics.then(std::time::Instant::now);
-                let runtime = crate::workspace_io::fresh_membership(&work_workspace).await?;
-                if !work_source.authorized(&runtime) {
-                    return Err(crate::persistence::error(
-                        "state source authorization changed",
-                    ));
-                }
-                drop(runtime);
-                let staging_peer = work_source.peer.clone();
-                let staging_state = state.clone();
-                let mut batch = crate::persistence::blocking(workers.clone(), move || {
-                    let mut state = staging_state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    new_checkpoint_batch(&mut state, envelopes, Some(&staging_peer))
-                })
-                .await??;
-                let started = diagnostics.then(std::time::Instant::now);
-                loop {
-                    let staging_state = state.clone();
-                    let (next, result) =
-                        Box::pin(crate::persistence::blocking(workers.clone(), move || {
-                            let mut state = staging_state
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let result = step_checkpoint_batch(&mut state, &mut batch);
-                            (batch, result)
-                        }))
-                        .await?;
-                    batch = next;
-                    if matches!(result?, Step::Done(())) {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-                let projection_elapsed_ms =
-                    projection_started.map_or(0, |started| started.elapsed().as_millis());
-                if tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
-                    for (index, input) in batch.inputs.iter().enumerate() {
-                        use crate::store::shell_selection::IncomingDisposition;
-                        let disposition = batch.projected.as_ref().and_then(|outcome| outcome.dispositions.get(index));
-                        let phase = match disposition {
-                            Some(IncomingDisposition::Covered) => "prefix_covered",
-                            Some(IncomingDisposition::Staged) => "prefix_staged",
-                            Some(IncomingDisposition::SelectedLive) => "prefix_selected_live",
-                            Some(IncomingDisposition::Original) => "prefix_original",
-                            None => "prefix_unclassified",
-                        };
-                        trace_native_publication(phase, &input.envelope, None);
-                    }
-                }
-                if diagnostics {
-                    use crate::store::shell_selection::{
-                        BatchProjectionReason, IncomingDisposition, Publication,
-                    };
-                    let (publication, reason, dispositions) = batch.projected.as_ref().map_or(
-                        ("none", "unprojectable_stage", None),
-                        |outcome| {
-                            let publication = match outcome.publication {
-                                Publication::Original => "original",
-                                Publication::Suppress => "suppress",
-                                Publication::Activate(_) => "activate",
-                                Publication::ReplayRequired(_) => "recovery",
-                            };
-                            let reason = match outcome.reason {
-                                BatchProjectionReason::Represented => "represented",
-                                BatchProjectionReason::FinalBasisOmission => "final_basis_omission",
-                                BatchProjectionReason::UnresolvedTailDependencies => {
-                                    "unresolved_tail_dependencies"
-                                }
-                            };
-                            (publication, reason, Some(outcome.dispositions.as_slice()))
-                        },
-                    );
-                    let dispositions = dispositions.unwrap_or_default();
-                    let unclassified = batch.inputs.len().saturating_sub(dispositions.len());
-                    let covered = dispositions
-                        .iter()
-                        .filter(|value| **value == IncomingDisposition::Covered)
-                        .count();
-                    let staged = dispositions
-                        .iter()
-                        .filter(|value| **value == IncomingDisposition::Staged)
-                        .count();
-                    let selected_live = dispositions
-                        .iter()
-                        .filter(|value| **value == IncomingDisposition::SelectedLive)
-                        .count();
-                    let originals = dispositions
-                        .iter()
-                        .filter(|value| **value == IncomingDisposition::Original)
-                        .count();
-                    let first_original = dispositions
-                        .iter()
-                        .position(|value| *value == IncomingDisposition::Original);
-                    let last_original = dispositions
-                        .iter()
-                        .rposition(|value| *value == IncomingDisposition::Original);
-                    tracing::info!(
-                        phase = "checkpoint_prefix_projection",
-                        inputs = batch.inputs.len(),
-                        queue_wait_ms,
-                        projection_elapsed_ms,
-                        publication,
-                        reason,
-                        unclassified,
-                        covered,
-                        staged,
-                        selected_live,
-                        originals,
-                        ?first_original,
-                        ?last_original,
-                    );
-                }
-                let mode = checkpoint_batch_mode(&batch);
-                #[cfg(test)]
-                observe_checkpoint_batch_mode(&batch, mode);
-                for index in 0..batch.inputs.len() {
-                    let input = batch
-                        .inputs
-                        .get(index)
-                        .invariant("checkpoint input missing")?;
-                    let Envelope::Delta {
-                        author_device_public_key,
-                        delta,
-                        ..
-                    } = &*input.envelope
-                    else {
-                        return Err(crate::persistence::error(
-                            "checkpoint batch input is not a delta",
-                        ));
-                    };
-                    let prepared = {
-                        #[cfg(test)]
-                        let _progress =
-                            checkpoint_progress_phase(&batch, "fresh-recipients".into());
-                        prepare_recipients(
-                            &work_workspace,
-                            &work_source,
-                            *author_device_public_key,
-                            role,
-                            delta.len(),
-                        )
-                        .await?
-                    };
-                    batch
-                        .inputs
-                        .get_mut(index)
-                        .invariant("checkpoint input missing")?
-                        .prepared = Some(prepared);
-                    if mode == CheckpointBatchMode::Serial {
-                        let operation_state = state.clone();
-                        let (next, result) =
-                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
-                                let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                let result =
-                                    SerialCheckpointCommit::new(&mut state, &mut batch, index);
-                                (batch, result)
-                            }))
-                            .await?;
-                        batch = next;
-                        let mut work = result?;
-                        loop {
-                            let operation_state = state.clone();
-                            let (next_batch, next_work, result) = Box::pin(
-                                crate::persistence::blocking(workers.clone(), move || {
-                                    let mut state = operation_state
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    let result = work.step(&mut state, &mut batch);
-                                    (batch, work, result)
-                                }),
-                            )
-                            .await?;
-                            batch = next_batch;
-                            work = next_work;
-                            let result = match result {
-                                Ok(result) => result,
-                                Err(error) => {
-                                    if let Some(fence) = work.error_fence(&batch) {
-                                        fence.apply(&work_workspace).await;
-                                    }
-                                    return Err(error);
-                                }
-                            };
-                            match result {
-                                Step::More => tokio::task::yield_now().await,
-                                Step::Done(commit) => {
-                                    publish_checkpoint_commit_fenced(
-                                        &work_workspace,
-                                        &work_source,
-                                        workers.clone(),
-                                        &work_metrics,
-                                        commit,
-                                    )
-                                    .await?;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        let operation_state = state.clone();
-                        let (next, result) =
-                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
-                                let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                #[cfg(test)]
-                                let _progress = checkpoint_progress_phase(&batch, "promote".into());
-                                let result =
-                                    promote_checkpoint_input(&mut state, &mut batch, index);
-                                let result = if index == 0 {
-                                    result.and_then(|()| {
-                                        checkpoint_prefix_post_first_promotion_fault(
-                                            state.store.root(),
-                                        )
-                                    })
-                                } else {
-                                    result
-                                };
-                                (batch, result)
-                            }))
-                            .await?;
-                        batch = next;
-                        result?;
-                    }
-                }
-                if mode != CheckpointBatchMode::Serial {
-                    let mut work = ProjectedCheckpointCommit::new(&batch, mode);
-                    loop {
-                        // Every AllOriginal worker quantum runs after all N
-                        // promotions. A worker acquisition/join error cannot
-                        // prove whether the selected CURRENT switched, so the
-                        // immutable exact-session fence is conservative here.
-                        let worker_fence = work
-                            .recovery_fence
-                            .clone()
-                            .or_else(|| work.full_fence.clone());
-                        let operation_state = state.clone();
-                        let blocking =
-                            Box::pin(crate::persistence::blocking(workers.clone(), move || {
-                                let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                #[cfg(test)]
-                                let _progress = checkpoint_progress_phase(
-                                    &batch,
-                                    if !work.selected_committed {
-                                        format!(
-                                            "selected-{}",
-                                            batch.selector.as_ref().unwrap().diagnostic_phase()
-                                        )
-                                    } else if work.gc_index < batch.inputs.len() {
-                                        "retained-gc".into()
-                                    } else {
-                                        "delivery".into()
-                                    },
-                                );
-                                let result = work.step(&mut state, &mut batch);
-                                (batch, work, result)
-                            }))
-                            .await;
-                        let (next_batch, next_work, result) = match blocking {
-                            Ok(result) => result,
-                            Err(error) => {
-                                if let Some(fence) = worker_fence {
-                                    fence.apply(&work_workspace).await;
-                                }
-                                return Err(error);
-                            }
-                        };
-                        batch = next_batch;
-                        work = next_work;
-                        let result = match result {
-                            Ok(result) => result,
-                            Err(error) => {
-                                if let Some(fence) = work.error_fence(&batch) {
-                                    fence.apply(&work_workspace).await;
-                                }
-                                return Err(error);
-                            }
-                        };
-                        match result {
-                            ProjectedCheckpointStep::More => tokio::task::yield_now().await,
-                            ProjectedCheckpointStep::Commit(commit) => {
-                                let commit = *commit;
-                                #[cfg(test)]
-                                let _progress = checkpoint_progress_phase(&batch, "publish".into());
-                                let commit_fence = CheckpointCommitFence::capture(&commit);
-                                if let Err(error) = publish_checkpoint_commit(
-                                    &work_workspace,
-                                    &work_source,
-                                    workers.clone(),
-                                    &work_metrics,
-                                    commit,
-                                )
-                                .await
-                                {
-                                    work.error_fence(&batch)
-                                        .unwrap_or(commit_fence)
-                                        .apply(&work_workspace)
-                                        .await;
-                                    return Err(error);
-                                }
-                            }
-                            ProjectedCheckpointStep::Done => break,
-                        }
-                    }
-                }
-                if diagnostics {
-                    tracing::info!(
-                        phase = "checkpoint_prefix_complete",
-                        inputs = batch.inputs.len(),
-                        disposition = match mode {
-                            CheckpointBatchMode::Represented => "represented",
-                            CheckpointBatchMode::AllOriginal => "all_original",
-                            CheckpointBatchMode::Serial => "serial",
-                        },
-                        success = true,
-                        elapsed_ms = started.map_or(0, |started| started.elapsed().as_millis()),
-                        selection_preparation_reads = batch
-                            .selector
-                            .as_ref()
-                            .map_or(0, |selector| selector.stats().preparation_reads),
-                    );
-                }
-                drop(inbound_budget);
-                Ok(())
-            },
-        )
-        .await?;
-    let failure = source.clone();
-    tokio::spawn(async move {
-        if crate::persistence::receipt(rx).await.is_err() {
-            failure.failed();
+    Ok((message_units, charged_size))
+}
+
+/// A checkpoint prefix's owner job: stage and project the batch, choose its
+/// mode, prepare and promote (or serially commit) each input, then commit
+/// and publish a projected batch. Every touch of the owner's state is one
+/// blocking quantum on its workers ([`Self::quantum`]).
+struct CheckpointPrefixRun {
+    workspace: SharedWorkspace,
+    source: StateSource,
+    metrics: Arc<crate::metrics::Metrics>,
+    role: crate::auth::PeerRole,
+    diagnostics: bool,
+    admitted_at: Option<std::time::Instant>,
+    state: Arc<std::sync::Mutex<crate::persistence::State>>,
+    workers: Arc<tokio::sync::Semaphore>,
+}
+
+impl CheckpointPrefixRun {
+    async fn run(
+        self,
+        envelopes: Vec<Envelope>,
+        inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
+    ) -> Result<(), crate::store::StoreError> {
+        let queue_wait_ms = self
+            .admitted_at
+            .map_or(0, |started| started.elapsed().as_millis());
+        let projection_started = self.diagnostics.then(std::time::Instant::now);
+        let runtime = crate::workspace_io::fresh_membership(&self.workspace).await?;
+        if !self.source.authorized(&runtime) {
+            return Err(crate::persistence::error(
+                "state source authorization changed",
+            ));
         }
-    });
-    Ok(())
+        drop(runtime);
+        let batch = self.new_batch(envelopes).await?;
+        let started = self.diagnostics.then(std::time::Instant::now);
+        let batch = self.project(batch).await?;
+        let projection_elapsed_ms =
+            projection_started.map_or(0, |started| started.elapsed().as_millis());
+        if tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+            trace_prefix_dispositions(&batch);
+        }
+        if self.diagnostics {
+            log_prefix_projection(&batch, queue_wait_ms, projection_elapsed_ms);
+        }
+        let mode = checkpoint_batch_mode(&batch);
+        #[cfg(test)]
+        observe_checkpoint_batch_mode(&batch, mode);
+        let mut batch = self.admit_inputs(batch, mode).await?;
+        if mode != CheckpointBatchMode::Serial {
+            batch = self.commit_projected(batch, mode).await?;
+        }
+        if self.diagnostics {
+            tracing::info!(
+                phase = "checkpoint_prefix_complete",
+                inputs = batch.inputs.len(),
+                disposition = match mode {
+                    CheckpointBatchMode::Represented => "represented",
+                    CheckpointBatchMode::AllOriginal => "all_original",
+                    CheckpointBatchMode::Serial => "serial",
+                },
+                success = true,
+                elapsed_ms = started.map_or(0, |started| started.elapsed().as_millis()),
+                selection_preparation_reads = batch
+                    .selector
+                    .as_ref()
+                    .map_or(0, |selector| selector.stats().preparation_reads),
+            );
+        }
+        drop(inbound_budget);
+        Ok(())
+    }
+
+    /// Run `operation` on the owner's state as one blocking quantum on its
+    /// workers; the state is locked for exactly the operation.
+    async fn quantum<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut crate::persistence::State) -> T + Send + 'static,
+    ) -> Result<T, crate::store::StoreError> {
+        let state = self.state.clone();
+        crate::persistence::blocking(self.workers.clone(), move || {
+            let mut state = state.lock_recover();
+            operation(&mut state)
+        })
+        .await
+    }
+
+    /// Stage every input of the prefix in a fresh batch.
+    async fn new_batch(
+        &self,
+        envelopes: Vec<Envelope>,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        let staging_peer = self.source.peer.clone();
+        self.quantum(move |state| new_checkpoint_batch(state, envelopes, Some(&staging_peer)))
+            .await?
+    }
+
+    /// Step the batch's staging and projection to completion.
+    async fn project(
+        &self,
+        mut batch: CheckpointBatch,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        loop {
+            let (next, result) = Box::pin(self.quantum(move |state| {
+                let result = step_checkpoint_batch(state, &mut batch);
+                (batch, result)
+            }))
+            .await?;
+            batch = next;
+            if matches!(result?, Step::Done(())) {
+                return Ok(batch);
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Prepare each input's recipients in input order. A serial batch then
+    /// commits and publishes the input; a projected one promotes it.
+    async fn admit_inputs(
+        &self,
+        mut batch: CheckpointBatch,
+        mode: CheckpointBatchMode,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        for index in 0..batch.inputs.len() {
+            self.prepare_input(&mut batch, index).await?;
+            batch = if mode == CheckpointBatchMode::Serial {
+                self.commit_serial(batch, index).await?
+            } else {
+                self.promote(batch, index).await?
+            };
+        }
+        Ok(batch)
+    }
+
+    async fn prepare_input(
+        &self,
+        batch: &mut CheckpointBatch,
+        index: usize,
+    ) -> Result<(), crate::store::StoreError> {
+        let input = batch
+            .inputs
+            .get(index)
+            .invariant("checkpoint input missing")?;
+        let Envelope::Delta {
+            author_device_public_key,
+            delta,
+            ..
+        } = &*input.envelope
+        else {
+            return Err(crate::persistence::error(
+                "checkpoint batch input is not a delta",
+            ));
+        };
+        let prepared = {
+            #[cfg(test)]
+            let _progress = checkpoint_progress_phase(batch, "fresh-recipients".into());
+            prepare_recipients(
+                &self.workspace,
+                &self.source,
+                *author_device_public_key,
+                self.role,
+                delta.len(),
+            )
+            .await?
+        };
+        batch
+            .inputs
+            .get_mut(index)
+            .invariant("checkpoint input missing")?
+            .prepared = Some(prepared);
+        Ok(())
+    }
+
+    /// Commit one input of a serial batch, then publish it.
+    async fn commit_serial(
+        &self,
+        mut batch: CheckpointBatch,
+        index: usize,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        let (next, result) = Box::pin(self.quantum(move |state| {
+            let result = SerialCheckpointCommit::new(state, &mut batch, index);
+            (batch, result)
+        }))
+        .await?;
+        batch = next;
+        let mut work = result?;
+        loop {
+            let (next_batch, next_work, result) = Box::pin(self.quantum(move |state| {
+                let result = work.step(state, &mut batch);
+                (batch, work, result)
+            }))
+            .await?;
+            batch = next_batch;
+            work = next_work;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(fence) = work.error_fence(&batch) {
+                        fence.apply(&self.workspace).await;
+                    }
+                    return Err(error);
+                }
+            };
+            match result {
+                Step::More => tokio::task::yield_now().await,
+                Step::Done(commit) => {
+                    publish_checkpoint_commit_fenced(
+                        &self.workspace,
+                        &self.source,
+                        self.workers.clone(),
+                        &self.metrics,
+                        commit,
+                    )
+                    .await?;
+                    return Ok(batch);
+                }
+            }
+        }
+    }
+
+    /// Promote one input of a projected batch.
+    async fn promote(
+        &self,
+        mut batch: CheckpointBatch,
+        index: usize,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        let (next, result) = Box::pin(self.quantum(move |state| {
+            #[cfg(test)]
+            let _progress = checkpoint_progress_phase(&batch, "promote".into());
+            let result = promote_checkpoint_input(state, &mut batch, index);
+            let result = if index == 0 {
+                result
+                    .and_then(|()| checkpoint_prefix_post_first_promotion_fault(state.store.root()))
+            } else {
+                result
+            };
+            (batch, result)
+        }))
+        .await?;
+        result?;
+        Ok(next)
+    }
+
+    /// Step a projected batch's commit to its end, publishing each commit it
+    /// emits.
+    async fn commit_projected(
+        &self,
+        mut batch: CheckpointBatch,
+        mode: CheckpointBatchMode,
+    ) -> Result<CheckpointBatch, crate::store::StoreError> {
+        let mut work = ProjectedCheckpointCommit::new(&batch, mode);
+        loop {
+            // Every AllOriginal worker quantum runs after all N
+            // promotions. A worker acquisition/join error cannot
+            // prove whether the selected CURRENT switched, so the
+            // immutable exact-session fence is conservative here.
+            let worker_fence = work
+                .recovery_fence
+                .clone()
+                .or_else(|| work.full_fence.clone());
+            let blocking = Box::pin(self.quantum(move |state| {
+                #[cfg(test)]
+                let _progress = checkpoint_progress_phase(
+                    &batch,
+                    if !work.selected_committed {
+                        format!(
+                            "selected-{}",
+                            batch.selector.as_ref().unwrap().diagnostic_phase()
+                        )
+                    } else if work.gc_index < batch.inputs.len() {
+                        "retained-gc".into()
+                    } else {
+                        "delivery".into()
+                    },
+                );
+                let result = work.step(state, &mut batch);
+                (batch, work, result)
+            }))
+            .await;
+            let (next_batch, next_work, result) = match blocking {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(fence) = worker_fence {
+                        fence.apply(&self.workspace).await;
+                    }
+                    return Err(error);
+                }
+            };
+            batch = next_batch;
+            work = next_work;
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Some(fence) = work.error_fence(&batch) {
+                        fence.apply(&self.workspace).await;
+                    }
+                    return Err(error);
+                }
+            };
+            match result {
+                ProjectedCheckpointStep::More => tokio::task::yield_now().await,
+                ProjectedCheckpointStep::Commit(commit) => {
+                    let commit = *commit;
+                    #[cfg(test)]
+                    let _progress = checkpoint_progress_phase(&batch, "publish".into());
+                    let commit_fence = CheckpointCommitFence::capture(&commit);
+                    if let Err(error) = publish_checkpoint_commit(
+                        &self.workspace,
+                        &self.source,
+                        self.workers.clone(),
+                        &self.metrics,
+                        commit,
+                    )
+                    .await
+                    {
+                        work.error_fence(&batch)
+                            .unwrap_or(commit_fence)
+                            .apply(&self.workspace)
+                            .await;
+                        return Err(error);
+                    }
+                }
+                ProjectedCheckpointStep::Done => return Ok(batch),
+            }
+        }
+    }
+}
+
+/// Trace how the projection disposed of each input.
+fn trace_prefix_dispositions(batch: &CheckpointBatch) {
+    for (index, input) in batch.inputs.iter().enumerate() {
+        use crate::store::shell_selection::IncomingDisposition;
+        let disposition = batch
+            .projected
+            .as_ref()
+            .and_then(|outcome| outcome.dispositions.get(index));
+        let phase = match disposition {
+            Some(IncomingDisposition::Covered) => "prefix_covered",
+            Some(IncomingDisposition::Staged) => "prefix_staged",
+            Some(IncomingDisposition::SelectedLive) => "prefix_selected_live",
+            Some(IncomingDisposition::Original) => "prefix_original",
+            None => "prefix_unclassified",
+        };
+        trace_native_publication(phase, &input.envelope, None);
+    }
+}
+
+fn log_prefix_projection(
+    batch: &CheckpointBatch,
+    queue_wait_ms: u128,
+    projection_elapsed_ms: u128,
+) {
+    use crate::store::shell_selection::{BatchProjectionReason, IncomingDisposition, Publication};
+    let (publication, reason, dispositions) =
+        batch
+            .projected
+            .as_ref()
+            .map_or(("none", "unprojectable_stage", None), |outcome| {
+                let publication = match outcome.publication {
+                    Publication::Original => "original",
+                    Publication::Suppress => "suppress",
+                    Publication::Activate(_) => "activate",
+                    Publication::ReplayRequired(_) => "recovery",
+                };
+                let reason = match outcome.reason {
+                    BatchProjectionReason::Represented => "represented",
+                    BatchProjectionReason::FinalBasisOmission => "final_basis_omission",
+                    BatchProjectionReason::UnresolvedTailDependencies => {
+                        "unresolved_tail_dependencies"
+                    }
+                };
+                (publication, reason, Some(outcome.dispositions.as_slice()))
+            });
+    let dispositions = dispositions.unwrap_or_default();
+    let unclassified = batch.inputs.len().saturating_sub(dispositions.len());
+    let count = |disposition: IncomingDisposition| {
+        dispositions
+            .iter()
+            .filter(|value| **value == disposition)
+            .count()
+    };
+    let covered = count(IncomingDisposition::Covered);
+    let staged = count(IncomingDisposition::Staged);
+    let selected_live = count(IncomingDisposition::SelectedLive);
+    let originals = count(IncomingDisposition::Original);
+    let first_original = dispositions
+        .iter()
+        .position(|value| *value == IncomingDisposition::Original);
+    let last_original = dispositions
+        .iter()
+        .rposition(|value| *value == IncomingDisposition::Original);
+    tracing::info!(
+        phase = "checkpoint_prefix_projection",
+        inputs = batch.inputs.len(),
+        queue_wait_ms,
+        projection_elapsed_ms,
+        publication,
+        reason,
+        unclassified,
+        covered,
+        staged,
+        selected_live,
+        originals,
+        ?first_original,
+        ?last_original,
+    );
 }
 
 pub(super) fn checkpoint_prefix_recovery_allowed(

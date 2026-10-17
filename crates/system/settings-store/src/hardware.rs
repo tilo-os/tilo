@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
+use tilo_lock::MutexRecover as _;
 
 mod profiles;
 
@@ -354,9 +355,7 @@ pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64
     let start_ticks = process_start_ticks(pid)
         .ok_or_else(|| std::io::Error::other("this process has no readable start time"))?;
     let path = publisher_lease_path(dir, pid, start_ticks);
-    let mut leases = LEASES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut leases = LEASES.lock_recover();
     if !leases.iter().any(|(held, _)| *held == path) {
         tilo_files::native::create_dir_all(dir)?;
         let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
@@ -1290,9 +1289,6 @@ impl TouchpadScrollMethod {
     pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
 }
 
-/// `input` key for the scroll-distance multiplier applied to wheel and
-/// finger scrolling alike.
-pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
 /// Slowest scroll multiplier the Settings slider can reach.
 pub const SCROLL_SPEED_MIN: f64 = 0.25;
 /// Fastest scroll multiplier the Settings slider can reach.
@@ -1842,6 +1838,9 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    /// Ask an agent about what is selected in the focused window, in the
+    /// quick composer seeded with that selection.
+    AskAgent,
     DictationToggle,
     DictationFinish,
     DictationCancel,
@@ -1878,6 +1877,13 @@ pub struct DesktopControlsConfig {
     /// window and strip navigation and for carrying the focused group. The ordinary arrow bindings remain
     /// available.
     pub vim_mode: bool,
+    /// Hide the desktop's top bar until the pointer reaches for the top
+    /// edge: windows take the whole height, and the bar
+    /// shows over them while it is used. Off by default, so the bar's clock,
+    /// workspace and status stay in view until the person chooses otherwise.
+    /// Per device: a small laptop panel and a large desk display want
+    /// different answers.
+    pub hide_top_bar: bool,
 }
 
 /// A stable, per-user identifier for a control that may appear in Quick
@@ -2456,6 +2462,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            // Windows' assistant key (Win+C): ask an agent about the
+            // focused window's selection.
+            (ShortcutAction::AskAgent, super_chord("c")),
             (ShortcutAction::DictationToggle, super_shift_chord("d")),
             (ShortcutAction::DictationFinish, super_alt_chord("d")),
             (ShortcutAction::DictationCancel, super_shift_chord("escape")),
@@ -3028,6 +3037,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::AskAgent), "Super+c");
         assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
@@ -3229,7 +3239,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 50);
+            assert_eq!(cfg.bindings.len(), 51);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

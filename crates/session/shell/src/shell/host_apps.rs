@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use desktop_entry::{DesktopEntry, EntrySource};
 
 use crate::shell::launcher::{self, LaunchError};
+use tilo_lock::MutexRecover as _;
 
 /// A projection of [`DesktopEntry`] holding only what the shell needs,
 /// testable against a fixed list without real `.desktop` files.
@@ -59,6 +60,95 @@ pub struct QueuedLaunch {
     pub placement: crate::shell::tab_binding::Placement,
     pub portal_workspace_id: Option<String>,
     pub requested_at: std::time::Instant,
+    /// Whether an app that is still running in the tray with no window may
+    /// be reopened through its tray item ([`reopen_from_tray`]) instead.
+    /// Cleared on the launch that follows an item refusing.
+    pub reopen_from_tray: bool,
+}
+
+/// Whether `tree` shows a window of `app`.
+pub(crate) fn has_window(app: &HostApp, tree: &crate::shell::state::WorkspaceTree) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|tab| match &tab.tile {
+            crate::shell::state::TileContent::Foreign { app_id, .. } => app
+                .window_identities
+                .iter()
+                .any(|identity| identity.eq_ignore_ascii_case(app_id.trim())),
+            _ => false,
+        })
+}
+
+/// Reopen an app that lives on in the tray after its last window closed
+/// (1Password, Discord, Steam, `KeePassXC`) by activating its tray item, as
+/// clicking that icon would, rather than starting a second copy. A second
+/// copy only finds the first one running, hands over and exits; for an
+/// Electron app in a Flatpak that is a full sandbox and browser start, many
+/// seconds on a loaded machine, before anything appears.
+///
+/// Only an item whose owner is proven to be this app counts
+/// ([`tilo_tray_host::ItemAddress::owner_app`]), and only while the app shows
+/// no window: with a window open, a launch asks it for a new one. The
+/// placement the request staged is kept, so the window that the item shows
+/// opens where the launch would have put it. If the item refuses, the
+/// launch is queued again without this step and `wake` runs the loop.
+///
+/// Returns whether the item was asked.
+pub(crate) fn reopen_from_tray(
+    request: &QueuedLaunch,
+    tray: &tilo_tray_host::Tray,
+    tree: &crate::shell::state::WorkspaceTree,
+    wake: crate::session_runtime::Wake,
+) -> bool {
+    if !request.reopen_from_tray || has_window(&request.app, tree) {
+        return false;
+    }
+    let mut identities = request.app.window_identities.clone();
+    identities.push(request.app.desktop_id.clone());
+    let Some(item) = tray.item_owned_by(&identities) else {
+        return false;
+    };
+    let mut retry = request.clone();
+    retry.reopen_from_tray = false;
+    let asked = tray.request_or_else(
+        &item.key,
+        tilo_tray_host::TrayRequest::Activate { x: 0, y: 0 },
+        move |error| {
+            tracing::warn!(
+                target: "tilo::app_launch",
+                desktop_id = %retry.app.desktop_id,
+                %error,
+                "the tray item refused to reopen its app; starting it instead"
+            );
+            if queue_launch(retry).is_ok() {
+                wake();
+            }
+        },
+    );
+    match asked {
+        Ok(()) => {
+            tracing::info!(
+                target: "tilo::app_launch",
+                desktop_id = %request.app.desktop_id,
+                tray_item = %item.key,
+                "reopening a running app through its tray item instead of starting a second copy"
+            );
+            true
+        }
+        Err(error) => {
+            tracing::debug!(
+                target: "tilo::app_launch",
+                desktop_id = %request.app.desktop_id,
+                %error,
+                "tray item unavailable; starting the app"
+            );
+            false
+        }
+    }
 }
 
 fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
@@ -88,20 +178,24 @@ fn require_host_execution() -> Result<(), LaunchError> {
 
 pub(crate) fn queue_launch(request: QueuedLaunch) -> Result<(), LaunchError> {
     require_host_execution()?;
-    queued_launches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(request);
+    queued_launches().lock_recover().push(request);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
-    std::mem::take(
-        &mut *queued_launches()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+    std::mem::take(&mut *queued_launches().lock_recover())
+}
+
+/// Take the queued launches of `desktop_id` only, leaving other tests'.
+#[cfg(test)]
+pub(crate) fn take_queued_launches_of(desktop_id: &str) -> Vec<QueuedLaunch> {
+    let mut queued = queued_launches().lock_recover();
+    let (taken, kept) = std::mem::take(&mut *queued)
+        .into_iter()
+        .partition(|request| request.app.desktop_id == desktop_id);
+    *queued = kept;
+    taken
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -613,6 +707,41 @@ pub fn search_path() -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_window_counts_for_the_app_whichever_identity_it_announces() {
+        let password_manager = app(
+            "com.onepassword.OnePassword.desktop",
+            "1Password",
+            &[
+                "1Password",
+                "com.onepassword.OnePassword.desktop",
+                "com.onepassword.OnePassword",
+            ],
+        );
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        assert!(!has_window(&password_manager, &tree), "an empty desktop");
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree,
+            7,
+            Some("org.gnome.TextEditor".into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            !has_window(&password_manager, &tree),
+            "another app's window"
+        );
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree,
+            8,
+            Some("1password".into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            has_window(&password_manager, &tree),
+            "an X11 window announcing its WM class, in any case"
+        );
+    }
+
     fn app(desktop_id: &str, name: &str, identities: &[&str]) -> HostApp {
         HostApp {
             desktop_id: desktop_id.to_string(),
@@ -914,6 +1043,7 @@ mod unavailable_provider_tests {
             package_id: "so.tilo.pdf-viewer".into(),
             display_name: "PDF Viewer".into(),
             resources: [ResourceKind::mime("application/pdf").unwrap()].into(),
+            secondary: false,
         });
         let published = crate::shell::launcher::resolved_host_defaults(
             &candidates,

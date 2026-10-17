@@ -17,6 +17,14 @@ fn paragraph(text: String) -> ClipBlock {
     }
 }
 
+/// A picture pasted into a body with nothing in it yet: the picture, then
+/// the empty line the caret goes on.
+pub(crate) fn into_empty_body(text: String) -> RichTextAction {
+    RichTextAction::ReplaceClips {
+        blocks: vec![paragraph(text), paragraph(String::new())],
+    }
+}
+
 pub(crate) fn plan(
     state: &RichTextState,
     target: &ImagePasteTarget,
@@ -35,18 +43,27 @@ pub(crate) fn plan(
         if !representable(block) {
             return None;
         }
-        if block.text.is_empty() && block.kind == "paragraph" && block.children.is_empty() {
-            return Some(RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: id.clone(),
-                at: 0,
-                del: 0,
-                ins: text,
-            });
+        // The picture goes after the caret's line (or fills it when it is an
+        // empty paragraph) and is followed by a fresh empty line, where the
+        // caret goes on: what is typed next lands under the picture, and the
+        // next paste goes after it, never onto it.
+        // The caret's line is carried over whole, as a replaced selection's
+        // edges are, so its marks and authors stay.
+        let end = block.text.chars().count();
+        let mut fragment = Vec::with_capacity(3);
+        if !(block.text.is_empty() && block.kind == "paragraph") {
+            fragment.push(slice(block, 0..end));
         }
-        return Some(RichTextAction::InsertParagraph {
-            after: id.clone(),
-            text,
+        fragment.push(paragraph(text));
+        fragment.push(paragraph(String::new()));
+        return Some(RichTextAction::PasteFragment {
+            region: RegionKind::Body,
+            start_block: id.clone(),
+            start: 0,
+            end_block: id.clone(),
+            end,
+            blocks: fragment,
+            adopt_first_style: true,
         });
     };
     let first = blocks.first()?;
@@ -73,11 +90,15 @@ pub(crate) fn plan(
         fragment.push(slice(state.block(&first.id)?, 0..start));
     }
     fragment.push(paragraph(text));
+    // The caret continues on the line after the picture: the rest of the
+    // replaced selection's last line, or a fresh empty line.
     if *end_byte < last.text.len() {
         fragment.push(slice(
             state.block(&last.id)?,
             end..last.text.chars().count(),
         ));
+    } else {
+        fragment.push(paragraph(String::new()));
     }
     Some(RichTextAction::PasteFragment {
         region: RegionKind::Body,
@@ -221,6 +242,73 @@ mod tests {
             }
         }
         assert_eq!(blocks[3], before.blocks(2..3).next().unwrap());
+    }
+
+    /// A picture pasted at the caret goes after the caret's line, which keeps
+    /// its marks, and is followed by an empty line for the caret; one pasted
+    /// on an empty line fills that line instead of leaving it above.
+    #[test]
+    fn a_picture_pasted_at_the_caret_is_followed_by_a_line_for_the_caret() {
+        let mut doc = fixture();
+        let before = state(&doc);
+        let first = before.blocks(0..1).next().unwrap().id.clone();
+        RichTextAction::SetMark {
+            region: RegionKind::Body,
+            spans: vec![Span {
+                block: first.clone(),
+                start: 0,
+                end: 2,
+            }],
+            name: "author".into(),
+            value: Some(MarkVal::Str("peer".into())),
+            also_clear: vec![],
+        }
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let before = state(&doc);
+        plan(
+            &before,
+            &ImagePasteTarget::After(first),
+            "![Image](asset:one)".into(),
+        )
+        .unwrap()
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let after = state(&doc);
+        let blocks = after.blocks(0..after.body().len()).collect::<Vec<_>>();
+        assert_eq!(
+            blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(),
+            ["Ä😀", "![Image](asset:one)", "", "日本", "After"]
+        );
+        assert!(
+            blocks[0].marks.iter().any(|mark| mark.name == "author"),
+            "{:?}",
+            blocks[0].marks
+        );
+        let empty = blocks[2].id.clone();
+        plan(
+            &after,
+            &ImagePasteTarget::After(empty),
+            "![Image](asset:two)".into(),
+        )
+        .unwrap()
+        .apply_under(&mut doc, &ROOT)
+        .unwrap();
+        let again = state(&doc);
+        assert_eq!(
+            again
+                .blocks(0..again.body().len())
+                .map(|b| b.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Ä😀",
+                "![Image](asset:one)",
+                "![Image](asset:two)",
+                "",
+                "日本",
+                "After"
+            ]
+        );
     }
 
     #[test]

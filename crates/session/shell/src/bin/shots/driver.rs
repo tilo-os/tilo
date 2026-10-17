@@ -520,6 +520,9 @@ impl ShellDriver {
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
+            // A still shows the capture as finished: the compositor applies
+            // the worker's result on a later frame, a shot waits for it.
+            let _ = executor.finish_io_blocking(&mut self.fb);
             return scene;
         }
         self.fb.draw_capture_overlays(&mut scene);
@@ -1067,6 +1070,99 @@ impl ShellDriver {
         );
     }
 
+    /// A desk to show the widgets on: a player in another workspace than
+    /// this one, and three people here, one with a status line they wrote,
+    /// one whose machine generated theirs, one with none, each on a window.
+    pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
+        use shell::shell::state::Collaborator;
+        let player = PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
+            identity: "Spotify".to_string(),
+            status: PlaybackStatus::Playing,
+            title: Some("Teardrop".to_string()),
+            artist: Some("Massive Attack".to_string()),
+            artwork: None,
+            track_id: Some("/org/tilo/shots/track/1".to_string()),
+            length_us: Some(330_000_000),
+            position_us: 94_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: true,
+            can_go_previous: true,
+            observed_at: Instant::now(),
+        };
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+        let handle = self.chrome_handle();
+        let room = {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let tab_ids = tree
+                .desktop
+                .active_workspace()
+                .into_iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            if let Some(active) = tree.desktop.active_workspace_mut() {
+                for (index, (id, name)) in [("mara", "Mara"), ("jonas", "Jonas"), ("ada", "Ada")]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if !active.collaborators.iter().any(|person| person.id == id) {
+                        let mut person = Collaborator::new(id, name);
+                        person.active_tab = index
+                            .checked_rem(tab_ids.len())
+                            .and_then(|slot| tab_ids.get(slot))
+                            .copied();
+                        active.collaborators.push(person);
+                    }
+                }
+            }
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        };
+        if let Some(room) = room {
+            for (id, text, automatic) in [
+                ("mara", "Finishing the layout review before 3", false),
+                ("jonas", "Comparing two onboarding drafts", true),
+            ] {
+                self.fb.apply_remote_presence_for_shots(
+                    id.to_string(),
+                    ui::presence::PresenceKey::Workspace { id: room.clone() },
+                    ui::collaboration::PresencePayload::Status {
+                        text: text.to_string(),
+                        automatic,
+                    },
+                );
+            }
+        }
+    }
+
+    /// A key reached the focused window just now.
+    pub fn desk_typing_for_shots(&mut self) {
+        let now = Instant::now();
+        self.host_mut().note_client_typing(Some(now), now);
+    }
+
+    /// Super alone, as the compositor classifies it.
+    pub fn super_gesture_for_shots(&mut self, gesture: shell::shell::input_policy::SuperGesture) {
+        let state = std::mem::take(&mut self.state);
+        let root = self.root_obj.clone();
+        self.host_mut().super_gesture(gesture, &state, &root);
+        self.state = state;
+    }
+
+    /// The focused field's caret, in desktop coordinates.
+    pub fn set_text_caret_for_shots(&mut self, caret: Option<Rect>) {
+        self.host_mut().set_text_caret(caret);
+    }
+
     /// Populate the live room through the same collaborator/capability state
     /// the People overlay reads. The varied tab attribution lets the rendered
     /// proof exercise meaningful location lines instead of screenshot-only
@@ -1473,6 +1569,7 @@ impl ShellDriver {
             "qs-edit-drag" => self.scene_qs_edit(true),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
             "qs-compact" => self.scene_qs_compact(),
+            "qs-scrolled" => self.scene_qs_scrolled(),
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
             "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
@@ -1484,6 +1581,7 @@ impl ShellDriver {
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
+            "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
@@ -1503,6 +1601,17 @@ impl ShellDriver {
                     .map_err(str::to_owned)?;
                 #[cfg(not(debug_assertions))]
                 return Err("dictation shots require a debug build".into());
+            }
+            "agent-composer"
+            | "agent-composer-typed"
+            | "agent-composer-answer"
+            | "agent-composer-working" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_agent_composer_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("agent composer shots require a debug build".into());
             }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
@@ -1664,6 +1773,19 @@ impl ShellDriver {
             });
         });
         self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// Quick Settings in a window too short for its page, scrolled to the
+    /// end with the wheel: the tiles keep their size and the lower controls
+    /// come into view (compare `quick-settings` at the same size).
+    fn scene_qs_scrolled(&mut self) {
+        self.scene_quick_settings();
+        // The first paint sizes the page's scroll region, as the first
+        // frame does before any pointer event reaches it.
+        let _ = self.paint();
+        let panel = self.fb.host().quick_settings_rect_for_tests();
+        self.move_cursor(panel.center());
+        self.mouse_wheel(0.0, -40.0);
     }
 
     fn scene_qs_compact(&mut self) {
@@ -1843,6 +1965,46 @@ impl ShellDriver {
             st.ws_settings_tab = WsTab::Agents;
         });
         self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    /// One agent's Allow / Ask first / Deny answers: Mail open with a
+    /// changed answer, Files narrowed, and sending mail always allowed.
+    fn scene_ws_settings_agent_access(&mut self) {
+        use tilo_action_policy::agent_answers::AnswerScope;
+        use tilo_action_policy::{ActionKind, Answer};
+        self.seed_agent_member_for_shots();
+        let mail = AnswerScope::app("so.tilo.mail");
+        self.with_chrome(|st| {
+            let actor = st.local_user_id.clone();
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
+                    tilo_desktop::workspace_settings::agent_access::set_agent_answers(
+                        ws,
+                        &actor,
+                        "scribe",
+                        &[
+                            (mail.clone(), ActionKind::Undoable, Some(Answer::Ask)),
+                            (
+                                AnswerScope::app("so.tilo.file-explorer"),
+                                ActionKind::Outside,
+                                Some(Answer::Deny),
+                            ),
+                            (
+                                AnswerScope::action("so.tilo.mail", "mail.mailbox", "send_message"),
+                                ActionKind::Outside,
+                                Some(Answer::Allow),
+                            ),
+                        ],
+                    );
+                }
+            }
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Agents;
+        });
+        let host = self.fb.host_mut();
+        host.open_agent_review_for_shots("scribe", Some(mail));
+        host.force_ws_settings_settled();
     }
 
     /// The People roster (`collaborators_overlay.rs`): two members present,
@@ -2722,6 +2884,7 @@ impl ShellDriver {
         "qs-edit-drag",
         "qs-hardware-wired",
         "qs-compact",
+        "qs-scrolled",
         "qs-wifi-drillin",
         "qs-wifi-long-labels",
         "qs-bt-drillin",
@@ -2734,6 +2897,7 @@ impl ShellDriver {
         "ws-settings-permissions",
         "ws-settings-apps",
         "ws-settings-agents",
+        "ws-settings-agent-access",
         "collaborators",
         "launchpad",
         "launchpad-notes-card",
@@ -2747,6 +2911,10 @@ impl ShellDriver {
         "dictation-listening",
         "dictation-finishing",
         "dictation-model-required",
+        "agent-composer",
+        "agent-composer-typed",
+        "agent-composer-answer",
+        "agent-composer-working",
         "notifications",
         "notifications-one",
         "notifications-dnd",

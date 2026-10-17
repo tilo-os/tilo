@@ -45,6 +45,7 @@ use vello::Scene;
 
 use super::frame::FramePaint;
 use super::render::OutputId;
+use tilo_lock::MutexRecover as _;
 
 /// Frames accepted beyond the one currently being presented, unless the
 /// presenter reports its own [`Presenter::queue_depth`].
@@ -284,9 +285,7 @@ struct QueuedFrame {
 type PendingFrames = Arc<Mutex<VecDeque<QueuedFrame>>>;
 
 fn lock_pending(pending: &PendingFrames) -> std::sync::MutexGuard<'_, VecDeque<QueuedFrame>> {
-    pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    pending.lock_recover()
 }
 
 /// A frame the pipe accepted ([`PresentPipe::submit_frame_with_input_age`]).
@@ -469,14 +468,10 @@ impl RetireBoard {
     /// paces by and acknowledges frames with.
     fn retire(&self, retirement: Retirement, physical: Option<PhysicalPresentation>) {
         self.physical_results
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .push_back((retirement.serial, physical));
         let serial = retirement.serial;
-        *self
-            .last_retirement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retirement);
+        *self.last_retirement.lock_recover() = Some(retirement);
         self.presented.store(serial, Ordering::Release);
     }
 
@@ -907,11 +902,7 @@ impl PresentPipe {
 
     /// Drain exact-frame physical outcomes on the Wayland dispatch thread.
     pub fn take_physical_results(&self) -> Vec<PhysicalOutcome> {
-        self.physical_results
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.physical_results.lock_recover().drain(..).collect()
     }
 
     /// Whether another frame may be built and handed over ([`admits`]).
@@ -997,10 +988,7 @@ impl PresentPipe {
     /// overlaps rendering with the flip, the retirement is published once the
     /// flip retired ([`Presenter::retire_owed`]), not when the render returned.
     pub fn latest_retirement(&self) -> Option<Retirement> {
-        *self
-            .last_retirement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.last_retirement.lock_recover()
     }
 
     /// Whether the render thread has exited, normally or through a panic.
@@ -1263,23 +1251,14 @@ mod tests {
     impl Presenter for Blocking {
         // Every lock here recovers from poisoning rather than panicking — a failing test that poisons the gate shouldn't also print an unrelated `PoisonError` backtrace over the real assertion failure.
         fn present(&mut self, _scene: &Scene, _output: OutputId) {
-            let _held = self
-                .gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _held = self.gate.lock_recover();
             self.seen.fetch_add(1, Ordering::Release);
         }
         fn resize(&mut self, size: (u32, u32)) {
-            self.resizes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(size);
+            self.resizes.lock_recover().push(size);
         }
         fn set_dpms(&mut self, on: bool) {
-            self.dpms
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(on);
+            self.dpms.lock_recover().push(on);
         }
     }
 
@@ -1320,9 +1299,7 @@ mod tests {
             &vello::kurbo::Rect::new(0.0, 0.0, 4.0, 4.0),
         );
         let gate = Arc::new(Mutex::new(()));
-        let rendering = gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rendering = gate.lock_recover();
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
@@ -1685,18 +1662,12 @@ mod tests {
     impl Presenter for Recording {
         fn present(&mut self, _scene: &Scene, _output: OutputId) {}
         fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
-            let _held = self
-                .gate
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.rendered
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((
-                    frame.revision,
-                    frame.previous_revision,
-                    frame.damage_regions.clone(),
-                ));
+            let _held = self.gate.lock_recover();
+            self.rendered.lock_recover().push((
+                frame.revision,
+                frame.previous_revision,
+                frame.damage_regions.clone(),
+            ));
         }
     }
 
@@ -1837,10 +1808,7 @@ mod tests {
         }
         impl Presenter for VblankPaced {
             fn present(&mut self, _scene: &Scene, _output: OutputId) {
-                let _held = self
-                    .gate
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _held = self.gate.lock_recover();
             }
             fn queue_depth(&self) -> usize {
                 0
@@ -1977,10 +1945,7 @@ mod tests {
 
     impl Presenter for Overlapping {
         fn present(&mut self, _scene: &Scene, _output: OutputId) {
-            let _held = self
-                .gpu
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _held = self.gpu.lock_recover();
             self.owes = self.queues_flip.pop_front().unwrap_or(true);
             self.rendered.fetch_add(1, Ordering::Release);
         }
@@ -2355,9 +2320,6 @@ mod tests {
             }
             fn owes_retirement(&self) -> bool {
                 self.0.owes
-            }
-            fn retire_owed(&mut self, _wait: Duration) -> Vec<OwedRetirement> {
-                Vec::new()
             }
         }
         let rendered = Arc::new(AtomicU64::new(0));

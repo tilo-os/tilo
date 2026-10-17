@@ -45,7 +45,7 @@
 //! plane the embedder supplied, if any.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
@@ -74,6 +74,7 @@ use super::{
     RemoveMemberRequest, Rooms, SetMemberRoleRequest,
 };
 use crate::app_serving::AppServingPlane;
+use tilo_lock::MutexRecover as _;
 
 /// Listing the invitations still redeemable: part of inviting.
 pub(crate) const INVITATIONS: &str = "invitation.list";
@@ -1010,10 +1011,7 @@ impl HostRoomActions {
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, InvocationLedger<InvocationState>> {
-        self.shared
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.ledger.lock_recover()
     }
 
     /// Whether `caller` started invocation `id` here.

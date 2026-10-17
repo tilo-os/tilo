@@ -103,8 +103,9 @@ sys.exit(37 if sys.argv[1] == os.environ.get('FAIL_ARCHIVE') else 0)
             "/target/publish/ci-control/image.oci.tar",
         ])
         self.assertIn(SCRIPT, smoke["inputs"])
-        self.assertIn("image-ci-fast-smoke", checks["publish-ci-fast"]["needs"])
-        self.assertEqual(checks["publish-ci-fast"]["on"], ["main"])
+        for name in ("publish-ci-fast", "publish-ci-control"):
+            self.assertIn("image-ci-fast-smoke", checks[name]["needs"])
+            self.assertEqual(checks[name]["on"], ["main", "dispatch"])
         control = checks["image-ci-control"]
         self.assertIn("image-ci-fast", control["needs"])
         self.assertIn("CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar", control["run"])

@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tilo_lock::MutexRecover as _;
 use ui::ColorCompat;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -379,9 +380,7 @@ pub fn bitmap(shape: CursorShape, size: u32) -> Arc<CursorBitmap> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let size = size.clamp(16, MAX_PIXEL_SIZE);
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = cache.lock_recover();
     if let Some((_, found)) = cache.iter().find(|(key, _)| *key == (shape, size)) {
         return Arc::clone(found);
     }

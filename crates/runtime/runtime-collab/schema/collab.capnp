@@ -172,7 +172,7 @@ interface ChannelHandle {
   # resources. A delta that does not apply (an unknown shape or template, an
   # invalid action) is refused and changes nothing; the publisher then sends
   # a `reset` delta.
-  publishActionSurface @62 (appId :Text, reset :Bool,
+  publishActionSurface @61 (appId :Text, reset :Bool,
                             shapes :List(ActionShape),
                             templates :List(ActionTemplate),
                             resources :List(ActionResource),
@@ -287,15 +287,14 @@ interface ChannelHandle {
   # tilo_actions::remote::UpdateMark), settles, the run is cancelled, or the
   # wait (capped by the broker) ends; the answer is observed and authorized
   # afresh when it is given. A broker without it answers at once.
-  # Retired durable-step request slots and the continuation result stay
-  # reserved with their original types. They carry no task-step semantics;
-  # waitMs and seenJson append new slots rather than reuse the old ones.
+  # Preserve the published parameter order. Additional fields append after
+  # provider; they must not shift waitMs, seenJson or any earlier wire slot.
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text,
-                        retiredStepIndex :UInt32, retiredHasStep :Bool,
-                        waitMs :UInt32, seenJson :Text, provider :Text)
+                        invocation :Text, waitMs :UInt32, seenJson :Text,
+                        provider :Text,
+                        retiredStepIndex :UInt32, retiredHasStep :Bool)
       -> (id :UInt64, updateJson :Text, retiredContinuation :Data);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
@@ -450,14 +449,19 @@ interface ChannelHandle {
   # Final receipt remains authoritative. No fallback to raw execution or @58.
   approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
 
+  # Resolves once what `nearbyTransferCommand`'s snapshot would show this
+  # connection (devices online, transfers and their phases) may have changed
+  # since `after`: 0 at first, then the `change` the previous call returned.
+  # It carries no device, transfer or handle; the endpoint asks for a fresh
+  # snapshot through `nearbyTransferCommand`, which re-checks the route and
+  # the person's continuity policy on every answer. An endpoint keeps one
+  # call pending instead of asking on a timer. Only the certified Files
+  # route is answered; a host without Nearby Send answers unimplemented.
+  nearbyTransferChanged @62 (after :UInt64) -> (change :UInt64);
 
   # Private website session custody for the certified Browser Read route.
   # Identity, person and source are derived by the broker, never caller claims.
   browserServiceSessionCommand @63 (command :Data) -> (reply :Data);
-
-  # Surface publication and browser session custody independently used @61.
-  # Reserve it so an older caller cannot dispatch into the other operation.
-  retiredSurfaceBrowserOrdinalCollision @61 () -> ();
 
 }
 
@@ -533,6 +537,9 @@ struct ActionDirectoryRow {
   # Bounded declarative metadata. The shell parses this into its own themed
   # primitives; application drawing code never crosses this boundary.
   resourcePresentationJson @9 :Text;
+  # Empty for legacy publishers. Resource-only rows retain the operation
+  # governing disclosure, not just its Read policy contract.
+  visibilityGoverningKind @10 :Text;
 }
 
 struct ActionDirectoryPage {

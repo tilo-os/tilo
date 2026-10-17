@@ -15,6 +15,7 @@ name = "flatpak-share-demo"
 path = "src/bin/flatpak-share-demo.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The library uses only the standard library and tracing. The demo binary also
 # depends on the compositor's encoder, shared-surface decoder and recording
 # muxer (all in the video-streaming stack) and the toolkit's text stack.

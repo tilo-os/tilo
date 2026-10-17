@@ -689,20 +689,13 @@ impl Core {
         };
         match model.reveal_value(&id) {
             Ok(secret) => {
-                if !ui::try_clipboard_copy(&secret) {
+                if !ui::try_clipboard_copy_secret(&secret, CLIPBOARD_FOR) {
                     self.toast("Could not copy to the clipboard. Try again.");
                     return;
                 }
-                let lease = accounts::ClipboardLease::new(secret, CLIPBOARD_FOR);
-                let clearing = ui::rt::spawn_thread("passwords-clipboard-clear", move || {
-                    let _ = ui::rt::sleep_thread(CLIPBOARD_FOR);
-                    let current = ui::text_selection::clipboard_paste();
-                    if lease.should_clear(current.as_deref()) {
-                        let _ = ui::try_clipboard_copy("");
-                    }
-                });
                 let label = secret_label(kind).to_lowercase();
-                self.toast(if clearing.is_ok() {
+                // Without threads (a browser page) the clipboard is not cleared.
+                self.toast(if ui::rt::available(ui::rt::Feature::Threads) {
                     format!("Copied {label}. The clipboard clears in 30 seconds.")
                 } else {
                     format!("Copied {label}")

@@ -8,6 +8,7 @@ use super::{
     WorkspaceAutobind, WorkspaceRegistry, current_session, mpsc, room_access,
     session_peer_authorized, unix_now_ns,
 };
+use tilo_lock::MutexRecover as _;
 
 /// How a subscriber's replay capture finished.
 enum SubscribeReplayCompletion {
@@ -36,11 +37,7 @@ async fn open_resume(
     resume: Subscription,
 ) -> Result<Option<crate::store::replay::ResumeSkip>, PeerError> {
     let (Subscription::From(position), Some(issuer)) = (resume, session.positions) else {
-        session
-            .resumes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&workspace_id);
+        session.resumes.lock_recover().remove(&workspace_id);
         return Ok(None);
     };
     let device = peer.device_public_key;
@@ -90,11 +87,7 @@ async fn open_resume(
     .await
     .map_err(|error| PeerError::Io(std::io::Error::other(error)))??;
     let (log, skip) = opened;
-    session
-        .resumes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(workspace_id, log);
+    session.resumes.lock_recover().insert(workspace_id, log);
     Ok(skip)
 }
 
@@ -200,6 +193,7 @@ pub(super) async fn handle_subscribe(
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
     *replay = Some((workspace_id, ticket, handle, catchup));
+    session.metrics.inc_subscribes();
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
     }

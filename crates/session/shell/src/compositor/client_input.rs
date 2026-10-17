@@ -110,6 +110,11 @@ pub struct ClientInput {
     /// evdev codes whose *press* was forwarded to a client. A release
     /// forwards iff its press did — a client never sees a release for a key it never saw pressed (a shell chord).
     forwarded_keys: HashSet<u32>,
+    /// evdev codes whose release [`deliver_held_key_release`] already sent
+    /// while the release itself still waits in the input queue; the queued
+    /// release then reaches the shell's own bookkeeping but not the client
+    /// a second time.
+    early_released_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
     /// Whether this module currently owns a content-drop indicator in the
@@ -620,6 +625,9 @@ impl State {
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered {
             self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
+            if pressed && !is_modifier_keycode(keycode) {
+                self.last_client_typing_at = Some(std::time::Instant::now());
+            }
         }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             if let Some((delivery_time_ns, observed_surface)) =
@@ -1297,7 +1305,7 @@ pub fn route_tablet_event(
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
     use crate::compositor::backend::TabletPhase;
-    let usable = !session_locked && !chrome_captures_input(fb);
+    let usable = !session_locked && !chrome_captures_pointer(fb);
     let under = usable
         .then(|| surface_at(state, fb, input.position))
         .flatten();
@@ -1566,7 +1574,7 @@ pub fn route_input(
             let _ = route_cursor_moved(
                 state,
                 fb,
-                chrome_captures_input(fb),
+                chrome_captures_pointer(fb),
                 winit::dpi::PhysicalPosition::new(x, y),
             );
         }
@@ -1580,14 +1588,19 @@ pub fn route_input(
             // leaves the widget hit-test one event behind.
             fb.host_mut()
                 .note_pointer(vello::kurbo::Point::new(position.x, position.y));
-            route_cursor_moved(state, fb, chrome_captures_input(fb), *position)
+            route_cursor_moved(state, fb, chrome_captures_pointer(fb), *position)
         }
         WindowEvent::CursorLeft { .. } => route_cursor_left(state),
         WindowEvent::MouseInput {
             state: element,
             button,
             ..
-        } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
+        } => {
+            if *element == ElementState::Pressed {
+                fb.host_mut().note_pointer_press();
+            }
+            route_mouse_input(state, fb, chrome_captures_pointer(fb), *element, *button)
+        }
         WindowEvent::MouseWheel { delta, phase, .. } => {
             route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
         }
@@ -1820,6 +1833,48 @@ fn route_mouse_wheel(
     }
 }
 
+/// Send the release of a key the focused client holds now, ahead of the
+/// rest of the input queue it waits in; `true` when it was sent.
+///
+/// A client repeats a held key from `wl_keyboard.repeat_info` until the
+/// release reaches it. The run loop reads input once per turn, ahead of
+/// work that can take longer than the repeat delay, so a release that
+/// arrives meanwhile would reach the client only after it had typed the key
+/// again. The loop therefore reads input between its phases too and sends
+/// such releases at once. Only the release of a non-modifier key whose
+/// press this client received qualifies: it goes to that client whatever
+/// else is queued before it (`route_keyboard_input` forwards it
+/// unconditionally), so sending it early changes when the client sees it,
+/// never whether. Everything else, presses included, waits for the full
+/// dispatch, where the queued release still runs the shell's bookkeeping
+/// and is not sent again.
+pub fn deliver_held_key_release(state: &mut State, event: &WindowEvent) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    if key.state != ElementState::Released
+        || key.repeat
+        || is_modifier_key(&key.logical_key)
+        || state.client_input.participant.is_some()
+        || state.client_input.keyboard_focus.is_none()
+    {
+        return false;
+    }
+    let Some(code) = evdev_keycode(key) else {
+        return false;
+    };
+    if !state.client_input.forwarded_keys.contains(&code)
+        || !state.remote_seats.local_release_reaches_apps(code)
+    {
+        return false;
+    }
+    state.client_input.forwarded_keys.remove(&code);
+    let _ = state.remote_seats.local_key_transition(code, false);
+    let delivered = state.deliver_client_key(code, false, true);
+    state.client_input.early_released_keys.insert(code);
+    delivered
+}
+
 /// `WindowEvent::KeyboardInput` half of [`route_input`]: every key goes
 /// through here (shell-owned ones too, to keep the seat's xkb state in
 /// sync), forwarded to the focused client only when the shell doesn't own the chord and a client actually holds keyboard focus.
@@ -1857,6 +1912,12 @@ fn route_keyboard_input(
     let Some(code) = evdev_keycode(key) else {
         return false;
     };
+    if pressed {
+        state.client_input.early_released_keys.remove(&code);
+    } else if state.client_input.early_released_keys.remove(&code) {
+        // The client already has this release (`deliver_held_key_release`).
+        return true;
+    }
     // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
     let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
     // Static safety chords and user-edited shortcuts share the same
@@ -2257,7 +2318,7 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     state.forward_client_pointer_motion(global, target);
 }
 
-/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked.
+/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked, and keep the strip where it is: the click landed on what was on screen.
 fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     let mut changed = false;
     fb.with_chrome(|chrome| {
@@ -2275,7 +2336,16 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
             chrome.bump();
         }
     });
+    if changed {
+        fb.host_mut().keep_clicked_group_in_place(strip, group);
+    }
     changed
+}
+
+/// Whether evdev `keycode` is a modifier on its own (Shift, Ctrl, Alt,
+/// Super, `AltGr`, Caps Lock): pressing one is not typing.
+fn is_modifier_keycode(keycode: u32) -> bool {
+    matches!(keycode, 29 | 42 | 54 | 56 | 58 | 97 | 100 | 125 | 126)
 }
 
 #[cfg(test)]
@@ -2330,17 +2400,36 @@ mod tests {
                 display.handle(),
                 tree,
             );
+            // At rest the bar hides: the top of the window is the client's,
+            // and the keyboard never leaves it for the bar.
             let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
+            let _ = route_input(&mut state, &mut fb, &moved, &Modifiers::default());
+            assert!(!chrome_captures_pointer(&fb));
+            assert!(!chrome_captures_input(&fb));
 
+            // Reached for, its controls take the pointer (only the pointer).
+            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("maximized group")
+                .set_maximized_chrome_shown_for_tests(true);
+            let _ = fb.paint_settled();
+            let restore = fb
+                .host()
+                .active_window_bounds()
+                .and_then(|bounds| bounds.restore)
+                .expect("Restore shows");
+            let moved = ui::synthetic_input::cursor_moved(restore.center().x, restore.center().y);
             assert!(
                 !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
                 "captured motion must fall through to shell widget dispatch"
             );
-            assert_eq!(
-                fb.host().pointer_position(),
-                Some(vello::kurbo::Point::new(1210.0, 70.0)),
+            assert_eq!(fb.host().pointer_position(), Some(restore.center()));
+            assert!(chrome_captures_pointer(&fb));
+            assert!(
+                !chrome_captures_input(&fb),
+                "the bar takes the pointer, never the client's keyboard"
             );
-            assert!(chrome_captures_input(&fb));
         }
         // Phase `clicking_a_window_defers_focus_persistence_until_after_input_flush`.
         {

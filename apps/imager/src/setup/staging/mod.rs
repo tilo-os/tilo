@@ -1,6 +1,6 @@
 //! Host-side staging for USB-free Full Tilo installation.
 //!
-//! Contract: `docs/superpowers/specs/2026-09-22-usb-free-install-design.md`.
+//! Contract: `docs/architecture/usb-free-install.md`.
 //! The unprivileged UI probes and plans; only the elevated helper
 //! (`--tilo-staging-helper`) mutates disks or firmware, and it revalidates the
 //! reviewed plan against a fresh probe before every mutation.

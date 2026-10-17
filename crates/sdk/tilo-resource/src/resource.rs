@@ -4,7 +4,7 @@
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,6 +19,7 @@ use crate::model::{Doc, ModelError};
 use crate::path::Edit;
 use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
+use tilo_lock::MutexRecover as _;
 
 /// A resource type. Implement it by hand for a type with its own storage
 /// layout and merge semantics (a timeline, a rich-text document, a photo edit
@@ -308,6 +309,15 @@ pub trait Resource: Sized + 'static {
     /// the same door, permissions and audit as every other action — never
     /// from a screenshot.
     const READABLE: bool = false;
+
+    /// Whether this exact child is part of the public document projection
+    /// answered by `read_content`. Defaults to false even for readable parents.
+    /// This is a structural declaration, not a permission check: it must not
+    /// perform IO, inspect private view state, or probe by executing a read.
+    /// Eligibility must remain stable while the child's identity exists.
+    fn document_child(_state: &Self::State, _id: &str) -> bool {
+        false
+    }
 
     /// What the resource holds, as JSON a caller can act on: with no `item`,
     /// the resource itself (a notebook's pages); with `item`, the nested
@@ -1429,6 +1439,31 @@ impl TryFrom<PlaceWire> for Place {
     }
 }
 
+// A selection carried to an agent is the place an action takes, in the
+// same wire form, so the agent can hand it back unchanged.
+impl From<Place> for tilo_actions::SelectionPlace {
+    fn from(place: Place) -> Self {
+        match place {
+            Place::Item(item) => Self::item(item),
+            Place::Caret { item, at } => Self::caret(item, at),
+            Place::Range { item, start, end } => Self::range(item, start, end),
+        }
+    }
+}
+
+impl TryFrom<tilo_actions::SelectionPlace> for Place {
+    type Error = String;
+
+    fn try_from(place: tilo_actions::SelectionPlace) -> Result<Self, String> {
+        Self::try_from(PlaceWire {
+            item: place.item,
+            at: place.at,
+            start: place.start,
+            end: place.end,
+        })
+    }
+}
+
 /// Builds a resource's action from arguments already bound against the
 /// declaration's parameters. `now_ms` is the origin's clock, captured once so
 /// replay is deterministic.
@@ -1977,7 +2012,7 @@ static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
 #[doc(hidden)]
 pub fn reset_type_schemas() {
     if let Some(cache) = SCHEMAS.get() {
-        let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut store = cache.lock_recover();
         store.epoch = store.epoch.wrapping_add(1);
         store.entries.clear();
     }
@@ -1986,9 +2021,7 @@ pub fn reset_type_schemas() {
 /// Which generation of app code built what is cached from the resource
 /// types: it changes when [`reset_type_schemas`] forgets them.
 pub(crate) fn type_epoch() -> u64 {
-    SCHEMAS.get().map_or(0, |cache| {
-        cache.lock().unwrap_or_else(PoisonError::into_inner).epoch
-    })
+    SCHEMAS.get().map_or(0, |cache| cache.lock_recover().epoch)
 }
 
 /// `build`'s schema for the resource `vocabulary`, retained for this
@@ -2022,7 +2055,7 @@ fn cached_schema(
     build: &dyn Fn() -> Option<serde_json::Value>,
 ) -> Option<Arc<serde_json::Value>> {
     let epoch = {
-        let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let store = cache.lock_recover();
         if let Some(found) = store.entries.get(&key) {
             let _phase = crate::profiling::Phase::start("schema.cached_clone");
             return found.clone();
@@ -2031,7 +2064,7 @@ fn cached_schema(
     };
     // Build outside the lock: a schema may publish another resource's.
     let value = build().map(Arc::new);
-    let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut store = cache.lock_recover();
     // A build started before a code reload cannot repopulate the new cache.
     if store.epoch == epoch {
         store.entries.insert(key, value.clone());
@@ -2721,5 +2754,36 @@ mod schema_sharing_tests {
         assert_eq!(old_build["minimum"], 2);
         assert_eq!(current["minimum"], 3);
         assert!(!Arc::ptr_eq(&first, &current));
+    }
+}
+
+#[cfg(test)]
+mod selection_place_tests {
+    use super::Place;
+    use tilo_actions::SelectionPlace;
+
+    #[test]
+    fn a_selection_place_is_the_place_an_action_takes() {
+        for place in [
+            Place::Item("p1".into()),
+            Place::Caret {
+                item: "p1".into(),
+                at: 3,
+            },
+            Place::Range {
+                item: "p1".into(),
+                start: 2,
+                end: 7,
+            },
+        ] {
+            let selection = SelectionPlace::from(place.clone());
+            assert_eq!(
+                serde_json::to_value(&selection).unwrap(),
+                serde_json::to_value(&place).unwrap(),
+                "both travel in one wire form"
+            );
+            assert_eq!(Place::try_from(selection).unwrap(), place);
+        }
+        assert!(Place::try_from(SelectionPlace::item("")).is_err());
     }
 }

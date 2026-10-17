@@ -1067,6 +1067,82 @@ pub fn close_tab_for_destroyed_surface_and_persist(
     removed
 }
 
+/// Which strip each workspace showed and which group each strip had in
+/// front, taken just before a new toplevel was adopted.
+///
+/// A toplevel is adopted as a tab, with focus, the moment it is created,
+/// before the client has said what it is. When it then turns out to be no
+/// window of the strip (a dialog, which becomes a sheet on its parent; a
+/// floating or presentation surface; the keyboard), or goes away before it
+/// ever showed a frame, its provisional tab is withdrawn. Plain removal hands
+/// focus to whatever group now sits at the withdrawn one's index, the one
+/// right of where the person was, and the strip pans to it although nothing
+/// the person did asked for that. This is what withdrawal restores instead.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FocusBefore {
+    active_strip: std::collections::HashMap<crate::shell::state::WorkspaceId, StripId>,
+    active_group: std::collections::HashMap<StripId, GroupId>,
+}
+
+impl FocusBefore {
+    pub fn of(tree: &WorkspaceTree) -> Self {
+        Self {
+            active_strip: tree.desktop.active_strip.clone(),
+            active_group: tree.desktop.active_group.clone(),
+        }
+    }
+}
+
+/// Withdraw the provisional tab of `surface_id` (see [`FocusBefore`]) and,
+/// if that tab still held its strip's focus, give focus back to the group
+/// and strip that had it before the adoption. A tab the toplevel was bound
+/// into an existing group returns that group to the tab in front before it.
+pub fn withdraw_provisional_tab(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    before: &FocusBefore,
+) -> bool {
+    let Some(tab_id) = foreign_tab_for_surface(tree, surface_id) else {
+        return false;
+    };
+    let held = tree.desktop.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .find(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+                .filter(|group| tree.desktop.active_group_for(strip.id) == Some(group.id))
+                .map(|_| (workspace.id, strip.id))
+        })
+    });
+    if !close_tab_back_to_previous(tree, tab_id) {
+        return false;
+    }
+    let Some((workspace_id, strip_id)) = held else {
+        return true;
+    };
+    let exists = |tree: &WorkspaceTree, strip: StripId, group: Option<GroupId>| {
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.strips.iter().find(|s| s.id == strip))
+            .is_some_and(|s| group.is_none_or(|g| s.window_groups.iter().any(|w| w.id == g)))
+    };
+    if let Some(&group) = before.active_group.get(&strip_id)
+        && exists(tree, strip_id, Some(group))
+    {
+        tree.desktop.set_active_group(strip_id, group);
+    }
+    if tree.desktop.active_strip.get(&workspace_id) == Some(&strip_id)
+        && let Some(&strip) = before.active_strip.get(&workspace_id)
+        && exists(tree, strip, None)
+    {
+        tree.desktop.active_strip.insert(workspace_id, strip);
+    }
+    true
+}
+
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
@@ -2837,6 +2913,8 @@ mod tests {
                     opens_extensions: Vec::new(),
                     opens_mime_types: Vec::new(),
                     opens_uri_schemes: Vec::new(),
+                    opens_secondary: false,
+                    offers: Vec::new(),
                 });
                 crate::shell::launcher::clear_pending_placements();
                 let mut tree = WorkspaceTree::bootstrap_demo();

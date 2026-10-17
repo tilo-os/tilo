@@ -7,7 +7,7 @@
 
 
 pub mod document_blobs {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type PutParams<> = ::capnp::capability::Params<crate::blobs_capnp::document_blobs::put_params::Owned>;
     pub type PutResults<> = ::capnp::capability::Results<crate::blobs_capnp::document_blobs::put_results::Owned>;
     pub type UploadParams<> = ::capnp::capability::Params<crate::blobs_capnp::document_blobs::upload_params::Owned>;
@@ -2330,7 +2330,7 @@ pub mod document_blobs {
 
 
 pub mod blob_upload {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type WriteParams<> = ::capnp::capability::Params<crate::blobs_capnp::blob_upload::write_params::Owned>;
     pub type WriteResults<> = ::capnp::capability::Results<crate::blobs_capnp::blob_upload::write_results::Owned>;
     pub type FinishParams<> = ::capnp::capability::Params<crate::blobs_capnp::blob_upload::finish_params::Owned>;
@@ -3802,7 +3802,7 @@ pub mod blob_read {
 
 
 pub mod session_blobs {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ScopeParams<> = ::capnp::capability::Params<crate::blobs_capnp::session_blobs::scope_params::Owned>;
     pub type ScopeResults<> = ::capnp::capability::Results<crate::blobs_capnp::session_blobs::scope_results::Owned>;
 

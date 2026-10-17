@@ -1,5 +1,6 @@
 counter = Wert: { $count }
 tab-modified = Nicht gespeicherte Änderungen
+tab-held-by = Fenster von { $name }
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
@@ -177,6 +178,7 @@ history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernt
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
 
@@ -470,6 +472,12 @@ block-editor-replace = Ersetzen
 block-editor-replace-all = Alle ersetzen
 block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
 
+block-callout-note = Hinweis
+block-callout-tip = Tipp
+block-callout-important = Wichtig
+block-callout-warning = Warnung
+block-callout-caution = Vorsicht
+
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
 
@@ -530,3 +538,12 @@ author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
+
+# Context menu entry: ask the desktop agent about what is selected here.
+ask-agent-about-selection = Agent fragen…
+
+widget-screenshot-saved = Gespeichert
+widget-screenshot-copied = Kopiert
+widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speichern
+widget-screenshot-send-no-device = Kein anderes Gerät ist online
+widget-screenshot-send-device = An { $device } senden

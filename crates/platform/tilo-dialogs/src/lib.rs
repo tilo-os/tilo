@@ -22,7 +22,7 @@
 //! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime ([`confined`]) | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
 //! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
-//! | Tilo session without a portal ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the target's |
+//! | App launched by a Tilo session ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the shell opens it in the app that claims its scheme, else the target's |
 //!
 //! [`availability`] says which [`Feature`]s the target has.
 
@@ -144,6 +144,20 @@ pub fn inherited_shell_picker(
     #[cfg(not(unix))]
     {
         drop(unattended);
+        None
+    }
+}
+
+/// Links opened by the session shell when the launcher handed this process a
+/// connection to it ([`shell::ShellLink::opener`]), with `elsewhere` opening
+/// the ones no app the shell knows claims; `None` otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn inherited_shell_opener(elsewhere: Arc<dyn UriOpener>) -> Option<Arc<dyn UriOpener>> {
+    #[cfg(unix)]
+    return shell::inherited_opener(elsewhere);
+    #[cfg(not(unix))]
+    {
+        drop(elsewhere);
         None
     }
 }

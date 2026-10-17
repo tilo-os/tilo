@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::collab::encoder::EncoderKind;
+use tilo_lock::MutexRecover as _;
 
 /// Default ring capacity — 128 samples ≈ 2.1 s at 60 fps.
 const LATENCY_RING_CAPACITY: usize = 128;
@@ -46,15 +47,6 @@ struct Inner {
     chosen_encoder: EncoderKind,
     capture_path: CapturePath,
     bitrate_bytes_per_sec_ewma: u64,
-    /// Sender→receiver monotonic clock offset, in signed nanoseconds:
-    /// `offset = receiver_monotonic_ns_at_recv - sender_monotonic_ns_at_send`,
-    /// computed once per session from the `SurfaceStreamStart` handshake. A
-    /// frame with wire timestamp `ts` was captured on the sender at
-    /// receiver-monotonic time `ts + offset`.
-    ///
-    /// `None` means the handshake hasn't landed, or the peer ships `ts=0`
-    /// (older wire format); callers treat "no offset" as "skip this measurement" rather than stamping a wrong value.
-    clock_offset_ns: Option<i128>,
 }
 
 /// Point-in-time copy of a peer surface's counters.
@@ -113,16 +105,12 @@ impl PeerSurfaceMetrics {
                 chosen_encoder: EncoderKind::RoyaltyFreeSoftware,
                 capture_path: CapturePath::default(),
                 bitrate_bytes_per_sec_ewma: 0,
-                clock_offset_ns: None,
             })),
         }
     }
 
     pub fn record_received(&self, latency_ns: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.frames_received = inner.frames_received.saturating_add(1);
         if inner.latency_ring.len() < inner.latency_capacity {
             inner.latency_ring.push(latency_ns);
@@ -137,18 +125,12 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn record_dropped(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.frames_dropped = inner.frames_dropped.saturating_add(1);
     }
 
     pub fn record_encode_wallclock(&self, ns: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         if inner.encode_ring.len() < inner.encode_capacity {
             inner.encode_ring.push(ns);
         } else {
@@ -162,20 +144,14 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn record_keyframe(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.keyframes = inner.keyframes.saturating_add(1);
     }
 
     /// Update the bitrate EWMA with a fresh sample (bytes/sec); alpha fixed
     /// at 0.2 so recent samples dominate but stay smooth across the ~5s window the OSD renders.
     pub fn record_bitrate(&self, bytes_per_sec: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         let prev = inner.bitrate_bytes_per_sec_ewma;
         let alpha = 20u64; // 20% new sample weight
         inner.bitrate_bytes_per_sec_ewma = prev
@@ -185,91 +161,17 @@ impl PeerSurfaceMetrics {
     }
 
     pub fn set_chosen_encoder(&self, kind: EncoderKind) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.chosen_encoder = kind;
     }
 
     pub fn set_capture_path(&self, path: CapturePath) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.lock_recover();
         inner.capture_path = path;
     }
 
-    /// Learn the sender→receiver clock offset from a `SurfaceStreamStart`
-    /// handshake, later consumed by [`Self::end_to_end_latency_ns`] to
-    /// translate every per-frame wire `ts` into the receiver's clock domain.
-    ///
-    /// `sender_ns_at_send == 0` signals the sender didn't include the field
-    /// (older peers, or `#[serde(default)]`); the offset is cleared rather
-    /// than storing a bogus value, so downstream queries return `None` (OSD renders "—") instead of a nonsense number.
-    pub fn set_clock_offset(&self, sender_ns_at_send: u64, receiver_ns_at_recv: u64) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if sender_ns_at_send == 0 {
-            inner.clock_offset_ns = None;
-            return;
-        }
-        let offset = i128::from(receiver_ns_at_recv).saturating_sub(i128::from(sender_ns_at_send));
-        inner.clock_offset_ns = Some(offset);
-    }
-
-    /// End-to-end latency in **nanoseconds** for a frame whose wire `ts`
-    /// (sender-side monotonic ns) is `wire_ts_ns`, observed at receiver-side monotonic ns `receiver_now_ns`.
-    ///
-    /// Returns `None` when no clock-offset has been learned yet, or when the
-    /// arithmetic would underflow (clock skew against a frame predating the
-    /// handshake) — callers skip the measurement rather than push a wrong one to the latency ring.
-    pub fn end_to_end_latency_ns(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
-        let offset = {
-            let inner = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inner.clock_offset_ns
-        }?;
-        // The sender's `ts` on the receiver's clock is `wire_ts_ns + offset` —
-        // the "moment of capture" in the receiver's monotonic domain; latency is now minus that.
-        // `wire_ts_ns` and `receiver_now_ns` are peer/wall-clock supplied, not bounded by this
-        // function, so both steps saturate rather than risk overflowing i128.
-        let capture_on_receiver = i128::from(wire_ts_ns).saturating_add(offset);
-        let latency = i128::from(receiver_now_ns).saturating_sub(capture_on_receiver);
-        if latency < 0 {
-            None
-        } else {
-            // A pathological clock offset can in principle push `latency` above
-            // `u64::MAX`; report the clamp rather than silently wrapping to a small,
-            // wrong-looking number.
-            Some(u64::try_from(latency).unwrap_or(u64::MAX))
-        }
-    }
-
-    /// End-to-end latency rounded to the nearest millisecond.
-    pub fn end_to_end_latency_ms(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
-        self.end_to_end_latency_ns(wire_ts_ns, receiver_now_ns)
-            .map(|ns| ns.saturating_add(500_000).saturating_div(1_000_000))
-    }
-
-    /// Current learned clock offset, or `None` before the handshake —
-    /// exposed so the OSD can show a huge offset (drifted NTP, unsync'd hosts) alongside the latency histogram.
-    pub fn clock_offset_ns(&self) -> Option<i128> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clock_offset_ns
-    }
-
     pub fn snapshot(&self) -> PeerSurfaceSnapshot {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.lock_recover();
         let latency_samples = inner.latency_ring.len();
         let (latency_ns_mean, latency_ns_max) = if latency_samples == 0 {
             (0, 0)
@@ -457,53 +359,5 @@ mod tests {
             assert_eq!(percentile_50_99(&[42]), (42, 42));
             assert_eq!(percentile_50_99(&[1, 2, 3, 4, 5]), (3, 5));
         }
-    }
-
-    #[test]
-    #[allow(
-        clippy::items_after_statements,
-        reason = "a phase with an early return keeps its original body as a nested fn"
-    )]
-    fn end_to_end_latency_uses_only_a_learned_nonnegative_offset() {
-        // Phase `no_clock_offset_returns_none_for_latency`.
-        {
-            let m = PeerSurfaceMetrics::new();
-            assert_eq!(m.end_to_end_latency_ns(1_000, 5_000), None);
-            assert_eq!(m.end_to_end_latency_ms(1_000, 5_000), None);
-            assert_eq!(m.clock_offset_ns(), None);
-        }
-        // Phase `clock_offset_zero_ts_clears`.
-        {
-            let m = PeerSurfaceMetrics::new();
-            // First, learn a real offset.
-            m.set_clock_offset(1_000, 5_000);
-            assert_eq!(m.clock_offset_ns(), Some(4_000));
-            // Then a "no field on the wire" event — offset is cleared.
-            m.set_clock_offset(0, 5_000);
-            assert_eq!(m.clock_offset_ns(), None);
-        }
-        // Phase `end_to_end_latency_uses_learned_offset`.
-        {
-            let m = PeerSurfaceMetrics::new();
-            // Sender 1_000_000 ns ahead of receiver at handshake (sender clock 100_000_000, receiver 101_000_000 → offset = +1_000_000).
-            m.set_clock_offset(100_000_000, 101_000_000);
-            // wire ts=200_000_000, receiver now=201_500_000 → capture_on_receiver =
-            // 200_000_000 + 1_000_000 = 201_000_000; latency = 500_000 ns.
-            assert_eq!(
-                m.end_to_end_latency_ns(200_000_000, 201_500_000),
-                Some(500_000)
-            );
-            // Rounded to ms: 500 000 ns rounds to 1 ms via the +500 000 offset.
-            assert_eq!(m.end_to_end_latency_ms(200_000_000, 201_500_000), Some(1));
-        }
-        // Phase `end_to_end_latency_none_when_negative`.
-        fn end_to_end_latency_none_when_negative() {
-            let m = PeerSurfaceMetrics::new();
-            m.set_clock_offset(1_000_000, 500_000);
-            // Frame whose "capture on receiver clock" is in the future (would-be
-            // negative latency) — return None instead of a wrong number.
-            assert_eq!(m.end_to_end_latency_ns(2_000_000, 500_000), None);
-        }
-        end_to_end_latency_none_when_negative();
     }
 }

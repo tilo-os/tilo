@@ -1270,11 +1270,16 @@ async function connect({
         if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
         // What the page learnt of the host at load may be stale (a new
         // certificate). A host set up again is not certified for here: the
-        // record is pinned to the one before, so that is the page's to offer
-        // (`joinViaHost`), with the kept certificate left as it is.
+        // record is pinned to the one before, so the page loads again and
+        // joins the new host as the same person (`joinViaHost`), with the
+        // kept certificate left as it is.
         const answering = JSON.parse(await runtime.hostInfo(post));
         const kept = await store.get(CERTIFICATE);
-        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) throw new AdmissionError('host-changed', HOST_CHANGED);
+        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) {
+          if (!globalThis.location) throw new AdmissionError('host-changed', HOST_CHANGED);
+          globalThis.location.reload();
+          return {operationId: 'reauthenticate'};
+        }
         voice?.reset();
         stopLive();
         peer.dispose();
@@ -1296,12 +1301,7 @@ async function connect({
 
 /** What a person is told when the host at an origin is no longer the one
  * this browser's kept state belongs to. */
-export const HOST_CHANGED = 'This workspace’s host was set up again and is no longer the one this browser kept your work for, so Tilo did not open it. Ask the workspace’s owner what happened.';
-/** What a person is asked when they may join a host that was set up again
- * through its door (`joinViaHost`'s `confirmRejoin`). */
-export const REJOIN_CHANGED_HOST = 'This workspace’s host was set up again. Join it again as yourself? Changes this browser had not sent to the old host stay on this device.';
-/** What a person is told when they chose not to join it again. */
-export const NOT_REJOINED = 'This workspace’s host was set up again, and you did not join it again. Reload the page to join it as yourself.';
+export const HOST_CHANGED = 'This workspace was reset since this browser last opened it. Reload the page to join it again.';
 /** Whether two host certificates name the same host (its person and device),
  * as the peer's saved record pins it; unknown when either is missing. */
 const sameHost = (kept, current) => !kept || !current

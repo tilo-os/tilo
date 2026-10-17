@@ -237,6 +237,7 @@ fn choose(
         title: pick.title,
         save: false,
         directory: false,
+        writable_directory: false,
         multiple: pick.multiple,
         accept_label: Some(pick.accept_label),
         current_name: None,

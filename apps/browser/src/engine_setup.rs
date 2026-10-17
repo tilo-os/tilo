@@ -3,9 +3,10 @@
 //! the launcher mounts the new engine. A person sees a progress state, never
 //! a dead end and never a command to run.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ui::lock::MutexRecover as _;
 use ui::webview::chromium::install::{EngineInstaller, InstallPhase, InstallStatus};
 
 /// How often the host is asked where the install stands.
@@ -64,7 +65,7 @@ impl EngineSetup {
         }));
         let shared = Arc::clone(&state);
         let publish = move |next: Setup| {
-            *shared.lock().unwrap_or_else(PoisonError::into_inner) = next;
+            *shared.lock_recover() = next;
             wake.wake();
         };
         let spawned = std::thread::Builder::new()
@@ -101,16 +102,12 @@ impl EngineSetup {
                 }
             });
         if let Err(error) = spawned {
-            *state.lock().unwrap_or_else(PoisonError::into_inner) =
-                Setup::Failed(error.to_string());
+            *state.lock_recover() = Setup::Failed(error.to_string());
         }
         Self { state }
     }
 
     pub(crate) fn state(&self) -> Setup {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.state.lock_recover().clone()
     }
 }

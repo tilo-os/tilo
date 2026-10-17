@@ -197,7 +197,8 @@ other and the host's delegated agent try every governance, host and member
 action, the administration door, subscription, write, catalogue and
 compute door against the room that is not theirs, and
 every refusal is checked against that room's governance afterwards. The
-`security-isolation` check in `t.toml` runs it nightly and on
+`Security / tenant and agent isolation` workflow
+(`.forgejo/workflows/security-isolation.yml`) runs it nightly and on
 demand with the room-access, admission, revocation and agent-confinement
 suites, against the default relay build and the `agents` build the room
 service ships.

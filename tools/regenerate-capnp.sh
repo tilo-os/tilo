@@ -58,7 +58,19 @@ for schema in "${schemas[@]}"; do
         >"$scratch/request.bin"
     (cd "$scratch" && "$plugin_root/bin/capnpc-rust" <request.bin)
     generated="$(basename "$schema" .capnp | tr '-' '_')_capnp.rs"
-    cp "$scratch/$generated" "$crate/src/generated/$generated"
+    # capnpc-rust suppresses unused RPC dispatch parameters at interface scope.
+    # Keep its output intact except for explaining that generated allowance,
+    # just as handwritten Rust must explain every lint suppression.
+    python3 - "$scratch/$generated" "$crate/src/generated/$generated" <<'PY'
+from pathlib import Path
+import sys
+
+source, destination = map(Path, sys.argv[1:])
+destination.write_text(source.read_text().replace(
+    '#![allow(unused_variables)]',
+    '#![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]',
+))
+PY
     echo "$crate/src/generated/$generated"
 done
 

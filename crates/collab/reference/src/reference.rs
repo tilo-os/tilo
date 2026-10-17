@@ -1,4 +1,4 @@
-//! The durable address of the thing a remark is about.
+//! The durable address of a thing in a document.
 
 use serde::{Deserialize, Serialize};
 

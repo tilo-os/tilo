@@ -8,16 +8,20 @@ mod display_auto_leases;
 mod display_refresh;
 #[cfg(test)]
 mod display_refresh_tests;
+mod nearby_changes;
 mod nearby_store_worker;
 pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
 mod spatial_cleanup;
 mod spatial_protocol;
+// Dispatches into the compositor's Wayland seat, which exists only on Linux.
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod spatial_revocation_tests;
 mod spatial_withdrawal;
 mod window_views;
+pub(crate) mod worker;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
 
@@ -49,6 +53,11 @@ use crate::shell::device_fabric::{
     MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
+pub(crate) use nearby_changes::{
+    nearby_changes, next_consent_expiry as next_nearby_consent_expiry, note_nearby_changed,
+    observe_nearby_view, served_incomplete_view as served_incomplete_nearby_view,
+};
+use tilo_lock::MutexRecover as _;
 
 type ProductionGamepadFactory =
     os_actions::LinuxVirtualGamepadFactory<os_actions::UinputGamepadDeviceProvider>;
@@ -365,10 +374,6 @@ fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
     try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::outbox)
 }
 
-fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
-    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::inbox)
-}
-
 /// A copy of the store's `entries`. A store that is busy or not open yet
 /// reads as empty rather than blocking: opening repairs the spool and
 /// replaces its index with fsyncs, so it happens on the store's thread.
@@ -408,6 +413,105 @@ struct NearbyStagingResult {
     result: Result<(), String>,
     /// The media handoff this object carries, when it is not a Nearby send.
     media_request: Option<[u8; 16]>,
+}
+
+/// A small file read for an inline Nearby send, off the loop.
+struct NearbyInlineRead {
+    target: crate::shell::personal_continuity::DeviceId,
+    name: String,
+    result: Result<Vec<u8>, String>,
+}
+
+fn nearby_inline_reads() -> &'static (
+    mpsc::Sender<NearbyInlineRead>,
+    Mutex<mpsc::Receiver<NearbyInlineRead>>,
+) {
+    static QUEUE: OnceLock<(
+        mpsc::Sender<NearbyInlineRead>,
+        Mutex<mpsc::Receiver<NearbyInlineRead>>,
+    )> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        (sender, Mutex::new(receiver))
+    })
+}
+
+/// Read the small file at `path` for an inline send: no symlink, and no
+/// more than the inline limit, even if it grew since it was inspected.
+fn read_inline_nearby_file(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-open-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    let mut bytes = Vec::new();
+    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-read-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
+    }
+    Ok(bytes)
+}
+
+/// Offer the inline sends whose file was read since the last pump. One whose
+/// read failed is reported as failed; with file transfer now off, it is
+/// dropped like a finished staging.
+fn send_nearby_inline_reads(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let reads = nearby_inline_reads().1.lock().map_or_else(
+        |_| Vec::new(),
+        |receiver| receiver.try_iter().collect::<Vec<_>>(),
+    );
+    for read in reads {
+        if !policy.permits(ContinuityCapability::FileTransfer) {
+            continue;
+        }
+        let sent = read.result.and_then(|bytes| {
+            let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            network
+                .send_personal_fabric_action(
+                    &read.target,
+                    PersonalFabricAction::NearbyDrop {
+                        content_hash: *blake3::hash(&bytes).as_bytes(),
+                        bytes,
+                        file_name: read.name.clone(),
+                    },
+                )
+                .map(|request| (request, total_bytes))
+        });
+        let Ok(mut state) = nearby_drop_state().lock() else {
+            continue;
+        };
+        match sent {
+            Ok((request, total_bytes)) => {
+                if state.pending.len() >= 256
+                    && let Some(oldest) = state.pending.keys().next().copied()
+                {
+                    state.pending.remove(&oldest);
+                }
+                state
+                    .pending
+                    .insert(request, (read.target, read.name, total_bytes));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "nearby send could not offer a small file");
+                state.events.push_back(NearbyDropEvent::Failed {
+                    file_name: read.name,
+                    peer: read.target,
+                });
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1054,6 +1158,23 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
 }
 
+/// Start the input and display session state a new session starts with:
+/// no input leases issued or received, declines read again from the
+/// session's own storage, no cached person layout.
+///
+/// That state belongs to the one session a shell process runs, so it lives
+/// in statics. A test fixture is a new session in the same process: without
+/// this it inherited the leases the previous test's session issued, and
+/// automatic display input, seeing the controller's lease still current,
+/// granted nothing. The caller holds the test-environment lock, as every
+/// test session using this state does.
+#[cfg(test)]
+pub(crate) fn start_session_for_test() {
+    *spatial_input_state().lock_recover() = SpatialInputState::default();
+    display_auto_leases::forget_for_test();
+    person_layout::forget_for_test();
+}
+
 /// This device's power source and whether energy saver is on.
 type LocalPower = (crate::shell::spatial_calibration::DevicePower, bool);
 
@@ -1105,9 +1226,7 @@ fn fabric_clock_state() -> &'static Mutex<crate::shell::fabric_clock::FabricCloc
 fn with_fabric_clock<T>(
     apply: impl FnOnce(&mut crate::shell::fabric_clock::FabricClockCore) -> T,
 ) -> T {
-    let mut core = fabric_clock_state()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut core = fabric_clock_state().lock_recover();
     apply(&mut core)
 }
 
@@ -1617,7 +1736,72 @@ pub struct LocalFabricCapabilities {
     pub audio_output: bool,
 }
 
-/// Stateful, low-frequency fabric pump owned by the native compositor loop.
+/// What the compositor hands the fabric pump each turn.
+pub(crate) struct FabricTurn {
+    pub selection: SharedSelection,
+    pub local: LocalFabricCapabilities,
+    pub app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    pub realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
+    pub remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
+}
+
+/// A [`DeviceFabricRuntime`] with the network it pumps against.
+struct NetworkFabricPump {
+    runtime: DeviceFabricRuntime,
+    network: Arc<ShellNetwork>,
+}
+
+impl worker::FabricPump for NetworkFabricPump {
+    type Facts = FabricTurn;
+
+    fn pump(&mut self, turn: FabricTurn) {
+        if let Some(adapter) = turn.realtime_adapter {
+            self.runtime.set_realtime_adapter(adapter);
+        }
+        if let Some(remote_capture) = turn.remote_capture {
+            self.runtime.set_remote_capture_runtime(remote_capture);
+        }
+        self.runtime.set_local_app_focus(turn.app_focus);
+        self.runtime
+            .pump(&self.network, &turn.selection, turn.local);
+    }
+}
+
+/// Run `runtime` off the compositor thread (see [`worker`]). After each run
+/// that left spatial input or nearby-drop news for the compositor, its loop
+/// is woken to pick them up.
+///
+/// # Errors
+///
+/// The OS error when the thread cannot be started.
+pub(crate) fn spawn_worker(
+    runtime: DeviceFabricRuntime,
+    network: Arc<ShellNetwork>,
+) -> std::io::Result<worker::FabricWorker<FabricTurn>> {
+    let wake = network.loop_waker();
+    worker::FabricWorker::spawn(
+        "device-fabric",
+        NetworkFabricPump { runtime, network },
+        move || {
+            if fabric_output_pending() {
+                wake();
+            }
+        },
+    )
+}
+
+/// Whether the fabric left anything the compositor's loop consumes.
+fn fabric_output_pending() -> bool {
+    nearby_drop_state()
+        .lock()
+        .is_ok_and(|state| !state.events.is_empty())
+        || spatial_input_state().lock().is_ok_and(|spatial| {
+            !spatial.release_controllers.is_empty() || !spatial.inbound.is_empty()
+        })
+}
+
+/// Stateful, low-frequency fabric pump; the native compositor runs it on a
+/// thread of its own ([`spawn_worker`]).
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
@@ -1726,6 +1910,7 @@ impl DeviceFabricRuntime {
                     contact_endpoint: None,
                     sender_name: None,
                     sound: None,
+                    incoming_call: false,
                 });
         }
     }
@@ -1820,6 +2005,9 @@ impl DeviceFabricRuntime {
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         resume_nearby_transfers(network, policy);
+        // After the store's follow-ups and expired consents: what Files
+        // would see now, announced only when it moved.
+        observe_nearby_view(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
@@ -3183,6 +3371,7 @@ fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnaps
         expire_nearby_consents(network);
     }
     settle_nearby_staging(network, policy);
+    send_nearby_inline_reads(network, policy);
     let entries = try_outbox_entries();
     if let Ok(mut state) = nearby_drop_state().lock() {
         state
@@ -5434,12 +5623,9 @@ pub fn require_speaker_groups() -> Result<(), String> {
 /// # Errors
 ///
 /// Returns an error for an unsafe/oversized source or unavailable fabric route.
-#[expect(
-    clippy::too_many_lines,
-    reason = "validation, staging and the offer stay in one ordered send path"
-)]
+/// The id names the staged transfer for a large source; a small one is read
+/// off the loop and offered later, so its id only acknowledges the request.
 pub fn request_nearby_drop(
-    network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
     path: &Path,
 ) -> Result<[u8; 16], String> {
@@ -5517,52 +5703,53 @@ pub fn request_nearby_drop(
     if metadata.len() == 0 {
         return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|error| {
-            crate::shell::i18n::t_args(
-                "device-fabric-error-open-failed",
-                &[("error", error.to_string().into())],
-            )
-        })?;
-    let mut bytes = Vec::new();
-    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            crate::shell::i18n::t_args(
-                "device-fabric-error-read-failed",
-                &[("error", error.to_string().into())],
-            )
-        })?;
-    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
-        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
-    }
-    let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    let request = network.send_personal_fabric_action(
+    read_inline_off_the_loop(
+        nearby_inline_reads().0.clone(),
         target,
-        PersonalFabricAction::NearbyDrop {
-            content_hash: *blake3::hash(&bytes).as_bytes(),
-            bytes,
-            file_name: file_name.clone(),
-        },
+        file_name.clone(),
+        path,
     )?;
     if let Ok(mut state) = nearby_drop_state().lock() {
-        if state.pending.len() >= 256
-            && let Some(oldest) = state.pending.keys().next().copied()
-        {
-            state.pending.remove(&oldest);
-        }
-        state
-            .pending
-            .insert(request, (target.clone(), file_name.clone(), total_bytes));
         state.events.push_back(NearbyDropEvent::Sending {
             file_name,
             peer: target.clone(),
         });
     }
-    Ok(request)
+    Ok(crate::random::nonzero::<16>())
+}
+
+/// A small file goes inline, but its first read may hydrate it from a peer
+/// (a drop from the workspace mount): read `path` on a worker, and offer it
+/// to `target` from the loop once read ([`send_nearby_inline_reads`]), as
+/// staging does for a large one. The read is handed to `sender`.
+fn read_inline_off_the_loop(
+    sender: mpsc::Sender<NearbyInlineRead>,
+    target: &crate::shell::personal_continuity::DeviceId,
+    name: String,
+    path: &Path,
+) -> Result<(), String> {
+    let source = path.to_path_buf();
+    let target = target.clone();
+    // Made on the loop's thread, so the worker wakes the loop the offer
+    // waits for.
+    let wake = crate::shell::search::invocation_wake::waker();
+    std::thread::Builder::new()
+        .name("tilo-nearby-read".into())
+        .spawn(move || {
+            let _ = sender.send(NearbyInlineRead {
+                target,
+                name,
+                result: read_inline_nearby_file(&source),
+            });
+            wake.wake();
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-transfer-start",
+                &[("error", error.to_string().into())],
+            )
+        })
 }
 
 /// Send from an already-open Files grant capability. The descriptor, rather
@@ -5581,65 +5768,49 @@ pub fn request_nearby_drop_secure(
     staging_owner: &str,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
+    request_prepared_nearby_drop(network, target, prepare_nearby_drop(source)?, staging_owner)
+}
+
+/// A Nearby Send source read as far as it must be before it is offered.
+pub enum PreparedNearbyDrop {
+    /// A directory, or a file too large to offer inline: a staging worker
+    /// reads it from the open source.
+    Staged(crate::shell::nearby_transfer::SecureNearbySource),
+    /// A small file, already read, offered inline.
+    Inline { file_name: String, bytes: Vec<u8> },
+}
+
+impl PreparedNearbyDrop {
+    /// The name the receiving device is offered.
+    pub fn file_name(&self) -> &str {
+        match self {
+            Self::Staged(source) => source.name(),
+            Self::Inline { file_name, .. } => file_name,
+        }
+    }
+}
+
+/// Inspect `source`, and read it whole when it is small enough to offer
+/// inline. Reads the disk: call it off the compositor loop, then hand the
+/// result to [`request_prepared_nearby_drop`] there.
+///
+/// # Errors
+///
+/// Returns a message when the source cannot be inspected or read, is empty,
+/// or changes while read.
+pub(crate) fn prepare_nearby_drop(
+    source: crate::shell::nearby_transfer::SecureNearbySource,
+) -> Result<PreparedNearbyDrop, String> {
     let metadata = source.metadata()?;
-    let file_name = source.name().to_string();
     if metadata.is_dir()
         || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
     {
-        let permit = NearbyStagingPermit::acquire(staging_owner)?;
-        let target = target.clone();
-        let worker_target = target.clone();
-        let name = file_name.clone();
-        let sender = nearby_staging_queue().0.clone();
-        let transfer_id = crate::random::nonzero::<16>();
-        std::thread::Builder::new()
-            .name("tilo-nearby-stage".into())
-            .spawn(move || {
-                let permit = permit;
-                let result = crate::shell::nearby_transfer::StageShape::of_secure(&source)
-                    .and_then(|shape| {
-                        let staging = crate::shell::nearby_transfer::Staging::for_secure(
-                            &source,
-                            worker_target.as_str().to_string(),
-                            unix_now_ms(),
-                            transfer_id,
-                        );
-                        stage_outside_store_lock(staging, shape, |reserved| {
-                            reserved.write_secure(source)
-                        })
-                    });
-                if !permit.valid() {
-                    if result.is_ok() {
-                        let _ =
-                            with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
-                    }
-                    return;
-                }
-                let _ = sender.send(NearbyStagingResult {
-                    transfer_id,
-                    target: worker_target,
-                    name,
-                    result,
-                    media_request: None,
-                });
-            })
-            .map_err(|error| {
-                crate::shell::i18n::t_args(
-                    "device-fabric-error-transfer-start",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
-        if let Ok(mut state) = nearby_drop_state().lock() {
-            state.events.push_back(NearbyDropEvent::Sending {
-                file_name,
-                peer: target,
-            });
-        }
-        return Ok(transfer_id);
+        return Ok(PreparedNearbyDrop::Staged(source));
     }
     if metadata.len() == 0 {
         return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
+    let file_name = source.name().to_string();
     let mut bytes = Vec::new();
     source
         .into_file()
@@ -5654,6 +5825,89 @@ pub fn request_nearby_drop_secure(
     if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
         return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
+    Ok(PreparedNearbyDrop::Inline { file_name, bytes })
+}
+
+/// Offer a [`prepare_nearby_drop`]ped source to `target`: an inline offer,
+/// or a staging worker for a large one. Reads no file.
+///
+/// # Errors
+///
+/// Returns a message when file transfer is not enabled, the owner has no
+/// free staging slot, the staging worker cannot start, or the offer cannot
+/// be sent to `target`.
+pub(crate) fn request_prepared_nearby_drop(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    prepared: PreparedNearbyDrop,
+    staging_owner: &str,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
+    let source = match prepared {
+        PreparedNearbyDrop::Staged(source) => source,
+        PreparedNearbyDrop::Inline { file_name, bytes } => {
+            return offer_nearby_drop_inline(network, target, file_name, bytes);
+        }
+    };
+    let file_name = source.name().to_string();
+    let permit = NearbyStagingPermit::acquire(staging_owner)?;
+    let target = target.clone();
+    let worker_target = target.clone();
+    let name = file_name.clone();
+    let sender = nearby_staging_queue().0.clone();
+    let transfer_id = crate::random::nonzero::<16>();
+    std::thread::Builder::new()
+        .name("tilo-nearby-stage".into())
+        .spawn(move || {
+            let permit = permit;
+            let result =
+                crate::shell::nearby_transfer::StageShape::of_secure(&source).and_then(|shape| {
+                    let staging = crate::shell::nearby_transfer::Staging::for_secure(
+                        &source,
+                        worker_target.as_str().to_string(),
+                        unix_now_ms(),
+                        transfer_id,
+                    );
+                    stage_outside_store_lock(staging, shape, |reserved| {
+                        reserved.write_secure(source)
+                    })
+                });
+            if !permit.valid() {
+                if result.is_ok() {
+                    let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                }
+                return;
+            }
+            let _ = sender.send(NearbyStagingResult {
+                transfer_id,
+                target: worker_target,
+                name,
+                result,
+                media_request: None,
+            });
+        })
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-transfer-start",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state.events.push_back(NearbyDropEvent::Sending {
+            file_name,
+            peer: target,
+        });
+    }
+    Ok(transfer_id)
+}
+
+/// Offer `bytes`, already read, inline to `target` as `file_name`.
+fn offer_nearby_drop_inline(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> Result<[u8; 16], String> {
     let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let request = network.send_personal_fabric_action(
         target,
@@ -5946,6 +6200,13 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
     Ok(())
 }
 
+/// What [`nearby_transfer_statuses`] projected, and whether it saw the
+/// store's queues: a busy store reads as empty rather than blocking.
+pub struct NearbyTransferStatuses {
+    pub statuses: Vec<NearbyTransferRuntimeStatus>,
+    pub complete: bool,
+}
+
 /// Project path-free, identity-redacted transfer state for Files.
 pub struct NearbyTransferRuntimeStatus {
     pub transfer_id: [u8; 16],
@@ -5961,11 +6222,17 @@ pub struct NearbyTransferRuntimeStatus {
     clippy::too_many_lines,
     reason = "one projection maps every transfer phase to its status row"
 )]
-pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
+pub fn nearby_transfer_statuses(network: &ShellNetwork) -> NearbyTransferStatuses {
     if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer) {
-        return Vec::new();
+        return NearbyTransferStatuses {
+            statuses: Vec::new(),
+            complete: true,
+        };
     }
     expire_nearby_consents(network);
+    let queues = nearby_changes::try_store_queues();
+    let complete = queues.is_some();
+    let (inbox, outbox) = queues.unwrap_or_default();
     let fabric = network.device_fabric();
     let label = |device: &crate::shell::personal_continuity::DeviceId| {
         fabric.snapshots().get(device).map_or_else(
@@ -5974,7 +6241,10 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         )
     };
     let Ok(state) = nearby_drop_state().lock() else {
-        return Vec::new();
+        return NearbyTransferStatuses {
+            statuses: Vec::new(),
+            complete,
+        };
     };
     let mut statuses = state
         .incoming
@@ -6029,10 +6299,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     let nearby_send = |kind: crate::shell::nearby_transfer::TransferKind| {
         kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
     };
-    for entry in try_inbox_entries()
-        .into_iter()
-        .filter(|entry| nearby_send(entry.kind))
-    {
+    for entry in inbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -6053,7 +6320,6 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             total_bytes: entry.total_bytes,
         });
     }
-    let outbox = try_outbox_entries();
     for entry in outbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
@@ -6093,7 +6359,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         });
     }
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
-    statuses
+    NearbyTransferStatuses { statuses, complete }
 }
 
 /// Outgoing streams on the one transfer lane, Nearby sends and media
@@ -7298,18 +7564,6 @@ impl SpatialInputState {
     }
 }
 
-/// Drain input that already passed exact-route, lease, expiry, and capability
-/// validation. The native compositor is the sole consumer.
-pub fn take_spatial_input() -> Vec<(
-    crate::shell::personal_continuity::DeviceId,
-    FabricInputEvent,
-)> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.inbound.drain(..).collect(),
-    )
-}
-
 fn native_display_connectors(
     snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
 ) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
@@ -8391,6 +8645,35 @@ mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
 
+    /// A small file dropped onto a device is read for its inline offer on
+    /// a worker: a file whose bytes have not arrived (a FIFO, as a file on
+    /// the workspace mount is while it hydrates) holds neither the drop nor
+    /// the loop, and the bytes reach the offer queue once they arrive.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_small_nearby_drop_is_read_off_the_loop() {
+        let directory = tempfile::tempdir().expect("source directory");
+        let hydrating =
+            crate::shell::disk_sync_guard::blocking_source(directory.path(), "note.txt");
+        let target = DeviceId::new("ab".repeat(32)).expect("device id");
+        let (sender, reads) = mpsc::channel();
+        read_inline_off_the_loop(sender, &target, "note.txt".into(), &hydrating)
+            .expect("the read worker started");
+        // Returned while the read blocks: the drop never waited for it.
+        assert!(
+            reads.try_recv().is_err(),
+            "nothing is read before the bytes arrive"
+        );
+
+        std::fs::write(&hydrating, b"small note\n").expect("the bytes arrive");
+        let read = reads
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the read finished once its bytes arrived");
+        assert_eq!(read.target, target);
+        assert_eq!(read.name, "note.txt");
+        assert_eq!(read.result, Ok(b"small note\n".to_vec()));
+    }
+
     #[test]
     fn rich_display_native_observation_preserves_identity_mode_scale_and_inactive_outputs() {
         use settings_store::hardware::{
@@ -8906,11 +9189,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
         let open = || {
-            settings_store::install_source(Some(Arc::new(
+            crate::shell::test_support::install_settings(Arc::new(
                 settings_store::SessionSettings::open(paths.clone()).unwrap(),
-            )));
+            ))
         };
-        open();
+        let settings = open();
 
         // A winner from another device reaches this process's readers and the
         // copy the compositor boots from and apps read.
@@ -8941,9 +9224,9 @@ mod tests {
         );
 
         // A restarted session reads the same records.
-        settings_store::install_source(None);
+        drop(settings);
         std::fs::remove_file(&paths.copy).unwrap();
-        open();
+        let _settings = open();
         assert_eq!(
             settings_store::load_section("appearance"),
             serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
@@ -8955,7 +9238,6 @@ mod tests {
             settings_store::load_section_at(&paths.copy, "appearance")["mode"],
             "dark"
         );
-        settings_store::install_source(None);
     }
 
     #[test]

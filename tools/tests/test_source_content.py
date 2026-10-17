@@ -81,6 +81,28 @@ class SourceContentTests(unittest.TestCase):
         self.assertEqual(count, 3)
         self.assertEqual(failures, ["source.txt: non-LF line endings"])
 
+    def test_broken_committed_tree_cannot_fall_back_to_a_clean_index(self):
+        self.stage("source", b"bad\r\n")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.org",
+                 "-c", "core.hooksPath=/dev/null", "commit", "-qm", "test: committed bytes")
+        self.stage("source", b"clean index\n")
+        tree = self.git("rev-parse", "HEAD^{tree}").decode().strip()
+        # Remove the committed tree object, leaving a perfectly readable index.
+        # A source audit must not silently switch the subject of its verdict.
+        (self.root / ".git/objects" / tree[:2] / tree[2:]).unlink()
+        with self.assertRaises(subprocess.CalledProcessError):
+            contract.audit(self.root)
+
+    def test_git_tree_operational_error_does_not_trigger_index_recovery(self):
+        original = contract.git
+        def git_reply(root, *arguments):
+            if arguments == ("rev-parse", "--verify", "--quiet", "HEAD^{tree}"):
+                raise subprocess.CalledProcessError(128, ["git", *arguments])
+            return original(root, *arguments)
+        with mock.patch.object(contract, "git", side_effect=git_reply):
+            with self.assertRaises(subprocess.CalledProcessError):
+                contract.audit(self.root)
+
     def test_exact_exception_does_not_allow_replacement_binary(self):
         self.stage("fixture", b"\x00original")
         oid = self.git("rev-parse", ":fixture").decode().strip()

@@ -50,6 +50,7 @@ use crate::payloads::ShellPayloads;
 use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
+use tilo_lock::MutexRecover as _;
 
 /// Tail size past which a channel is compacted: this many entries, or
 /// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a
@@ -184,6 +185,29 @@ struct Inner {
     forced: Mutex<HashSet<ChannelKey>>,
     /// Entry bodies per channel whose signature verified in this process.
     signatures: Mutex<HashMap<ChannelKey, Signatures>>,
+    /// The record channels this host stewards, whose sealed history it
+    /// folds itself.
+    steward: std::sync::OnceLock<Arc<dyn StewardedKeys>>,
+}
+
+/// Opens a sealed document frame, or refuses it.
+pub(crate) type Opener<'a> = dyn Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + 'a;
+
+/// The content keys of the record channels a host stewards (the rooms it
+/// governs as a node that may own workspaces). It is a member of each
+/// channel's group, so it reads and seals a sealed record like any member.
+pub(crate) trait StewardedKeys: Send + Sync {
+    /// The keys of `route`'s channel, when this host stewards it.
+    fn keys<'a>(
+        &'a self,
+        route: &'a Route,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<channel_crypto::ChannelContentKeys>>
+                + Send
+                + 'a,
+        >,
+    >;
 }
 
 /// A retained document delta, as [`Compactor::note`] counts it.
@@ -215,9 +239,7 @@ impl Drop for Admitting {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex.lock_recover()
 }
 
 impl Compactor {
@@ -242,7 +264,15 @@ impl Compactor {
             hold: Mutex::new(Duration::ZERO),
             forced: Mutex::default(),
             signatures: Mutex::default(),
+            steward: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Fold the sealed history of the channels `keys` names, as their
+    /// steward, instead of asking a member to.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(crate) fn steward_with(&self, keys: Arc<dyn StewardedKeys>) {
+        let _ = self.0.steward.set(keys);
     }
 
     /// Compactions finished so far (host folds and accepted statements).
@@ -404,10 +434,89 @@ impl Compactor {
                 .await?;
         }
         if let Some(route) = sealed {
+            if self
+                .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
+                .await?
+            {
+                return Ok(());
+            }
             let (this, workspace) = (self.clone(), workspace.clone());
             tokio::spawn(async move { this.ask(&workspace, workspace_id, channel, &route).await });
         }
         Ok(())
+    }
+
+    /// Fold `channel`'s sealed history as the steward of `route`'s channel,
+    /// when this host is: open every sealed entry with the channel's keys,
+    /// fold them as a cleartext channel is folded, and retain the snapshot
+    /// sealed under the channel's current key, signed as this host. A
+    /// newcomer then replays one snapshot and the writes since, not every
+    /// write ever made. False when this host does not steward the channel.
+    async fn fold_as_steward(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+        min_tail: usize,
+    ) -> Result<bool, String> {
+        let Some(steward) = self.0.steward.get() else {
+            return Ok(false);
+        };
+        let Some(keys) = steward.keys(route).await else {
+            return Ok(false);
+        };
+        let store = workspace.lock().await.store.clone();
+        let mut signatures = lock(&self.0.signatures)
+            .remove(&(workspace_id, channel))
+            .unwrap_or_else(|| Signatures::with_payloads(self.0.payloads.clone()));
+        let key = self.0.key.clone();
+        let payloads = self.0.payloads.clone();
+        let (signatures, planned) = tokio::task::spawn_blocking(move || {
+            let planned = on_cpu(|| {
+                let entries = store.channel_entries(&channel)?;
+                let open = |op: &collab_types::SignedOp| {
+                    let metadata = op.encryption?;
+                    let ciphertext = collab_types::sealed_ciphertext(op).ok()?;
+                    keys.open_content(op.artifact, &metadata, &ciphertext)
+                        .ok()
+                        .map(|plaintext| plaintext.to_vec())
+                };
+                Ok::<_, crate::store::StoreError>(
+                    plan_opening(
+                        &entries,
+                        &mut signatures,
+                        &HashSet::new(),
+                        min_tail,
+                        Some(&open),
+                        |route, snapshot| {
+                            sealed_document_frames(
+                                &*payloads,
+                                (&key, &keys),
+                                workspace_id,
+                                route,
+                                snapshot,
+                            )
+                            .ok()
+                        },
+                    )
+                    .1,
+                )
+            });
+            (signatures, planned)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        lock(&self.0.signatures).insert((workspace_id, channel), signatures);
+        let Some((folded, frames)) = planned.map_err(|error| error.to_string())? else {
+            return Ok(true);
+        };
+        self.0
+            .folding
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.persist_fold(workspace, channel, &folded, frames)
+            .await?;
+        Ok(true)
     }
 
     async fn persist_fold(
@@ -662,7 +771,12 @@ async fn owner_run<T: Send + 'static>(
         .submit_prepared_wait(
             4096,
             async { Ok(()) },
-            move |state, ()| on_cpu(|| operation(&state.store)),
+            move |state, ()| {
+                // Retention and channel replacement each forget what
+                // captures listed of what they write.
+                state.retaining_only();
+                on_cpu(|| operation(&state.store))
+            },
             |result| async { result },
         )
         .await
@@ -707,9 +821,22 @@ fn plan(
     min_tail: usize,
     sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
 ) -> Plan {
+    plan_opening(entries, signatures, known, min_tail, None, sign)
+}
+
+/// [`plan`], reading sealed entries `open` opens (the host stewards their
+/// channel) like cleartext ones.
+fn plan_opening(
+    entries: &[ChannelEntry],
+    signatures: &mut Signatures,
+    known: &HashSet<[u8; 32]>,
+    min_tail: usize,
+    open: Option<&Opener<'_>>,
+    sign: impl FnOnce(&Route, &[u8]) -> Option<Vec<Vec<u8>>>,
+) -> Plan {
     let checked: Vec<Checked<'_>> = entries
         .iter()
-        .map(|entry| signatures.check(entry))
+        .map(|entry| signatures.check_opening(entry, open))
         .collect();
     signatures.end_round();
     let sealed = sealed_tail(&checked, known);
@@ -1004,6 +1131,36 @@ pub(crate) fn document_frames(
     route: &Route,
     snapshot: &[u8],
 ) -> Result<Vec<Vec<u8>>, String> {
+    frames_of(payloads, (key, None), workspace_id, route, snapshot)
+}
+
+/// [`document_frames`] for a sealed channel this host stewards: each frame
+/// sealed under the channel's current key with `keys`, as a member seals
+/// the snapshot it compacts, so the folded history stays as sealed as the
+/// writes it replaces.
+fn sealed_document_frames(
+    payloads: &dyn ShellPayloads,
+    (key, keys): (
+        &ed25519_dalek::SigningKey,
+        &channel_crypto::ChannelContentKeys,
+    ),
+    workspace_id: u64,
+    route: &Route,
+    snapshot: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    frames_of(payloads, (key, Some(keys)), workspace_id, route, snapshot)
+}
+
+fn frames_of(
+    payloads: &dyn ShellPayloads,
+    (key, keys): (
+        &ed25519_dalek::SigningKey,
+        Option<&channel_crypto::ChannelContentKeys>,
+    ),
+    workspace_id: u64,
+    route: &Route,
+    snapshot: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
     use ed25519_dalek::Signer as _;
     let author = key.verifying_key().to_bytes();
     let artifact =
@@ -1023,15 +1180,39 @@ pub(crate) fn document_frames(
         .into_iter()
         .enumerate()
     {
-        let mut op = collab_types::SignedOp::new_unsigned(
-            payload,
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes(author),
-            attestation,
-            collab_types::OpKind::Change,
-            timestamp,
-            now_ns.saturating_add(index as u64),
-        );
+        let author_key = collab_types::Ed25519PublicKey::from_bytes(author);
+        let seq = now_ns.saturating_add(index as u64);
+        let mut op = match keys {
+            None => collab_types::SignedOp::new_unsigned(
+                payload,
+                artifact,
+                author_key,
+                attestation,
+                collab_types::OpKind::Change,
+                timestamp,
+                seq,
+            ),
+            Some(keys) => {
+                let retention = if index == 0 {
+                    collab_types::ContentRetention::Checkpoint
+                } else {
+                    collab_types::ContentRetention::Delta
+                };
+                let (metadata, sealed) = keys
+                    .seal_content(artifact, retention, &payload)
+                    .map_err(|error| error.to_string())?;
+                collab_types::SignedOp::new_unsigned_with_encryption(
+                    sealed,
+                    artifact,
+                    author_key,
+                    attestation,
+                    collab_types::OpKind::Change,
+                    timestamp,
+                    seq,
+                    metadata,
+                )
+            }
+        };
         let signing = op.signing_bytes().map_err(|error| error.to_string())?;
         op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
         let body = payloads.document_body(&author, route, op)?;

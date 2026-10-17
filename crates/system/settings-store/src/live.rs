@@ -27,6 +27,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use crate::{Listener, SectionDigest, SettingsSource, SettingsStamp};
+use tilo_lock::MutexRecover as _;
 
 /// How often the document's stamp is compared by a follower that has no
 /// notification to wait for: a settings file whose watch could not start.
@@ -197,10 +198,7 @@ impl LiveSettings {
                 "refresh thread unavailable, settings stay as read at start: {error}"
             ));
         }
-        *inner
-            .notified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(notified);
+        *inner.notified.lock_recover() = Some(notified);
         Self(inner)
     }
 
@@ -211,8 +209,7 @@ impl LiveSettings {
     pub fn degraded(&self) -> Option<String> {
         self.0
             .notified
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .and_then(|notified| notified.degraded.clone())
     }
@@ -227,13 +224,7 @@ impl LiveSettings {
     /// The current document and its generation.
     #[must_use]
     pub fn snapshot(&self) -> Arc<Snapshot> {
-        Arc::clone(
-            &self
-                .0
-                .current
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
+        Arc::clone(&self.0.current.lock_recover())
     }
 
     /// One top-level section of the current document.
@@ -246,11 +237,7 @@ impl LiveSettings {
     /// return the snapshot current then.
     #[must_use]
     pub fn wait_for_change(&self, seen: u64, timeout: Duration) -> Arc<Snapshot> {
-        let current = self
-            .0
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.0.current.lock_recover();
         Arc::clone(
             &self
                 .0
@@ -266,11 +253,7 @@ impl LiveSettings {
     /// until the document changes, which then costs no wakeups at all.
     #[must_use]
     pub fn wait_for_next(&self, seen: u64) -> Arc<Snapshot> {
-        let current = self
-            .0
-            .current
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let current = self.0.current.lock_recover();
         Arc::clone(
             &self
                 .0
@@ -342,7 +325,7 @@ fn follow(
 /// Make `document` current unless it equals the current one. Returns whether
 /// a new generation was published.
 fn publish(inner: &Inner, document: Map<String, Value>) -> bool {
-    let mut current = inner.current.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut current = inner.current.lock_recover();
     if current.document == document {
         return false;
     }

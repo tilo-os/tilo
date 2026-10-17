@@ -156,7 +156,19 @@ pub enum SliderCommit {
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
+    /// The page's layout rect: the popover itself when everything fits,
+    /// otherwise the full-height page placed under the popover at the
+    /// current scroll offset. Every geometry helper measures from it, so
+    /// paint, hit-testing and accessibility agree while scrolled.
     panel: Rect,
+    /// The popover rect the host gave this page, and the region that
+    /// scrolls the page inside it when the window is too short for the
+    /// controls at their natural size.
+    viewport: Rect,
+    scroll: ui::widget::ScrollRegion,
+    /// The popover rect `scroll` was last sized for; a page laid out in any
+    /// other rect does not scroll until a frame sizes it.
+    scroll_viewport: Rect,
     // Text scale changes the amount of vertical room a two-line control
     // needs.  The host supplies this before it resolves the popover rect,
     // so large-text screenshots and the live frame use the same geometry.
@@ -280,7 +292,7 @@ impl QuickSettingsRoot {
     fn edit_row_height(&self) -> f64 {
         self.edit_row_height_at(self.layout_scale)
     }
-    /// A section caption band in edit mode ("ACTIVE CONTROLS", "AVAILABLE"):
+    /// A section caption band in edit mode ("Active controls", "Available"):
     /// control padding above the caption line, one related step below it.
     fn caption_band_at(&self, layout_scale: f64) -> f64 {
         (CONTROL_PAD + RELATED_GAP) * layout_scale + self.caption_line_height()
@@ -321,6 +333,9 @@ impl QuickSettingsRoot {
     fn from_config(config: QuickSettingsConfig, persist_config: bool) -> Self {
         Self {
             panel: Rect::ZERO,
+            viewport: Rect::ZERO,
+            scroll: ui::widget::ScrollRegion::vertical(),
+            scroll_viewport: Rect::ZERO,
             layout_scale: 1.0,
             text_scale: 1.0,
             slider_drag: None,
@@ -339,12 +354,138 @@ impl QuickSettingsRoot {
         // silently preselecting it and making that same Tab skip past it.
         self.keyboard_focus = None;
         self.root_focus = None;
+        // Each opening starts at the top of the page.
+        self.scroll.set_offset(vello::kurbo::Vec2::ZERO);
+    }
+
+    /// Lay the page out in the popover rect `viewport`. When the controls at
+    /// their natural size are taller than it, the page keeps that size and
+    /// scrolls ([`ui::widget::ScrollRegion`]) instead of squeezing its tiles;
+    /// the returned page rect sits at the scroll offset, laid out to the
+    /// region's content width. Until a frame has sized the region (it needs
+    /// the theme's bar lane) the page is the popover rect itself.
+    fn lay_out(&mut self, viewport: Rect, state: &QuickSettingsState) -> Rect {
+        self.viewport = viewport;
+        self.panel = self.page_rect(state);
+        self.panel
+    }
+
+    fn page_rect(&self, state: &QuickSettingsState) -> Rect {
+        if !self.scrolls() {
+            return self.viewport;
+        }
+        let shown = self.scroll.content_rect();
+        let top = shown.y0 - self.scroll.offset().y;
+        let height = self.preferred_height(state).max(shown.height());
+        Rect::new(shown.x0, top, shown.x1, top + height)
+    }
+
+    /// Size the scroll region for this frame's popover and theme.
+    fn sync_scroll(&mut self, viewport: Rect, theme: &Theme, state: &QuickSettingsState) {
+        self.scroll.set_viewport(viewport, theme);
+        self.scroll
+            .set_content_size(viewport.width(), self.preferred_height(state));
+        self.scroll_viewport = viewport;
+    }
+
+    /// The part of the popover the page shows in (less the bar lane while
+    /// it scrolls).
+    fn visible_rect(&self) -> Rect {
+        if self.scrolls() {
+            self.scroll.content_rect()
+        } else {
+            self.panel
+        }
+    }
+
+    /// Whether the page is taller than the popover and scrolls.
+    pub fn scrolls(&self) -> bool {
+        !self.viewport.is_zero_area()
+            && self.scroll_viewport == self.viewport
+            && self.scroll.overflows_vertically()
+    }
+
+    /// Wheel, touchpad, touch-drag (as the compositor's emulated wheel) and
+    /// scrollbar input over a page that scrolls. Returns whether the page
+    /// moved or its bar changed; `handled` is set when the event was the
+    /// region's.
+    pub fn handle_scroll_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+        theme: &Theme,
+    ) -> bool {
+        if !self.scrolls() && !self.scroll.is_dragging() {
+            return false;
+        }
+        self.scroll
+            .handle_window_event(event, scale_factor, modifiers, handled, theme)
+    }
+
+    /// Whether the page's scrollbar is being dragged.
+    pub fn scroll_dragging(&self) -> bool {
+        self.scroll.is_dragging()
+    }
+
+    /// The scrollbar's fade, for the host's frame clock.
+    pub fn scroll_needs_frame(&self, theme: &Theme) -> bool {
+        self.scrolls() && self.scroll.needs_animation_frame(theme)
+    }
+    pub fn scroll_wake_deadline(&self, theme: &Theme) -> Option<std::time::Instant> {
+        if self.scrolls() {
+            self.scroll.next_wake_deadline(theme)
+        } else {
+            None
+        }
+    }
+
+    /// How far the page is scrolled, in logical pixels.
+    #[cfg(test)]
+    pub fn scroll_offset(&self) -> f64 {
+        self.scroll.offset().y
+    }
+
+    /// Bring the keyboard-focused stop into view, as a scrolling list does.
+    fn reveal_focus(&mut self, state: &QuickSettingsState) {
+        if !self.scrolls() || self.edit_mode {
+            return;
+        }
+        let Some(stop) = self.focused_stop(state) else {
+            return;
+        };
+        let rect = self.stop_rect(stop, state);
+        let page = self.panel;
+        self.scroll.scroll_into_view(Rect::new(
+            rect.x0 - page.x0,
+            rect.y0 - page.y0,
+            rect.x1 - page.x0,
+            rect.y1 - page.y0,
+        ));
+        self.panel = self.page_rect(state);
     }
 
     /// Named geometry for every visible root affordance. Quick Settings is
     /// retained chrome rather than a child-widget tree, so this projection is
     /// the semantic equivalent of `Widget::test_rects()`.
     pub fn semantic_rects(&self, state: &QuickSettingsState) -> Vec<(String, Rect)> {
+        // Only what is on screen is a target: a control scrolled out of the
+        // popover is reached by scrolling, never by a point outside it.
+        if !self.scrolls() {
+            return self.page_semantic_rects(state);
+        }
+        let visible = self.visible_rect();
+        self.page_semantic_rects(state)
+            .into_iter()
+            .filter_map(|(name, rect)| {
+                let shown = rect.intersect(visible);
+                (shown.width() > 0.0 && shown.height() > 0.0).then_some((name, shown))
+            })
+            .collect()
+    }
+
+    fn page_semantic_rects(&self, state: &QuickSettingsState) -> Vec<(String, Rect)> {
         if self.edit_mode {
             let active = self.active_edit_controls(state);
             let available = self.available_edit_controls(state);
@@ -419,24 +560,6 @@ impl QuickSettingsRoot {
         self.layout_scale = f64::from(scale).clamp(1.0, 1.2);
         // Row heights still follow the full scale: see `line_height`.
         self.text_scale = f64::from(scale).clamp(0.5, 4.0);
-    }
-    /// Fit root-page spatial chrome to the available popover height while
-    /// leaving text itself at the user's full theme scale. The same effective
-    /// factor drives drawing and hit testing through every geometry helper.
-    ///
-    /// Chrome shrinks only when the desktop is too short for the page: a
-    /// panel with room keeps the token rhythm, because a squeezed gap is a
-    /// touch (HIG §7).
-    pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
-        self.sync_displays(state);
-        let unscaled = self.preferred_height_at(state, 1.0);
-        self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.2, 1.2));
-        // Rows that had to grow for their type do not shrink with the chrome
-        // scale, so the proportional estimate above can still overshoot.
-        // Walk the chrome down to the same floor until the whole root fits.
-        while self.preferred_height(state) > height && self.layout_scale > 0.2 {
-            self.layout_scale = (self.layout_scale - 0.01).max(0.2);
-        }
     }
     /// Take the monitor list from `state`: one brightness slider each.
     pub fn sync_displays(&mut self, state: &QuickSettingsState) {
@@ -771,7 +894,7 @@ impl QuickSettingsRoot {
             count,
         )
     }
-    /// Top of the "AVAILABLE" section: one section gap under the last row.
+    /// Top of the "Available" section: one section gap under the last row.
     fn edit_help_baseline(&self) -> f64 {
         self.header_bottom(self.panel) + self.scaled(CONTROL_PAD)
     }
@@ -786,7 +909,7 @@ impl QuickSettingsRoot {
             + (active - 1.0).max(0.0) * self.scaled(RELATED_GAP)
             + self.scaled(SECTION_GAP)
     }
-    /// The add-chips under the "AVAILABLE" caption: pointer-floor tall,
+    /// The add-chips under the "Available" caption: pointer-floor tall,
     /// siblings one sibling gap apart across the panel padding. One helper
     /// feeds paint, hit-testing and the tests.
     fn available_chips(&self, state: &QuickSettingsState) -> Vec<(QuickSettingsControl, Rect)> {
@@ -1326,6 +1449,7 @@ impl QuickSettingsRoot {
         };
         self.keyboard_focus = Some(next);
         self.root_focus = stops.and_then(|stops| stops.get(next).copied());
+        self.reveal_focus(state);
         true
     }
     /// Whether the next [`Self::focus_next`] in this direction would wrap
@@ -1346,7 +1470,7 @@ impl QuickSettingsRoot {
         }
     }
     pub fn activate_focused(&mut self, panel: Rect, state: &mut QuickSettingsState) -> RootAction {
-        self.panel = panel;
+        self.lay_out(panel, state);
         let Some(i) = self.keyboard_focus else {
             return RootAction::None;
         };
@@ -1491,7 +1615,7 @@ impl QuickSettingsRoot {
         panel: Rect,
         state: &mut QuickSettingsState,
     ) -> RootAction {
-        self.panel = panel;
+        let panel = self.lay_out(panel, state);
         if self.edit_mode {
             return self.edit_click(point, state);
         }
@@ -1590,7 +1714,7 @@ impl QuickSettingsRoot {
         panel: Rect,
         state: &mut QuickSettingsState,
     ) -> bool {
-        self.panel = panel;
+        let panel = self.lay_out(panel, state);
         if let Some(i) = self.slider_drag {
             let (bar, _) = self.slider_geometry_for(panel, i);
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
@@ -1646,17 +1770,35 @@ impl QuickSettingsRoot {
         cursor: Option<Point>,
         state: &QuickSettingsState,
     ) {
-        self.panel = panel;
+        self.sync_scroll(panel, theme, state);
+        self.lay_out(panel, state);
+        // A pointer over the bar lane or outside the shown page hovers
+        // nothing on the page.
+        let scrolls = self.scrolls();
+        let cursor = cursor.filter(|point| !scrolls || self.visible_rect().contains(*point));
         // Panel role (HIG §9.1/§9.2): the host paints the one Panel surface
         // — `panel_ground` with its derived `panel_border` — and the root
         // paints nothing under its controls. A second fill here (formerly
         // `surfaces.raised`) covered the inner half of that border and made
         // the tiles' own `raised` faces vanish into it.
+        if scrolls {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &self.visible_rect(),
+            );
+        }
         self.header(scene, transform, text, theme, cursor, state);
         if self.edit_mode {
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
             self.draw_root(scene, transform, text, theme, cursor, state);
+        }
+        if scrolls {
+            scene.pop_layer();
+            self.scroll.paint_bars(scene, transform, theme);
         }
     }
     fn header(
@@ -3260,7 +3402,8 @@ mod tests {
 
         fn edit_help_copy_uses_font_safe_keyboard_names() {
             let copy = QuickSettingsRoot::edit_help_copy();
-            assert_eq!(copy, "Drag to reorder · Ctrl + Up/Down");
+            assert_eq!(copy, "Drag or press Ctrl + Up/Down to reorder");
+            assert!(!copy.contains('·'), "no middle-dot join in chrome copy");
             assert!(!copy.contains('↑'));
             assert!(!copy.contains('↓'));
         }
@@ -3271,6 +3414,46 @@ mod tests {
         edit_remove_action_has_a_clear_wide_target();
         edit_header_keeps_help_section_and_first_control_visually_separate();
         edit_help_copy_uses_font_safe_keyboard_names();
+    }
+
+    /// Lay `root` out in a popover `viewport` shorter than its page, then
+    /// Tab through every stop: each lands fully inside the shown part of the
+    /// popover, scrolled there the way a list follows its focus, at the
+    /// size it has when nothing scrolls.
+    fn assert_reachable_by_scrolling(
+        root: &mut QuickSettingsRoot,
+        state: &QuickSettingsState,
+        viewport: Rect,
+    ) {
+        let theme = Theme::dark();
+        root.sync_displays(state);
+        root.sync_scroll(viewport, &theme, state);
+        root.lay_out(viewport, state);
+        assert!(root.scrolls(), "a page taller than {viewport:?} scrolls");
+        let shown = root.visible_rect();
+        let stops = root.root_stops(state);
+        root.reset_focus();
+        let mut deepest: f64 = 0.0;
+        for stop in &stops {
+            root.focus_next(state, false);
+            assert_eq!(root.focused_stop(state), Some(*stop));
+            let rect = root.stop_rect(*stop, state);
+            assert!(
+                rect.y0 >= shown.y0 - 1e-6 && rect.y1 <= shown.y1 + 1e-6,
+                "{stop:?} at {rect:?} is not shown in {shown:?} (offset {})",
+                root.scroll_offset()
+            );
+            deepest = deepest.max(root.scroll_offset());
+        }
+        assert!(deepest > 0.0, "reaching the last stops scrolled the page");
+        let targets = root.semantic_rects(state);
+        assert!(!targets.is_empty());
+        for (name, rect) in targets {
+            assert!(
+                shown.contains(rect.center()),
+                "{name} targets {rect:?} outside {shown:?}"
+            );
+        }
     }
 
     #[test]
@@ -3338,7 +3521,7 @@ mod tests {
             );
         }
 
-        fn compact_root_reclaims_space_without_clipping_the_power_profile() {
+        fn a_short_popover_keeps_natural_tiles_and_scrolls_to_the_power_profile() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
             state.radios.wifi_available = true;
@@ -3349,12 +3532,15 @@ mod tests {
                 active: false,
                 kind: "vpn".into(),
             });
-            root.fit_root_layout_to_height(&state, 416.0);
-            let height = root.preferred_height(&state);
-            assert!(height <= 416.0, "the root fits the height it was offered");
-            let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + height);
-            root.panel = panel;
-            assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
+            let natural = root.preferred_height(&state);
+            let tile = root.action_height();
+            let card = root.card_height();
+            let viewport = Rect::new(0.0, 48.0, 400.0, 48.0 + 300.0);
+            assert!(natural > viewport.height(), "the fixture must not fit");
+            assert_reachable_by_scrolling(&mut root, &state, viewport);
+            assert_eq!(root.layout_scale, 1.0, "nothing is squeezed to fit");
+            assert_eq!(root.action_height(), tile);
+            assert_eq!(root.card_height(), card);
         }
 
         fn a_root_with_room_keeps_the_token_rhythm() {
@@ -3363,7 +3549,6 @@ mod tests {
             state.radios.wifi_available = true;
             state.bluetooth_available = true;
             // A 1080p desktop under the top bar: nothing has to give.
-            root.fit_root_layout_to_height(&state, 1080.0 - 64.0);
             assert_eq!(root.layout_scale, 1.0);
             let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + root.preferred_height(&state));
             root.panel = panel;
@@ -3444,7 +3629,7 @@ mod tests {
         compact_geometry_never_overlaps();
         odd_control_count_uses_a_balanced_full_width_last_card();
         bottom_utilities_keep_independent_touch_targets();
-        compact_root_reclaims_space_without_clipping_the_power_profile();
+        a_short_popover_keeps_natural_tiles_and_scrolls_to_the_power_profile();
         a_root_with_room_keeps_the_token_rhythm();
         power_utility_keeps_a_clear_root_target();
         accessibility_nodes_carry_the_rects_paint_and_hit_testing_use();
@@ -3456,21 +3641,18 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn root_panel_fits_large_text_and_keeps_one_rhythm() {
-        fn large_text_keeps_the_complete_root_panel_on_an_800_by_600_desktop() {
+        fn large_text_keeps_full_size_targets_and_scrolls_on_an_800_by_600_desktop() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
             state.radios.wifi_available = true;
             state.bluetooth_available = true;
             root.set_layout_text_scale(1.3);
-            // The panel begins below the 48px top bar and must leave the shell's
-            // 16px lower margin intact: the host fits the root's chrome to that
-            // budget (`fit_root_layout_to_height`) exactly as it does per frame.
-            // This catches accidental growth of whitespace that would hide the
-            // power profile at common laptop sizes — the fit must succeed
-            // while preserving full-size text and minimum pointer targets.
+            // The panel begins below the 48px top bar and leaves the shell's
+            // 16px lower margin. Text and targets keep their full size; a
+            // page taller than that scrolls instead of shrinking.
             let available = 600.0 - 48.0 - 16.0;
-            root.fit_root_layout_to_height(&state, available);
-            root.panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
+            let viewport = Rect::new(0., 48., 400., 48. + available);
+            assert_reachable_by_scrolling(&mut root, &state, viewport);
             // A rect at a fractional `y` loses a few ulps of its height.
             for index in 0..2 {
                 assert!(root.slider_face_rect(root.panel, index).height() >= TARGET - 1e-9);
@@ -3479,30 +3661,17 @@ mod tests {
             for index in 0..QuickSettingsRoot::ACTION_COUNT {
                 assert!(root.action(index).height() >= 44.0);
             }
-            assert!(root.preferred_height(&state) <= available + f64::EPSILON);
-            let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
-            assert!(root.power_geometry(panel, &state).y1 <= panel.y1 + f64::EPSILON);
         }
 
-        fn large_text_fits_every_root_control_on_a_960_by_540_desktop() {
+        fn large_text_reaches_every_root_control_on_a_960_by_540_desktop() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
             state.radios.wifi_available = true;
             state.bluetooth_available = true;
             root.set_layout_text_scale(1.3);
             let available = 540.0 - 48.0 - 16.0;
-            root.fit_root_layout_to_height(&state, available);
-            let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + available);
-
-            assert!(root.preferred_height(&state) <= available + f64::EPSILON);
-            assert!(root.power_geometry(panel, &state).y1 <= panel.y1 + f64::EPSILON);
-            for i in 0..root.visible_controls(&state).len() {
-                assert!(
-                    root.control_card(panel, i, root.visible_controls(&state).len())
-                        .y1
-                        <= panel.y1
-                );
-            }
+            let viewport = Rect::new(0.0, 48.0, 400.0, 48.0 + available);
+            assert_reachable_by_scrolling(&mut root, &state, viewport);
         }
 
         fn large_text_rows_grow_to_hold_their_type_and_the_title_stays_clear_of_the_tiles() {
@@ -3684,8 +3853,8 @@ mod tests {
             }
         }
 
-        large_text_keeps_the_complete_root_panel_on_an_800_by_600_desktop();
-        large_text_fits_every_root_control_on_a_960_by_540_desktop();
+        large_text_keeps_full_size_targets_and_scrolls_on_an_800_by_600_desktop();
+        large_text_reaches_every_root_control_on_a_960_by_540_desktop();
         large_text_rows_grow_to_hold_their_type_and_the_title_stays_clear_of_the_tiles();
         root_geometry_keeps_one_rhythm_at_one_x();
     }
@@ -3954,7 +4123,7 @@ mod tests {
                 state.radios.wifi_available = true;
                 state.bluetooth_available = true;
                 root.set_layout_text_scale(f32v(theme.responsive_scale()));
-                root.fit_root_layout_to_height(&state, 900.0);
+                root.sync_displays(&state);
                 let panel = Rect::new(
                     24.0,
                     24.0,

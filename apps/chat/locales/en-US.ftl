@@ -194,6 +194,7 @@ chat-move-channel = { $up ->
 chat-delete-channel = Deleted the channel #{ $item }
 chat-start-draft = Started a draft
 chat-post = Posted: { $text }
+chat-post-file = Posted the file { $name }
 chat-share-resource = Shared a link in #{ $item }
 chat-edit-message = Edited a message: { $text }
 chat-delete-message = Deleted a message

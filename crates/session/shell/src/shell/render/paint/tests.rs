@@ -17,6 +17,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
 mod direct;
+mod multi_output;
 mod output_views;
 mod recovery;
 mod sparse_damage;

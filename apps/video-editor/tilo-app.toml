@@ -1,8 +1,11 @@
 # Video Editor — Tilo application manifest.
 #
-# Export muxing goes through GStreamer (feature `gst`) and decode
-# through openh264 (feature `decode`); both plugin trees live under
-# `/usr/lib64`, which the system read profile covers. No network.
+# Preview decode (feature `decode`) and export encode and muxing
+# (feature `gst`) both go through the system's GStreamer, whose plugin
+# trees live under `/usr/lib64`, which the system read profile covers.
+# Tilo bundles no H.264 codec: encoders are picked from the machine's
+# GStreamer registry, hardware first, and Cisco's `openh264enc` is there
+# only where the owner installed the media-codecs extension. No network.
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read on the directories the user sources clips from —
@@ -28,6 +31,9 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 optional = ["files.open", "files.save", "files.paths", "app-files", "threads", "media.decode"]
+
+[resources]
+kinds = ["video-editor.project"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -67,8 +73,11 @@ splash-segments = ["bin/video-editor[0x0:0x400000]"]
 splash-budget   = 250
 
 # Formats the importer probes (see `probe.rs`): ISOBMFF, Matroska/WebM, MP3,
-# WAV, and the two still-image formats.
+# WAV, and the two still-image formats. Opening one of these means watching or
+# listening to it, so the Video Player, Music and Photos open them by default
+# and the editor is offered under Open with.
 [providers]
+secondary = true
 mime = [
     "video/mp4",
     "video/quicktime",

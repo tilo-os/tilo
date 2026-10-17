@@ -142,8 +142,11 @@ pub fn page_of(id: &Id) -> Option<PageId> {
 #[resource(
     kind = "notes.notebook",
     label = "Notebook",
+    version = 2,
+    migrate = crate::legacy::migrate,
     search = crate::search::entries,
     read_content_in_doc = Notebook::read_note,
+    document_child = Notebook::document_projection_child,
     answer = Notebook::created_page,
     effects = crate::effect::NotesEffect
 )]
@@ -748,6 +751,14 @@ impl Notebook {
                 })
             })
         })
+    }
+
+    /// Only notes and their bodies are addressed by the notebook's read.
+    /// Tags and custom view children do not inherit that disclosure.
+    fn document_projection_child(&self, id: &str) -> bool {
+        crate::actions::page_of_resource(id)
+            .or_else(|| crate::actions::page_of_body_resource(id))
+            .is_some_and(|page| self.pages.get(&page_id(page)).is_some())
     }
 
     /// One note, or the notebook, as a reader reads it: the notebook as its

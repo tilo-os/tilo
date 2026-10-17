@@ -24,3 +24,13 @@ metrics, swash rasterisation) use the normal width, as before.
 
 Remove this patch once upstream shapes variable fonts at the width a run asks
 for (cosmic-text 0.19 applies `wght` only).
+
+## Font stack on the versions the rest of Tilo uses
+
+The manifest asks for `skrifa` 0.44 and `harfrust` 0.12 instead of 0.40 and
+0.5, the versions `swash` and `vello_cpu` already pull in, so one copy of the
+font parser ships instead of two (the web build included). `src/shape.rs`
+passes its cached plan and features through `harfrust::ShapeOptions`, the
+form `Shaper::shape` takes in harfrust 0.12.
+
+Drop this once an upstream release depends on these versions.

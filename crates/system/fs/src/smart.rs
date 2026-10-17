@@ -14,8 +14,10 @@ use iroh_blobs::Hash;
 use tokio::sync::mpsc;
 
 use crate::hydration::Hydrator;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 pub mod history;
+pub mod kept_history;
 
 /// Predictive reads are an optimization, not an instruction to fill the disk.
 /// Larger files remain projected until explicitly opened or pinned.
@@ -101,7 +103,13 @@ pub struct Heuristics {
     opened: Arc<std::sync::atomic::AtomicBool>,
     /// Signalled by every open, so the monitor resumes sampling at once.
     activity: Arc<tokio::sync::Notify>,
+    /// Run whenever the person turns prediction off: what was learned for
+    /// it is forgotten with it.
+    prefetch_off: Mutex<Vec<PrefetchOffHook>>,
 }
+
+/// What [`Heuristics::on_prefetch_off`] runs.
+pub type PrefetchOffHook = Box<dyn Fn() + Send + Sync>;
 
 impl Heuristics {
     /// Construct the bounded predictive worker on the hydrator's runtime.
@@ -122,32 +130,27 @@ impl Heuristics {
             while let Some(job) = jobs.recv().await {
                 if job.generation != worker_generation.load(Ordering::Acquire)
                     || !worker_policy
-                        .read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .read_recover()
                         .permits()
                 {
                     worker_pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lock_recover()
                         .remove(&job.hash);
                     continue;
                 }
                 let Ok(permit) = slots.clone().acquire_owned().await else {
                     worker_pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lock_recover()
                         .remove(&job.hash);
                     continue;
                 };
                 if job.generation != worker_generation.load(Ordering::Acquire)
                     || !worker_policy
-                        .read()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .read_recover()
                         .permits()
                 {
                     worker_pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lock_recover()
                         .remove(&job.hash);
                     continue;
                 }
@@ -170,8 +173,7 @@ impl Heuristics {
                         }
                     }
                     pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lock_recover()
                         .remove(&job.hash);
                 });
             }
@@ -185,7 +187,14 @@ impl Heuristics {
             queue,
             opened: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             activity: Arc::new(tokio::sync::Notify::new()),
+            prefetch_off: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Run `hook` each time the person turns prediction off, after the
+    /// worker has stopped.
+    pub fn on_prefetch_off(&self, hook: PrefetchOffHook) {
+        self.prefetch_off.lock_recover().push(hook);
     }
 
     /// Whether a file was opened since the last call.
@@ -203,10 +212,7 @@ impl Heuristics {
     /// invalidates every queued/running prediction; reopening policy starts
     /// with a fresh generation and never resurrects stale hints.
     pub fn set_policy(&self, policy: PredictivePolicy) {
-        let mut inputs = self
-            .inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inputs = self.inputs.lock_recover();
         inputs.0 = policy;
         self.apply(*inputs);
     }
@@ -215,28 +221,27 @@ impl Heuristics {
     /// is queued or running and admits nothing more, whatever the system's
     /// gates say; on leaves those gates in charge.
     pub fn set_prefetch_enabled(&self, enabled: bool) {
-        let mut inputs = self
-            .inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inputs.1 = enabled;
-        self.apply(*inputs);
+        {
+            let mut inputs = self.inputs.lock_recover();
+            inputs.1 = enabled;
+            self.apply(*inputs);
+        }
+        if !enabled {
+            let hooks = self.prefetch_off.lock_recover();
+            for hook in hooks.iter() {
+                hook();
+            }
+        }
     }
 
     /// Whether the person allows prediction.
     #[must_use]
     pub fn prefetch_enabled(&self) -> bool {
-        self.inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .1
+        self.inputs.lock_recover().1
     }
 
     fn apply(&self, (system, enabled): (PredictivePolicy, bool)) {
-        *self
-            .policy
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = PredictivePolicy {
+        *self.policy.write_recover() = PredictivePolicy {
             enabled: system.enabled && enabled,
             ..system
         };
@@ -244,19 +249,13 @@ impl Heuristics {
             .generation
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.pending.lock_recover().clear();
         let _ = self.cancel.send(generation);
     }
 
     #[must_use]
     pub fn policy(&self) -> PredictivePolicy {
-        *self
-            .policy
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.policy.read_recover()
     }
 
     /// Current admitted speculative work as `(jobs, declared_bytes)`.
@@ -267,10 +266,7 @@ impl Heuristics {
     /// exposing the queue implementation.
     #[must_use]
     pub fn pending_work(&self) -> (usize, u64) {
-        let pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pending = self.pending.lock_recover();
         (pending.len(), pending.values().copied().sum())
     }
 
@@ -291,10 +287,7 @@ impl Heuristics {
                 continue;
             }
             {
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut pending = self.pending.lock_recover();
                 if !admit_pending(&mut pending, hash, size, policy) {
                     continue;
                 }
@@ -306,10 +299,7 @@ impl Heuristics {
             {
                 // Queue pressure is a reason to skip speculation, never to
                 // delay the foreground open that produced the hint.
-                self.pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&hash);
+                self.pending.lock_recover().remove(&hash);
             }
         }
     }

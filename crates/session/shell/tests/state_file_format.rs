@@ -73,6 +73,7 @@ fn populated_tree() -> WorkspaceTree {
         route: WorkspaceTaskRoute::Manual,
         status: WorkspaceTaskStatus::Queued,
         resource: None,
+        subject: None,
         created_at: 10,
         updated_at: 20,
         audit: Vec::new(),

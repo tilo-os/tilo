@@ -1,0 +1,4096 @@
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_0 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_2 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_3 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_4 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_5 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_6 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_7 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_8 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_9 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_10 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_11 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_12 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_13 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_14 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_15 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_16 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_17 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_18 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_19 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_20 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_21 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_22 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_23 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_24 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_25 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_26 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_27 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_28 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_29 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_30 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_31 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_32 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_33 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_34 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_35 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_36 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_37 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_38 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_39 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_40 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_41 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_42 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_43 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_44 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_45 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_46 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_47 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_48 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_49 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_50 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_51 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_52 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_53 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_54 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_55 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_56 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_57 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_58 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_59 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_60 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_61 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_62 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_63 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_64 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_65 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_66 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_67 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_68 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_69 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_70 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_71 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_72 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_73 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_74 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_75 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_76 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_77 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_78 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_79 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_80 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_81 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_82 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_83 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_84 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_85 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_86 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_87 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_88 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_89 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_90 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_91 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_92 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_93 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_94 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_95 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_96 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_97 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_98 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_99 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_100 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_101 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_102 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_103 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_104 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_105 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_106 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_107 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_108 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_109 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_110 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_111 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_112 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_113 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_114 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_115 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_116 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_117 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_118 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_119 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_120 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_121 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_122 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_123 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_124 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_125 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_126 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_127 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_128 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_129 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_130 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_131 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_132 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_133 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_134 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_135 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_136 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_137 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_138 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_139 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_140 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_141 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_142 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_143 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_144 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_145 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_146 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_147 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_148 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_149 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_150 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_151 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_152 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_153 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_154 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_155 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_156 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_157 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_158 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_159 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_160 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_161 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_162 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_163 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_164 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_165 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_166 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_167 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_168 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_169 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_170 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_171 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_172 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_173 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_174 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_175 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_176 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_177 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_178 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_179 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_180 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_181 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_182 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_183 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_184 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_185 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_186 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_187 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_188 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_189 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_190 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_191 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_192 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_193 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_194 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_195 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_196 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_197 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_198 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_199 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_200 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_201 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_202 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_203 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_204 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_205 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_206 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_207 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_208 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_209 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_210 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_211 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_212 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_213 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_214 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_215 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_216 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_217 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_218 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_219 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_220 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_221 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_222 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_223 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_224 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_225 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_226 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_227 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_228 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_229 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_230 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_231 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_232 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_233 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_234 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_235 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_236 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_237 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_238 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_239 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_240 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_241 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_242 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_243 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_244 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_245 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_246 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_247 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_248 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_249 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_250 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_251 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_252 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_253 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_254 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_255 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_256 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_257 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_258 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_259 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_260 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_261 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_262 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_263 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_264 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_265 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_266 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_267 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_268 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_269 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_270 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_271 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_272 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_273 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_274 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_275 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_276 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_277 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_278 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_279 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_280 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_281 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_282 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_283 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_284 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_285 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_286 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_287 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_288 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_289 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_290 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_291 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_292 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_293 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_294 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_295 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_296 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_297 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_298 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_299 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_300 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_301 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_302 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_303 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_304 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_305 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_306 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_307 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_308 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_309 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_310 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_311 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_312 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_313 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_314 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_315 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_316 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_317 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_318 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_319 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_320 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_321 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_322 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_323 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_324 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_325 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_326 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_327 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_328 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_329 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_330 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_331 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_332 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_333 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_334 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_335 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_336 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_337 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_338 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_339 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_340 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_341 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_342 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_343 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_344 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_345 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_346 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_347 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_348 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_349 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_350 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_351 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_352 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_353 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_354 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_355 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_356 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_357 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_358 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_359 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_360 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_361 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_362 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_363 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_364 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_365 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_366 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_367 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_368 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_369 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_370 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_371 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_372 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_373 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_374 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_375 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_376 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_377 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_378 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_379 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_380 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_381 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_382 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_383 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_384 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_385 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_386 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_387 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_388 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_389 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_390 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_391 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_392 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_393 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_394 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_395 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_396 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_397 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_398 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_399 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_400 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_401 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_402 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_403 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_404 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_405 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_406 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_407 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_408 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_409 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_410 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_411 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_412 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_413 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_414 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_415 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_416 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_417 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_418 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_419 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_420 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_421 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_422 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_423 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_424 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_425 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_426 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_427 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_428 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_429 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_430 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_431 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_432 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_433 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_434 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_435 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_436 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_437 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_438 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_439 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_440 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_441 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_442 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_443 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_444 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_445 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_446 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_447 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_448 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_449 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_450 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_451 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_452 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_453 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_454 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_455 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_456 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_457 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_458 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_459 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_460 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_461 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_462 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_463 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_464 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_465 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_466 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_467 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_468 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_469 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_470 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_471 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_472 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_473 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_474 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_475 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_476 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_477 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_478 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_479 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_480 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_481 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_482 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_483 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_484 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_485 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_486 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_487 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_488 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_489 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_490 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_491 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_492 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_493 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_494 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_495 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_496 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_497 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_498 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_499 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_500 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_501 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_502 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_503 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_504 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_505 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_506 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_507 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_508 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_509 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_510 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_511 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_512 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_513 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_514 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_515 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_516 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_517 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_518 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_519 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_520 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_521 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_522 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_523 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_524 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_525 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_526 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_527 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_528 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_529 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_530 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_531 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_532 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_533 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_534 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_535 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_536 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_537 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_538 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_539 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_540 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_541 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_542 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_543 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_544 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_545 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_546 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_547 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_548 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_549 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_550 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_551 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_552 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_553 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_554 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_555 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_556 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_557 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_558 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_559 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_560 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_561 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_562 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_563 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_564 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_565 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_566 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_567 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_568 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_569 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_570 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_571 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_572 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_573 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_574 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_575 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_576 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_577 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_578 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_579 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_580 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_581 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_582 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_583 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_584 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_585 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_586 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_587 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_588 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_589 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_590 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_591 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_592 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_593 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_594 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_595 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_596 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_597 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_598 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_599 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_600 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_601 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_602 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_603 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_604 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_605 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_606 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_607 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_608 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_609 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_610 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_611 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_612 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_613 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_614 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_615 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_616 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_617 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_618 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_619 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_620 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_621 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_622 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_623 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_624 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_625 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_626 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_627 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_628 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_629 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_630 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_631 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_632 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_633 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_634 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_635 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_636 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_637 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_638 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_639 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_640 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_641 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_642 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_643 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_644 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_645 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_646 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_647 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_648 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_649 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_650 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_651 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_652 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_653 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_654 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_655 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_656 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_657 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_658 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_659 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_660 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_661 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_662 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_663 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_664 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_665 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_666 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_667 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_668 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_669 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_670 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_671 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_672 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_673 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_674 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_675 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_676 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_677 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_678 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_679 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_680 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_681 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_682 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_683 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_684 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_685 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_686 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_687 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_688 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_689 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_690 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_691 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_692 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_693 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_694 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_695 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_696 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_697 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_698 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_699 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_700 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_701 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_702 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_703 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_704 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_705 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_706 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_707 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_708 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_709 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_710 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_711 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_712 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_713 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_714 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_715 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_716 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_717 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_718 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_719 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_720 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_721 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_722 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_723 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_724 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_725 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_726 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_727 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_728 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_729 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_730 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_731 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_732 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_733 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_734 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_735 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_736 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_737 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_738 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_739 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_740 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_741 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_742 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_743 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_744 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_745 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_746 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_747 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_748 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_749 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_750 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_751 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_752 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_753 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_754 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_755 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_756 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_757 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_758 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_759 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_760 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_761 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_762 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_763 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_764 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_765 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_766 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_767 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_768 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_769 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_770 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_771 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_772 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_773 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_774 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_775 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_776 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_777 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_778 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_779 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_780 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_781 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_782 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_783 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_784 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_785 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_786 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_787 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_788 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_789 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_790 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_791 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_792 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_793 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_794 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_795 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_796 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_797 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_798 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_799 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_800 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_801 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_802 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_803 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_804 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_805 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_806 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_807 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_808 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_809 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_810 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_811 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_812 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_813 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_814 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_815 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_816 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_817 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_818 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_819 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_820 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_821 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_822 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_823 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_824 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_825 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_826 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_827 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_828 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_829 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_830 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_831 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_832 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_833 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_834 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_835 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_836 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_837 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_838 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_839 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_840 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_841 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_842 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_843 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_844 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_845 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_846 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_847 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_848 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_849 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_850 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_851 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_852 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_853 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_854 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_855 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_856 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_857 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_858 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_859 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_860 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_861 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_862 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_863 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_864 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_865 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_866 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_867 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_868 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_869 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_870 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_871 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_872 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_873 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_874 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_875 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_876 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_877 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_878 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_879 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_880 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_881 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_882 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_883 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_884 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_885 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_886 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_887 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_888 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_889 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_890 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_891 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_892 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_893 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_894 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_895 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_896 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_897 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_898 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_899 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_900 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_901 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_902 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_903 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_904 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_905 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_906 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_907 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_908 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_909 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_910 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_911 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_912 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_913 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_914 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_915 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_916 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_917 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_918 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_919 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_920 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_921 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_922 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_923 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_924 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_925 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_926 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_927 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_928 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_929 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_930 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_931 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_932 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_933 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_934 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_935 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_936 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_937 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_938 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_939 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_940 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_941 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_942 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_943 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_944 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_945 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_946 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_947 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_948 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_949 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_950 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_951 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_952 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_953 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_954 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_955 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_956 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_957 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_958 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_959 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_960 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_961 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_962 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_963 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_964 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_965 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_966 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_967 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_968 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_969 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_970 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_971 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_972 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_973 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_974 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_975 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_976 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_977 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_978 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_979 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_980 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_981 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_982 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_983 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_984 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_985 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_986 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_987 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_988 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_989 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_990 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_991 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_992 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_993 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_994 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_995 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_996 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_997 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_998 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_999 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1000 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1001 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1002 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1003 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1004 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1005 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1006 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1007 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1008 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1009 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1010 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1011 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1012 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1013 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1014 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1015 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1016 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1017 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1018 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1019 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1020 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1021 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1022 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}
+#[allow(dead_code, reason = "capnpc emits optional accessors")]
+pub mod generated_1023 {
+    pub struct Reader<a> { pub data: &a [u8] }
+}

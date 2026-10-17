@@ -175,47 +175,129 @@ pub(crate) fn with_scratch_event_ctx<R>(f: impl FnOnce(&mut ui::widget::EventCtx
     })
 }
 
+/// When pan step `step` of a fixture that does not model input timing was
+/// reported: well before the frame and far apart from the step before, so
+/// the strip's frame-time resampling has nothing to interpolate and each
+/// frame shows exactly the travel last reported, and a release throws
+/// nothing.
+#[cfg(test)]
+pub(crate) fn settled_pan_report(step: u32) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_sub(std::time::Duration::from_secs(30))
+        .and_then(|base| {
+            base.checked_add(std::time::Duration::from_millis(50).saturating_mul(step))
+        })
+        .unwrap_or(now)
+}
+
 #[cfg(test)]
 pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
 
+/// This process's settings document, replaced by `source` until the guard
+/// drops and then restored, also while a failing test unwinds.
+///
+/// Which document the process reads is as process-wide as its environment:
+/// the installed source, else the file `XDG_CONFIG_HOME` names. A test that
+/// installed a source beside a test holding a [`tilo_test_env::TestHome`]
+/// took that test's settings writes, and uninstalling it sent the other
+/// test's reads back to a file it never wrote: the automatic display input
+/// tests saw their own policy vanish in a parallel run. So the guard holds
+/// the process-wide test-environment lock, as `TestHome` does, for as long
+/// as the source is installed.
+#[cfg(test)]
+#[must_use = "the source is uninstalled as soon as the guard drops"]
+pub(crate) struct InstalledSettings {
+    previous: Option<std::sync::Arc<dyn settings_store::SettingsSource>>,
+    // Released after `drop` restored the previous source.
+    _env: tilo_test_env::EnvLock,
+}
+
+/// Install `source` as this process's settings until the guard drops.
+#[cfg(test)]
+pub(crate) fn install_settings(
+    source: std::sync::Arc<dyn settings_store::SettingsSource>,
+) -> InstalledSettings {
+    let env = tilo_test_env::lock();
+    let previous = settings_store::installed_source();
+    settings_store::install_source(Some(source));
+    InstalledSettings {
+        previous,
+        _env: env,
+    }
+}
+
+#[cfg(test)]
+impl Drop for InstalledSettings {
+    fn drop(&mut self) {
+        settings_store::install_source(self.previous.take());
+    }
+}
+
+/// Forbids production service starts (workers, process-global handles,
+/// ambient identity and file lookups) for the lifetime of a guard.
+///
+/// The guard is scoped to the thread that arms it, which is the test that
+/// owns it: libtest runs each test on its own thread, so a guard in one
+/// test never trips the production paths another test exercises
+/// concurrently. Every `ambient_start` boundary runs synchronously on the
+/// thread that requests the service, before any worker is spawned, so a
+/// thread-local guard still sees every start its own test makes.
 #[cfg(test)]
 mod ambient {
+    use std::cell::Cell;
 
-    static DENY_AMBIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    static AMBIENT_ATTEMPTS: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(0);
+    thread_local! {
+        static DENY_AMBIENT: Cell<bool> = const { Cell::new(false) };
+        static AMBIENT_ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
 
     pub(crate) struct DenyAmbientStarts {
+        /// This thread's attempt count when the guard was armed.
         initial_attempts: usize,
+        /// Thread-bound: the guard only covers the thread that armed it.
+        _not_send: std::marker::PhantomData<*const ()>,
     }
     impl DenyAmbientStarts {
         pub(crate) fn new() -> Self {
-            use std::sync::atomic::Ordering;
             assert!(
-                !DENY_AMBIENT.swap(true, Ordering::SeqCst),
-                "ambient guard already armed"
+                !DENY_AMBIENT.replace(true),
+                "ambient guard already armed on this test thread"
             );
-            AMBIENT_ATTEMPTS.store(0, Ordering::SeqCst);
             Self {
-                initial_attempts: 0,
+                initial_attempts: AMBIENT_ATTEMPTS.get(),
+                _not_send: std::marker::PhantomData,
             }
         }
         pub(crate) fn attempts(&self) -> usize {
-            AMBIENT_ATTEMPTS
-                .load(std::sync::atomic::Ordering::SeqCst)
-                .saturating_sub(self.initial_attempts)
+            AMBIENT_ATTEMPTS.get().saturating_sub(self.initial_attempts)
         }
     }
     impl Drop for DenyAmbientStarts {
         fn drop(&mut self) {
-            DENY_AMBIENT.store(false, std::sync::atomic::Ordering::SeqCst);
+            DENY_AMBIENT.set(false);
         }
     }
     pub(crate) fn ambient_start(boundary: &'static str) {
-        use std::sync::atomic::Ordering;
-        if DENY_AMBIENT.load(Ordering::SeqCst) {
-            AMBIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+        if DENY_AMBIENT.get() {
+            AMBIENT_ATTEMPTS.set(AMBIENT_ATTEMPTS.get().saturating_add(1));
             panic!("ambient service start forbidden: {boundary}");
         }
+    }
+
+    #[test]
+    fn a_guard_forbids_only_its_own_tests_starts() {
+        let guard = DenyAmbientStarts::new();
+        let concurrent_test = std::thread::spawn(|| {
+            ambient_start("a concurrent test's production path");
+            let own = DenyAmbientStarts::new();
+            assert_eq!(own.attempts(), 0);
+        });
+        assert!(
+            concurrent_test.join().is_ok(),
+            "another test's guard tripped a concurrent test"
+        );
+        let own_start = std::panic::catch_unwind(|| ambient_start("own production path"));
+        assert!(own_start.is_err());
+        assert_eq!(guard.attempts(), 1);
     }
 }

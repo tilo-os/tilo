@@ -224,7 +224,7 @@ test('mounted semantic watch latches with pixels and preserves input through dis
  watch.close();assert.equal(requests.at(-1).observe,false);assert.equal(watch.read(),null);
  observer.close();await f.host.cleanup();assert.throws(()=>f.host.observeSemanticTarget(target),/closed/);
 });
-test('desktop chords typed in a focused text field reach the desktop, other modified keys stay the browser\'s',async()=>{
+test('desktop chords and text-editing keys typed in a focused text field reach the desktop, browser chords stay the browser\'s',async()=>{
  const f=await fixture();f.host.editor.focus();
  const canvasKeys=[];f.host.canvas.addEventListener('keydown',event=>canvasKeys.push([event.key,Boolean(event.metaKey),Boolean(event.ctrlKey),Boolean(event.altKey)]));
  // The fixture is a Mac: Super is Cmd, the stand-in Ctrl+Option.
@@ -235,9 +235,16 @@ test('desktop chords typed in a focused text field reach the desktop, other modi
  }
  assert.deepEqual(canvasKeys,[['ArrowRight',true,false,false],['ArrowLeft',false,true,true],['PageDown',true,false,false],['¡',false,true,true]]);
  canvasKeys.length=0;
- for(const init of [{key:'ArrowLeft',code:'ArrowLeft',altKey:true},{key:'ArrowLeft',code:'ArrowLeft',altKey:true,shiftKey:true},{key:'l',code:'KeyL',metaKey:true}]){
+ // Word movement and deletion edit the app's text field, so they reach it.
+ for(const init of [{key:'ArrowLeft',code:'ArrowLeft',altKey:true},{key:'ArrowLeft',code:'ArrowLeft',altKey:true,shiftKey:true},{key:'Backspace',code:'Backspace',altKey:true}]){
   const event=new DomEvent('keydown',init);f.host.editor.dispatchEvent(event);
-  assert.equal(event.defaultPrevented,false,`${JSON.stringify(init)} stays native`);
+  assert.equal(event.defaultPrevented,true,`${JSON.stringify(init)} edits the app's text`);
+  f.host.editor.dispatchEvent(new DomEvent('keyup',{key:init.key,code:init.code}));
  }
- assert.deepEqual(canvasKeys,[],'word movement and browser chords are not desktop chords');
+ assert.deepEqual(canvasKeys,[['ArrowLeft',false,false,true],['ArrowLeft',false,false,true],['Backspace',false,false,true]]);
+ canvasKeys.length=0;
+ // A browser chord stays the browser's.
+ const address=new DomEvent('keydown',{key:'l',code:'KeyL',metaKey:true});f.host.editor.dispatchEvent(address);
+ assert.equal(address.defaultPrevented,false,'Cmd+L stays native');
+ assert.deepEqual(canvasKeys,[],'browser chords are not the app\'s');
 });

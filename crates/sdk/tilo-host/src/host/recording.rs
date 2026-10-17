@@ -18,10 +18,12 @@ use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
 };
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct Log {
     copies: Vec<(ClipboardTarget, String)>,
+    secret_copies: Vec<String>,
     /// What another app last copied, when it was an image.
     clipboard_image: Option<ClipboardImage>,
     opened_uris: Vec<String>,
@@ -57,14 +59,17 @@ pub struct HostRecorder {
 
 impl HostRecorder {
     fn log(&self) -> MutexGuard<'_, Log> {
-        self.log
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.log.lock_recover()
     }
 
     /// Every text copy, in order.
     pub fn copies(&self) -> Vec<(ClipboardTarget, String)> {
         self.log().copies.clone()
+    }
+
+    /// Every secret copy, in order. These are not among [`Self::copies`].
+    pub fn secret_copies(&self) -> Vec<String> {
+        self.log().secret_copies.clone()
     }
 
     /// Another app copies `image`, as a screenshot tool does: the next paste
@@ -181,6 +186,15 @@ impl ClipboardBackend for RecordingClipboard {
             }
         }
         self.buffer.set_text(target, text)
+    }
+
+    fn set_secret_text(&self, text: &str) -> bool {
+        {
+            let mut log = self.recorder.log();
+            log.secret_copies.push(text.to_string());
+            log.clipboard_image = None;
+        }
+        self.buffer.set_text(ClipboardTarget::Clipboard, text)
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {

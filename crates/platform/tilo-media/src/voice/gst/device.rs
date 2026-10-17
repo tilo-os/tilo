@@ -10,6 +10,7 @@ use std::{
     thread::Thread,
     time::{Duration, Instant},
 };
+use tilo_lock::MutexRecover as _;
 
 pub(super) const MAX_DEVICE_WORKERS: usize = 8;
 static OUTSTANDING: AtomicUsize = AtomicUsize::new(0);
@@ -90,9 +91,7 @@ fn registry() -> Result<&'static Registry, AudioError> {
                 .spawn(move || {
                     loop {
                         {
-                            let mut slots = observed
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let mut slots = observed.lock_recover();
                             slots.retain(|slot| {
                                 let Some(state) = slot.upgrade() else {
                                     return false;
@@ -145,9 +144,7 @@ impl DevicePipeline {
             thread: OnceLock::new(),
         }));
         {
-            let mut slots = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut slots = registry.lock_recover();
             slots.retain(|slot| {
                 slot.upgrade()
                     .is_some_and(|state| !state.finished.load(Ordering::Acquire))

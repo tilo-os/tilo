@@ -36,6 +36,8 @@ fs-protocol = { path = "../../crates/system/fs-protocol" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+# Credential-free cloud browsing and independent streamed imports.
+tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 # Share- and recipient-control frames.
 wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"] }
@@ -57,6 +59,9 @@ icu_locale = "2.3.0"
 # manager can show each workspace file's sync/hydration state, and performs
 # no-replace renames, private staging and trash management.
 host-fs = { path = "../../crates/system/host-fs" }
+# Reading a PDF's text, through the portable engine. Document formats are
+# Writer's: it links the codecs and converts files.
+tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 # Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true

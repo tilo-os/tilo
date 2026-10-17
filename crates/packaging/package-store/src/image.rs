@@ -37,6 +37,7 @@ use crate::StoreError;
 use crate::catalog::SystemStore;
 use crate::layout::{COLLECTION_FILE, Layout, MANIFEST_FILE, SIGNED_ROOT_FILE};
 use crate::store::{Admission, PackageStore};
+use tilo_lock::MutexRecover as _;
 
 /// File, beside the system store's registry, naming the publishers whose
 /// images this installation trusts, one hex Ed25519 key per line. The OS
@@ -542,9 +543,7 @@ impl Store {
                     }),
                     Err(error) => {
                         let reason = error.to_string();
-                        *refusal
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        *refusal.lock_recover() = Some(error);
                         Err(reason)
                     }
                 }

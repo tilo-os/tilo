@@ -145,6 +145,7 @@ fn read_bounded_lines(
 }
 
 use crate::disks::PartitionExtent;
+use tilo_lock::MutexRecover as _;
 
 /// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
@@ -665,9 +666,7 @@ fn stream_command_with_accounts<F: FnMut(String)>(
             if read.is_err() {
                 // The command may still hold stdout open: stop it so the
                 // stdout reader sees EOF.
-                let mut tree = tree
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut tree = tree.lock_recover();
                 let (child, reaped) = &mut *tree;
                 if !*reaped {
                     bounded_command::kill_tree(child);
@@ -684,18 +683,14 @@ fn stream_command_with_accounts<F: FnMut(String)>(
         Ok(())
     };
     if stdout_result.is_err() {
-        let mut tree = tree
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tree = tree.lock_recover();
         bounded_command::kill_tree(&mut tree.0);
     }
     // Wait for the exit without reaping, so the stderr reader can still stop
     // the tree meanwhile; then reap under the lock.
     let exited = wait_exited_unreaped(pid);
     let status = {
-        let mut tree = tree
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tree = tree.lock_recover();
         let (child, reaped) = &mut *tree;
         let status = exited.and_then(|()| child.wait());
         *reaped = true;

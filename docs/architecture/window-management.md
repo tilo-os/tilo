@@ -84,7 +84,7 @@ unless marked fixed.
 focused tab's context menu at its tab pill. The first action is focused
 immediately; Up/Down choose a row, Enter invokes it, and Escape cancels.
 Right-click still targets the tab under the pointer. A single-tab group offers
-Close only; multi-tab groups also offer Split Right and Move to New Group.
+Close only; multi-tab groups also offer Split right and Move to new group.
 The menu uses the existing action dispatch, permissions and close history.
 Settings and the shortcut guide publish the same binding. App Context Menu
 and Shift+F10 keys continue to reach the app's resource menu.

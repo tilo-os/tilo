@@ -254,6 +254,12 @@ pub trait CollabTransport: Send {
         false
     }
 
+    /// Whether that failure was the workspace refusing a change, rather than
+    /// the connection or the transport failing.
+    fn document_change_refused(&self) -> bool {
+        false
+    }
+
     /// Withdraw the transport after an unrecoverable publication outcome.
     fn fail_closed(&self, reason: &'static str) {
         let _ = reason;
@@ -288,6 +294,9 @@ pub enum DocumentPublicationError {
     Unavailable,
     /// The first signing, encoding, transport or queue failure.
     Failed(String),
+    /// The workspace's policy declined to admit a change: the connection was
+    /// fine, but a change it would not take cannot be followed by others.
+    Refused(String),
     /// The transport stopped without resolving the receipt.
     WorkerStopped,
     /// The caller's absolute deadline elapsed.
@@ -300,6 +309,7 @@ impl std::fmt::Display for DocumentPublicationError {
             Self::Unsupported => f.write_str("document publication completion is unsupported"),
             Self::Unavailable => f.write_str("document publication transport is unavailable"),
             Self::Failed(error) => write!(f, "document publication failed: {error}"),
+            Self::Refused(error) => write!(f, "document publication refused: {error}"),
             Self::WorkerStopped => f.write_str("document publication worker stopped"),
             Self::DeadlineElapsed => f.write_str("document publication deadline elapsed"),
         }

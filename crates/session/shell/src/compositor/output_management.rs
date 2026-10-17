@@ -29,7 +29,7 @@
 
 use settings_store::ConditionalUpdate;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
@@ -60,6 +60,7 @@ use super::output_heads::{
     assess_change, leaves_a_display_on, plan_arrangement,
 };
 use super::state::State;
+use tilo_lock::MutexRecover as _;
 
 const MANAGER_VERSION: u32 = 4;
 const MODE_VERSION: u32 = 3;
@@ -870,10 +871,6 @@ fn power_mode(on: bool) -> zwlr_output_power_v1::Mode {
     }
 }
 
-fn lock(pending: &Mutex<PendingConfiguration>) -> std::sync::MutexGuard<'_, PendingConfiguration> {
-    pending.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 impl GlobalDispatch<ZwlrOutputManagerV1, ()> for State {
     fn bind(
         state: &mut Self,
@@ -976,7 +973,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         let already_used = |configuration: &ZwlrOutputConfigurationV1| {
             configuration.post_error(
                 Error::AlreadyUsed,
@@ -1109,7 +1106,7 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_output_configuration_head_v1::{Error, Request};
-        let mut pending = lock(&data.pending);
+        let mut pending = data.pending.lock_recover();
         if pending.used {
             return;
         }

@@ -869,6 +869,15 @@ impl ShellNetwork {
         Ok(())
     }
 
+    /// Whether a shared room's enrollment is still to be installed, never
+    /// waiting: a pass installing them holds the list meanwhile.
+    pub(super) fn shared_rooms_pending(&self) -> bool {
+        self.relay_rooms
+            .shared
+            .try_lock()
+            .is_ok_and(|shared| !shared.is_empty())
+    }
+
     /// Install every shared room whose enrollment completed.
     pub(super) fn finish_shared_rooms(&self) {
         let Ok(mut shared) = self.relay_rooms.shared.lock() else {

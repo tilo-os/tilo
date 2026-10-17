@@ -14,7 +14,8 @@
 # configured" state Settings and Mail show for that provider.
 #
 # Scopes are per use of the client, not per provider: `files` is what cloud
-# storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for. A use with
+# storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for, `models`
+# what the model gateway asks for to call hosted agent models. A use with
 # no scopes is not offered for that provider.
 #
 # Every sign-in redirects to `http://127.0.0.1:<port>/oauth`.
@@ -34,6 +35,10 @@ mail = ["https://mail.google.com/"]
 # Google's CalDAV endpoint requires the calendar scope (not calendar.events).
 # No Drive, Gmail or Contacts permission is needed to read/write calendars.
 calendar = ["https://www.googleapis.com/auth/calendar"]
+# Vertex AI's OpenAI-compatible endpoint and listing the person's Cloud
+# projects; Vertex AI offers no narrower OAuth scope. Granted on its own,
+# never together with `files` or `mail`.
+models = ["https://www.googleapis.com/auth/cloud-platform"]
 
 [microsoft]
 # Microsoft Entra app registration, "Accounts in any organizational directory

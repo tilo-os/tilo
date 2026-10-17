@@ -407,7 +407,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
 
     // --- phase: the progress shows above the list in the window ---
     {
-        let mut a = app();
+        let a = app();
         a.force_refresh_in_progress();
         let mounted = framed(a);
         let tree = mounted.accessibility().expect("a semantic window");

@@ -20,6 +20,9 @@ de = "Kurzbefehle"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+[resources]
+kinds = ["shortcuts.workbench"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

@@ -7,7 +7,7 @@
 
 use registry_types::{RegistryImageKind, RegistryVersion, TappArtifact};
 
-use crate::flathub_client::{AppStreamRecord, PopularEntry};
+use crate::flathub_client::AppStreamRecord;
 use crate::model::{
     BotListing, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
@@ -241,53 +241,6 @@ fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemV
         root_hash_hex: Some(tapp.tapp_root_hash_hex.clone()),
         size_bytes: tapp.tapp_size_bytes,
         runtime: tapp.target.runtime.clone(),
-    }
-}
-
-/// Convert a Flathub popular entry (id-only) into a placeholder
-/// store item — the store shows the id + a "Loading…" description
-/// until a follow-up `fetch_appstream` populates the record.
-///
-/// `installed_flatpaks` is the `(app_id, version)` snapshot from
-/// the app-host service.
-pub fn flathub_placeholder_to_item(
-    p: &PopularEntry,
-    installed_flatpaks: &[(String, String)],
-) -> StoreItem {
-    let installed = installed_flatpaks
-        .iter()
-        .find(|(id, _)| id == &p.app_id)
-        .map_or(InstalledState::Not, |(_, v)| InstalledState::Installed {
-            version: v.clone(),
-            available: String::new(),
-            pinned: false,
-            user_managed: true,
-        });
-    StoreItem {
-        bot: None,
-        id: p.app_id.clone(),
-        name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
-        description: String::new(),
-        tagline: String::new(),
-        supported_languages: Vec::new(),
-        categories: Vec::new(),
-        icon_url: None,
-        screenshot_urls: Vec::new(),
-        homepage_url: None,
-        source_url: None,
-        install_ref_path: None,
-        source: StoreSource::Flathub,
-        trust: StoreTrust::Flathub,
-        versions: vec![StoreItemVersion {
-            version: String::new(),
-            released_at_unix: 0,
-            download_url: None,
-            root_hash_hex: None,
-            size_bytes: 0,
-            runtime: None,
-        }],
-        publisher_pubkey_hex: None,
-        installed,
     }
 }
 
@@ -853,16 +806,27 @@ pub(crate) mod tests {
     /// Merging, category dedup and `AppStream` descriptions.
     #[test]
     fn source_merging_dedups_and_describes() {
+        let flathub_item = |app_id: &str, name: &str| {
+            let record = AppStreamRecord {
+                app_id: app_id.into(),
+                name: name.into(),
+                summary: String::new(),
+                description: String::new(),
+                icon: None,
+                current_release_version: None,
+                categories: Vec::new(),
+                homepage: None,
+                urls: None,
+                screenshots: Vec::new(),
+            };
+            flathub_record_to_item(&record, &[])
+        };
         // Case `merge_dedups_by_name_tilo_wins`.
         {
             let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
             let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
             // Flathub carries a same-name item; it must be dropped.
-            let fh = PopularEntry {
-                app_id: "com.other.Notes".into(),
-                name: Some("Notes".into()),
-            };
-            let fh_item = flathub_placeholder_to_item(&fh, &[]);
+            let fh_item = flathub_item("com.other.Notes", "Notes");
             let merged = merge(vec![tilo], vec![fh_item]);
             assert_eq!(merged.len(), 1);
             assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
@@ -875,13 +839,7 @@ pub(crate) mod tests {
                 "Tilo main",
                 &[],
             );
-            let f = flathub_placeholder_to_item(
-                &PopularEntry {
-                    app_id: "org.videolan.VLC".into(),
-                    name: Some("VLC".into()),
-                },
-                &[],
-            );
+            let f = flathub_item("org.videolan.VLC", "VLC");
             let merged = merge(vec![q], vec![f]);
             assert_eq!(merged.len(), 2);
         }

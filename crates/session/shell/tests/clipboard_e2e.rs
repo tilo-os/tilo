@@ -1938,6 +1938,56 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
     }
 }
 
+/// A secret an app copies (a password, a one-time code) pastes into any other
+/// app as plain text, and reaches the compositor with the markers that keep
+/// it out of clipboard history and device sync. This is the app-side backend
+/// apps run on, not in-process chrome.
+#[test]
+fn an_app_secret_copy_pastes_as_plain_text_and_keeps_its_secret_markers() {
+    const SECRET: &str = "correct horse battery staple";
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-secret");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    app.map_window(&compositor);
+
+    assert!(clipboard.set_secret_text(SECRET));
+    app.wait_until(
+        |s| {
+            s.clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == ui::clipboard::SECRET_MIME)
+        },
+        "the app clipboard worker never published its secret selection",
+    );
+
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.secret-sink");
+    sink.assert_is_tilo_compositor();
+    sink.map_window(&compositor);
+    assert_eq!(sink.read_clipboard(None), SECRET);
+    // The compositor took the selection over from the app; its own offer
+    // still says what kind of copy it is, which is what keeps it out of
+    // history and device sync and tells other clipboard managers to skip it.
+    for marker in [
+        ui::clipboard::SECRET_MIME,
+        ui::clipboard::PASSWORD_MANAGER_HINT_MIME,
+    ] {
+        assert!(
+            sink.state
+                .clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == marker),
+            "the pasted offer lost {marker}: {:?}",
+            sink.state.clipboard_offer_mimes
+        );
+    }
+    assert!(
+        !compositor.full_log().contains(SECRET),
+        "the copied secret reached the compositor log"
+    );
+}
+
 #[test]
 fn native_borrowed_display_pastes_the_compositors_current_selection() {
     let compositor = Compositor::start();
@@ -2858,6 +2908,184 @@ fn a_touch_tap_on_a_client_without_wl_touch_is_one_click() {
         client.state.pointer_events
     );
     assert!(client.state.touch_events.is_empty());
+}
+
+/// The group a client's window lives in, from the persisted tree.
+fn client_group(compositor: &Compositor, client: &TestClient) -> Option<u64> {
+    foreign_group_for_app(&compositor.workspace_tree(), &client.app_id).map(|(id, _)| id)
+}
+
+/// The on-screen rect of the tab pill a client's window wears in the strip:
+/// the shell names each pill `tab:<title>[<group>]`.
+fn client_tab_rect(compositor: &Compositor, client: &TestClient) -> Option<[f64; 4]> {
+    let suffix = format!("[{}]", client_group(compositor, client)?);
+    compositor
+        .target_rects(|name| name.starts_with("tab:") && name.ends_with(&suffix))
+        .into_iter()
+        .map(|(_, rect)| rect)
+        .find(|[_, _, w, h]| *w > 0.0 && *h > 0.0)
+}
+
+/// One finger swept from `from` to `to` in `steps` even moves, as a panel
+/// reports it: every edge closed by its frame.
+fn touch_sweep(compositor: &Compositor, from: (f64, f64), to: (f64, f64), steps: u32) {
+    for step in 1..=steps {
+        let t = f64::from(step) / f64::from(steps);
+        let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        compositor.touch("e2e-panel", 0, "motion", x, y);
+        compositor.touch("e2e-panel", 0, "frame", x, y);
+    }
+}
+
+/// Client windows of `app_ids`, each in its own group (a window that joins
+/// a group as a tab cannot be carried apart from it), mapped and at rest.
+fn windows_in_their_own_groups(compositor: &Compositor, app_ids: &[&str]) -> Vec<TestClient> {
+    let clients: Vec<TestClient> = app_ids
+        .iter()
+        .map(|app_id| {
+            compositor.place_next_window(app_id);
+            let mut client = TestClient::new(compositor.connect(), app_id);
+            client.assert_is_tilo_compositor();
+            client.map_window(compositor);
+            client
+        })
+        .collect();
+    compositor.wait_for_layout_to_settle(|name| name.starts_with("tab:"), "the mapped windows");
+    clients
+}
+
+/// A finger on a window's tab, held still for a moment and then dragged
+/// along the strip, carries the window: it lands where the finger lifts,
+/// and the strip does not pan underneath it. This is the touchscreen's way
+/// to move a window, through the real seat and the compositor's touch
+/// routing, not a widget-level shortcut.
+#[test]
+fn touch_hold_then_drag_on_a_tab_moves_the_window() {
+    let compositor = Compositor::start_with(None, (1600, 800));
+    let clients = windows_in_their_own_groups(
+        &compositor,
+        &["org.tilo.test.touch-carry-a", "org.tilo.test.touch-carry-b"],
+    );
+    // Quarter-strip groups, so both windows' tabs are on screen at once.
+    // The width applies to the groups that exist, so it is set once both
+    // are mapped.
+    compositor.set_group_width(250);
+    compositor.wait_for_layout_to_settle(|name| name.starts_with("tab:"), "the resized groups");
+    let (first, second) = (&clients[0], &clients[1]);
+    let groups = |c: &Compositor| (client_group(c, first), client_group(c, second));
+    let (Some(first_group), Some(second_group)) = groups(&compositor) else {
+        panic!("both windows have a group.\n{}", compositor.debug_state());
+    };
+    assert_ne!(first_group, second_group, "each window is its own group");
+    let position = |order: &[u64], group: u64| order.iter().position(|g| *g == group);
+    let before = group_order(&compositor.workspace_tree());
+    assert!(
+        position(&before, first_group) < position(&before, second_group),
+        "the first window leads: {before:?}"
+    );
+    let [ax, _, aw, _] = client_tab_rect(&compositor, first)
+        .unwrap_or_else(|| panic!("no tab for the first window.\n{}", compositor.debug_state()));
+    let [bx, by, bw, bh] = client_tab_rect(&compositor, second).unwrap_or_else(|| {
+        panic!(
+            "no tab for the second window.\n{}",
+            compositor.debug_state()
+        )
+    });
+    let screen_w = f64::from(compositor.size.0);
+    assert!(
+        ax >= 0.0 && bx + bw <= screen_w,
+        "both tabs must be on screen: {ax}..{} and {bx}..{}",
+        ax + aw,
+        bx + bw
+    );
+
+    // The second window is carried back past the first: the finger lifts
+    // on the first window's tab, left of that group's middle wherever the
+    // groups' widths put it, and on screen.
+    let grab = (bx + bw / 2.0, by + bh / 2.0);
+    compositor.touch("e2e-panel", 0, "down", grab.0, grab.1);
+    compositor.touch("e2e-panel", 0, "frame", grab.0, grab.1);
+    // The hold that tells a carry from a swipe (300 ms in the strip), with
+    // room so a slow frame cannot read it as a swipe.
+    std::thread::sleep(Duration::from_millis(450));
+    let drop = ((ax + aw / 2.0).max(4.0), grab.1);
+    touch_sweep(&compositor, grab, drop, 12);
+    compositor.touch("e2e-panel", 0, "up", drop.0, drop.1);
+    compositor.touch("e2e-panel", 0, "frame", drop.0, drop.1);
+
+    compositor.wait_for(
+        "the carried window never landed before the first one",
+        |c| {
+            let order = group_order(&c.workspace_tree());
+            position(&order, second_group) < position(&order, first_group)
+        },
+    );
+    assert_eq!(
+        groups(&compositor),
+        (Some(first_group), Some(second_group)),
+        "carrying moves the window's group whole; it is not merged or split"
+    );
+}
+
+/// A quick one-finger swipe along the tab bar scrolls the strip: the
+/// windows slide with the finger, and none of them is picked up.
+#[test]
+fn touch_swipe_on_the_tab_bar_scrolls_the_strip() {
+    let compositor = Compositor::start();
+    let clients = windows_in_their_own_groups(
+        &compositor,
+        &[
+            "org.tilo.test.touch-pan-a",
+            "org.tilo.test.touch-pan-b",
+            "org.tilo.test.touch-pan-c",
+            "org.tilo.test.touch-pan-d",
+        ],
+    );
+    let order_before_tree = group_order(&compositor.workspace_tree());
+    // The last mapped window is revealed; swiping right brings earlier
+    // windows back into view.
+    let last = clients.last().expect("four clients");
+    let [lx, ly, lw, lh] = client_tab_rect(&compositor, last)
+        .unwrap_or_else(|| panic!("no tab for the last window.\n{}", compositor.debug_state()));
+    let order_before: Vec<f64> = clients
+        .iter()
+        .filter_map(|c| client_tab_rect(&compositor, c).map(|[x, ..]| x))
+        .collect();
+
+    let start = (lx + lw / 2.0, ly + lh / 2.0);
+    let end = (start.0 + 360.0, start.1);
+    compositor.touch("e2e-panel", 0, "down", start.0, start.1);
+    compositor.touch("e2e-panel", 0, "frame", start.0, start.1);
+    touch_sweep(&compositor, start, end, 8);
+    let [mid_x, ..] = client_tab_rect(&compositor, last).expect("the last tab is still laid out");
+    assert!(
+        mid_x - lx > 200.0,
+        "the strip follows the finger while it is down: the tab moved {} px",
+        mid_x - lx
+    );
+    compositor.touch("e2e-panel", 0, "up", end.0, end.1);
+    compositor.touch("e2e-panel", 0, "frame", end.0, end.1);
+    compositor.wait_for_layout_to_settle(|name| name.starts_with("tab:"), "the swipe's glide");
+
+    let [after_x, ..] = client_tab_rect(&compositor, last).expect("the last tab is still laid out");
+    assert!(
+        after_x - lx > 200.0,
+        "the strip stays scrolled after the finger lifts: {lx} -> {after_x}"
+    );
+    let order_after: Vec<f64> = clients
+        .iter()
+        .filter_map(|c| client_tab_rect(&compositor, c).map(|[x, ..]| x))
+        .collect();
+    let sorted = |xs: &[f64]| xs.windows(2).all(|w| w[0] < w[1]);
+    assert!(
+        sorted(&order_before) && sorted(&order_after),
+        "a swipe scrolls; it never reorders windows: {order_before:?} -> {order_after:?}"
+    );
+    assert_eq!(
+        group_order(&compositor.workspace_tree()),
+        order_before_tree,
+        "a swipe never moves a window in the strip"
+    );
 }
 
 /// The desktop help overlay speaks the input language in use. A headless

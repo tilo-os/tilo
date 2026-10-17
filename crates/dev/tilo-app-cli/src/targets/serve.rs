@@ -12,13 +12,14 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use notify::{Event, RecommendedWatcher};
 
 use super::{Project, TargetRequest, web};
+use tilo_lock::MutexRecover as _;
 
 /// How `run --target web` serves.
 #[derive(Clone, Debug)]
@@ -50,7 +51,7 @@ struct Server {
 impl Server {
     fn broadcast(&self, event: &str, data: &str) {
         let payload = format!("event: {event}\ndata: {data}\n\n");
-        let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut clients = self.clients.lock_recover();
         clients.retain_mut(|client| {
             client
                 .write_all(payload.as_bytes())
@@ -199,11 +200,7 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: connected\n\n",
         )?;
         stream.set_read_timeout(None)?;
-        server
-            .clients
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(stream);
+        server.clients.lock_recover().push(stream);
         return Ok(());
     }
     let Some(file) = resolve(&server.root, path) else {

@@ -85,6 +85,16 @@ impl Shelf {
         self.name = format!("{} with {picture}", self.name);
     }
 
+    /// Caption a picture: content another action produced, beside words.
+    #[action]
+    pub fn caption_picture(
+        &mut self,
+        #[param("The picture", content)] picture: String,
+        #[param("Its caption")] caption: String,
+    ) {
+        self.name = format!("{} with {picture}: {caption}", self.name);
+    }
+
     /// Mail the shelf to someone.
     #[action]
     pub fn mail_to(&mut self, cx: &mut ActionCx, mail: &mut Outbox<String>, to: String) {
@@ -471,6 +481,23 @@ fn content_inputs_nested_derived_places_and_edit_effects() {
         tilo_actions::PROMPTED_PARAM.to_owned(),
         serde_json::json!("blake3:abc"),
     )]));
+    assert!(encoded.is_ok(), "{encoded:?}");
+
+    // Content beside other parameters: every parameter is published, the
+    // content one marked as taking what another action produced.
+    let caption = tree
+        .actions
+        .iter()
+        .find(|spec| spec.id == "caption-picture")
+        .unwrap();
+    let params = caption.params();
+    let names: Vec<&str> = params.iter().map(|param| &*param.name).collect();
+    assert_eq!(names, ["picture", "caption"]);
+    assert!(params[0].is_content() && !params[1].is_content());
+    let encoded = caption.build_json(&serde_json::Map::from_iter([
+        ("picture".to_owned(), serde_json::json!("abc")),
+        ("caption".to_owned(), serde_json::json!("Sunset")),
+    ]));
     assert!(encoded.is_ok(), "{encoded:?}");
 
     let shade = Shelf::child(&shelf.state().unwrap(), "test.shelf/derived/red/shade").unwrap();

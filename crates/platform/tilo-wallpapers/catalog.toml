@@ -1,0 +1,110 @@
+# The wallpapers Tilo ships (src/lib.rs). The installed files are made from
+# the originals by `python3 tools/wallpapers.py make`, published to artifact
+# storage and fetched by digest when the OS image is built.
+
+schema = 1
+default = "alps"
+
+[[wallpaper]]
+id = "alps"
+tone = "mid"
+title = "View in an easterly direction towards the Western Alps at the location of Grenoble"
+author = "Dktue"
+license = "CC0-1.0"
+license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source_url = "https://commons.wikimedia.org/wiki/File:View_in_an_easterly_direction_towards_the_Western_Alps_at_the_location_of_Grenoble.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/0/03/View_in_an_easterly_direction_towards_the_Western_Alps_at_the_location_of_Grenoble.jpg"
+original_sha256 = "82fb6a35da1b6cf7d4a05e0f6eaba398906f54d5b856d3cf8e682d3acf9dd569"
+picture = { file = "alps.webp", width = 2944, height = 1840, bytes = 337062, sha256 = "bf79a9f8a71c2a339e33c3c19f58913b14c380f1deec5e1d8f18685d83430db7" }
+thumbnail = { file = "alps-thumbnail.webp", width = 480, height = 300, bytes = 8814, sha256 = "1225fa834f40c1b635e153077f453aa2713e1072d26f16c60bd2d0bacf2bf8c7" }
+
+[[wallpaper]]
+id = "cloud-sea"
+tone = "light"
+title = "Aiguille Rousse in sea of clouds, 2018"
+author = "DimiTalen"
+license = "CC0-1.0"
+license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source_url = "https://commons.wikimedia.org/wiki/File:Aiguille_Rousse_in_sea_of_clouds,_2018.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/8/84/Aiguille_Rousse_in_sea_of_clouds%2C_2018.jpg"
+original_sha256 = "af29633d7566d55b8ef77af1e0d6144aa4e169e50d6d175b767b455a52601bcf"
+picture = { file = "cloud-sea.webp", width = 2944, height = 1840, bytes = 175608, sha256 = "0eadfe66491474556300248c6012f3671766761f8926bd3a5f30f63a40272e35" }
+thumbnail = { file = "cloud-sea-thumbnail.webp", width = 480, height = 300, bytes = 6232, sha256 = "45f3f9d73f2cd84e93e661d1ae37a62648f6838cae45402b2ae0f566251b5210" }
+
+[[wallpaper]]
+id = "dunes"
+tone = "light"
+title = "Utah Dunes Landscape - West Desert District"
+author = "Bob Wick, Bureau of Land Management Utah"
+license = "public-domain"
+license_url = "https://commons.wikimedia.org/wiki/Template:PD-USGov-BLM"
+source_url = "https://commons.wikimedia.org/wiki/File:Utah_Dunes_Landscape_-_West_Desert_District.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/c/cb/Utah_Dunes_Landscape_-_West_Desert_District.jpg"
+original_sha256 = "08786cf02088576bf95df9c7b941c8a358c6843e1702d3fe37c19597328ad589"
+picture = { file = "dunes.webp", width = 2944, height = 1840, bytes = 830824, sha256 = "963c2b0b9e8f6e49e538a54a1c8c6bf3ac719454b28c75cc9df046215ee4a6de" }
+thumbnail = { file = "dunes-thumbnail.webp", width = 480, height = 300, bytes = 20330, sha256 = "8bbf5dc5775f8a6d9291d676cd68d7606298046d9c67def9757a0f7e752f8e76" }
+
+[[wallpaper]]
+id = "frost-tree"
+tone = "light"
+title = "Baum in Kärnten 037"
+author = "zause01"
+license = "public-domain"
+license_url = "https://commons.wikimedia.org/wiki/Template:PD-self"
+source_url = "https://commons.wikimedia.org/wiki/File:Baum_in_K%C3%A4rnten_037.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/2/2c/Baum_in_K%C3%A4rnten_037.jpg"
+original_sha256 = "6c3365a475b6fe5ae8484b6b7469d897beee47dc6b5c5339ff2b1dd1e693e9a7"
+picture = { file = "frost-tree.webp", width = 2944, height = 1840, bytes = 664788, sha256 = "96f171aee51394f0a41c97b7d58fc2b2a7a63fea4708784bb79ce3fe06a503fa" }
+thumbnail = { file = "frost-tree-thumbnail.webp", width = 480, height = 300, bytes = 12510, sha256 = "dd2658af4ec8f82b9d8fb01e9ef530d9d4dc332a492f91954fa0c504ed27a463" }
+
+[[wallpaper]]
+id = "rainier"
+tone = "mid"
+title = "Rainier20200906"
+author = "Caleb Riston"
+license = "CC0-1.0"
+license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source_url = "https://commons.wikimedia.org/wiki/File:Rainier20200906.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/f/f9/Rainier20200906.jpg"
+original_sha256 = "41710fc7e8301ec4ae0efcfc1f365bb267b976ea1c027cded9f766f5b13dd34e"
+picture = { file = "rainier.webp", width = 2944, height = 1840, bytes = 549630, sha256 = "17b74da311b6325359f7206a50c74ac597d79d6bf335579c3d99897a91be2ec9" }
+thumbnail = { file = "rainier-thumbnail.webp", width = 480, height = 300, bytes = 11604, sha256 = "c9a036d6a2d72d110af06a15f95041b1ece91cb360fdf9db59b713005503d38e" }
+
+[[wallpaper]]
+id = "moonlit-fjord"
+tone = "dark"
+title = "Waxing half moon over Brofjorden 1"
+author = "W.carter"
+license = "CC0-1.0"
+license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source_url = "https://commons.wikimedia.org/wiki/File:Waxing_half_moon_over_Brofjorden_1.jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/d/d9/Waxing_half_moon_over_Brofjorden_1.jpg"
+original_sha256 = "5f68fb7d4ddb54f27fd71f70277e322856a11b7eb7aa03137eb3ca777ae0f03d"
+picture = { file = "moonlit-fjord.webp", width = 2944, height = 1840, bytes = 256082, sha256 = "dcc8464146a177e1f614fa8ce7ba45d25c04bbf990b6eac60014d8d3167552b7" }
+thumbnail = { file = "moonlit-fjord-thumbnail.webp", width = 480, height = 300, bytes = 5934, sha256 = "03c9aeb37edbc71ee114c2a21a0467642e5439b785a282d831dcc01fb51ad4d9" }
+
+[[wallpaper]]
+id = "earthset"
+tone = "dark"
+title = "The Edge of Two Worlds (art002e009285)"
+author = "NASA"
+license = "public-domain"
+license_url = "https://commons.wikimedia.org/wiki/Template:PD-USGov-NASA"
+source_url = "https://commons.wikimedia.org/wiki/File:The_Edge_of_Two_Worlds_(art002e009285).jpg"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/b/b1/The_Edge_of_Two_Worlds_%28art002e009285%29.jpg"
+original_sha256 = "56434d0bcb0c7dd76667c523ef41ce03ab06812a45c68a5756dab7dc136054db"
+picture = { file = "earthset.webp", width = 2944, height = 1840, bytes = 252986, sha256 = "3cd93d2ed70057e48b87959dd68b1244101aa68b2c69b5760b55f8cbc68dbd97" }
+thumbnail = { file = "earthset-thumbnail.webp", width = 480, height = 300, bytes = 7754, sha256 = "9bfc434e90b386c0ce8b481090e6fcbfd89d200dd6362aae52ee87bd9ef2c2e4" }
+
+[[wallpaper]]
+id = "andromeda"
+tone = "dark"
+title = "Andromeda Galaxy 2025"
+author = "Brody Wesner"
+license = "CC0-1.0"
+license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source_url = "https://commons.wikimedia.org/wiki/File:Andromeda_Galaxy_2025.png"
+original_url = "https://upload.wikimedia.org/wikipedia/commons/0/05/Andromeda_Galaxy_2025.png"
+original_sha256 = "ec7edb662808e45e8012b3fe77944c94ddaaafff1f9647c7d6be7cddb8d6c413"
+picture = { file = "andromeda.webp", width = 2944, height = 1840, bytes = 720202, sha256 = "fe8e3f9243431e117fd7d8b7ec62d5f9315b71dbaabe3a9fdd122892c9de7525" }
+thumbnail = { file = "andromeda-thumbnail.webp", width = 480, height = 300, bytes = 34090, sha256 = "8717b387fee83440d0066288656743698bf775ffe8041808fda09570c635c895" }

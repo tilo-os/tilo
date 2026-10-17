@@ -17,6 +17,7 @@ use fs_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
 const AUTHORITY_VERSION: u16 = 1;
@@ -250,8 +251,7 @@ impl ShareAuthority {
     #[must_use]
     pub fn has_unrevoked_grants(&self) -> bool {
         self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .grants
             .values()
             .any(|grant| !grant.revoked)
@@ -398,10 +398,7 @@ impl ShareAuthority {
         record_id: fs_protocol::FileRecordId,
         now_ms: u64,
     ) -> ShareProjectionV1 {
-        let current = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.state.lock_recover();
         let grants = current
             .grants
             .iter()

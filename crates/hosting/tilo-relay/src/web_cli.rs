@@ -62,7 +62,9 @@ pub struct WebArgs {
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
     /// The host name browsers reach this listener by (the certificate's
-    /// name), for `--tls files:…` on an unspecified address.
+    /// name), on an unspecified address: the origin the host announces, and
+    /// with `--tls dev` the development certificate's first name (a node
+    /// reached by its LAN address).
     #[arg(long = "public-host", value_name = "NAME")]
     pub public_host: Option<String>,
     /// Also serve the HTTPS routes as plain HTTP at this loopback address,
@@ -104,9 +106,28 @@ pub struct WebArgs {
     #[arg(
         long = "session-cert-out",
         value_name = "PATH",
-        requires_all = ["session_device", "install_token_file"]
+        requires_all = ["session_device", "install_token_file"],
+        conflicts_with = "session_identity_root"
     )]
     pub session_cert_out: Option<PathBuf>,
+    /// The session's identity tree (its `TILO_IDENTITY_ROOT`), holding its
+    /// device key: install writes its certificate and the person's user key
+    /// there, so the session starts as an enrolled device of that person.
+    #[arg(
+        long = "session-identity-root",
+        value_name = "DIR",
+        requires_all = ["session_device", "install_token_file"]
+    )]
+    pub session_identity_root: Option<PathBuf>,
+    /// Once serving, write this relay's endpoint for the session beside it
+    /// as `TILO_COLLAB_HOST='<endpoint JSON>'`, a systemd `EnvironmentFile`:
+    /// the session dials its node without anyone copying the address.
+    #[arg(
+        long = "session-env-out",
+        value_name = "PATH",
+        requires = "session_device"
+    )]
+    pub session_env_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -245,7 +266,12 @@ pub async fn start_relay(
 pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => TlsSource::Development {
-            hosts: vec!["localhost".into(), listen.ip().to_string()],
+            hosts: args
+                .public_host
+                .iter()
+                .cloned()
+                .chain(["localhost".into(), listen.ip().to_string()])
+                .collect(),
             store: Some(state_root.join("web-dev-identity")),
         },
         TlsArg::Files { chain, key } => TlsSource::Files {
@@ -316,11 +342,24 @@ pub async fn await_certificate(
             "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
         })
     );
-    let session = match (session_device(args)?, &args.session_cert_out) {
-        (Some(public_key), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
+    let session = match (
+        session_device(args)?,
+        &args.session_cert_out,
+        &args.session_identity_root,
+    ) {
+        (Some(public_key), Some(cert_out), _) => Some(tilo_relay::web::install::SessionDevice {
             public_key,
             cert_out: cert_out.clone(),
+            user_key_out: None,
         }),
+        (Some(public_key), None, Some(root)) => {
+            let paths = tilo_user_identity::IdentityPaths::under(root);
+            Some(tilo_relay::web::install::SessionDevice {
+                public_key,
+                cert_out: paths.device_cert,
+                user_key_out: Some(paths.user_pubkey),
+            })
+        }
         _ => None,
     };
     let cert = tilo_relay::web::install::await_certificate(
@@ -362,6 +401,13 @@ pub async fn serve(
     let device = session_device(args)?;
     if let Some(device) = device {
         relay.set_node_session(device);
+    }
+    if let Some(path) = &args.session_env_out {
+        let endpoint =
+            serde_json::to_string(&relay.node_addr()).context("encode the relay's endpoint")?;
+        let line = format!("TILO_COLLAB_HOST='{endpoint}'\n");
+        tilo_files::native::atomic::write_with_mode(path, line.as_bytes(), 0o644)
+            .with_context(|| format!("write {}", path.display()))?;
     }
     let web = relay
         .serve_web(web_config(args, listen, state_root))

@@ -30,6 +30,9 @@ aarch64 = "aarch64"
 required = ["files.paths", "processes"]
 optional = ["files.open", "app-files", "network.http", "threads", "open-uri", "secrets"]
 
+[resources]
+kinds = ["imager.sources"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

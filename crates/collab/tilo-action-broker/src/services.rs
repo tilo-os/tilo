@@ -1,5 +1,7 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod own_device;
 mod task_execution;
+pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
 
 use std::sync::Arc;
@@ -276,6 +278,11 @@ pub struct LaunchableApplication {
     /// A host application Tilo did not package: it runs outside every Tilo
     /// sandbox, with the user's own files, and publishes no typed actions.
     pub unconfined: bool,
+    /// What its signed manifest offers while it is not running
+    /// (`[[offers]]`): listed in a workspace where it has published nothing
+    /// yet. Invoking one launches it, and its published action admits the
+    /// invocation.
+    pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
 }
 /// The application a launcher-authenticated connection belongs to, and the
 /// workspace it was launched into. Launch content is only ever read through
@@ -1055,6 +1062,21 @@ pub trait NearbyTransferServices: Send + Sync {
 
     /// Forgets every handle issued to `peer_id`.
     fn disconnect(&self, peer_id: u64);
+
+    /// Resolves once what a [`runtime_collab::NearbyTransferCommand::Snapshot`]
+    /// would show `context` may have changed since `after` (0 at first, then
+    /// the value the previous wait returned), with the value to wait from
+    /// next. It names nothing: the endpoint asks for a snapshot, which the
+    /// host checks as it checks every command. `None` when the host cannot
+    /// say when its state changes; the broker then answers unimplemented.
+    fn changed(
+        &self,
+        context: &NearbyTransferRequestContext,
+        after: u64,
+    ) -> Option<NearbyTransferChange> {
+        let _ = (context, after);
+        None
+    }
 }
 
 /// Original Browser connection, minted only from certified launcher custody.
@@ -1126,6 +1148,11 @@ pub trait BrowserServiceSessionServices: Send + Sync {
     ) -> Result<runtime_collab::BrowserServiceSessionReply, String>;
     fn disconnect(&self, peer_id: u64);
 }
+
+/// A wait for Nearby Send's next change, as [`NearbyTransferServices::changed`]
+/// returns it.
+pub type NearbyTransferChange =
+    std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send + 'static>>;
 
 /// A descriptor source sealed to the kernel-attested local process.
 pub(crate) type SelectedDescriptorSource =
@@ -1427,4 +1454,7 @@ pub struct HostServices {
     /// (`tilo_actions::offload`). Without it every one runs here, through
     /// the app's own handler.
     pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+    /// Carries an application's action to another of the person's own
+    /// devices. Without it no app reaches another device's actions.
+    pub own_device: Option<Arc<dyn OwnDeviceActions>>,
 }

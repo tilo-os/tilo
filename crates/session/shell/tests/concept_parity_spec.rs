@@ -11,7 +11,10 @@
 //! individual `assert*` calls. A failing test here is the specified
 //! behaviour; closing the gap means fixing the code, not the test.
 
-#![allow(clippy::bool_assert_comparison)]
+#![allow(
+    clippy::bool_assert_comparison,
+    reason = "spec assertions name the expected boolean state explicitly"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -799,11 +802,12 @@ fn topbar_system_monitor_labels_and_sparkline_are_ink_not_status_colour() {
 }
 
 /// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):
-/// concept hides the maximized floating chrome when cursor.y > 80, ours
-/// always draws it. Renders with no cursor, then at y=200.
+/// the concept hides the maximized floating chrome until the pointer reaches
+/// for the top edge. Ours hides it at rest (no cursor, and a cursor in the
+/// app at y=200) and shows it once reached for (`top_edge_reveal`).
 #[test]
-fn maximized_chrome_hides_when_cursor_below_y_80() {
-    let theme = Theme::dark();
+fn maximized_chrome_hides_at_rest_and_shows_when_reached_for() {
+    let theme = Theme::dark().with_reduce_motion(true);
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
         TabDescriptor {
@@ -820,45 +824,29 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 
     let Layout { taffy, child_node } = lay_out(&mut group, 960.0, 540.0);
     let mut tr = TextRenderer::new();
-
-    let mut scene_no_cursor = Scene::new();
     let presence = PresenceCtx::default();
-    group.draw(
-        &mut scene_no_cursor,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-    );
-    let fills_no_cursor = collect_solid_colors(&scene_no_cursor).len();
+    let mut fills = |group: &mut WindowGroup| {
+        let mut scene = Scene::new();
+        group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        collect_solid_colors(&scene).len()
+    };
 
-    // y=200 is well below the y<=80 reveal band; chrome should still hide.
+    let fills_no_cursor = fills(&mut group);
     let cursor_event = ui::synthetic_input::cursor_moved(480.0, 200.0);
     let modifiers = winit::event::Modifiers::default();
     dispatch(&mut group, &taffy, child_node, modifiers, &cursor_event);
-
-    let mut scene_below = Scene::new();
-    group.draw(
-        &mut scene_below,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
+    let fills_in_app = fills(&mut group);
+    assert_eq!(
+        fills_in_app, fills_no_cursor,
+        "a cursor in the app shows no chrome, as with no cursor at all"
     );
-    let fills_below = collect_solid_colors(&scene_below).len();
 
-    // EXPECTED: below-band render has strictly fewer fills. CURRENT: equal
-    // (chrome is unconditional).
+    group.set_maximized_chrome_shown_for_tests(true);
+    let fills_reached = fills(&mut group);
     assert!(
-        fills_below < fills_no_cursor,
-        "Maximized WindowGroup must hide its floating chrome (title +
-         Restore + close) when the cursor sits below y=80 (concept TSX
-         WindowFrame.tsx:108-123). Observed identical fill counts:
-         no_cursor={fills_no_cursor}, below={fills_below}. Audit rows \
-         `concept-coverage.md:20` and `:377-381`: ours always draws the \
-         maximized chrome. Fix in `crates/sdk/ui-core/src/widget/window_group.rs:659+` \
-         by gating the maximized chrome on `last_cursor_y <= 80.0` (with \
-         a fade-in/out for polish)."
+        fills_reached > fills_in_app,
+        "reaching for the top edge shows the floating chrome (title + Full screen + \
+         Restore + close): at rest={fills_in_app}, reached={fills_reached}"
     );
 }
 
@@ -1111,7 +1099,10 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
         for (peer, name) in [(0x11u64, "bob"), (0x22u64, "dana")] {
             assert!(
-                tree.note_peer_present(room, peer, name),
+                tree.admit_collaborator_in_room(
+                    room,
+                    tilo_desktop_model::Collaborator::new(name, name).with_session(peer)
+                ),
                 "{name} arriving must change the roster"
             );
         }

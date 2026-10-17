@@ -1,7 +1,7 @@
 use super::AccountsPane;
 use crate::{SettingsApp, SettingsShell};
 
-fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDir, AccountsPane) {
+pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDir, AccountsPane) {
     let root = tempfile::tempdir().unwrap();
     let account_root = crate::accounts::AccountRoot::at(root.path());
     let mut account = accounts::Account::new("cloud", "nextcloud");
@@ -97,6 +97,7 @@ fn changed_private_signin_account_type_target_and_scopes_cannot_commit_review() 
         let before = root.store().get(&id).cloned();
         let secret = root.vault().get(&id);
         pane.save_calendar_selection();
+        pane.settle_lane();
         assert!(pane.form_error.is_some(), "{change}");
         assert_eq!(root.store().get(&id), before.as_ref(), "{change}");
         assert_eq!(root.vault().get(&id), secret, "{change}");
@@ -219,6 +220,15 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
         serde_json::json!({}),
     )
     .unwrap();
+    let deadline = ui::time::now() + std::time::Duration::from_secs(10);
+    while account_root.store().get(&account.id) == Some(&account) {
+        app.settle();
+        assert!(
+            ui::time::now() < deadline,
+            "calendar selection did not save"
+        );
+        std::thread::yield_now();
+    }
     let saved = account_root.store();
     assert_eq!(saved.len(), 1);
     assert_eq!(

@@ -341,6 +341,55 @@ pub fn try_clipboard_copy(text: &str) -> bool {
     clipboard().set_shared_text(ClipboardTarget::Clipboard, text)
 }
 
+/// Copy a secret — a password, a one-time code, a recovery key, an enrolment
+/// token — so it pastes anywhere as plain text while clipboard histories and
+/// device sync are told not to keep it
+/// ([`ClipboardBackend::set_secret_text`](crate::clipboard::ClipboardBackend::set_secret_text)).
+///
+/// After `clear_after` the clipboard is cleared if it still holds this
+/// secret; something copied since is left alone. A browser page has no
+/// thread to wait on, so there the clipboard is not cleared.
+///
+/// Returns `false` when no shared clipboard took the secret: it is never kept
+/// in a buffer private to this process.
+#[must_use]
+pub fn try_clipboard_copy_secret(text: &str, clear_after: std::time::Duration) -> bool {
+    let clipboard = clipboard();
+    if !clipboard.set_secret_text(text) {
+        return false;
+    }
+    let lease = SecretLease {
+        value: zeroize::Zeroizing::new(text.to_owned()),
+    };
+    // The clear goes to the clipboard that took the copy, whichever host is
+    // current on that thread later.
+    let _ = crate::rt::spawn_thread("clipboard-secret-clear", move || {
+        if crate::rt::sleep_thread(clear_after).is_ok() {
+            lease.clear_if_unchanged(&*clipboard);
+        }
+    });
+    true
+}
+
+/// A secret this process put on the clipboard, held only to recognise it.
+struct SecretLease {
+    value: zeroize::Zeroizing<String>,
+}
+
+impl SecretLease {
+    /// Clear the clipboard if it still holds the secret, so a later copy is
+    /// never destroyed.
+    fn clear_if_unchanged(&self, clipboard: &dyn crate::clipboard::ClipboardBackend) {
+        let current = clipboard
+            .text(ClipboardTarget::Clipboard)
+            .map(zeroize::Zeroizing::new);
+        if current.is_some_and(|current| current.as_bytes() == self.value.as_bytes()) {
+            // An empty secret, so the clear itself stays out of history.
+            let _ = clipboard.set_secret_text("");
+        }
+    }
+}
+
 /// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
 /// the system clipboard as image data, so it can be pasted into an image editor
 /// or chat. Returns `false` when the buffer size is wrong or no backend can
@@ -439,6 +488,66 @@ mod tests {
         assert_eq!(clipboard_paste(), None);
         clipboard_copy(" \n");
         assert_eq!(clipboard_paste().as_deref(), Some(" \n"));
+    }
+
+    #[test]
+    fn a_secret_copy_is_cleared_only_while_the_clipboard_still_holds_it() {
+        let (services, recorder) = crate::host::HostServices::recording();
+        let clipboard = services.clipboard.clone();
+        let _host = crate::host::enter(&services);
+        assert!(try_clipboard_copy_secret(
+            "hunter2",
+            std::time::Duration::from_secs(3600)
+        ));
+        assert_eq!(recorder.secret_copies(), ["hunter2"]);
+        assert!(
+            recorder.copies().is_empty(),
+            "a secret is never written as an ordinary copy"
+        );
+        assert_eq!(clipboard_paste().as_deref(), Some("hunter2"));
+
+        let lease = SecretLease {
+            value: zeroize::Zeroizing::new("hunter2".to_owned()),
+        };
+        clipboard_copy("copied since");
+        lease.clear_if_unchanged(&*clipboard);
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("copied since"),
+            "a later copy must survive the secret's timeout"
+        );
+        assert!(clipboard.set_secret_text("hunter2"));
+        lease.clear_if_unchanged(&*clipboard);
+        assert_eq!(clipboard_paste(), None, "the unchanged secret is cleared");
+        assert_eq!(recorder.secret_copies(), ["hunter2", "hunter2", ""]);
+    }
+
+    #[test]
+    fn a_secret_copy_is_refused_without_a_shared_clipboard_and_cleared_on_time() {
+        let services = crate::host::HostServices::null();
+        {
+            let _host = crate::host::enter(&services);
+            assert!(
+                !try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO),
+                "an in-process buffer must not claim a secret copy"
+            );
+            assert_eq!(clipboard_paste(), None);
+        }
+        let (services, recorder) = crate::host::HostServices::recording();
+        let _host = crate::host::enter(&services);
+        assert!(try_clipboard_copy_secret(
+            "hunter2",
+            std::time::Duration::ZERO
+        ));
+        let deadline = tilo_test_env::hang_deadline();
+        while recorder.secret_copies().len() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the expired secret was never cleared"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(recorder.secret_copies(), ["hunter2", ""]);
     }
 
     #[cfg(windows)]

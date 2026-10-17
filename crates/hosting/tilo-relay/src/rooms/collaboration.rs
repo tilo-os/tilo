@@ -31,6 +31,7 @@ use tilo_action_policy::roles::governance;
 use super::authority::RoomOp;
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 use crate::host_authority::HostOperation;
+use tilo_lock::MutexRecover as _;
 
 /// A verified redemption to admit, and what its receipt answers for.
 pub(super) struct Redeeming<'a> {
@@ -543,7 +544,7 @@ impl Rooms {
             request.request_id,
             request_digest(&request)?,
             |peer| {
-                peer.set_member_role(
+                peer.governance_mut().set_member_role(
                     request.user_public_key,
                     request.role,
                     &key,
@@ -582,7 +583,10 @@ impl Rooms {
             &mut room,
             request_id,
             request_digest(&grants)?,
-            |peer| peer.put_governed_grants(&grants, &key, system_time(now)),
+            |peer| {
+                peer.governance_mut()
+                    .put_governed_grants(&grants, &key, system_time(now))
+            },
             now,
         )
         .await
@@ -617,7 +621,13 @@ impl Rooms {
             &mut room,
             request_id,
             request_digest(&("administrator", user_public_key))?,
-            |peer| peer.set_member_administrator(user_public_key, &key, system_time(now)),
+            |peer| {
+                peer.governance_mut().set_member_administrator(
+                    user_public_key,
+                    &key,
+                    system_time(now),
+                )
+            },
             now,
         )
         .await
@@ -674,7 +684,9 @@ impl Rooms {
                 |peer| {
                     let mut changed = false;
                     for person in people {
-                        changed |= peer.remove_member(*person, &key, system_time(now))?;
+                        changed |=
+                            peer.governance_mut()
+                                .remove_member(*person, &key, system_time(now))?;
                     }
                     Ok(changed)
                 },
@@ -801,10 +813,19 @@ impl Rooms {
                 request.request_id,
                 request_digest(&(membership, &request))?,
                 |peer| match membership {
-                    Membership::Remove => peer.remove_member(target, &key, system_time(now)),
-                    Membership::Ban => peer.ban_member(target, &by, &key, system_time(now)),
-                    Membership::Unban => peer.unban_member(target, &key, system_time(now)),
-                    Membership::Restrict(until_ms) => peer.put_governed_grants(
+                    Membership::Remove => {
+                        peer.governance_mut()
+                            .remove_member(target, &key, system_time(now))
+                    }
+                    Membership::Ban => {
+                        peer.governance_mut()
+                            .ban_member(target, &by, &key, system_time(now))
+                    }
+                    Membership::Unban => {
+                        peer.governance_mut()
+                            .unban_member(target, &key, system_time(now))
+                    }
+                    Membership::Restrict(until_ms) => peer.governance_mut().put_governed_grants(
                         &[tilo_action_policy::roles::restriction_grant(
                             &room_id,
                             &person,
@@ -814,7 +835,7 @@ impl Rooms {
                         &key,
                         system_time(now),
                     ),
-                    Membership::Unrestrict => peer.remove_governed_grants(
+                    Membership::Unrestrict => peer.governance_mut().remove_governed_grants(
                         &[tilo_action_policy::roles::restriction_grant_id(&person)],
                         &key,
                         system_time(now),
@@ -869,18 +890,16 @@ impl Rooms {
         // Validate retries against today's exact certificate, admission,
         // administration and governor custody through the same typed command.
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             request.request_id,
             request_digest(&("app.authorship.grant", &request))?,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -934,18 +953,16 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let key = self.inner.host.key.clone();
-        room.peer().clone().apply_workspace_membership_command(
-            administrator,
-            &command,
-            &key,
-            system_time(now),
-        )?;
+        room.peer()
+            .clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
         self.administer(
             &mut room,
             digest,
             digest,
             |peer| {
-                peer.apply_workspace_membership_command(
+                peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
                     &command,
                     &key,
@@ -974,6 +991,7 @@ impl Rooms {
             .lock()
             .await
             .peer()
+            .governance()
             .installation(id, now))
     }
 
@@ -999,7 +1017,7 @@ impl Rooms {
         let room = self.room(room).await?;
         let mut room = room.lock().await;
         let mut candidate = room.peer().clone();
-        let changed = candidate.apply_member_effect_receipt(
+        let changed = candidate.workspace_mut().apply_member_effect_receipt(
             caller,
             invocation,
             redacted,
@@ -1125,11 +1143,7 @@ impl Rooms {
     /// Queue `written` for `room`'s next write. True when it is the first
     /// since the room last took them, so its sender starts the write.
     fn queue_write(&self, room: &str, written: Written) -> bool {
-        let mut queued = self
-            .inner
-            .queued_writes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.inner.queued_writes.lock_recover();
         let waiting = queued.entry(room.to_owned()).or_default();
         waiting.push(written);
         let first = waiting.len() == 1;
@@ -1141,8 +1155,7 @@ impl Rooms {
         let take = || {
             self.inner
                 .queued_writes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .remove(room_id)
                 .unwrap_or_default()
         };
@@ -1370,7 +1383,8 @@ impl Rooms {
             let admitted = Self::redeemable(room, redemption.join().invite_id()).and_then(|()| {
                 // A refused admission leaves the others' candidate as it was.
                 let mut next = candidate.clone();
-                next.admit_invited_member(redemption, &self.inner.host.key, system_time(now))
+                next.governance_mut()
+                    .admit_invited_member(redemption, &self.inner.host.key, system_time(now))
                     .map_err(|error| {
                         tracing::warn!(
                             room = %room.room(),
@@ -1495,7 +1509,7 @@ impl Rooms {
         }
         let mut nonce = [0; 32];
         getrandom::fill(&mut nonce).map_err(|error| CollaborationError::new(error.to_string()))?;
-        let challenge = room.peer().membership_challenge(
+        let challenge = room.peer().governance().membership_challenge(
             room.workspace_id(),
             &request.device_cert,
             request.request_id,
@@ -1554,6 +1568,7 @@ impl Rooms {
         )?;
         let role = room
             .peer()
+            .governance()
             .verify_member_refresh(&membership, system_time(now))?;
         let invite_id = room
             .collaboration()

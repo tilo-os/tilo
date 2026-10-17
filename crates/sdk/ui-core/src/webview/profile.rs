@@ -23,6 +23,7 @@ use crate::time::{Duration, Instant};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_lock::MutexRecover as _;
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
@@ -100,9 +101,7 @@ pub fn record_input(kind: &'static str) {
     if !enabled() {
         return;
     }
-    let mut s = state()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut s = state().lock_recover();
     if s.pending_input.is_none() {
         s.pending_input = Some((crate::time::now(), kind));
     }
@@ -115,9 +114,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
         return;
     }
     let now = crate::time::now();
-    let mut s = state()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut s = state().lock_recover();
     s.started.get_or_insert(now);
 
     if let Some(prev) = s.last_frame {
@@ -163,9 +160,7 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     }
     // Scoped so the mutex guard is dropped before the (I/O) eprintln! below.
     let n = {
-        let mut s = state()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = state().lock_recover();
         s.draw_count = s.draw_count.saturating_add(1);
         s.draw_count
     };

@@ -34,11 +34,24 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
 </script>
   <style>
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
-    #surface { height: calc(100% - 28px); }
-    #bar { height: 28px; line-height: 28px; padding: 0 8px; display: flex; gap: 12px; }
-    #bar a { color: #9ab4ff; margin-left: auto; }
-    .tilo-entry-card { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); display: grid; gap: 10px; padding: 20px; border-radius: 12px; background: #1f2228; border: 1px solid #3a3d44; max-width: 420px; }
-    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; }
+    #surface { height: 100%; }
+    /* Until the desktop is up, #status is placed by the arrival rules below;
+       after, it speaks to screen readers only, and the desktop is the whole
+       page. */
+    #bar { display: contents; }
+    [data-arrival=done] #bar { display: block; position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
+    .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
+    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
+    .tilo-entry-card button:hover { background: #26282e; }
+    .tilo-entry-card button.tilo-entry-primary { border-color: transparent; background: #f2f2f4; color: #121214; font-weight: 500; }
+    .tilo-entry-card button.tilo-entry-primary:hover { background: #ffffff; }
+    .tilo-entry-actions { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; }
+    .tilo-entry-options { display: grid; gap: 6px; }
+    .tilo-entry-options button { text-align: left; }
+    /* While the page asks something, the arrival screen behind it waits too:
+       no breathing mark, line, bar or note that the network is slow. */
+    body:has(.tilo-entry-card) :is(#arrival > *, #arrival-note, #arrival-bar, #status) { visibility: hidden; }
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
@@ -72,8 +85,6 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     #arrival-retry:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    #bar { overflow: hidden; }
-    [data-arrival=done] #status { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .tilo-entry-card { z-index: 3; }
     @media (prefers-reduced-motion: reduce) {
       #arrival { transition: none; }
@@ -87,12 +98,11 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
   <div id="arrival" aria-hidden="true"><i><b></b><b></b><b></b></i><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
-  <div id="bar"><span id="status" role="status">Loading Tilo…</span><a id="other-mode" hidden>Open in its own tab</a></div>
+  <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
     // fragment and never reaches the server; see docs/architecture/web-routing.md.
     import {startEntryPage} from './entry-page.mjs';
-    Object.assign(document.getElementById('other-mode'), {target: '_blank', rel: 'noopener'});
     await startEntryPage({mode: 'desktop'});
   </script>
 </body>
