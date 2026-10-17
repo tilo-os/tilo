@@ -12761,6 +12761,7 @@ pub fn run() {
                             let reply_net = Arc::clone(net);
                             let local_peer = net.local_peer_id_hash();
                             let workspace_topic = inbound.workspace_topic;
+                            let keyframe_net = Arc::clone(net);
                             let input_sink = Arc::new(move |input| {
                                 if let Ok(event) = postcard::to_allocvec(&input) {
                                     let _ = reply_net.publish_legacy_message(
@@ -12773,6 +12774,16 @@ pub fn run() {
                                     );
                                 }
                             });
+                            let keyframe_sink = Arc::new(move |seq| {
+                                let _ = keyframe_net.publish_legacy_message(
+                                    workspace_topic,
+                                    crate::network::NeighbourMsg::SurfaceKeyframeRequest {
+                                        peer: local_peer,
+                                        surface,
+                                        seq,
+                                    },
+                                );
+                            });
                             let stream = crate::shell::peer_view::PeerStreamStart {
                                 source_peer,
                                 surface,
@@ -12782,6 +12793,7 @@ pub fn run() {
                                 display_size: Some((width, height)),
                                 hdr_static_metadata,
                                 input_sink,
+                                keyframe_sink,
                                 tab,
                             };
                             let mounted = !stream.app_id.is_empty()
@@ -12855,6 +12867,13 @@ pub fn run() {
                                     "dropping malformed remote input"
                                 ),
                             }
+                        }
+                        crate::network::NeighbourMsg::SurfaceKeyframeRequest {
+                            peer,
+                            surface,
+                            seq,
+                        } => {
+                            state.request_share_keyframe(peer, surface, seq);
                         }
                         _ => {
                             tracing::debug!("ignoring non-stream message in the legacy inbox");

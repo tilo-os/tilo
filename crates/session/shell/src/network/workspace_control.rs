@@ -42,6 +42,7 @@ pub enum WorkspaceControlUpdate {
         surface: SurfaceId,
         encoded_h264: Vec<u8>,
         timestamp: u64,
+        seq: u64,
     },
     Closed(WorkspaceControlCloseReason),
 }
@@ -174,7 +175,7 @@ impl WorkspaceControlSession {
                 source_peer,
                 encoded_h264,
                 ts,
-                ..
+                seq,
             } if transport_peer == Some(self.target)
                 && *source_peer == self.target_peer
                 && self.stream_is_h264
@@ -184,6 +185,7 @@ impl WorkspaceControlSession {
                     surface: *surface,
                     encoded_h264: encoded_h264.clone(),
                     timestamp: *ts,
+                    seq: *seq,
                 })
             }
             NeighbourMsg::SurfaceStreamEnd {
@@ -217,6 +219,23 @@ impl WorkspaceControlSession {
             peer: self.local_peer,
             surface,
             event,
+        })
+    }
+
+    /// Ask the target for a keyframe of the live stream: unit `seq` could
+    /// not be decoded. Gated like input, on a consented live surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no consented live surface is active.
+    pub fn keyframe_request(&self, seq: u64) -> Result<NeighbourMsg, &'static str> {
+        let Some(surface) = self.active_surface() else {
+            return Err("target has not granted control for a live surface");
+        };
+        Ok(NeighbourMsg::SurfaceKeyframeRequest {
+            peer: self.local_peer,
+            surface,
+            seq,
         })
     }
 
@@ -344,6 +363,10 @@ mod tests {
                     .input_message(&InputEvent::PointerMotion { x: 1.0, y: 2.0 })
                     .is_err()
             );
+            assert!(
+                session.keyframe_request(9).is_err(),
+                "no keyframe request before consent either"
+            );
             assert!(matches!(
                 session.observe_from(Some(target), &grant(11, 44, true)),
                 Some(WorkspaceControlUpdate::ConsentGranted { surface: 44, .. })
@@ -354,6 +377,27 @@ mod tests {
                     pressed: true
                 }),
                 Ok(NeighbourMsg::RemoteInput { surface: 44, .. })
+            ));
+            assert_eq!(
+                session.keyframe_request(9),
+                Ok(NeighbourMsg::SurfaceKeyframeRequest {
+                    peer: 11,
+                    surface: 44,
+                    seq: 9
+                })
+            );
+            assert!(matches!(
+                session.observe_from(
+                    Some(target),
+                    &NeighbourMsg::SurfaceFrame {
+                        surface: 44,
+                        source_peer: peer_liveness_handle(&target),
+                        encoded_h264: vec![0, 0, 1, 0x65],
+                        ts: 5,
+                        seq: 9,
+                    }
+                ),
+                Some(WorkspaceControlUpdate::Frame { seq: 9, .. })
             ));
         }
     }

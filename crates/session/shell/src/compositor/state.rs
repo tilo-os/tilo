@@ -3532,6 +3532,23 @@ impl State {
     /// Encode and publish `surface`'s already captured frame, so a viewer
     /// can start decoding without the window having to damage itself (a
     /// static window may never do so).
+    /// Viewer `peer` of `surface` could not use unit `seq` and asks for a
+    /// keyframe. Only a device the share streams to may ask; the session
+    /// rate-limits what it forces, and the frame goes out at once so a
+    /// window that is not changing recovers too.
+    pub fn request_share_keyframe(&self, peer: MsgPeerId, surface: SurfaceId, seq: u64) {
+        let Some(session) = self.active_sessions.get(&surface) else {
+            return;
+        };
+        if session.viewer_share(peer).is_none() {
+            tracing::debug!(peer, surface, "keyframe request from a device not watching");
+            return;
+        }
+        if session.request_keyframe(seq, std::time::Instant::now()) {
+            self.seed_share_frame(session, surface);
+        }
+    }
+
     fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
         if let Some(rgba) = self.share_frame(session, surface, || {
             crate::compositor::foreign::store()

@@ -55,6 +55,10 @@ const LATE_PICTURE_POLL: std::time::Duration = std::time::Duration::from_millis(
 /// back until the next unit must not keep an idle desktop awake.
 const LATE_PICTURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long a view waiting for a keyframe waits before asking again, in
+/// case its request or the keyframe answering it was lost too.
+const KEYFRAME_REQUEST_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// `decoder`, set up for the compositor loop: it never waits for a picture.
 fn loop_decoder(mut decoder: VideoDecoder) -> VideoDecoder {
     decoder.set_picture_wait(PICTURE_WAIT);
@@ -159,6 +163,9 @@ pub struct PeerStreamStart {
     pub display_size: Option<(u32, u32)>,
     pub hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
     pub input_sink: Arc<dyn Fn(InputEvent) + Send + Sync>,
+    /// Asks the sender for a keyframe, naming the unit the view could not
+    /// decode; see [`PeerView::set_keyframe_sink`].
+    pub keyframe_sink: Arc<dyn Fn(u64) + Send + Sync>,
     /// The workspace tab the sender shows the window in; `0` when it names
     /// none and the view goes to the first free tab of the app.
     pub tab: u64,
@@ -219,9 +226,12 @@ pub struct PeerView {
     /// The newest push whose picture is still decoding: its motion-to-photon
     /// latency then, and when, so a late picture's latency counts the wait.
     pending_push: Option<(Option<u64>, ui::time::Instant)>,
-    /// The sequence number the next delta unit must carry to continue the
-    /// decoder's reference chain; `None` until a keyframe starts one.
-    next_seq: Option<u64>,
+    /// Which units continue the decoder's reference chain.
+    chain: neighbour_wire::unit_chain::UnitChain,
+    /// Asks the sender for a keyframe once the chain broke.
+    keyframe_sink: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    /// When the view last asked for a keyframe.
+    keyframe_requested: Option<ui::time::Instant>,
 }
 
 impl PeerView {
@@ -268,7 +278,9 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
-            next_seq: None,
+            chain: neighbour_wire::unit_chain::UnitChain::default(),
+            keyframe_sink: None,
+            keyframe_requested: None,
         }
     }
 
@@ -336,7 +348,9 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
-            next_seq: None,
+            chain: neighbour_wire::unit_chain::UnitChain::default(),
+            keyframe_sink: None,
+            keyframe_requested: None,
         }
     }
 
@@ -364,7 +378,9 @@ impl PeerView {
             self.decoder.set_picture_wake(self.picture_wake.clone());
             self.pending_push = None;
             self.late_poll_until = None;
-            self.next_seq = None;
+            // The new stream starts at its own keyframe.
+            self.chain.lose();
+            self.keyframe_requested = None;
         }
         self.decoder.set_display_size(display_size);
     }
@@ -422,23 +438,25 @@ impl PeerView {
         nalus: &[u8],
         latency_ns: Option<u64>,
     ) -> PushOutcome {
-        // A keyframe always starts a chain, whatever its number: a share
-        // replaced by a new session numbers its units from zero again, and
-        // its first keyframe can overtake the stream start announcing it.
-        if self.next_seq != Some(seq) && !media::realtime::is_keyframe(self.codec(), nalus) {
-            if self.next_seq.is_some_and(|next| seq < next) {
-                return PushOutcome::Stale;
+        let keyframe = media::realtime::is_keyframe(self.codec(), nalus);
+        match self.chain.admit(seq, keyframe) {
+            neighbour_wire::unit_chain::Admission::Decode => {}
+            neighbour_wire::unit_chain::Admission::Stale => return PushOutcome::Stale,
+            neighbour_wire::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                if broke {
+                    tracing::debug!(
+                        surface = self.surface_id,
+                        seq,
+                        "peer stream lost a unit; asking for a keyframe"
+                    );
+                }
+                self.request_keyframe(seq, broke);
+                return PushOutcome::AwaitingKeyframe;
             }
-            if self.next_seq.take().is_some() {
-                tracing::debug!(
-                    surface = self.surface_id,
-                    seq,
-                    "peer stream lost a unit; waiting for its next keyframe"
-                );
-            }
-            return PushOutcome::AwaitingKeyframe;
         }
-        self.next_seq = seq.checked_add(1);
+        if keyframe {
+            self.keyframe_requested = None;
+        }
         let decoded = self.decoder.decode(nalus);
         let pending = self.decoder.picture_pending();
         let now = ui::time::Instant::now();
@@ -452,7 +470,9 @@ impl PeerView {
             }
             // Whatever the decoder kept of a rejected unit is no base for
             // the deltas after it.
-            self.next_seq = None;
+            let broke = self.chain.intact();
+            self.chain.lose();
+            self.request_keyframe(seq, broke);
             return PushOutcome::DecodeFailed;
         };
         self.accept(frame, latency_ns)
@@ -547,6 +567,29 @@ impl PeerView {
 
     pub fn set_input_sink(&mut self, sink: Arc<dyn Fn(InputEvent) + Send + Sync>) {
         self.input_sink = Some(sink);
+    }
+
+    /// Where the view asks the sender for a keyframe once a unit went
+    /// missing or its decoder rejected one, naming that unit's sequence
+    /// number, instead of staying frozen until the sender's periodic one.
+    pub fn set_keyframe_sink(&mut self, sink: Arc<dyn Fn(u64) + Send + Sync>) {
+        self.keyframe_sink = Some(sink);
+    }
+
+    /// Ask for a keyframe when the chain just broke, or again when the last
+    /// request has gone unanswered for [`KEYFRAME_REQUEST_RETRY`].
+    fn request_keyframe(&mut self, seq: u64, broke: bool) {
+        let due = broke
+            || self
+                .keyframe_requested
+                .is_none_or(|asked| asked.elapsed() >= KEYFRAME_REQUEST_RETRY);
+        if !due {
+            return;
+        }
+        if let Some(sink) = &self.keyframe_sink {
+            self.keyframe_requested = Some(ui::time::Instant::now());
+            sink(seq);
+        }
     }
 
     fn emit_input(&mut self, event: InputEvent) {
@@ -894,11 +937,11 @@ mod tests {
     /// Push `unit` and settle its picture as the compositor loop does: a
     /// push never waits, so a picture still decoding is collected once it
     /// is out. A rejected unit stays [`PushOutcome::DecodeFailed`], and one
-    /// whose picture never comes stays [`PushOutcome::Pending`]. The unit
-    /// continues the view's sequence.
+    /// whose picture never comes stays [`PushOutcome::Pending`].
     fn push_settled(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> PushOutcome {
-        let seq = view.next_seq.unwrap_or(0);
-        let outcome = view.push_encoded_with_latency(seq, unit, latency_ns);
+        // Every unit these tests push is a keyframe, which decodes at any
+        // sequence number.
+        let outcome = view.push_encoded_with_latency(0, unit, latency_ns);
         if outcome != PushOutcome::Pending {
             return outcome;
         }
@@ -1202,7 +1245,7 @@ mod tests {
     fn push_until_pending(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> usize {
         const ATTEMPTS: usize = 50;
         for decoded in 0..ATTEMPTS {
-            match view.push_encoded_with_latency(view.next_seq.unwrap_or(0), unit, latency_ns) {
+            match view.push_encoded_with_latency(0, unit, latency_ns) {
                 PushOutcome::Pending => return decoded,
                 outcome => {
                     assert_eq!(outcome, PushOutcome::Decoded, "push {decoded}");

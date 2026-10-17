@@ -4944,6 +4944,7 @@ impl ShellOverlayHost {
             display_size,
             hdr_static_metadata,
             ref input_sink,
+            ref keyframe_sink,
             tab,
         } = *stream;
         let key = (source_peer, surface_id);
@@ -4992,6 +4993,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_keyframe_sink(std::sync::Arc::clone(keyframe_sink));
         peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by

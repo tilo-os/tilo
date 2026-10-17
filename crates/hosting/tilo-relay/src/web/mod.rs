@@ -545,7 +545,9 @@ async fn maintain_legacy(
 
 /// Tell the sessions of every room with members in its live plane what
 /// those members decode ([`legacy::LegacyWindows::advertise`]), so a session
-/// picks a codec for this host's windows that every member's page plays.
+/// picks a codec for this host's windows that every member's page plays, and
+/// ask for the keyframes streams that lost a unit need
+/// ([`legacy::LegacyWindows::keyframe_requests`]).
 /// Lossy like presence: a full queue misses one advert, and the next restates it.
 #[allow(
     clippy::significant_drop_tightening,
@@ -583,11 +585,11 @@ async fn advertise_legacy_codecs(
             sessions,
         });
     }
-    let adverts = legacy.advertise(
-        &rooms,
-        &context.relay.identity.cert,
-        std::time::Instant::now(),
-    );
+    let now = std::time::Instant::now();
+    let mut adverts = legacy.advertise(&rooms, &context.relay.identity.cert, now);
+    // A stream that lost a unit on its way here asks its session for a
+    // keyframe, so members watching it recover at once.
+    adverts.extend(legacy.keyframe_requests(&context.relay.identity.cert, now));
     for advert in adverts {
         let Some(queue) = queues.get(&(advert.workspace_id, advert.device)) else {
             continue;

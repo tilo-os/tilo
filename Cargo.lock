@@ -12972,6 +12972,7 @@ dependencies = [
  "anyhow",
  "des",
  "iroh-base",
+ "neighbour-wire",
  "runtime-collab",
  "runtime-dylib",
  "russh",

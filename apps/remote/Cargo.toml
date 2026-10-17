@@ -27,6 +27,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
+# Which encoded units of a workspace-control stream continue the decoder's
+# reference chain (`unit_chain`), the same rule every viewer path follows.
+neighbour-wire = { path = "../../crates/collab/neighbour-wire" }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }

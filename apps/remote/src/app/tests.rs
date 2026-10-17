@@ -682,6 +682,69 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     ));
 }
 
+/// A unit of the target's stream lost on the way leaves a gap in its
+/// sequence numbers: the session holds back the deltas after it and asks the
+/// target for a keyframe through the consented route.
+#[test]
+fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
+    const IDR: [u8; 12] = [0, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x65, 0x88, 0x84];
+    const DELTA: [u8; 6] = [0, 0, 0, 1, 0x41, 0x9a];
+    let mut app = demo();
+    let target = SecretKey::generate().public();
+    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.open_session(id);
+    let session_id = match app.session.borrow().live.as_ref() {
+        Some(LiveSession::Tilo(session)) => session.id,
+        _ => panic!("Tilo session"),
+    };
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+        session_id,
+        event: runtime_collab::WorkspaceControlEvent::StreamStarted {
+            surface: 4,
+            width: 1280,
+            height: 720,
+        },
+    });
+    let _ = app.take_collab_requests();
+    let frame = |app: &mut RemoteApp, seq: u64, unit: &[u8]| {
+        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
+            session_id,
+            event: runtime_collab::WorkspaceControlEvent::Frame {
+                surface: 4,
+                encoded_h264: unit.to_vec(),
+                timestamp: seq,
+                seq,
+            },
+        });
+        app.take_collab_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                ui::collaboration::CollabRequest::WorkspaceControlInput {
+                    event: runtime_collab::WorkspaceControlInput::RequestKeyframe { seq },
+                    ..
+                } => Some(seq),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(frame(&mut app, 0, &IDR).is_empty());
+    assert!(frame(&mut app, 1, &DELTA).is_empty());
+    let mut asked = frame(&mut app, 3, &DELTA);
+    let mut seq = 3;
+    let deadline = tilo_test_env::hang_deadline();
+    while asked.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        seq += 1;
+        asked = frame(&mut app, seq, &DELTA);
+    }
+    assert_eq!(asked.len(), 1, "one request for the gap");
+    assert!(
+        (3..=seq).contains(&asked[0]),
+        "the request names a unit after the gap: {asked:?}"
+    );
+}
+
 #[test]
 fn resource_operations_settle_only_their_own_session() {
     let mut app = demo();
