@@ -2543,6 +2543,81 @@ fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
     assert!(check.get("native_caret").is_none());
 }
 
+#[test]
+fn document_size_reports_reach_only_a_host_that_measures() {
+    let tx = Arc::new(CommandQueue::default());
+    let shared = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let runtime = Arc::new(Runtime {
+        tx: tx.clone(),
+        process: shared.clone(),
+        supervisor: Mutex::default(),
+        routes,
+        next_tab: AtomicU32::new(2),
+        download_events: Arc::default(),
+        server: std::sync::OnceLock::new(),
+        link: None,
+        service_session: None,
+        exited: Arc::new(AtomicBool::new(false)),
+    });
+    let engine = ChromiumEngine {
+        tx: tx.clone(),
+        shared,
+        runtime: runtime.clone(),
+        tab: 1,
+    };
+    engine.send(WebViewCommand::ReportDocumentSize(true));
+    assert!(engine.drain_events().is_empty());
+    let queued = || tx.state.lock().unwrap().0.len();
+    assert_eq!(queued(), 0, "an older host never sees the command");
+
+    let (ready, _receiver) = sync_channel(1);
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152","document_size":true}),
+        &runtime.routes,
+        &runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    engine.drain_events();
+    let asked = tx.pop().expect("told once the host can measure");
+    assert_eq!(asked["op"], "document_size");
+    assert_eq!(asked["tab"], 1);
+    assert_eq!(asked["enabled"], true);
+    engine.drain_events();
+    assert_eq!(queued(), 0, "told once");
+
+    route_native_event(
+        &json!({"event":"document_size","tab":1,"width":640.0,"height":1830.5,"scroll_y":0.0}),
+        &runtime.routes,
+        &runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    assert_eq!(
+        engine.drain_events(),
+        [WebViewEvent::DocumentSize {
+            width: 640.0,
+            height: 1830.5,
+            scroll_y: 0.0
+        }]
+    );
+    assert!(
+        route_native_event(
+            &json!({"event":"document_size","tab":1,"width":640.0,"height":-1.0,"scroll_y":0.0}),
+            &runtime.routes,
+            &runtime.download_events,
+            &ready,
+        )
+        .is_err(),
+        "a size no document has is refused"
+    );
+
+    engine.send(WebViewCommand::ReportDocumentSize(false));
+    let stopped = tx.pop().expect("stopping is told at once");
+    assert_eq!(stopped["enabled"], false);
+}
+
 pub(super) fn selected_service_request() -> super::super::ServiceSessionRequest {
     use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
     super::super::ServiceSessionRequest {
