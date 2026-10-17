@@ -70,9 +70,19 @@ class ProcessObservationTests(unittest.TestCase):
 class DisplayPublicationTests(unittest.TestCase):
     def setUp(self):
         self.session = LIFECYCLE.Session.__new__(LIFECYCLE.Session)
-        self.session.runtime = "/private/run"
-        self.session.env = {"XDG_RUNTIME_DIR": self.session.runtime}
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name)
+        self.session.runtime = str(self.root)
+        self.session.bus_file = str(self.root / "session-bus-address")
+        self.session.env = {"XDG_RUNTIME_DIR": self.session.runtime,
+                            "DBUS_SESSION_BUS_ADDRESS": "inherited-bus"}
         self.session.proc = mock.Mock(pid=123)
+
+    def prepare_display(self, bus="unix:path=/private/bus"):
+        (self.root / "wayland-1").touch()
+        (self.root / "wayland-1.lock").touch()
+        pathlib.Path(self.session.bus_file).write_text(bus)
 
     def test_failed_activation_update_is_propagated(self):
         def update(command, **kwargs):
@@ -80,27 +90,40 @@ class DisplayPublicationTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, command)
             return subprocess.CompletedProcess(command, 1)
 
-        with mock.patch.object(LIFECYCLE.os, "listdir", return_value=["wayland-1", "wayland-1.lock"]), \
-                mock.patch.object(LIFECYCLE, "session_bus_address", return_value="unix:path=/private/bus"), \
-                mock.patch.object(LIFECYCLE.subprocess, "run", side_effect=update):
+        self.prepare_display()
+        with mock.patch.object(LIFECYCLE.subprocess, "run", side_effect=update):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.session.publish_display_to_bus()
 
     def test_missing_setup_inputs_fail_instead_of_skipping(self):
-        for sockets, bus, message in (([], "bus", "no Wayland"), (["wayland-1"], None, "no session bus")):
-            with self.subTest(message=message):
-                with mock.patch.object(LIFECYCLE.os, "listdir", return_value=sockets), \
-                        mock.patch.object(LIFECYCLE, "session_bus_address", return_value=bus):
-                    with self.assertRaisesRegex(RuntimeError, message):
+        with mock.patch.object(LIFECYCLE.subprocess, "run") as run:
+            # A lock file is not a display, even with a valid bus file.
+            self.prepare_display()
+            (self.root / "wayland-1").unlink()
+            with self.assertRaisesRegex(RuntimeError, "no Wayland"):
+                self.session.publish_display_to_bus()
+            (self.root / "wayland-1").touch()
+            for bus in (None, "", " \n"):
+                with self.subTest(bus=bus):
+                    path = pathlib.Path(self.session.bus_file)
+                    if bus is None:
+                        path.unlink()
+                    else:
+                        path.write_text(bus)
+                    with self.assertRaisesRegex(RuntimeError, "no session bus"):
                         self.session.publish_display_to_bus()
+            run.assert_not_called()
 
     def test_success_publishes_only_to_private_bus(self):
-        with mock.patch.object(LIFECYCLE.os, "listdir", return_value=["wayland-1"]), \
-                mock.patch.object(LIFECYCLE, "session_bus_address", return_value="private-bus"), \
-                mock.patch.object(LIFECYCLE.subprocess, "run") as run:
+        self.prepare_display("  unix:path=/private/bus\n")
+        with mock.patch.object(LIFECYCLE.subprocess, "run") as run:
             self.session.publish_display_to_bus()
-        self.assertEqual(run.call_args.kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"], "private-bus")
-        self.assertTrue(run.call_args.kwargs["check"])
+        run.assert_called_once_with(
+            ["dbus-update-activation-environment", "WAYLAND_DISPLAY=wayland-1",
+             f"XDG_RUNTIME_DIR={self.session.runtime}"],
+            env={**self.session.env, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/private/bus"},
+            check=True)
+        self.assertEqual(self.session.env["DBUS_SESSION_BUS_ADDRESS"], "inherited-bus")
 
 
 class ClientFailureTests(unittest.TestCase):
