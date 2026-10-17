@@ -5,9 +5,9 @@
 //! catalog and running a query all block. Doing them on the render thread
 //! would freeze the whole window, so they run here instead: the widget
 //! [`request`](DbWorker::request)s work over a channel, the worker executes it
-//! and sends a [`DbReply`] back, and the widget [`drain`](DbWorker::drain)s the
-//! replies each frame (see [`crate::session`] and the app's `needs_animation_frame`
-//! pump). The engine never crosses the thread boundary — it is created and used
+//! and sends a [`DbReply`] back on a waking channel: each reply wakes the app,
+//! whose next sync [`drain`](DbWorker::drain)s it (see [`crate::session`]).
+//! Nothing polls for replies frame by frame. The engine never crosses the thread boundary — it is created and used
 //! entirely on the worker — so no live driver handle has to be `Send`/`Sync`.
 //!
 //! The same channel path is driven synchronously by
@@ -83,8 +83,8 @@ pub enum DbReply {
 }
 
 /// Handle to the background worker thread. Owns the request/reply channels and
-/// tracks how many requests are still outstanding so the UI can keep pumping
-/// frames until every reply has landed.
+/// tracks how many requests are still outstanding, so the UI can say it is
+/// busy until every reply has landed.
 pub struct DbWorker {
     tx: Sender<DbRequest>,
     rx: Receiver<DbReply>,
@@ -121,7 +121,7 @@ impl DbWorker {
     )]
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<DbRequest>();
-        let (res_tx, res_rx) = std::sync::mpsc::channel::<DbReply>();
+        let (res_tx, res_rx) = ui::wake::waking_channel::<DbReply>();
         let active_query = Arc::new(Mutex::new(None));
         let worker_active_query = Arc::clone(&active_query);
         let handle = std::thread::Builder::new()
@@ -142,12 +142,13 @@ impl DbWorker {
         self.outstanding += 1;
         if self.tx.send(req).is_err() {
             // Worker thread is gone; the reply will never arrive, so don't
-            // leave the count stuck (which would spin the animation pump).
+            // leave the count stuck (the app would say it is busy forever).
             self.outstanding = self.outstanding.saturating_sub(1);
         }
     }
 
-    /// Collect every reply that has arrived, without blocking. Call each frame.
+    /// Collect every reply that has arrived, without blocking. Call on each
+    /// sync; a reply wakes the app for one.
     pub fn drain(&mut self) -> Vec<DbReply> {
         let mut out = Vec::new();
         while let Ok(reply) = self.rx.try_recv() {
@@ -176,7 +177,7 @@ impl DbWorker {
         out
     }
 
-    /// Whether any request is still in flight (drives `needs_animation_frame`).
+    /// Whether any request is still in flight.
     pub fn busy(&self) -> bool {
         self.outstanding > 0
     }
@@ -214,7 +215,7 @@ impl Drop for DbWorker {
 /// request at a time.
 fn worker_loop(
     rx: &Receiver<DbRequest>,
-    tx: &Sender<DbReply>,
+    tx: &ui::wake::WakingSender<DbReply>,
     active_query: &Arc<Mutex<Option<ActiveQuery>>>,
 ) {
     let mut engine: Option<LiveEngine> = None;

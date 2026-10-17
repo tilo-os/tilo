@@ -642,7 +642,8 @@ impl GitClientApp {
             RemoteAction::Push => "Pushing…",
         }
         .to_string();
-        let (sender, receiver) = mpsc::channel();
+        // The worker's reply wakes the app; nothing polls frame by frame.
+        let (sender, receiver) = ui::wake::waking_channel();
         std::thread::Builder::new()
             .name("git-remote".into())
             .spawn(move || {
@@ -2966,17 +2967,10 @@ impl Widget for GitClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Redraw while the list column slides, while a transfer runs, and
-        // while an embedded text field is focused so its caret keeps
-        // blinking.
+        // Frames only while the list column slides or the bars fade. A
+        // transfer wakes the app when its worker replies, and the toolkit's
+        // caret is steady: neither needs frames.
         (self.screen.has_list() && self.drawer.is_animating())
-            || self.remote_job.is_some()
-            || self.commit_input.needs_animation_frame()
-            || self.branch_input.needs_animation_frame()
-            || self.worktree_branch_input.needs_animation_frame()
-            || self.worktree_path_input.needs_animation_frame()
-            || self.worktree_start_input.needs_animation_frame()
-            || self.open_input.needs_animation_frame()
             || self.bar_fade.fading_at(ui::time::now(), self.bars_held())
     }
 

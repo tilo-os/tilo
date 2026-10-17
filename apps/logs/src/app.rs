@@ -853,8 +853,19 @@ impl Widget for LogsApp {
         (self.reads && self.live_tail) || self.reading.is_some()
     }
 
+    /// Live tail reads the journal once a [`POLL_INTERVAL`]: a deadline,
+    /// not a frame pump. A read and an export wake the app when they finish.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let poll = (self.reads && self.live_tail && self.reading.is_none())
+            .then(|| self.last_poll.checked_add(POLL_INTERVAL))
+            .flatten();
+        poll.into_iter()
+            .chain(self.shell.next_wake_deadline())
+            .min()
+    }
+
     fn needs_animation_frame(&self) -> bool {
-        (self.allow_live && self.live_tail) || self.exporting || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 }
 

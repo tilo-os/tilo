@@ -8,6 +8,9 @@ use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
 use chrono::NaiveDateTime;
 use std::cell::Cell;
+
+/// How often a running job's progress line is read.
+const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1064,9 +1067,28 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A running job's progress line, read on its wake deadline.
+        let progressed = self.work == Work::Running
+            && self
+                .job_progress
+                .lock()
+                .is_ok_and(|shown| *shown != self.operation_status);
         self.drain_intents();
         self.refresh_view();
-        self.shell.update(state, path) || self.dirty
+        self.shell.update(state, path) || self.dirty || progressed
+    }
+
+    /// A running job reports progress through a shared line; the app reads
+    /// it a few times a second on a deadline. Choosing a folder and the job's
+    /// end wake the app themselves (framework effects).
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let progress = (self.work == Work::Running)
+            .then(|| ui::time::now().checked_add(PROGRESS_READ))
+            .flatten();
+        progress
+            .into_iter()
+            .chain(self.shell.next_wake_deadline())
+            .min()
     }
 
     fn build_layout(
@@ -1149,9 +1171,7 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.work != Work::Idle
-            || self.status_bubble.needs_frame(ui::time::now())
-            || self.shell.needs_animation_frame()
+        self.status_bubble.needs_frame(ui::time::now()) || self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {

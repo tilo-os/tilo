@@ -355,6 +355,62 @@ impl<T> Reply<T> {
     }
 }
 
+/// The worker's end of a [`waking_channel`]: every message it sends wakes
+/// the scope that opened the channel, so the app drains it on its next sync
+/// instead of pumping frames to poll for it.
+pub struct WakingSender<T> {
+    sender: Sender<T>,
+    wake: WakeHandle,
+}
+
+impl<T> Clone for WakingSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            wake: self.wake.clone(),
+        }
+    }
+}
+
+impl<T> WakingSender<T> {
+    /// Queue `message` and wake the owner to take it. A gone receiver (the
+    /// window closed) is an error.
+    ///
+    /// # Errors
+    /// The message back when the receiving end is gone.
+    pub fn send(&self, message: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+        self.sender.send(message)?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
+impl<T> Drop for WakingSender<T> {
+    /// A worker that ends without replying (it failed, or panicked) wakes
+    /// the owner too, so the owner sees the channel disconnected instead of
+    /// waiting forever.
+    fn drop(&mut self) {
+        self.wake.wake();
+    }
+}
+
+/// "Wake me when this worker replies": a channel opened now, under the
+/// current wake scope (the app's). A worker sends its replies through the
+/// [`WakingSender`]; each one wakes the app's event loop, which drains the
+/// [`Receiver`] in its next sync. A waiting app paints nothing until a reply
+/// lands — `needs_animation_frame` is for motion, never for polling a worker.
+#[must_use]
+pub fn waking_channel<T>() -> (WakingSender<T>, Receiver<T>) {
+    let (sender, receiver) = channel();
+    (
+        WakingSender {
+            sender,
+            wake: WakeHandle::new(),
+        },
+        receiver,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +505,45 @@ mod tests {
             })
             .unwrap();
         (scope, rx)
+    }
+
+    #[test]
+    fn a_worker_reply_on_a_waking_channel_wakes_its_owner() {
+        let (scope, rx) = bound_scope();
+        let (sender, replies) = {
+            let _entry = scope.enter();
+            waking_channel::<u32>()
+        };
+        std::thread::spawn(move || sender.send(7).unwrap())
+            .join()
+            .unwrap();
+        assert!(
+            rx.recv().unwrap().requires_sync(),
+            "the reply woke the owner"
+        );
+        assert_eq!(replies.try_recv().unwrap(), 7);
+        // The worker's end went away with its thread: one more wake.
+        assert!(rx.recv().is_ok());
+        let (sender, replies) = {
+            let _entry = scope.enter();
+            waking_channel::<u32>()
+        };
+        drop(replies);
+        assert!(sender.send(1).is_err(), "a gone receiver wakes nobody");
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        let (sender, replies) = {
+            let _entry = scope.enter();
+            waking_channel::<u32>()
+        };
+        std::thread::spawn(move || drop(sender)).join().unwrap();
+        assert!(
+            rx.recv().is_ok(),
+            "a worker that ends without a reply wakes too"
+        );
+        assert!(matches!(
+            replies.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]
