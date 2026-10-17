@@ -25,6 +25,35 @@ fn parameter_roles_keep_defaults_and_order_independent_precedence() {
 }
 
 #[test]
+fn content_parameter_is_marked_in_generated_declaration() {
+    let attr: Attribute = syn::parse_quote!(#[action]);
+    let mut method = syn::parse_quote! {
+        fn attach(&mut self, #[param(content)] body: String) {}
+    };
+    let verb = read_verb(&mut method, &attr).expect("content action parses");
+    assert_eq!(verb.params.len(), 1);
+    let content = &verb.params[0];
+    assert_eq!(content.role, Role::Content);
+    let expected = quote! {
+        tilo_resource::__private::ParamDecl {
+            name: "body",
+            ty: tilo_resource::__private::ParamTypeOf::Known(tilo_resource::__private::ParamType::Text),
+            description: "Body",
+            schema: <String as tilo_resource::JsonSchema>::json_schema,
+            optional: false,
+            place: tilo_resource::__private::PlaceIn::Nowhere,
+            example: ::core::option::Option::None,
+            flat: false,
+            content: true,
+        }
+    };
+    assert_eq!(
+        param_decl(content, &krate()).to_string(),
+        expected.to_string()
+    );
+}
+
+#[test]
 fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     let attr: Attribute = syn::parse_quote!(#[action]);
     let mut method = syn::parse_quote! {
@@ -53,6 +82,7 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
             place: tilo_resource::__private::PlaceIn::Nowhere,
             example: ::core::option::Option::None,
             flat: false,
+            content: false,
         }
     };
     assert_eq!(
@@ -69,6 +99,7 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
     let declaration = param_decl(secret, &krate()).to_string();
     assert!(declaration.contains("ParamType :: Secret"));
     assert!(declaration.contains("optional : true"));
+    assert!(declaration.contains("content : false"));
     for attributes in [
         "secret, content",
         "secret, flatten",
