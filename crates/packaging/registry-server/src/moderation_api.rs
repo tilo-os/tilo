@@ -59,6 +59,20 @@ impl ModerationApiService {
         allowlist: &PublisherAllowlist,
     ) -> Result<ModerationCase, ModerationApiError> {
         validate_request(request, now_unix)?;
+        let operation = request
+            .external_operation()
+            .map_err(|_| ModerationApiError::BadSignature)?;
+        operation
+            .validate()
+            .map_err(|_| ModerationApiError::Invalid("invalid external operation"))?;
+        if operation.destination.base_url != self.identity.base_url
+            || !operation
+                .destination
+                .owner_pubkey_hex
+                .eq_ignore_ascii_case(&self.identity.owner_pubkey_hex)
+        {
+            return Err(ModerationApiError::Forbidden);
+        }
         verify_moderation_mutation(request).map_err(|_| ModerationApiError::BadSignature)?;
         let digest_hex = hex::encode(
             registry_types::moderation_signing_message(request)
@@ -408,11 +422,12 @@ fn validate_request(
     request: &SignedModerationMutation,
     now: u64,
 ) -> Result<(), ModerationApiError> {
-    if request.protocol != 1 {
+    if request.protocol != 2 {
         return Err(ModerationApiError::Invalid("unsupported protocol"));
     }
     validate_id(&request.request_id)?;
-    if request.issued_at_unix > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+    if request.expires_at_unix <= request.issued_at_unix
+        || request.issued_at_unix > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
         || now > request.expires_at_unix
         || request
             .expires_at_unix
@@ -549,8 +564,8 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use registry_types::{
-        RegistryEntry, RegistryTarget, RegistryVersion, TILO_OS_PLATFORM, sign_entry,
-        sign_moderation_mutation,
+        ExternalModerationOperation, ModerationDestination, RegistryEntry, RegistryTarget,
+        RegistryVersion, TILO_OS_PLATFORM, sign_entry, sign_external_moderation,
     };
 
     fn setup() -> (
@@ -563,7 +578,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let storage = Storage::open(directory.path()).unwrap();
         let publisher = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let reviewer = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let reviewer = SigningKey::from_bytes(&[42; 32]);
         let mut entry = RegistryEntry {
             package_id: "so.tilo.notes".into(),
             kind: registry_types::EntryKind::App,
@@ -618,6 +633,33 @@ mod tests {
         (directory, service, publisher, reviewer, allowlist)
     }
 
+    fn sign_moderation_mutation(
+        request_id: String,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        role: ModerationActorRole,
+        mutation: ModerationMutation,
+        key: &SigningKey,
+    ) -> Result<SignedModerationMutation, registry_types::ModerationWireError> {
+        let request = sign_external_moderation(
+            &ExternalModerationOperation {
+                destination: ModerationDestination {
+                    base_url: "https://registry.test".into(),
+                    owner_pubkey_hex: hex::encode(
+                        SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
+                    ),
+                },
+                request_id,
+                issued_at_unix,
+                expires_at_unix,
+                mutation,
+            },
+            key,
+        )?;
+        assert_eq!(request.actor_role, role);
+        Ok(request)
+    }
+
     fn report(key: &SigningKey, request_id: &str) -> SignedModerationMutation {
         sign_moderation_mutation(
             request_id.into(),
@@ -633,6 +675,44 @@ mod tests {
             key,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn moderation_rejects_legacy_and_other_destinations_before_writing() {
+        let (_directory, service, _publisher, _reviewer, allowlist) = setup();
+        let actor = SigningKey::from_bytes(&[7; 32]);
+        let request = report(&actor, "destination-test");
+        let legacy = registry_types::sign_moderation_mutation(
+            request.request_id.clone(),
+            100,
+            200,
+            request.actor_role,
+            request.mutation.clone(),
+            &actor,
+        )
+        .unwrap();
+        registry_types::verify_moderation_mutation(&legacy).unwrap();
+        assert!(matches!(
+            service.apply(&legacy, 110, &allowlist),
+            Err(ModerationApiError::Invalid("unsupported protocol"))
+        ));
+        for change_owner in [false, true] {
+            let mut operation = request.external_operation().unwrap();
+            if change_owner {
+                operation.destination.owner_pubkey_hex = "ab".repeat(32);
+            } else {
+                operation.destination.base_url.push('/');
+            }
+            let foreign = sign_external_moderation(&operation, &actor).unwrap();
+            registry_types::verify_moderation_mutation(&foreign).unwrap();
+            assert!(matches!(
+                service.apply(&foreign, 110, &allowlist),
+                Err(ModerationApiError::Forbidden)
+            ));
+        }
+        assert!(service.transparency(1, 10).unwrap().events.is_empty());
+        service.apply(&request, 110, &allowlist).unwrap();
+        assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
     }
 
     #[test]
