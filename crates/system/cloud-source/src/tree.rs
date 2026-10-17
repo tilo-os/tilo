@@ -278,7 +278,9 @@ fn numbered(name: &str, ordinal: u32) -> String {
     let marker = format!(" ({ordinal})");
     // An extension can occupy nearly NAME_MAX bytes itself. Reserve room
     // for both the ordinal and at least one byte of the stem.
-    let budget = MAX_NAME_BYTES.saturating_sub(marker.len() + 1);
+    let budget = MAX_NAME_BYTES
+        .saturating_sub(marker.len())
+        .saturating_sub(1);
     let mut end = extension.len().min(budget);
     while !extension.is_char_boundary(end) {
         end = end.saturating_sub(1);

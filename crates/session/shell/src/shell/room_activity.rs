@@ -6,7 +6,8 @@
 //! action broker, managed agent launches, and the native workspace tree as
 //! its causal history source.
 use crate::shell::automation_host::{
-    DocumentShare, FinishedShortcutRun, document_share, ordered_steps, record_run_steps,
+    DocumentShare, FinishedShortcutRun, RunGroup, group_share, ordered_steps, record_run_steps,
+    record_task_run_steps,
 };
 use crate::shell::cold_record_reads::ColdRecordReads;
 use crate::shell::collab_broker::AppActionBroker;
@@ -20,6 +21,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
+use tilo_action_broker::task_runs::EndedTaskRun;
 use tilo_desktop::activity::{
     ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier,
 };
@@ -149,6 +151,8 @@ pub(crate) struct NativeActivityHost {
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
     morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
+    /// Agent task runs being undone, and how each ended.
+    undos: super::task_undo::TaskUndos,
 }
 
 /// A document's revision when a waiting run last looked at it: the heads of
@@ -159,9 +163,59 @@ enum LookedRevision {
     Persisted(u64),
 }
 
-/// A shortcut run the broker finished whose history is not recorded yet.
+/// A run the broker saw end: a shortcut's, or an agent's run of a workspace
+/// task. Either stamps its changes with its group, and either is recorded as
+/// one run in workspace history, undoable as a unit.
+#[derive(Clone, Debug)]
+pub(crate) enum EndedRun {
+    Shortcut(Box<FinishedShortcutRun>),
+    Task(EndedTaskRun),
+}
+
+impl EndedRun {
+    fn group(&self) -> RunGroup {
+        match self {
+            Self::Shortcut(finished) => RunGroup::shortcut(finished.report.run),
+            Self::Task(ended) => RunGroup::task(&ended.task_id),
+        }
+    }
+
+    fn room(&self) -> &str {
+        match self {
+            Self::Shortcut(finished) => &finished.room,
+            Self::Task(ended) => &ended.room,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Shortcut(finished) => &finished.shortcut.name,
+            Self::Task(ended) => &ended.title,
+        }
+    }
+
+    /// Whether the run may have changed a document, so its changes are
+    /// worth waiting for: a shortcut that invoked nothing changed nothing.
+    fn may_have_changed(&self) -> bool {
+        match self {
+            Self::Shortcut(finished) => !finished.report.invocations().is_empty(),
+            Self::Task(_) => true,
+        }
+    }
+
+    /// Record the run in `coordinator` as `steps`; the transaction is left
+    /// open for the caller to commit.
+    fn record(&self, coordinator: &mut automerge::AutoCommit, steps: &[ui::RunStep]) -> bool {
+        match self {
+            Self::Shortcut(finished) => record_run_steps(coordinator, finished, steps).is_some(),
+            Self::Task(ended) => record_task_run_steps(coordinator, ended, steps).is_some(),
+        }
+    }
+}
+
+/// A run the broker saw end whose history is not recorded yet.
 pub(crate) struct PendingShortcutRun {
-    finished: FinishedShortcutRun,
+    finished: EndedRun,
     since: Instant,
     /// What the last look found in each candidate document, under the
     /// revision it was read at. `None` when the revision is unknown, so the
@@ -171,7 +225,7 @@ pub(crate) struct PendingShortcutRun {
 
 /// One persisted document a waiting run needs looked at, read off the loop.
 struct PersistedLook {
-    run: tilo_automation::RunId,
+    run: RunGroup,
     id: RecordId,
     /// The revision the last look read it at.
     seen: Option<LookedRevision>,
@@ -179,7 +233,7 @@ struct PersistedLook {
 
 /// What a persisted look found.
 struct PersistedFound {
-    run: tilo_automation::RunId,
+    run: RunGroup,
     id: RecordId,
     revision: Option<LookedRevision>,
     share: PersistedShare,
@@ -194,7 +248,12 @@ enum PersistedShare {
 }
 
 impl PendingShortcutRun {
+    #[cfg(test)]
     pub(crate) fn new(finished: FinishedShortcutRun, since: Instant) -> Self {
+        Self::ended(EndedRun::Shortcut(Box::new(finished)), since)
+    }
+
+    pub(crate) fn ended(finished: EndedRun, since: Instant) -> Self {
         Self {
             finished,
             since,
@@ -212,13 +271,13 @@ impl PendingShortcutRun {
         records: &RecordStore,
     ) -> Vec<PersistedLook> {
         use automerge::transaction::Transactable as _;
-        let run = self.finished.report.run;
+        let run = self.finished.group();
         self.looked.retain(|id, _| candidates.contains(id));
         let mut persisted = Vec::new();
         for id in candidates {
             if !open.contains(id) {
                 persisted.push(PersistedLook {
-                    run,
+                    run: run.clone(),
                     id: id.clone(),
                     seen: self.looked.get(id).and_then(|(seen, _)| seen.clone()),
                 });
@@ -234,7 +293,7 @@ impl PendingShortcutRun {
                 continue;
             }
             let share = records
-                .read(id, |doc| document_share(run, id.as_str(), doc))
+                .read(id, |doc| group_share(&run, id.as_str(), doc))
                 .flatten();
             self.looked.insert(id.clone(), (revision, share));
         }
@@ -282,7 +341,7 @@ fn read_persisted(reader: &LocalRecordReader, looks: Vec<PersistedLook>) -> Vec<
                 PersistedShare::Read(
                     reader
                         .load(&look.id)
-                        .and_then(|doc| document_share(look.run, look.id.as_str(), &doc)),
+                        .and_then(|doc| group_share(&look.run, look.id.as_str(), &doc)),
                 )
             };
             PersistedFound {
@@ -315,7 +374,11 @@ pub(crate) mod held_looks {
         let mut all = HELD.lock().unwrap();
         let held = all
             .iter()
-            .position(|(run, _)| looks.iter().any(|look| look.run == *run))
+            .position(|(run, _)| {
+                looks
+                    .iter()
+                    .any(|look| look.run == crate::shell::automation_host::RunGroup::shortcut(*run))
+            })
             .map(|index| all.remove(index).1);
         drop(all);
         // Bounded, so a read that regressed onto the test's own thread
@@ -343,7 +406,10 @@ impl ShortcutRunRecorder {
     /// Whether a run waits to be recorded, here or in `broker`. Cheap enough
     /// for every tick.
     pub(crate) fn has_work(&self, broker: Option<&AppActionBroker>) -> bool {
-        !self.pending.is_empty() || broker.is_some_and(AppActionBroker::has_finished_shortcut_runs)
+        !self.pending.is_empty()
+            || broker.is_some_and(|broker| {
+                broker.has_finished_shortcut_runs() || broker.has_ended_task_runs()
+            })
     }
 
     /// Wait for `run` too, as if the broker had just handed it over.
@@ -391,15 +457,27 @@ impl ShortcutRunRecorder {
         now: Instant,
     ) -> bool {
         if let Some(broker) = broker {
-            let taken = broker.take_finished_shortcut_runs();
+            let taken: Vec<EndedRun> = broker
+                .take_finished_shortcut_runs()
+                .into_iter()
+                .map(|finished| EndedRun::Shortcut(Box::new(finished)))
+                .chain(
+                    broker
+                        .take_ended_task_runs()
+                        .into_iter()
+                        .map(EndedRun::Task),
+                )
+                .collect();
             if !taken.is_empty() {
                 self.next_look = None;
             }
-            self.pending.extend(
-                taken
-                    .into_iter()
-                    .map(|finished| PendingShortcutRun::new(finished, now)),
-            );
+            for ended in taken {
+                // A task run again (retried, resumed) is recorded as it is
+                // now: its record replaces the one before.
+                let group = ended.group();
+                self.pending.retain(|run| run.finished.group() != group);
+                self.pending.push(PendingShortcutRun::ended(ended, now));
+            }
         }
         let found = match self.reading.take() {
             Some(running) => match running.try_recv() {
@@ -421,7 +499,7 @@ impl ShortcutRunRecorder {
                 if let Some(run) = self
                     .pending
                     .iter_mut()
-                    .find(|run| run.finished.report.run == found.run)
+                    .find(|run| run.finished.group() == found.run)
                 {
                     run.take_persisted(found);
                 }
@@ -449,7 +527,7 @@ impl ShortcutRunRecorder {
         let known = local.known();
         let mut persisted = Vec::new();
         for run in &mut self.pending {
-            let room = crate::shell::state::RoomId::parse(&run.finished.room);
+            let room = crate::shell::state::RoomId::parse(run.finished.room());
             let candidates: BTreeSet<RecordId> = open
                 .iter()
                 .cloned()
@@ -505,19 +583,19 @@ impl ShortcutRunRecorder {
                     tree = Some(lock());
                 }
                 if let Some(tree) = tree.as_mut()
-                    && record_run_steps(&mut tree.doc, &run.finished, &steps).is_some()
+                    && run.finished.record(&mut tree.doc, &steps)
                 {
                     recorded = true;
                     continue;
                 }
             }
             let settling = now.saturating_duration_since(run.since) < SHORTCUT_RUN_SETTLE;
-            if settling && !run.finished.report.invocations().is_empty() {
+            if settling && run.finished.may_have_changed() {
                 self.pending.push(run);
             } else {
                 tracing::debug!(
-                    shortcut = %run.finished.shortcut.name,
-                    "a finished shortcut run changed no document on this device; not recorded"
+                    run = %run.finished.name(),
+                    "a run that ended changed no document on this device; not recorded"
                 );
             }
         }
@@ -922,12 +1000,38 @@ impl ActivityHost for NativeActivityHost {
         &self,
         request: tilo_desktop::activity::TaskReviewRequest,
     ) -> Result<(), String> {
+        if let tilo_desktop::activity::TaskReviewCommand::UndoRun { task_id, steps } =
+            &request.command
+        {
+            // Undone by each changed document's history, as the person at
+            // the screen: the task's own state does not change.
+            let broker = self
+                .broker
+                .clone()
+                .ok_or("the session's action broker is not running yet")?;
+            let session = crate::shell::certified_action_session::CertifiedActionSession::open(
+                broker,
+                &request.room,
+                None,
+            )?;
+            return self.undos.start(
+                session.door(),
+                request.invocation,
+                task_id.clone(),
+                steps.clone(),
+            );
+        }
         self.review
             .as_ref()
             .ok_or("authenticated task owner unavailable")?
             .submit(request)
     }
     fn poll_task_review(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        match self.undos.poll(invocation) {
+            Some(super::task_undo::UndoState::Running) => return None,
+            Some(super::task_undo::UndoState::Ended(outcome)) => return Some(outcome),
+            None => {}
+        }
         self.review.as_ref()?.poll(invocation)
     }
 
@@ -1192,6 +1296,7 @@ impl RoomActivityPane {
             ))),
             broker: Some(broker),
             review: None,
+            undos: super::task_undo::TaskUndos::default(),
         }));
     }
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
@@ -1202,6 +1307,7 @@ impl RoomActivityPane {
                 .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
             broker,
             review: Some(review),
+            undos: super::task_undo::TaskUndos::default(),
         }));
     }
     /// Whether a finished shortcut run waits to be recorded. Cheap: the
@@ -1786,6 +1892,71 @@ mod tests {
         let pending_left = pane.shortcut_run_recorder_mut().pending_len();
         drop(pane);
         assert_eq!(pending_left, 0, "the recorded run is no longer pending");
+    }
+
+    /// An agent's run of a workspace task that ended is recorded as one run
+    /// from the changes it grouped under the task: under the task's title,
+    /// by the agent, for the person, and naming the task, which is what the
+    /// Task Center offers to undo and what undo names. Changes of another
+    /// task are not its.
+    #[test]
+    fn an_ended_task_run_is_recorded_as_the_agents_undoable_run() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("launch.note");
+        let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("note"));
+        assert!(records.open_record(&checkout));
+        records.with(&record, |doc| {
+            ui::record::init(doc, &record, &checkout.kind, &room.to_string());
+            for (key, task) in [("body", "task:translate"), ("title", "task:other")] {
+                doc.put(automerge::ROOT, key, "Hallo").unwrap();
+                let context = ui::tilo_actions::ActionContext::for_resource(
+                    "notes.note:launch",
+                    "notes.note",
+                    "Launch notes",
+                )
+                .with_app("so.tilo.notes", "Notes")
+                .with_group(task, "Translate", "task");
+                doc.commit_with(
+                    CommitOptions::default().with_message(context.change_message().unwrap()),
+                );
+            }
+        });
+        let mut pane = RoomActivityPane::new();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::ended(
+                EndedRun::Task(EndedTaskRun {
+                    room: room.to_string(),
+                    task_id: "task:translate".into(),
+                    title: "Translate the paragraph".into(),
+                    agent: "agent:scribe".into(),
+                    person: "person:ada".into(),
+                    instruction: Some("translate this to German in place".into()),
+                    outcome: "completed".into(),
+                }),
+                Instant::now(),
+            ));
+        let local = RoomRecords::in_memory();
+        let now = Instant::now();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now));
+        drop(pane);
+
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.label, "Translate the paragraph");
+        assert_eq!(run.by.as_deref(), Some("agent:scribe"));
+        assert_eq!(run.issued_by.as_deref(), Some("person:ada"));
+        assert_eq!(
+            run.instruction.as_deref(),
+            Some("translate this to German in place")
+        );
+        assert_eq!(run.task.as_deref(), Some("task:translate"));
+        assert_eq!(run.steps.len(), 1, "only the task's own change");
+        assert_eq!(run.steps[0].app, "so.tilo.notes");
+        assert_eq!(run.steps[0].record, record.to_string());
+        assert_eq!(run.steps[0].run.start, run.steps[0].run.end);
     }
 
     /// `tree` as the recorder locks it.

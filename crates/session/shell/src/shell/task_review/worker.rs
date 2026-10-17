@@ -263,6 +263,9 @@ impl Worker {
             TaskReviewCommand::Inspect { .. } => {
                 return Err("inspection does not mutate task state".into());
             }
+            TaskReviewCommand::UndoRun { .. } => {
+                return Err("undoing a run changes its documents, not the task".into());
+            }
             TaskReviewCommand::Steer {
                 task_id,
                 run_epoch,

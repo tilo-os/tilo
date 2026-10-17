@@ -728,6 +728,75 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
     drop(fixture);
 }
 
+/// A document the person opens from Files is read by the app that owns its
+/// type under a session grant this device issued. The room's next signed
+/// projection must keep that read: withdrawing it interrupts the app that
+/// was just handed the document, which is how every file opened from Files
+/// closed its app again a moment after it appeared.
+#[test]
+fn a_document_opened_in_its_app_keeps_its_read_across_the_rooms_projection() {
+    use crate::portal::{GrantStoreHandle, PortalCaller};
+    use crate::shell::state::{Access, ResourceRef};
+    const CODE: &str = "so.tilo.code-editor";
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let workspace = tree.read().desktop.active;
+    let script = fixture.home.home().join("greet.py");
+    std::fs::write(&script, "def greet():\n    pass\n").unwrap();
+    let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(tree.clone());
+    crate::shell::doc_open::grant_read_for_open(CODE, &script, &chrome).unwrap();
+    let read = tree
+        .read()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .sandbox
+        .iter()
+        .find(|cap| cap.scope == crate::shell::state::Scope::FsPath(script.display().to_string()))
+        .unwrap()
+        .clone();
+
+    let job = actions
+        .change_workspace_membership(
+            &fixture.room.to_string(),
+            &WorkspaceMembershipCommand::GrantAppAuthorship { app: CODE.into() },
+            &fixture.certificate,
+        )
+        .unwrap();
+    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(completed.code.is_empty(), "{}", completed.message);
+    drop(actions);
+
+    assert!(
+        tree.read()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .sandbox
+            .contains(&read),
+        "the projection kept the document's read"
+    );
+    let grants = GrantStoreHandle::new(tree);
+    let resource = ResourceRef::FsPath(script.display().to_string());
+    assert!(grants.permits(&PortalCaller::new(workspace, CODE), &resource, Access::Read));
+    assert!(
+        !grants.permits(
+            &PortalCaller::new(workspace, CODE),
+            &resource,
+            Access::Write
+        ),
+        "opening a document hands over its read, nothing more"
+    );
+    assert!(!grants.permits(
+        &PortalCaller::new(workspace, "so.tilo.chat"),
+        &resource,
+        Access::Read
+    ));
+    drop(fixture);
+}
+
 #[test]
 fn native_files_home_consent_is_not_reconstructed_when_session_reopens() {
     use crate::portal::{GrantStoreHandle, PortalCaller};

@@ -9,8 +9,8 @@ homepage.workspace = true
 description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies, and blocking and async clients on Tilo's TLS defaults."
 
 [dependencies]
-accounts = { path = "../accounts", optional = true }
-account-custody = { path = "../account-custody", optional = true }
+accounts = { version = "0.1.0", path = "../accounts", optional = true }
+account-custody = { version = "0.1.0", path = "../account-custody", optional = true }
 serde_json = { workspace = true, optional = true }
 quick-xml.workspace = true
 roxmltree.workspace = true

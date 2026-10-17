@@ -33,6 +33,11 @@ display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
 display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
 display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
+# Displays pane: a connected display that could not be lit
+display-status = Status
+display-link-down = Kein Bild hat diesen Bildschirm erreicht: Die Verbindung kam nicht zustande. Schließe das Kabel erneut an, um es noch einmal zu versuchen
+display-output-driver-rejected = Der Grafiktreiber hat das Einschalten dieses Bildschirms abgelehnt
+
 
 # Displays pane: night light, rotation, built-in name
 display-builtin = Integrierter Bildschirm

@@ -47,13 +47,14 @@ use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
 use super::input_config::{DeviceCaps, InputSettings, KeyboardSettings};
+use super::output_link::LinkFailure;
 use super::output_signal::{HdrRequest, OutputSignalStatus};
 use super::outputs::{DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
-    CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DirectScanoutTargets,
-    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, is_builtin_connector,
-    physical_card_identity, resolve_connector_config_keys,
+    CardHandle, ConnectorKeyCandidate, ConnectorProber, ConnectorSnapshot, CursorPlanes,
+    DirectScanoutTargets, DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles,
+    is_builtin_connector, physical_card_identity, resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use super::topology;
@@ -235,6 +236,24 @@ pub struct DrmDispatchState {
     /// which production paths reach the hardware.
     #[cfg(test)]
     forced_probes: usize,
+    /// The thread hotplug probes run on ([`ConnectorProbeWorker`]). `None`
+    /// only in a headless test state, which probes its (absent) cards inline.
+    connector_prober: Option<ConnectorProbeWorker>,
+    /// Set by whoever owns the scanouts while an output's link is still
+    /// changing (a nonblocking modeset or its vblank proof in flight,
+    /// [`super::output_link`]). Its completion arrives as a page-flip event
+    /// that only a presented frame reads, so while this is set each event
+    /// on a card asks the compositor for a frame ([`Self::watch_card`]).
+    pub kms_link_busy: Arc<std::sync::atomic::AtomicBool>,
+    /// Connected outputs that could not be lit, and why. They stay dark,
+    /// committed no more, until the connector reports another sink (or
+    /// none: a replug) or the user changes the display settings — never
+    /// retried on a timer or on a udev edge that changed nothing.
+    link_failures: BTreeMap<DrmOutputKey, LinkFailureRecord>,
+    /// The inner loop, to watch and unwatch cards as they come and go.
+    loop_handle: Option<LoopHandle<'static, DrmDispatchState>>,
+    /// Each retained card's event-stream watch ([`Self::watch_card`]).
+    card_watches: BTreeMap<u64, smithay::reexports::calloop::RegistrationToken>,
     /// Channel to whoever owns the scanouts — the presenter once split off, the backend itself before that.
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
@@ -1172,6 +1191,11 @@ impl DrmDispatchState {
             connector_probes: BTreeMap::new(),
             #[cfg(test)]
             forced_probes: 0,
+            connector_prober: None,
+            kms_link_busy: Arc::default(),
+            link_failures: BTreeMap::new(),
+            loop_handle: None,
+            card_watches: BTreeMap::new(),
             commands: Some(commands_tx),
             input,
             accessibility,
@@ -1369,22 +1393,19 @@ impl DrmDispatchState {
             }
             ConnectorProbe::Cached => {
                 let mut snapshots = BTreeMap::new();
-                for (&device_id, card) in &self.cards {
-                    let probed = self.connector_probes.entry(device_id).or_insert_with(|| {
-                        // Every path that retains a card probes it (startup,
-                        // then the udev rescan that follows an add). A card
-                        // never probed has no state to reuse; reading it as
-                        // connectorless would tear its outputs down.
-                        tracing::warn!(
+                for &device_id in self.cards.keys() {
+                    let Some(probed) = self.connector_probes.get(&device_id) else {
+                        // Startup probes every card it retains, and a card
+                        // added later lights nothing before the probe the
+                        // add queued answers: until then it has no outputs
+                        // that reading it as connectorless could tear down.
+                        tracing::debug!(
                             device_id,
-                            "DRM display: card has no probed connectors; probing it"
+                            "DRM display: card not probed yet; its probe is queued"
                         );
-                        #[cfg(test)]
-                        {
-                            self.forced_probes = self.forced_probes.saturating_add(1);
-                        }
-                        card.connected()
-                    });
+                        snapshots.insert(device_id, Vec::new());
+                        continue;
+                    };
                     snapshots.insert(device_id, probed.clone());
                 }
                 snapshots
@@ -1399,13 +1420,21 @@ impl DrmDispatchState {
         let probed = self.connector_snapshots(ConnectorProbe::Cached);
         let (snapshots, _) =
             configured_connectors(&self.cards, probed, &self.live, Some(&self.display_set));
-        display_capabilities(
+        let mut outputs = display_capabilities(
             &self.cards,
             &snapshots,
             &self.color_profiles,
             &self.signal_status,
             self.scale_override,
-        )
+        );
+        for output in &mut outputs {
+            output.unavailable_reason = self
+                .link_failures
+                .values()
+                .find(|record| record.config_key == output.descriptor.connector)
+                .map(|record| record.reason);
+        }
+        outputs
     }
 
     /// Re-ask the hardware what is connected and reconcile.
@@ -1429,7 +1458,146 @@ impl DrmDispatchState {
             );
             return;
         }
-        self.rescan_outputs_with_removal_ack(reason, None, ConnectorProbe::Force);
+        self.request_connector_probe(reason);
+    }
+
+    /// Ask every retained card what is connected, off this thread: a forced
+    /// probe takes hundreds of milliseconds per DP sink, longer while a sink's
+    /// AUX channel misbehaves, and this thread dispatches input. The worker
+    /// coalesces requests, and its answer comes back through
+    /// [`Self::connector_probe_finished`], which reconciles. Without a worker
+    /// (a headless test state) the cards are probed here.
+    fn request_connector_probe(&mut self, reason: &str) {
+        let Some(worker) = self.connector_prober.as_ref() else {
+            self.rescan_outputs_with_removal_ack(reason, None, ConnectorProbe::Force);
+            return;
+        };
+        #[cfg(test)]
+        {
+            self.forced_probes = self.forced_probes.saturating_add(1);
+        }
+        let probers = self
+            .cards
+            .values()
+            .filter_map(|card| match card.prober() {
+                Ok(prober) => Some(prober),
+                Err(error) => {
+                    tracing::warn!(
+                        device_id = card.device_id(),
+                        %error,
+                        "DRM hotplug: cannot probe this card's connectors"
+                    );
+                    None
+                }
+            })
+            .collect();
+        worker.request(ProbeRequest {
+            reason: reason.to_owned(),
+            probers,
+        });
+    }
+
+    /// A probe [`Self::request_connector_probe`] asked for is back: remember
+    /// what each card still retained has connected, and reconcile against it.
+    /// A card removed meanwhile is ignored; a card added meanwhile has its
+    /// own probe queued behind this one.
+    pub(super) fn connector_probe_finished(&mut self, result: ConnectorProbeResult) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.is_active())
+        {
+            // Activation probes again; a modeset now would fail without master.
+            return;
+        }
+        for (device_id, snapshots) in result.snapshots {
+            if self.cards.contains_key(&device_id) {
+                self.connector_probes.insert(device_id, snapshots);
+            }
+        }
+        self.rescan_outputs_with_removal_ack(&result.reason, None, ConnectorProbe::Cached);
+    }
+
+    /// Start the connector probe worker and watch every retained card's
+    /// events ([`Self::watch_card`]): what keeps a slow display off this
+    /// thread.
+    fn attach_display_watchers(
+        &mut self,
+        handle: &LoopHandle<'static, DrmDispatchState>,
+    ) -> Result<(), DrmBackendError> {
+        let (probe_results, probe_results_rx) =
+            smithay::reexports::calloop::channel::channel::<ConnectorProbeResult>();
+        self.connector_prober = Some(ConnectorProbeWorker::spawn(probe_results)?);
+        handle
+            .insert_source(
+                probe_results_rx,
+                |event, (), state: &mut DrmDispatchState| {
+                    if let smithay::reexports::calloop::channel::Event::Msg(result) = event {
+                        state.connector_probe_finished(result);
+                    }
+                },
+            )
+            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+        self.loop_handle = Some(handle.clone());
+        let retained: Vec<u64> = self.cards.keys().copied().collect();
+        for device_id in retained {
+            self.watch_card(device_id);
+        }
+        Ok(())
+    }
+
+    /// Wake the compositor on `card`'s page-flip events while a link is
+    /// changing. The presenter alone reads the card's event stream, and only
+    /// while presenting a frame; a modeset finishing seconds later, with
+    /// nothing else to draw, would otherwise wait for an unrelated frame.
+    /// The watch is edge-triggered on a duplicate of the card fd and never
+    /// reads: each event the kernel queues is one edge.
+    fn watch_card(&mut self, device_id: u64) {
+        let (Some(handle), Some(card)) = (self.loop_handle.as_ref(), self.cards.get(&device_id))
+        else {
+            return;
+        };
+        let fd = match card.event_fd() {
+            Ok(fd) => fd,
+            Err(error) => {
+                tracing::warn!(device_id, %error, "DRM: cannot watch the card's events");
+                return;
+            }
+        };
+        let source = smithay::reexports::calloop::generic::Generic::new(
+            fd,
+            smithay::reexports::calloop::Interest::READ,
+            smithay::reexports::calloop::Mode::Edge,
+        );
+        match handle.insert_source(source, |_, _, state: &mut DrmDispatchState| {
+            if state
+                .kms_link_busy
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                state.push(BackendEvent::Redraw);
+            }
+            Ok(smithay::reexports::calloop::PostAction::Continue)
+        }) {
+            Ok(token) => {
+                if let Some(old) = self.card_watches.insert(device_id, token) {
+                    handle.remove(old);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(device_id, %error, "DRM: cannot watch the card's events");
+            }
+        }
+    }
+
+    /// Drop `device_id`'s watch, and with it its duplicate of the card fd:
+    /// a removed card's session fd may close only once no duplicate is left.
+    fn unwatch_card(&mut self, device_id: u64) {
+        if let (Some(token), Some(handle)) = (
+            self.card_watches.remove(&device_id),
+            self.loop_handle.as_ref(),
+        ) {
+            handle.remove(token);
+        }
     }
 
     /// Reconcile the outputs with the display settings, over the connectors
@@ -1458,6 +1626,7 @@ impl DrmDispatchState {
         let probed = self.connector_snapshots(probe);
         let (snapshots, display_set) =
             configured_connectors(&self.cards, probed, &self.live, Some(&self.display_set));
+        let failures_forgotten = prune_link_failures(&mut self.link_failures, &snapshots);
         let display_set_changed = self.display_set != display_set;
         self.display_set = display_set;
         // A surviving output now answers to the configuration of this set
@@ -1503,12 +1672,21 @@ impl DrmDispatchState {
         // connector needs a modeset (the same port, a different monitor).
         let live_config_changed =
             reconcile_live_config_keys(&mut self.live, &config_keys) || display_set_changed;
+        let failures = &self.link_failures;
         let connected: Vec<ConnectedOutput> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
                 snapshots
                     .iter()
                     .filter(|snapshot| snapshot.enabled)
+                    // An output that could not be lit is not committed again
+                    // until something real changed ([`Self::link_failures`]).
+                    .filter(move |snapshot| {
+                        !failures.contains_key(&DrmOutputKey {
+                            device: device_id,
+                            connector: snapshot.connector_id,
+                        })
+                    })
                     .map(move |s| {
                         let (w, h) = s.mode.size();
                         ConnectedOutput {
@@ -1554,7 +1732,7 @@ impl DrmDispatchState {
                 self.push(BackendEvent::OutputsChanged);
                 self.push(BackendEvent::Redraw);
             }
-            if capability_topology_changed || live_config_changed {
+            if capability_topology_changed || live_config_changed || failures_forgotten {
                 // `connected` intentionally excludes disabled outputs, but
                 // Settings must still see a disabled dock connector/card as
                 // it appears or disappears so it can be re-enabled.
@@ -1609,6 +1787,7 @@ impl DrmDispatchState {
             .chain(plan.remoded.iter().map(|(_, c)| c))
             .collect();
         let mut builds: Vec<ScanoutBuild> = Vec::new();
+        let mut refused = Vec::new();
         for want in to_add {
             let Some(card) = self.cards.get(&want.key.device) else {
                 continue;
@@ -1624,8 +1803,19 @@ impl DrmDispatchState {
             if let Some(build) = bring_up_journaled(card, snapshot, used_on_card) {
                 used_on_card.push(build.crtc);
                 builds.push(build);
+            } else {
+                // Refused, or no CRTC free: asking again on every udev edge
+                // would modeset it in a loop.
+                refused.push((
+                    want.key,
+                    LinkFailureRecord::of(
+                        snapshot,
+                        settings_store::hardware::OutputUnavailable::DriverRejected,
+                    ),
+                ));
             }
         }
+        self.link_failures.extend(refused);
 
         let added_entries = self.adopt_builds(builds);
         for entry in &mut self.live {
@@ -1929,19 +2119,45 @@ impl DrmDispatchState {
         };
         let reports: Vec<SignalReport> = reports.try_iter().collect();
         let mut changed = false;
+        let mut failed = false;
         for report in reports {
-            let Some(key) = self
+            let Some((key, output_key)) = self
                 .live
                 .iter()
                 .find(|entry| entry.id == report.output)
-                .map(|entry| entry.config_key.clone())
+                .map(|entry| (entry.config_key.clone(), entry.key))
             else {
                 continue;
             };
+            if let Some(reason) = report.status.link_failure
+                && let Some(snapshot) =
+                    self.connector_probes
+                        .get(&output_key.device)
+                        .and_then(|snapshots| {
+                            snapshots
+                                .iter()
+                                .find(|snapshot| snapshot.connector_id == output_key.connector)
+                        })
+            {
+                tracing::warn!(
+                    connector = %key,
+                    ?reason,
+                    "DRM display: the output could not be lit; it stays dark until it is replugged or the display settings change"
+                );
+                let mut record = LinkFailureRecord::of(snapshot, reason);
+                record.config_key.clone_from(&key);
+                self.link_failures.insert(output_key, record);
+                failed = true;
+            }
             if self.signal_status.get(&key) != Some(&report.status) {
                 self.signal_status.insert(key, report.status);
                 changed = true;
             }
+        }
+        if failed {
+            // Drop the failed outputs; the reconciliation republishes.
+            self.reapply_outputs_from_cache("an output could not be lit");
+            changed = true;
         }
         if changed {
             self.reconcile_adaptive_sync();
@@ -2722,6 +2938,8 @@ impl DrmDispatchState {
             self.rescan_outputs("udev unknown device removed");
             return;
         }
+        self.unwatch_card(device_id);
+        self.link_failures.retain(|key, _| key.device != device_id);
         let Some(card) = self.cards.remove(&device_id) else {
             // Keep the fd-bearing map and the pure ownership map from ever
             // drifting silently if a future caller bypasses `add_card`.
@@ -2735,10 +2953,13 @@ impl DrmDispatchState {
             .card_removal_ack_sender
             .clone()
             .map(|ack| (device_id, ack));
+        // The remaining cards' connectors did not change with this one's
+        // removal: reconcile against their last probe, here, so the removed
+        // card's scanouts are dropped before its session fd is closed.
         self.rescan_outputs_with_removal_ack(
             "udev device removed",
             removal_ack,
-            ConnectorProbe::Force,
+            ConnectorProbe::Cached,
         );
     }
 
@@ -2954,6 +3175,7 @@ impl DrmDispatchState {
                     return;
                 }
                 self.cards.insert(device_id, card);
+                self.watch_card(device_id);
                 self.card_leases.opened(device_id);
                 tracing::info!(device = %path.display(), device_id, "DRM: retained newly added KMS card");
             }
@@ -3778,6 +4000,117 @@ impl IccProfileWorker {
     }
 }
 
+/// An output that could not be lit ([`DrmDispatchState::link_failures`]),
+/// with the sink it failed on: another sink on the connector (or none, for a
+/// moment) is a replug, which tries again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LinkFailureRecord {
+    config_key: String,
+    monitor: Option<settings_store::hardware::MonitorIdentity>,
+    modes: Vec<settings_store::hardware::OutputMode>,
+    reason: settings_store::hardware::OutputUnavailable,
+}
+
+impl LinkFailureRecord {
+    fn of(
+        snapshot: &ConnectorSnapshot,
+        reason: settings_store::hardware::OutputUnavailable,
+    ) -> Self {
+        Self {
+            config_key: snapshot.config_key.clone(),
+            monitor: snapshot.monitor.clone(),
+            modes: snapshot.advertised_modes(),
+            reason,
+        }
+    }
+
+    /// `snapshot` (the connector's latest probe) still shows the sink this
+    /// failed on.
+    fn same_sink(&self, snapshot: &ConnectorSnapshot) -> bool {
+        self.monitor == snapshot.monitor && self.modes == snapshot.advertised_modes()
+    }
+}
+
+/// Forget failures whose connector no longer shows the sink they failed on;
+/// `true` when one was forgotten. A card absent from `snapshots` says
+/// nothing; a removed card's failures go with it ([`DrmDispatchState::retire_card`]).
+fn prune_link_failures(
+    failures: &mut BTreeMap<DrmOutputKey, LinkFailureRecord>,
+    snapshots: &BTreeMap<u64, Vec<ConnectorSnapshot>>,
+) -> bool {
+    let before = failures.len();
+    failures.retain(|key, record| {
+        snapshots.get(&key.device).is_none_or(|snapshots| {
+            snapshots
+                .iter()
+                .find(|snapshot| snapshot.connector_id == key.connector)
+                .is_some_and(|snapshot| record.same_sink(snapshot))
+        })
+    });
+    failures.len() != before
+}
+
+/// One hotplug probe for [`ConnectorProbeWorker`]: every retained card,
+/// and the edge that asked, for the reconciliation's journal.
+struct ProbeRequest {
+    reason: String,
+    probers: Vec<ConnectorProber>,
+}
+
+/// What a hotplug probe found, by card `dev_t`.
+pub(super) struct ConnectorProbeResult {
+    reason: String,
+    snapshots: BTreeMap<u64, Vec<ConnectorSnapshot>>,
+}
+
+/// Runs the forced connector probes udev edges ask for, so a slow DP sink
+/// (an AUX channel that times out, link training on detect) never holds the
+/// compositor's loop thread. A burst of edges collapses into one probe after
+/// the one running: only the newest request is probed. Results wake the
+/// loop through a calloop channel, which reconciles them in order.
+struct ConnectorProbeWorker {
+    requests: Sender<ProbeRequest>,
+}
+
+impl ConnectorProbeWorker {
+    fn spawn(
+        results: smithay::reexports::calloop::channel::Sender<ConnectorProbeResult>,
+    ) -> Result<Self, DrmBackendError> {
+        let (requests, request_rx) = channel::<ProbeRequest>();
+        std::thread::Builder::new()
+            .name("tilo-connector-probe".into())
+            .spawn(move || {
+                while let Ok(first) = request_rx.recv() {
+                    let request = request_rx.try_iter().last().unwrap_or(first);
+                    let snapshots = request
+                        .probers
+                        .iter()
+                        .map(|prober| (prober.device_id(), prober.connected()))
+                        .collect();
+                    let result = ConnectorProbeResult {
+                        reason: request.reason,
+                        snapshots,
+                    };
+                    if results.send(result).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                DrmBackendError::Calloop(format!(
+                    "failed to start the connector probe worker: {error}"
+                ))
+            })?;
+        Ok(Self { requests })
+    }
+
+    fn request(&self, request: ProbeRequest) {
+        if self.requests.send(request).is_err() {
+            tracing::warn!("DRM hotplug: the connector probe worker has exited");
+        }
+    }
+}
+
 pub struct DrmRuntime {
     /// calloop loop this backend ticks; we own it so `submit_frame`/`poll_events` can dispatch without a parent loop's help.
     pub event_loop: EventLoop<'static, DrmDispatchState>,
@@ -3855,12 +4188,46 @@ pub struct ScanoutEntry {
 }
 
 impl ScanoutEntry {
+    /// The output shows nothing this frame: switched off for an
+    /// output-power client, or not lit yet (a modeset or its vblank proof
+    /// in flight, or a link that failed).
+    pub fn dark(&self) -> bool {
+        self.powered_off || !self.scanout.presentable()
+    }
+
+    /// A flip queued on this output's CRTC has not had its event read.
+    pub fn flip_unread(&self) -> bool {
+        self.scanout.ring_flip_pending()
+            || self
+                .direct_targets
+                .as_ref()
+                .is_some_and(DirectScanoutTargets::flip_pending)
+    }
+
+    /// Light the output or switch it off ([`DrmScanout::set_dpms`]).
+    pub fn set_power(&mut self, on: bool) {
+        let flip_unread = self.flip_unread();
+        self.scanout.set_dpms(on, flip_unread);
+    }
+
+    /// Commit what the output's link owes ([`DrmScanout::service_link`]).
+    pub fn service_link(&mut self) {
+        let flip_unread = self.flip_unread();
+        self.scanout.service_link(flip_unread);
+    }
+
     /// The signalling facts this output would report now.
     pub fn signal_status(&self) -> OutputSignalStatus {
         OutputSignalStatus {
             adaptive_sync_rejected: self.scanout.adaptive_sync_rejected(),
             hdr_active: self.scanout.hdr_active(),
             hdr_failure: self.hdr_failure,
+            link_failure: self.scanout.link_failure().map(|failure| match failure {
+                LinkFailure::NoVblank => settings_store::hardware::OutputUnavailable::LinkDown,
+                LinkFailure::Refused(_) => {
+                    settings_store::hardware::OutputUnavailable::DriverRejected
+                }
+            }),
         }
     }
 
@@ -4357,6 +4724,7 @@ impl DrmRuntime {
         );
         dispatch.display_set = startup.display_set;
         dispatch.connector_probes = startup.connector_probes;
+        dispatch.attach_display_watchers(&handle)?;
         dispatch.signal_reports = Some(signal_rx);
         // Tablet pads are read from a context of their own; see `PadInput`.
         let pads = PadInput::new(session.clone());
@@ -4605,6 +4973,9 @@ impl DrmDispatchState {
     /// keyboard dispatch for seconds on a DP-MST dock. What is connected
     /// changes only through a udev edge, which re-probes.
     pub fn reload_display_settings(&mut self) {
+        // A display settings change is the user acting on the displays:
+        // an output that could not be lit gets another attempt.
+        self.link_failures.clear();
         let scale_override = settings_store::display_scale::load_user_scale();
         if scale_override != self.scale_override {
             self.scale_override = scale_override;
@@ -7482,6 +7853,7 @@ pub(super) mod tests {
             hdr_unavailable_reason: None,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profile_labels: BTreeMap::new(),
         };
         let mut outputs = vec![
@@ -8634,6 +9006,139 @@ pub(super) mod tests {
             state.forced_probes, 1,
             "and the next settings reload reuses it"
         );
+    }
+
+    #[test]
+    fn udev_edges_probe_connectors_off_the_loop_thread() {
+        // A forced probe of a DP sink whose AUX channel times out takes
+        // seconds; on the loop thread every udev "changed" edge froze input.
+        // The edge only asks the worker, coalesced, and the outputs change
+        // when its answer arrives.
+        let (mut state, rx) = dispatch_with_channel();
+        let (requests_tx, requests) = channel();
+        state.connector_prober = Some(ConnectorProbeWorker {
+            requests: requests_tx,
+        });
+        let panel = adopt_on(&mut state, IGPU, 77, "eDP-1", (1920, 1200), (302, 189));
+        state.rescan_outputs("udev device changed");
+        state.rescan_outputs("udev device changed");
+        let asked: Vec<ProbeRequest> = requests.try_iter().collect();
+        assert_eq!(asked.len(), 2, "each edge queues a request for the worker");
+        assert!(
+            asked
+                .iter()
+                .all(|request| request.reason == "udev device changed")
+        );
+        assert!(
+            rx.try_iter().next().is_none(),
+            "nothing is reconciled before the probe answers"
+        );
+        assert_eq!(state.live.first().map(|entry| entry.id), Some(panel));
+
+        // The answer reconciles against what the retained cards report. This
+        // state retains none, so the panel's card reports nothing connected.
+        state.connector_probe_finished(ConnectorProbeResult {
+            reason: "udev device changed".into(),
+            snapshots: BTreeMap::from([(DGPU, Vec::new())]),
+        });
+        assert!(
+            state.connector_probes.is_empty(),
+            "a probe of a card no longer retained is dropped"
+        );
+        assert!(state.live.is_empty());
+        assert!(rx.try_iter().any(|command| matches!(
+            command,
+            ScanoutCommand::Reconfigure { remove, .. } if remove == [panel]
+        )));
+    }
+
+    fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
+        settings_store::hardware::MonitorIdentity {
+            serial: serial.into(),
+            ..settings_store::hardware::MonitorIdentity::default()
+        }
+    }
+
+    #[test]
+    fn an_output_whose_link_fails_stays_dark_until_its_sink_changes() {
+        // An msm DP sink whose link training fails every time: re-lighting
+        // it on every udev edge or wake stalled the desktop each time.
+        let key = DrmOutputKey {
+            device: DGPU,
+            connector: 11,
+        };
+        let failed = LinkFailureRecord::of(
+            &ConnectorSnapshot::fake(11, "DP-2", Some(edid("A"))),
+            settings_store::hardware::OutputUnavailable::LinkDown,
+        );
+        let mut failures = BTreeMap::from([(key, failed.clone())]);
+
+        // The same sink, probed again: still failed, so not committed again.
+        let same = BTreeMap::from([(
+            DGPU,
+            vec![ConnectorSnapshot::fake(11, "DP-2", Some(edid("A")))],
+        )]);
+        assert!(!prune_link_failures(&mut failures, &same));
+        assert_eq!(failures.get(&key), Some(&failed));
+
+        // Another monitor on the port: a replug, which tries again.
+        let other = BTreeMap::from([(
+            DGPU,
+            vec![ConnectorSnapshot::fake(11, "DP-2", Some(edid("B")))],
+        )]);
+        assert!(prune_link_failures(&mut failures, &other));
+        assert!(failures.is_empty());
+
+        // Unplugged for one probe: also a replug.
+        let mut failures = BTreeMap::from([(key, failed)]);
+        assert!(prune_link_failures(
+            &mut failures,
+            &BTreeMap::from([(DGPU, Vec::new())])
+        ));
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn a_presenter_link_failure_is_recorded_published_and_retried_by_the_user() {
+        let (mut state, _rx) = dispatch_with_channel();
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        let dp = adopt_on(&mut state, DGPU, 11, "DP-2", (2560, 1440), (597, 336));
+        state.connector_probes.insert(
+            DGPU,
+            vec![ConnectorSnapshot::fake(11, "DP-2", Some(edid("A")))],
+        );
+        report_tx
+            .send(SignalReport {
+                output: dp,
+                status: OutputSignalStatus {
+                    link_failure: Some(settings_store::hardware::OutputUnavailable::LinkDown),
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report");
+        assert!(state.drain_signal_reports());
+        let record = state
+            .link_failures
+            .get(&DrmOutputKey {
+                device: DGPU,
+                connector: 11,
+            })
+            .expect("the failure is remembered");
+        assert_eq!(
+            record.reason,
+            settings_store::hardware::OutputUnavailable::LinkDown
+        );
+        assert_eq!(record.config_key, "DP-2");
+        assert!(
+            state.live.iter().all(|entry| entry.id != dp),
+            "the failed output is dropped from the desktop"
+        );
+
+        // Changing the display settings is the user acting on the
+        // displays: the output gets another attempt.
+        state.reload_display_settings();
+        assert!(state.link_failures.is_empty());
     }
 
     // libinput device configuration, on the production plan

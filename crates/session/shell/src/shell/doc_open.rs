@@ -918,9 +918,11 @@ fn focus(chrome: &Chrome, at: TabAddress) {
 /// Read-only, session-scoped, the same shape a file drop records.
 /// Skipped when a live grant already covers the path — reopening must
 /// not pile up duplicate capabilities.
-fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result<(), OpenError> {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
-
+pub(crate) fn grant_read_for_open(
+    package_id: &str,
+    path: &Path,
+    chrome: &Chrome,
+) -> Result<(), OpenError> {
     let ws_id = {
         let st = chrome.borrow();
         let tree = st.tree();
@@ -937,16 +939,63 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
     if store.filesystem_path_granted(&caller, path) {
         return Ok(());
     }
-    store.insert(
-        &caller,
+    let granted = grant_document_read(&mut chrome.borrow().tree_mut(), ws_id, package_id, path)
+        .ok_or(OpenError::NoWorkspace)?;
+    chrome.borrow_mut().bump();
+    if granted {
+        Ok(())
+    } else {
+        // Only this device's own identity can vouch for the read; without it
+        // the app would start and lose the document a moment later.
+        Err(OpenError::Launch(
+            launcher::LaunchError::IdentityUnavailable {
+                detail: "this device's identity cannot vouch for the document's read".into(),
+            },
+        ))
+    }
+}
+
+/// Grant `package_id` a session read of `path` in workspace `ws_id`, with
+/// this device's provenance for it. `None` when the workspace is gone;
+/// `false` when the read cannot be vouched for and was not granted.
+fn grant_document_read(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    ws_id: crate::shell::state::WorkspaceId,
+    package_id: &str,
+    path: &Path,
+) -> Option<bool> {
+    use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+
+    let ws = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id)?;
+    let ids = ws.grant_app(
+        package_id,
         &Capability::Filesystem {
             path: path.to_path_buf(),
             mode: FsMode::Read,
             scope: GRANT_SESSION,
         },
     );
-    chrome.borrow_mut().bump();
-    Ok(())
+    // A room a native owner governs is re-projected from its signed state,
+    // which never holds this device-local read: without its provenance the
+    // next projection withdraws the grant and the sandbox of the app just
+    // handed the document is interrupted.
+    let remembered = tree
+        .native_runtime
+        .remember_document_read(ws, &ids, package_id);
+    if !remembered && tree.native_authority.requires(ws.room) {
+        ws.sandbox
+            .retain(|capability| !ids.contains(&capability.id));
+        return Some(false);
+    }
+    // Mirrored into the room document so a restart reloads it.
+    tree.doc_write_policy(
+        ws_id,
+        &crate::shell::state::PolicyEdit {
+            sandbox_granted: ids,
+            ..crate::shell::state::PolicyEdit::default()
+        },
+    );
+    Some(true)
 }
 
 #[cfg(test)]
@@ -2047,6 +2096,75 @@ mod tests {
                 ("so.tilo.video-editor".to_string(), false),
             ],
             "the editor stays one pick away"
+        );
+        clear_launch_env();
+    }
+
+    /// A source file opens in Code with the file handed to it, even where a
+    /// host text editor claims its type (`.py` is `text/plain` to the type
+    /// table); Markdown stays with Notes and plain text with the host editor.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn source_files_open_in_code_and_other_text_keeps_its_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        install_shipped(&apps, "so.tilo.code-editor", "code-editor");
+        install_shipped(&apps, "so.tilo.notes", "notes");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        without_host_apps(tmp.path(), &mut env);
+        let host_entries = tmp.path().join("host-data/applications");
+        std::fs::create_dir_all(&host_entries).unwrap();
+        std::fs::write(
+            host_entries.join("org.gnome.TextEditor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Text Editor\nExec=true %U\n\
+             MimeType=text/plain;text/x-python;text/x-rust;application/x-sh;\n",
+        )
+        .unwrap();
+        crate::shell::host_apps::invalidate_cache();
+        let log = install_recording_launcher(tmp.path(), &mut env);
+        reset_session_state();
+
+        let file = |name: &str| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, b"def greet():\n    pass\n").unwrap();
+            path
+        };
+        for name in ["tool.py", "main.rs", "build.sh", "app.ts", "core.c"] {
+            assert!(
+                matches!(
+                    resolve_for(&file(name), "", None),
+                    DocumentTarget::App { ref app, .. } if app.package_id == "so.tilo.code-editor"
+                ),
+                "{name} opens in Code"
+            );
+        }
+        assert!(matches!(
+            resolve_for(&file("plan.md"), "", None),
+            DocumentTarget::App { ref app, .. } if app.package_id == "so.tilo.notes"
+        ));
+        assert!(
+            matches!(
+                resolve_for(&file("readme.txt"), "", None),
+                DocumentTarget::HostApp { ref app } if app.desktop_id.contains("TextEditor")
+            ),
+            "plain text stays with the person's text editor"
+        );
+
+        let script = file("tool.py");
+        let chrome = chrome_with_workspace();
+        let opened = open_in_workspace(&script, &chrome).unwrap();
+        assert_eq!(
+            opened.app().map(|app| app.package_id.as_str()),
+            Some("so.tilo.code-editor")
+        );
+        let commands = launched_commands(&log, 1);
+        assert!(
+            commands[0].contains("--app-id so.tilo.code-editor")
+                && commands[0].contains(&format!("--open {}", script.display())),
+            "Code is launched with the file handed to it: {}",
+            commands[0]
         );
         clear_launch_env();
     }

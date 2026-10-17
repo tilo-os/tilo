@@ -158,6 +158,7 @@ fn store_query(peer_id: u64, parent: &str) -> runtime_collab::ActionDirectoryQue
         max_bytes: 128 * 1024,
         max_work: 512,
         max_depth: 16,
+        resource_name: String::new(),
     }
 }
 

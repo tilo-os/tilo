@@ -123,10 +123,7 @@ impl CompletionClient {
     /// Set trusted-host provider preferences. Only service tier and reasoning
     /// effort are accepted; these never alter the neutral protocol or authority.
     #[must_use]
-    pub fn with_request_hints(mut self, hints: serde_json::Value) -> Self {
-        let serde_json::Value::Object(mut hints) = hints else {
-            return self;
-        };
+    pub fn with_request_hints(mut self, hints: &serde_json::Value) -> Self {
         let Some(request_hints) = self.request_hints.as_object_mut() else {
             return self;
         };
@@ -137,10 +134,10 @@ impl CompletionClient {
                 &["none", "minimal", "low", "medium", "high", "xhigh"][..],
             ),
         ] {
-            if let Some(value) = hints.remove(name)
-                && value.as_str().is_some_and(|value| allowed.contains(&value))
+            if let Some(value) = hints.get(name).and_then(serde_json::Value::as_str)
+                && allowed.contains(&value)
             {
-                request_hints.insert(name.into(), value);
+                request_hints.insert(name.to_owned(), value.into());
             }
         }
         self

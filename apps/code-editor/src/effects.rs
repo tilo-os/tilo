@@ -34,6 +34,10 @@ pub enum CodeEditorEffect {
         results: bool,
     },
     /// Open a file from disk.
+    ///
+    /// Opens a file Code can reach: one it was handed or one in its open
+    /// project. Any other file is opened from Files (its `open-with` with
+    /// Code Editor), which hands the file to Code.
     #[effect(job, cancellable, device_only)]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]

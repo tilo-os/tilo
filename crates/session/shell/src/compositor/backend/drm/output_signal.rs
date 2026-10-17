@@ -48,6 +48,10 @@ pub struct OutputSignalStatus {
     /// HDR was requested but could not be driven, and why. The output fell
     /// back to 8-bit SDR.
     pub hdr_failure: Option<HdrUnavailable>,
+    /// The output could not be lit, and why ([`super::output_link`]). The
+    /// loop thread then drops it until a replug or a display settings
+    /// change.
+    pub link_failure: Option<settings_store::hardware::OutputUnavailable>,
 }
 
 /// Settings' view of HDR on one connector: usable, or why not.

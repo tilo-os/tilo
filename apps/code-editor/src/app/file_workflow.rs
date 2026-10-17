@@ -343,7 +343,7 @@ impl CodeApp {
                 Ok(())
             }
             Err(e) => {
-                let message = format!("Could not open {}: {e}", path.display());
+                let message = could_not_open(path, &e);
                 self.note(&message, true);
                 Err(message)
             }
@@ -371,10 +371,30 @@ impl CodeApp {
                 Ok(())
             }
             Err(e) => {
-                let message = format!("Could not open {}: {e}", path.display());
+                let message = could_not_open(&path, &e);
                 self.note(&message, true);
                 Err(message)
             }
         }
+    }
+}
+
+/// Why `path` did not open. A path Code cannot see is most often one it was
+/// never handed: its sandbox reaches the files the desktop gave it (opened
+/// from Files, dropped on it, picked in the file chooser), not every path on
+/// the machine, so the answer names the way that hands one over.
+pub(super) fn could_not_open(path: &std::path::Path, error: &std::io::Error) -> String {
+    let unreachable = matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+    );
+    if unreachable {
+        format!(
+            "Could not open {}: {error}. Code opens the files it is handed: open it from \
+             Files (Open, or Open with Code Editor), which gives Code the file",
+            path.display()
+        )
+    } else {
+        format!("Could not open {}: {error}", path.display())
     }
 }

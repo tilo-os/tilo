@@ -33,6 +33,11 @@ display-vrr-unsupported = Not supported by this display
 display-vrr-driver-unsupported = The graphics driver does not offer it for this display
 display-vrr-driver-rejected = The graphics driver refused to turn it on
 
+# Displays pane: a connected display that could not be lit
+display-status = Status
+display-link-down = No picture reached this display: the connection to it did not come up. Reconnect the cable to try again
+display-output-driver-rejected = The graphics driver refused to turn this display on
+
 
 # Displays pane: night light, rotation, built-in name
 display-builtin = Built-in display

@@ -1806,6 +1806,7 @@ impl ChannelHandle {
             wire.set_max_work(query.max_work);
             wire.set_max_depth(query.max_depth);
             wire.set_peer_id(query.peer_id);
+            wire.set_resource_name(&query.resource_name);
         }
         let reply = request.send().promise.await?;
         Ok(decode_action_directory_page(reply.get()?.get_page()?)?)

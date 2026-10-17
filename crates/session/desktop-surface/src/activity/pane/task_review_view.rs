@@ -85,7 +85,12 @@ impl RoomActivityPane {
             && let Some(result) = self.host.poll_task_review(invocation)
         {
             self.review_pending = None;
+            let undo = std::mem::take(&mut self.review_pending_undo);
             match result {
+                Ok(()) if undo => {
+                    self.review_notice = Some(t("activity-undo-task-done"));
+                    self.agent_undo_notice = None;
+                }
                 Ok(()) => {
                     self.direction = None;
                     self.review_notice = Some(t("activity-task-review-saved"));

@@ -1002,7 +1002,11 @@ impl DesktopSurface {
                 .is_some();
         }
         let mut new_tab = None;
+        let mut search_in = None;
         for group in &mut row.groups {
+            if group.take_pending_search_open().is_some() {
+                search_in = Some(group.id);
+            }
             for tab in group.take_pending_close_commits() {
                 changed |= shared.tree.remove_tab(tab).is_some();
             }
@@ -1056,6 +1060,11 @@ impl DesktopSurface {
         // over the applications, aimed at that window.
         if let Some(group) = new_tab {
             shared.search_request = Some(search::SearchRequest::NewTab(strip_id, group));
+        }
+        // A window's search control searches what that window shows, as
+        // the native shell's does.
+        if let Some(group) = search_in {
+            shared.search_request = Some(search::SearchRequest::Window(strip_id, group));
         }
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -2358,6 +2367,41 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    /// A window's search control opens search, over what that window shows:
+    /// the control is never a dead one in this desktop.
+    #[test]
+    fn a_windows_search_control_opens_search() {
+        let (surface, handle) = desktop(1);
+        let tree = handle.shared_tree();
+        let tab = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .next()
+            .unwrap();
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1000, 700),
+        );
+        frame.relayout();
+        assert!(!handle.search_open());
+        frame
+            .perform_semantic_named(
+                "tabs",
+                Some(&format!("tab-search:{tab}")),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        for _ in 0..3 {
+            frame.relayout();
+        }
+        assert!(handle.search_open());
     }
 
     /// An acknowledgement is said politely over the desktop, wakes the host

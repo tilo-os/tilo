@@ -5823,6 +5823,18 @@ impl Widget for TextInput {
             return;
         }
 
+        // An open menu owns the keyboard: arrows move through its rows and
+        // Enter runs the highlighted one, never editing the text beneath.
+        if self.context_menu.is_open() && matches!(event, WindowEvent::KeyboardInput { .. }) {
+            Widget::handle_event(&mut self.context_menu, event, ctx);
+            if let Some(index) = self.context_menu.take_selection() {
+                self.dispatch_context_action(index);
+            }
+            *ctx.handled = true;
+            self.notify_user_change(false);
+            return;
+        }
+
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
             WindowEvent::MouseWheel { delta, .. }
@@ -7294,12 +7306,6 @@ impl TextInput {
         handled: &mut bool,
     ) {
         if element_state != ElementState::Pressed {
-            return;
-        }
-        // Checked even if the field isn't focused, since the menu is the focused surface.
-        if self.context_menu.is_open() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
-            self.context_menu.close();
-            *handled = true;
             return;
         }
         if !self.is_focused {

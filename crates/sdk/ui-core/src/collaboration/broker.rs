@@ -6616,24 +6616,31 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                     query.get_cursor().map(<[u8]>::to_vec),
                     text(query.get_needle()),
                     text(query.get_parent_resource()),
+                    text(query.get_resource_name()),
                 ) {
-                    (Ok(revision), Ok(cursor), Ok(needle), Ok(parent_resource)) => {
-                        Ok(runtime_collab::ActionDirectoryQuery {
-                            peer_id: query.get_peer_id(),
-                            revision,
-                            cursor,
-                            needle,
-                            parent_resource,
-                            max_results: query.get_max_results(),
-                            max_bytes: query.get_max_bytes(),
-                            max_work: query.get_max_work(),
-                            max_depth: query.get_max_depth(),
-                        })
-                    }
+                    (
+                        Ok(revision),
+                        Ok(cursor),
+                        Ok(needle),
+                        Ok(parent_resource),
+                        Ok(resource_name),
+                    ) => Ok(runtime_collab::ActionDirectoryQuery {
+                        peer_id: query.get_peer_id(),
+                        revision,
+                        cursor,
+                        needle,
+                        parent_resource,
+                        max_results: query.get_max_results(),
+                        max_bytes: query.get_max_bytes(),
+                        max_work: query.get_max_work(),
+                        max_depth: query.get_max_depth(),
+                        resource_name,
+                    }),
                     (Err(error), ..)
                     | (_, Err(error), ..)
                     | (_, _, Err(error), ..)
-                    | (_, _, _, Err(error)) => Err(error),
+                    | (_, _, _, Err(error), _)
+                    | (_, _, _, _, Err(error)) => Err(error),
                 }
             }
             Err(error) => Err(error),
@@ -11398,40 +11405,12 @@ mod tests {
         }
     }
 
-    /// Names the one test a re-executed test binary runs in its own process.
-    const OWN_PROCESS_TEST: &str = "TILO_UI_OWN_PROCESS_TEST";
-
-    /// Whether the calling test `name` (in this module) runs its body here:
-    /// only in a process that runs nothing else.
-    ///
-    /// An app's settings and live-activity channels are process-wide — one
-    /// app, one collaboration manager per process — and flush through the
-    /// transport that connected last (`SETTINGS_COMMAND_BRIDGE`). Any other
-    /// test's manager connecting in the same process takes over that route,
-    /// and the change it carries never reaches this test's broker. So the
-    /// test re-executes this binary for itself alone, as nextest's process
-    /// per test would, and here only checks that the child ran it and passed.
+    /// Whether the calling test `name` (in this module) runs its body here.
+    /// An app's settings and live-activity channels are process-wide and
+    /// flush through the transport that connected last, so another test's
+    /// manager connecting in the same process would take over the route.
     fn in_own_process(name: &str) -> bool {
-        let module = module_path!()
-            .split_once("::")
-            .map_or(module_path!(), |(_, path)| path);
-        let test = format!("{module}::{name}");
-        if std::env::var(OWN_PROCESS_TEST).is_ok_and(|own| own == test) {
-            return true;
-        }
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
-            .env(OWN_PROCESS_TEST, &test)
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success() && stdout.contains("test result: ok. 1 passed;"),
-            "{test} in its own process: {}\n{stdout}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        false
+        crate::testing::in_own_process(&crate::testing::test_path(module_path!(), name))
     }
 
     #[cfg(unix)]
