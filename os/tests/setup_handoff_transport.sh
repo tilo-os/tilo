@@ -4,6 +4,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
+# The extractor unpacks the handoff with the compiled installer helper; run
+# this checkout's build of it.
+cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-install-helpers --bin tilo-staging-handoff
+export TILO_STAGING_HANDOFF="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-staging-handoff"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 media="$work/media.img"
@@ -64,6 +68,24 @@ TILO_INSTALLER_PROFILE_OUT_DIR="$work/secret-out" \
   "$extractor"
 test ! -e "$work/secret-out/setup-handoff"
 grep -q "human root secret" "$work/secret-out/profile.error"
+
+# A record naming a path outside the handoff is refused whole.
+for escaping in ../escape /etc/escape; do
+  escape_media="$work/escape.img"
+  python3 - "$escape_media" "$escaping" <<'PY'
+import hashlib, sys
+payload = b"etc/marker\n4\nwifi" + sys.argv[2].encode() + b"\n4\nevil"
+digest = hashlib.sha256(payload).hexdigest().encode()
+header = b"TILO_SETUP_HANDOFF_V1\n" + digest + b"\n" + str(len(payload)).encode() + b"\n"
+open(sys.argv[1], "wb").write(b"\xab" * 1000 + payload + header.ljust(4096, b"\0") + b"\0" * 65536)
+PY
+  rm -rf "$work/escape-out"
+  TILO_INSTALLER_PROFILE_DEVICE="$escape_media" \
+  TILO_INSTALLER_PROFILE_ALLOW_FILE=1 \
+  TILO_INSTALLER_PROFILE_OUT_DIR="$work/escape-out" \
+    "$extractor"
+  test ! -e "$work/escape-out/setup-handoff"
+done
 
 # Automatic discovery on a non-removable composefs installer must find the
 # parent of /sysroot's partition. Model lsblk's real tree-vs-raw behaviour;

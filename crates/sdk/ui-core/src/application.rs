@@ -1382,7 +1382,9 @@ impl AppComponent {
 
     /// Sample and deliver only after the caller has released its document loan.
     /// The same checked callback lifetime owns both the sample and the hook.
-    /// Returns whether the delivered status changed.
+    /// The changes the room refused and the record withdrew are delivered
+    /// with it. Returns whether the delivered status changed or a refusal
+    /// arrived.
     pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let sampled = self
@@ -1392,19 +1394,25 @@ impl AppComponent {
                 {
                     tracing::warn!(%error, "retrying a failed record save");
                 }
+                let refusals = binding.records.take_refusals(&binding.checkout.id);
+                for refusal in &refusals {
+                    root.record_refused(refusal);
+                }
                 let status = binding.records.save_status(&binding.checkout.id).ok()?;
                 root.record_save_status(status.clone());
-                Some(status)
+                Some((status, !refusals.is_empty()))
             })
             .ok()
             .flatten();
-        let Some(status) = sampled else {
+        let Some((status, refused)) = sampled else {
             return false;
         };
-        let changed = self
-            .record_save
-            .as_ref()
-            .is_some_and(|(previous, _)| *previous != status);
+        // A refusal changed what the root shows, as a new durability does.
+        let changed = refused
+            || self
+                .record_save
+                .as_ref()
+                .is_some_and(|(previous, _)| *previous != status);
         self.record_save = Some((status, crate::time::now()));
         if changed {
             // The caller syncs the root again with the new state; a frame

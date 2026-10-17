@@ -6,9 +6,15 @@
 //! tilo-board-successor NOW_NS       print the verified successor (digest reference,
 //!                                   generation, source revision, freshness expiry),
 //!                                   or exit 3 when there is none newer
+//! tilo-board-successor install-update-origin OVERRIDE
+//!                                   print the update origin an install of this image
+//!                                   records: the hardware profile's, else OVERRIDE
+//!                                   (may be empty), the bound development origin or
+//!                                   the official default
 //! ```
 //!
-//! `tilo-verified-update` runs it. All cryptographic verification uses the
+//! `tilo-verified-update` runs the first two; the installer backend and the
+//! offline-target import run `install-update-origin`. All cryptographic verification uses the
 //! image's pinned Cosign verifier and key; this helper never changes the
 //! deployment, owner trust or rollback state. Exit status 1 on any failure,
 //! with the reason on stderr; 128 + the signal when stopped.
@@ -195,7 +201,7 @@ fn image_generation(root: &Root) -> Result<u64> {
 fn selected(args: &[String]) -> Result<i32> {
     let [argument] = args else {
         return Err(Error::value(
-            "usage: tilo-board-successor applicable|NOW_NS",
+            "usage: tilo-board-successor applicable|NOW_NS|install-update-origin OVERRIDE",
         ));
     };
     let root = Root::system();
@@ -253,6 +259,21 @@ fn selected(args: &[String]) -> Result<i32> {
 /// The command line, without the program name; returns the exit status.
 #[must_use]
 pub fn main(args: &[String]) -> i32 {
+    if let [command, override_ref] = args
+        && command == "install-update-origin"
+    {
+        // Runtime callers cannot redirect metadata to a writable path.
+        return match profile::install_update_origin(&Root::system(), override_ref) {
+            Ok(origin) => {
+                println!("{origin}");
+                0
+            }
+            Err(error) => {
+                eprintln!("hardware profile rejected: {error}");
+                1
+            }
+        };
+    }
     match selected(args) {
         Ok(code) => code,
         Err(Error::Cancelled(signal)) => signal.saturating_add(128),

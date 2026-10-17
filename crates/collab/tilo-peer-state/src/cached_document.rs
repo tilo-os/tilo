@@ -23,6 +23,8 @@ pub(crate) type IdentityViews =
 pub(crate) struct PolicyData {
     pub owner: Option<String>,
     pub members: std::collections::BTreeMap<String, tilo_action_policy::Role>,
+    /// When each member was admitted, Unix milliseconds.
+    pub joined: std::collections::BTreeMap<String, u64>,
     pub grants: Vec<tilo_action_policy::Grant>,
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
 }
@@ -34,6 +36,7 @@ impl PolicyData {
             room: room.to_owned(),
             owner: self.owner.clone(),
             members: self.members.clone(),
+            joined: self.joined.clone(),
             grants: self
                 .grants
                 .iter()

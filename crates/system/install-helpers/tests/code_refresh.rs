@@ -657,3 +657,71 @@ fn the_shipped_daemon_refuses_outside_the_development_vm() {
     );
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn the_transient_backend_owns_the_lock_and_refuses_an_unapplied_refresh() {
+    // The backend's own lock block, run as the launcher re-execs it.
+    let backend = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
+    )
+    .unwrap();
+    let start = backend
+        .find("# Only the transient backend owns this lock.")
+        .unwrap();
+    let end = backend
+        .get(start..)
+        .unwrap()
+        .find("# TILO_VM_CODE_REFRESH_PROBE_V1:")
+        .unwrap()
+        + start;
+    assert!(
+        start
+            > backend
+                .find("if [ -z \"${TILO_INSTALL_TRANSIENT:-}\" ]; then")
+                .unwrap()
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("code-refresh");
+    fs::create_dir(&state).unwrap();
+    let block = backend
+        .get(start..end)
+        .unwrap()
+        .replace("/run/tilo-installer/code-refresh", state.to_str().unwrap())
+        .replace(
+            "/usr/libexec/tilo-vm-install-proof",
+            env!("CARGO_BIN_EXE_tilo-vm-install-proof"),
+        );
+    let script = directory.path().join("launcher.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/bash\nset -euo pipefail\nif [ -z \"${{TILO_INSTALL_TRANSIENT:-}}\" ]; then\n \
+             TILO_INSTALL_TRANSIENT=1 bash \"$0\"; exit $?\nfi\n{block}echo backend-ran\n"
+        ),
+    )
+    .unwrap();
+    let run = || Command::new("bash").arg(&script).output().unwrap();
+    let ran = run();
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(ran.stdout, b"backend-ran\n");
+    fs::write(
+        state.join("active.json"),
+        r#"{"state":"applied","sha256":"a"}"#,
+    )
+    .unwrap();
+    assert_eq!(run().stdout, b"backend-ran\n");
+    for marker in [r#"{"state":"applying"}"#, "{}", "not json"] {
+        fs::write(state.join("active.json"), marker).unwrap();
+        let refused = run();
+        assert!(!refused.status.success(), "{marker}");
+        assert!(refused.stdout.is_empty(), "{marker}");
+    }
+    fs::write(state.join("active.json"), r#"{"state":"applying"}"#).unwrap();
+    assert!(
+        String::from_utf8_lossy(&run().stderr).contains("installer code refresh is incomplete")
+    );
+}

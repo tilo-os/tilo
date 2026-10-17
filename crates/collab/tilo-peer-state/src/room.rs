@@ -26,6 +26,9 @@ pub struct RoomGovernance {
     pub owner: Option<String>,
     /// `members.*`: JSON role blobs keyed by person.
     pub members: BTreeMap<String, Vec<u8>>,
+    /// `members_joined_v1.*`: when the room admitted each member, Unix
+    /// milliseconds as JSON, keyed by person.
+    pub members_joined: BTreeMap<String, Vec<u8>>,
     /// `grants.*`: JSON `Grant` blobs keyed by grant id.
     pub grants: BTreeMap<String, Vec<u8>>,
     /// `sandbox.*`: JSON sandbox `CapOverride` blobs keyed by id.
@@ -46,6 +49,7 @@ impl RoomGovernance {
         Self {
             owner: None,
             members: BTreeMap::new(),
+            members_joined: BTreeMap::new(),
             grants: BTreeMap::new(),
             sandbox: BTreeMap::new(),
             peers: BTreeMap::new(),
@@ -73,6 +77,11 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
             }
             read::GovernanceEntry::Member { key, bytes } => {
                 governance.members.insert(key.to_owned(), bytes.to_vec());
+            }
+            read::GovernanceEntry::MemberJoined { key, bytes } => {
+                governance
+                    .members_joined
+                    .insert(key.to_owned(), bytes.to_vec());
             }
             read::GovernanceEntry::Sandbox { key, bytes } => {
                 governance.sandbox.insert(key.to_owned(), bytes.to_vec());

@@ -674,6 +674,7 @@ impl Workspace {
         }
         let person = Subject::Person(user.to_owned());
         self.policy.grants.retain(|grant| grant.subject != person);
+        self.policy.joined.remove(user);
         self.policy.members.remove(user).is_some()
     }
 

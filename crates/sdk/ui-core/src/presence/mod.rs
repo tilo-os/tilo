@@ -600,9 +600,14 @@ pub struct PresenceCtx {
     /// people (a row for yourself there is a pill over your own document).
     /// `None` until the room has said.
     self_participant: Option<(UserId, String)>,
+    /// When the room admitted each participant, this session's own
+    /// included, Unix milliseconds, as the roster
+    /// (`CollabEvent::Context`) records it. Who shares a name is numbered
+    /// in this order.
+    joined: HashMap<UserId, u64>,
     /// The numbers people who share a name are told apart by, resolved from
-    /// [`Self::names`] and [`Self::self_participant`] whenever either
-    /// changes. See [`ParticipantLabels`].
+    /// [`Self::names`], [`Self::self_participant`] and [`Self::joined`]
+    /// whenever one changes. See [`ParticipantLabels`].
     labels: ParticipantLabels,
     /// The surface this process draws, spelled as [`crate::local_surface_id`]
     /// spells it, compared against a pointer's claimed surface to decide
@@ -1109,6 +1114,19 @@ impl PresenceCtx {
         user_color(&user.0)
     }
 
+    /// When the room admitted `user`, as its roster records it; `None` when
+    /// it has no time for them. People who share a name are numbered by it,
+    /// so a newcomer never takes an earlier member's number.
+    pub fn set_joined_at(&mut self, user: UserId, joined: Option<u64>) {
+        let changed = match joined {
+            Some(at) => self.joined.insert(user, at) != Some(at),
+            None => self.joined.remove(&user).is_some(),
+        };
+        if changed {
+            self.refresh_labels();
+        }
+    }
+
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         self.names.insert(user.clone(), name.into());
@@ -1134,14 +1152,15 @@ impl PresenceCtx {
             .self_participant
             .as_ref()
             .map(|(id, name)| (id.0.as_str(), name.as_str()));
-        let next = ParticipantLabels::new(
+        let next = ParticipantLabels::by_joining(
             self.names
                 .iter()
                 .map(|(UserId(id), name)| (id.as_str(), name.as_str()))
                 .chain(own)
                 .filter(|(id, _)| {
                     self.participant_kind(&UserId((*id).to_owned())) == ParticipantKind::Person
-                }),
+                })
+                .map(|(id, name)| (id, name, self.joined.get(&UserId(id.to_owned())).copied())),
         );
         if next == self.labels {
             return;
@@ -1866,6 +1885,7 @@ impl PresenceCtx {
             .retain(|(_, follower), target| follower != &uid && target != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
+        self.joined.remove(&uid);
         self.statuses.remove(&uid);
         self.remove_interactions_for_actor(user_id);
         self.remove_remote_cursor(user_id);
@@ -2023,6 +2043,7 @@ mod remote_cursor_tests {
             colour: Some(crate::tokens::PresenceHue::Violet),
             is_agent: false,
             is_self: false,
+            joined_at: None,
         }
         .packed_colour();
         assert_eq!(

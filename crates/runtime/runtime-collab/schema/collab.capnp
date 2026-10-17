@@ -964,6 +964,13 @@ struct Collaborator {
   # Additive, so a peer that predates it decodes as somebody else —
   # which is what every row was before this field existed.
   isSelf      @4 :Bool;
+  # When the room admitted this member, Unix milliseconds, as its
+  # membership records it. People who share a name are numbered in this
+  # order, so a newcomer never takes an earlier member's number. The
+  # default, all ones, is a member the room has no time for (an agent, or
+  # one admitted before rooms recorded it), which is also what a peer that
+  # predates this field decodes as.
+  joinedAtMs  @5 :UInt64 = 0xffffffffffffffff;
 }
 
 # A page of previously-validated signed ops returned by

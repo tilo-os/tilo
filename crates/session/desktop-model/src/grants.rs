@@ -351,6 +351,12 @@ impl PolicyEdit {
                     desktop_doc::remove_member(doc, id, person);
                 }
             }
+            desktop_doc::set_member_joined(
+                doc,
+                id,
+                person,
+                workspace.policy.joined.get(person).copied(),
+            );
         }
         for grant in workspace
             .policy

@@ -2801,11 +2801,13 @@ fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
         .map_or_else(
             || short_id(user),
             |person| {
-                ui::presence::ParticipantLabels::new(
-                    ws.collaborators
-                        .iter()
-                        .map(|person| (person.id.as_str(), person.name.as_str())),
-                )
+                ui::presence::ParticipantLabels::by_joining(ws.collaborators.iter().map(|person| {
+                    (
+                        person.id.as_str(),
+                        person.name.as_str(),
+                        ws.policy.joined_at(&person.id),
+                    )
+                }))
                 .label(user, person.name.trim())
             },
         )

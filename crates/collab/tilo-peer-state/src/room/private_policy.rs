@@ -277,7 +277,9 @@ where
     let mut identities = BTreeMap::new();
     read::visit_governance_entries(read, |entry| {
         match entry {
-            read::GovernanceEntry::Owner(_) | read::GovernanceEntry::Sandbox { .. } => (),
+            read::GovernanceEntry::Owner(_)
+            | read::GovernanceEntry::Sandbox { .. }
+            | read::GovernanceEntry::MemberJoined { .. } => (),
             read::GovernanceEntry::Grant { key, bytes } => {
                 work.tree_entry::<String, Vec<u8>>().map_err(resource)?;
                 grants.insert(

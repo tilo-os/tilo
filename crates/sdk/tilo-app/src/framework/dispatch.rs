@@ -487,7 +487,20 @@ impl DispatchCore {
     pub(crate) fn refuse(&self, action: &str, reason: String) {
         self.refused.set(Some(Refused {
             action: action.to_owned(),
+            item: None,
             reason,
+            by_room: false,
+        }));
+    }
+
+    /// The room refused what `refusal` names after this device applied it;
+    /// the record withdrew it.
+    pub(crate) fn refuse_by_room(&self, refusal: &ui_core::record::RecordRefusal) {
+        self.refused.set(Some(Refused {
+            action: refusal.action.clone(),
+            item: refusal.item.clone(),
+            reason: refusal.reason.clone(),
+            by_room: true,
         }));
     }
 
@@ -621,6 +634,11 @@ impl DispatchCore {
     /// Who edits through this dispatcher; `None` in a view of a past version.
     pub(crate) fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// The last action refused here ([`Dispatcher::refused`]).
+    pub(crate) fn last_refused(&self) -> Option<Refused> {
+        self.refused.get()
     }
 
     pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
@@ -1295,13 +1313,20 @@ fn may_declared(
     }
 }
 
-/// An edit or effect the door refused ([`Dispatcher::refused`]).
+/// An edit or effect the door refused ([`Dispatcher::refused`]), or one the
+/// room refused after this device applied it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused {
-    /// The id of the refused action or effect.
+    /// The id of the refused action or effect: for one the room refused,
+    /// the verb's key or the edited field's path.
     pub action: String,
+    /// The item it acted on, when the room refused it and it named one.
+    pub item: Option<String>,
     /// Why, for a person.
     pub reason: String,
+    /// The room refused it: it was applied here, never reached anyone
+    /// else, and was withdrawn again. Submitting it again is a new action.
+    pub by_room: bool,
 }
 
 /// A submission the door applied ([`Dispatcher::landed`]).
