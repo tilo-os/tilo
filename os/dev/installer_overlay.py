@@ -6,8 +6,6 @@ from pathlib import Path
 # tilo-staging-handoff, tilo-vm-install-proof) and the UKI editor
 # tilo-uki-cmdline come with the base image, from os/components.toml.
 OVERRIDES=('usr/libexec/tilo-install','usr/libexec/tilo-verified-boot-install-preflight',
-           'usr/libexec/tilo-installer-code-protocol.py',
-           'usr/libexec/tilo-installer-code-refresh.py',
            'usr/lib/systemd/system/tilo-installer-code-refresh.service')
 def stage(source,helpers,context):
  source=Path(source)/'os';helpers=Path(helpers)/'os';context=Path(context)

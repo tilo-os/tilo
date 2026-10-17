@@ -15,6 +15,8 @@
 //! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`
 //! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
 //!   (VMs only)
+//! * [`code_refresh`]: `tilo-vm-install-proof code-refresh`, the development
+//!   VM's installer helper refresh daemon
 
 use std::ffi::OsString;
 use std::fmt;
@@ -22,6 +24,7 @@ use std::process::ExitCode;
 
 pub mod args;
 pub mod bootc_copy_cache;
+pub mod code_refresh;
 pub mod dev_ssh;
 pub mod dev_target_uki;
 pub mod handoff_copy;

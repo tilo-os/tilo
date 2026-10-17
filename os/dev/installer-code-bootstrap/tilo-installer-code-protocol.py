@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Bounded, named-file protocol for disposable installer VM code refresh."""
+"""Bounded, named-file protocol for disposable installer VM code refresh.
+
+The host side (os/dev/refresh-installer-code.py) bundles and sends with it, and
+it is seeded onto old CI media beside the Python refresh daemon. New media
+validate packets with the compiled daemon, `tilo-vm-install-proof code-refresh`.
+"""
 import base64
 import hashlib
 import json
@@ -10,13 +15,14 @@ import struct
 SCHEMA = 'tilo.installer-code-refresh.v1'
 LIMIT = 2 * 1024 * 1024
 # Text helpers only. The compiled helpers (tilo-install-handoff-copy,
-# tilo-install-dev-ssh, tilo-vm-bootc-copy-cache, tilo-installer-offline-target,
-# tilo-staging-handoff, tilo-vm-install-proof) come from the base image's
-# install-helpers component in os/components.toml; a checkout holds no file to
-# send for them.
+# tilo-install-dev-ssh, tilo-vm-bootc-copy-cache, tilo-installer-offline-target
+# with its development target UKI, tilo-staging-handoff, tilo-vm-install-proof
+# with the refresh daemon) come from the base image's install-helpers component
+# in os/components.toml; a checkout holds no file to send for them. The guest
+# daemon (crates/system/install-helpers/src/code_refresh.rs) holds the same
+# list and must accept exactly what this module bundles.
 ALLOWLIST = frozenset({
     'usr/libexec/tilo-install',
-    'usr/libexec/tilo-installer-dev-target-uki.py',
     'usr/libexec/tilo-boot-mount-contract',
     'usr/lib/tilo/hardware_profile.py',
 })

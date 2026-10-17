@@ -21,13 +21,10 @@ import time
 SCHEMA = 'tilo.installer-code-bootstrap.v1'
 FILES = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
          'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py')
-# Where the checkout keeps each seeded file. The bootstrap, the probe and the
-# Python proof emitter only ever run from the seed on old media, so they live
-# with the host tooling; the refresh daemon and its protocol also ship in the
-# installer image.
-SOURCES = {name: ('os/dev/installer-code-bootstrap/' if name in (
-    'tilo-installer-code-bootstrap.py', 'tilo-installer-code-target-probe.py',
-    'tilo-vm-install-proof.py') else 'os/usr/libexec/') + name for name in FILES}
+# Where the checkout keeps each seeded file. Every one only ever runs from the
+# seed on old media (new media carry the compiled refresh daemon and proof
+# emitter), so they live with the host tooling.
+SOURCES = {name: 'os/dev/installer-code-bootstrap/' + name for name in FILES}
 UNIT = '[Unit]\nDescription=Local development installer bootstrap (VM only)\nConditionVirtualization=vm\nConditionKernelCommandLine=tilo.install\nWants=systemd-udev-settle.service\nRequires=tilo-installer-setup.service\nAfter=local-fs.target systemd-udev-settle.service tilo-installer-setup.service\nBefore=greetd.service\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=60\nUMask=0077\nExecStart=/usr/bin/python3 /etc/tilo/installer-code-bootstrap/tilo-installer-code-bootstrap.py\nPrivateMounts=no\nNoNewPrivileges=no\n[Install]\nWantedBy=multi-user.target\n'
 NAME = 'tilo-installer-code-bootstrap.service'
 

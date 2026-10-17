@@ -890,6 +890,7 @@ inputs = [
   "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
   "crates/session/installer/src/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
+  "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
 readers = [
@@ -901,6 +902,7 @@ readers = [
   "crates/system/install-helpers/tests/offline_target.rs",
   "crates/system/install-helpers/tests/staging_handoff.rs",
   "crates/system/install-helpers/tests/install_proof.rs",
+  "crates/system/install-helpers/tests/code_refresh.rs",
   "crates/system/install-helpers/tests/dev_target_uki.rs",
 ]
 
@@ -1835,10 +1837,6 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "os/tests/probe_installer_code_refresh_mounts.py"
-reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"
 
 [[cargo]]
 package = "runtime-bundle"
