@@ -6,11 +6,13 @@ can probe and enforce; detection is not presented as hardware assignment.
 
 ## Native RemoteApp
 
-The Fedora 44 image installs the distribution packages `freerdp`,
-`xwayland-satellite`, and `virt-viewer` from Tilo's digest-pinned RPM snapshot.
-Fedora's `freerdp` package provides `/usr/bin/xfreerdp`, and Fedora's
-`xwayland-satellite` package provides `/usr/bin/xwayland-satellite`. The latter
-forwards `-auth` and `-nolisten` to Xwayland in the 0.8 series used by the
+The Fedora 44 image installs the distribution packages `freerdp` and
+`virt-viewer` from Tilo's digest-pinned RPM snapshot. Fedora's `freerdp`
+package provides `/usr/bin/xfreerdp`. `/usr/bin/xwayland-satellite` is built
+from pinned upstream source with a clipboard fix
+(`os/external-assets/xwayland-satellite/`), and Xwayland comes from the
+snapshot. Satellite forwards `-auth` and `-nolisten` to Xwayland in the 0.8
+series used by the
 image. Tilo checks both binaries and the active Wayland socket before selecting
 native RAIL.
 

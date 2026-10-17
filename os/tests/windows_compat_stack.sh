@@ -39,11 +39,15 @@ grep -Fq "x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;;" "
   || bad 'x86-64 image lacks its native Wine or DXVK package selection'
 
 for package in qemu-kvm-core qemu-ui-spice-core qemu-char-spice qemu-audio-spice \
-  libvirt-daemon-driver-qemu swtpm freerdp xwayland-satellite virt-viewer xorriso; do
+  libvirt-daemon-driver-qemu swtpm freerdp xorg-x11-server-Xwayland virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
 done
+
+grep -Fq 'COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite' "$CF" \
+  && ok 'the patched xwayland-satellite is part of the immutable image' \
+  || bad 'the image does not ship the patched xwayland-satellite'
 
 for selection in 'x86_64) vm_firmware=edk2-ovmf;' 'aarch64) vm_firmware=edk2-aarch64;'; do
   grep -Fq "$selection" "$CF" \

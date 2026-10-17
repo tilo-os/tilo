@@ -348,6 +348,27 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && rm -rf "/bootc-${BOOTC_VERSION}"
 
 
+# ---- xwayland-satellite -----------------------------------------------------
+# The X11 bridge, built from pinned upstream source with the patch in
+# os/external-assets/xwayland-satellite/ that keeps a paste in flight while the
+# clipboard manager takes over an X11 selection. Fedora's 0.8.2 package drops
+# it. CI builders install the same build through the same script. Built in the
+# pinned builder image like bootc, with that image's own Fedora repositories for
+# the build headers; only the binary ships, and the rootfs checks it resolves
+# against the base's libraries. Once a satellite
+# release contains https://github.com/Supreeeme/xwayland-satellite/pull/527,
+# install the snapshot's package instead.
+FROM ${BOOTC_BUILD_IMAGE} AS xwayland-satellite-builder
+ARG XWAYLAND_SATELLITE_BUILD_PACKAGES="xcb-util-cursor-devel"
+COPY os/external-assets/xwayland-satellite/0001-drain-pending-conversions-before-takeover.patch /patches/
+COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
+COPY tools/ci/install-xwayland-satellite.sh /install-xwayland-satellite.sh
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    dnf install -y ${XWAYLAND_SATELLITE_BUILD_PACKAGES} \
+    && dnf clean all \
+    && bash /install-xwayland-satellite.sh /tilo-assets /out/usr /tilo-assets.tsv /patches
+
+
 # ---- The sources the Rust compile reads -------------------------------------
 # Only what the builder stage reads, never the whole context: with
 # `COPY . /build`, a unit, an /etc file or a test script under os/ re-ran the
@@ -1279,6 +1300,10 @@ COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/mo
 # it against the base's libostree.
 COPY --from=bootc-builder /out/usr/bin/bootc /usr/bin/bootc
 COPY --from=bootc-builder /out/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
+# The X11 bridge with the in-flight clipboard handoff fix
+# (xwayland-satellite-builder); its runtime packages are in the rootfs.
+COPY --from=xwayland-satellite-builder /out/usr/bin/xwayland-satellite /usr/bin/xwayland-satellite
+COPY --from=xwayland-satellite-builder /out/usr/share/licenses/tilo-xwayland-satellite/ /usr/share/licenses/tilo-xwayland-satellite/
 # tilo-session records each login through the flight recorder; the report
 # summarises those records. The host package installs the same two files.
 COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
@@ -2068,7 +2093,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     swtpm-tools \
     "$vm_firmware" \
     freerdp \
-    xwayland-satellite \
+    xorg-x11-server-Xwayland \
+    xcb-util-cursor \
+    open-sans-fonts \
     waypipe \
     virtiofsd \
     vhost-device-vsock \
@@ -3196,9 +3223,9 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
               /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
               /usr/libexec/tilo-doubletake-test-receiver \
               /usr/libexec/tilo-account-credential \
-    && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
+    && missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
-         printf 'shell has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+         printf 'shell or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
          exit 1; \
        fi; } \
     && engine="/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium" \
@@ -3408,6 +3435,7 @@ COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
 COPY --from=doubletake-builder /out/ /doubletake/
 COPY --from=joycond-builder /out/ /joycond/
 COPY --from=bootc-builder /out/ /bootc/
+COPY --from=xwayland-satellite-builder /out/ /xwayland-satellite/
 
 # BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
 # so mounting the whole split rootfs into the uki stage hashed every file of it,

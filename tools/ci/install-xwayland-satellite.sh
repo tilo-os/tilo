@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build xwayland-satellite from its pinned upstream source with Tilo's patches
 # (os/external-assets/xwayland-satellite/README.md) and install it under a
-# prefix. Every CI builder installs the same build to /usr.
+# prefix. The OS image and every CI builder install the same build to
+# /usr.
 #
 # The caller owns fetching the source into the asset cache and installing the
 # build dependencies (cargo, clang-devel, fontconfig-devel, wayland-devel,
