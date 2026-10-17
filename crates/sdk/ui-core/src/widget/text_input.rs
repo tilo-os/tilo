@@ -4615,10 +4615,14 @@ impl TextInput {
         let dictionary = self
             .spell_dictionary
             .get_or_insert_with(spellcheck::Dictionary::default);
-        if dictionary.contains(&original) || self.personal_word(&original) {
+        let pronoun = spellcheck::pronoun_correction(&self.spell_language, &original);
+        if pronoun.is_none() && (dictionary.contains(&original) || self.personal_word(&original)) {
             return None;
         }
-        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        let replacement = match pronoun {
+            Some(pronoun) => pronoun,
+            None => spellcheck::probable_correction(&self.spell_language, &original)?,
+        };
         (replacement != original).then(|| AutocorrectionPreview {
             language: self.spell_language.clone(),
             start,

@@ -5145,3 +5145,20 @@ fn an_open_text_menu_owns_the_keyboard() {
     assert!(!ti.context_menu.is_open());
     assert_eq!(ti.selection_range(), Some((0, 5)));
 }
+
+#[test]
+fn a_lowercase_pronoun_is_corrected_at_the_next_word_boundary() {
+    for (typed, corrected) in [("so i", "so I "), ("im", "I'm ")] {
+        let mut ti = suggesting_field(typed);
+        let start = crate::time::now();
+        ti.refresh_suggestion_at(start);
+        ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+        let preview = ti
+            .autocorrection_preview
+            .clone()
+            .expect("the pronoun is corrected although word lists hold \"i\"");
+        assert!(preview.automatic, "{typed}: a sure correction");
+        ti.insert_word_boundary(" ");
+        assert_eq!(ti.value(), corrected);
+    }
+}
