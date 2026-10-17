@@ -81,6 +81,11 @@ const AUTO_REFRESH_MIN: i64 = 5;
 /// looked up: long enough not to look up every keystroke, short enough to
 /// be done before the password is typed.
 const DISCOVERY_DEBOUNCE_MS: u64 = 400;
+/// How long a search's text has to stay the same before the servers are
+/// asked for it.
+const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
+/// The shortest text the servers are searched for.
+const SERVER_SEARCH_MIN_CHARS: usize = 3;
 
 /// Whether `email` reads as a whole address: something before the `@` and
 /// a domain with a dot and a top-level part of two letters or more.
@@ -447,6 +452,13 @@ pub struct MailApp {
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Where fetched mail is kept on this device.
     store: crate::store::Store,
+    /// Text to search the servers for once the person stops typing it, and
+    /// when; and the text last searched for.
+    server_search: Option<(String, ui::time::Instant)>,
+    server_searched: String,
+    /// An attachment handed to another app, until the host says whether it
+    /// opened.
+    attachment_opening: Option<(String, ui::portal::LaunchChannel)>,
     /// Accounts whose watched inbox changed: fetched once the engine's
     /// events are drained.
     pending_watch_fetches: Vec<AccountConfig>,
@@ -747,6 +759,9 @@ impl MailApp {
             last_auto_refresh_min: 0,
             store: crate::store::Store::nowhere(),
             pending_watch_fetches: Vec::new(),
+            attachment_opening: None,
+            server_search: None,
+            server_searched: String::new(),
             has_older: HashMap::new(),
             older_pending: HashMap::new(),
             kept_registered: true,
@@ -1055,6 +1070,8 @@ impl MailApp {
                 1 => "1 selected".to_owned(),
                 n => format!("{n} selected"),
             }
+        } else if state.all_inboxes {
+            "All inboxes".to_owned()
         } else {
             state.folder.title().to_owned()
         }
@@ -1187,6 +1204,9 @@ impl MailApp {
                 Intent::SaveAttachment(message_id, index) => {
                     self.request_attachment_save(message_id, index);
                 }
+                Intent::OpenAttachment(message_id, index) => {
+                    self.open_attachment(message_id, index);
+                }
                 Intent::Engine(req) => {
                     self.post_engine(req);
                 }
@@ -1223,6 +1243,7 @@ impl MailApp {
                     state.set_active_account(account);
                     state.select_folder(doc, folder);
                 }
+                Command::OpenAllInboxes => self.shared.borrow_mut().open_all_inboxes(),
                 Command::AccountSettings(account) => self.open_setup_edit(account),
                 Command::Compose => {
                     self.shared.borrow_mut().push_intent(Intent::Compose);
@@ -1472,6 +1493,55 @@ impl MailApp {
         )
     }
 
+    /// A reply goes from the account the answered mail came to, whichever
+    /// account is open (every inbox shows together).
+    fn answer_from_its_account(&mut self, id: MessageId) {
+        let owner = self.shared.borrow().account_of(id);
+        if let Some(account) = owner {
+            self.compose.send_from(account.email);
+        }
+    }
+
+    /// The account the composer's message goes from: the one it was set to
+    /// go from, otherwise the open one.
+    fn sending_account(&self) -> AccountConfig {
+        let st = self.shared.borrow();
+        self.compose
+            .sending_from()
+            .and_then(|address| {
+                st.accounts
+                    .accounts
+                    .iter()
+                    .find(|account| account.config.email == address)
+                    .map(|account| account.config.clone())
+            })
+            .unwrap_or_else(|| st.accounts.active_config())
+    }
+
+    /// Keep what was typed into the recipients and subject in the draft, a
+    /// moment after the typing stops, as the body is kept while it is
+    /// written: a draft survives the window closing or the app quitting.
+    fn keep_compose_headers(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some([to, cc, bcc, subject]) = self.compose.take_due_headers() else {
+            return;
+        };
+        let kept = read_mail(doc.doc()).unwrap_or_default().draft;
+        let draft = Mail::paths().draft;
+        let st = self.shared.borrow();
+        if kept.to != to {
+            st.submit(doc, draft.to.set(to));
+        }
+        if kept.cc != cc {
+            st.submit(doc, draft.cc.set(cc));
+        }
+        if kept.bcc != bcc {
+            st.submit(doc, draft.bcc.set(bcc));
+        }
+        if kept.subject != subject {
+            st.submit(doc, draft.subject.set(subject));
+        }
+    }
+
     /// The composer closed: what the person wrote stays a draft; a message
     /// they never touched leaves nothing behind.
     fn close_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -1504,6 +1574,7 @@ impl MailApp {
         let quote = Self::reply_quote(&msg);
         self.compose.open_reply(&msg.from.rfc5322(), &subj, &quote);
         self.compose.reply_to(id);
+        self.answer_from_its_account(id);
         self.close_menu();
         self.dirty = true;
     }
@@ -1513,8 +1584,13 @@ impl MailApp {
     fn open_reply_all(&mut self, id: MessageId) {
         let (msg, my_email) = {
             let st = self.shared.borrow();
+            let mine = st
+                .account_of(id)
+                .unwrap_or_else(|| st.accounts.active_config())
+                .email
+                .to_ascii_lowercase();
             match st.mailbox.get(id).cloned() {
-                Some(m) => (m, st.accounts.active_config().email.to_ascii_lowercase()),
+                Some(m) => (m, mine),
                 None => return,
             }
         };
@@ -1539,6 +1615,7 @@ impl MailApp {
         self.compose
             .open_reply_all(&msg.from.rfc5322(), &cc.join(", "), &subj, &quote);
         self.compose.reply_to(id);
+        self.answer_from_its_account(id);
         self.close_menu();
         self.dirty = true;
     }
@@ -1584,7 +1661,7 @@ impl MailApp {
     fn send_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
-        let acct = self.shared.borrow().accounts.active_config();
+        let acct = self.sending_account();
         if !self.contact_sender_matches(&draft) {
             self.shared.borrow_mut().status = Some(crate::i18n::t("mail-contact-sender-changed"));
             self.dirty = true;
@@ -2567,11 +2644,19 @@ impl MailApp {
     /// Hand a newly-set status to the shell, which shows it as a toast and
     /// lets it fade on its own.
     fn show_status(&mut self) {
-        let Some(msg) = self.shared.borrow_mut().status.take() else {
+        let (status, undoable) = {
+            let mut st = self.shared.borrow_mut();
+            (st.status.take(), std::mem::take(&mut st.status_undo))
+        };
+        let Some(msg) = status else {
             return;
         };
         let kind = Self::status_kind(&msg);
-        self.nav.toast(msg, kind);
+        if undoable {
+            self.nav.toast_with_action(msg, kind, "Undo");
+        } else {
+            self.nav.toast(msg, kind);
+        }
     }
 
     fn status_kind(msg: &str) -> ToastKind {
@@ -2695,10 +2780,20 @@ impl MailApp {
                 .and_then(|thread| thread.message_ids.last().copied());
         }
         // Kept on this device, so the next window opens on it at once.
-        self.store.save(
+        let kept = self.store.save(
             account_id,
             st.mailbox.of_account(account_id).cloned().collect(),
         );
+        for (id, index) in kept {
+            if let Some(attachment) = st
+                .mailbox
+                .messages
+                .get_mut(&id)
+                .and_then(|message| message.attachments.get_mut(index))
+            {
+                attachment.kept = true;
+            }
+        }
         // The account works again: a failure it showed is over.
         st.sync_error = None;
         report_account_sync(
@@ -2780,25 +2875,41 @@ impl MailApp {
     /// Ask for the page before the oldest message of the open folder, once:
     /// the list has scrolled to its end and the server has more.
     pub(crate) fn load_older(&mut self) {
-        let (account, folder, known) = {
+        // Every inbox together asks each account for its older page.
+        let wanted: Vec<(AccountConfig, Folder, Option<crate::sync::Window>)> = {
             let st = self.shared.borrow();
-            let account = st.accounts.active_config();
-            let known = crate::sync::Window::of(&st.mailbox, &account.email, st.folder);
-            (account, st.folder, known)
+            let accounts: Vec<AccountConfig> = if st.all_inboxes {
+                st.accounts
+                    .accounts
+                    .iter()
+                    .map(|account| account.config.clone())
+                    .collect()
+            } else {
+                vec![st.accounts.active_config()]
+            };
+            accounts
+                .into_iter()
+                .map(|account| {
+                    let known = crate::sync::Window::of(&st.mailbox, &account.email, st.folder);
+                    (account, st.folder, known)
+                })
+                .collect()
         };
-        let Some(known) = known else {
-            return;
-        };
-        let key = (account.email.clone(), folder);
-        if self.has_older.get(&key) == Some(&false) || self.older_pending.contains_key(&key) {
-            return;
-        }
-        if let Some(request) = self.post_engine(EngineRequest::fetch_wanting(
-            account,
-            folder,
-            crate::sync::Want::Older { known },
-        )) {
-            self.older_pending.insert(key, request);
+        for (account, folder, known) in wanted {
+            let Some(known) = known else {
+                continue;
+            };
+            let key = (account.email.clone(), folder);
+            if self.has_older.get(&key) == Some(&false) || self.older_pending.contains_key(&key) {
+                continue;
+            }
+            if let Some(request) = self.post_engine(EngineRequest::fetch_wanting(
+                account,
+                folder,
+                crate::sync::Want::Older { known },
+            )) {
+                self.older_pending.insert(key, request);
+            }
         }
     }
 
@@ -2827,6 +2938,11 @@ impl MailApp {
         context: &str,
         message: &str,
     ) {
+        if context == "search" {
+            // The search shows what this device holds either way.
+            tracing::debug!(%message, "mail: a server search failed");
+            return;
+        }
         let detail = format!("{context}: {message}");
         let refused = self.server_outbox.borrow_mut().sent.remove(&request_id);
         if let Some((_, done)) = refused {
@@ -2937,6 +3053,22 @@ impl MailApp {
                     true,
                     Some("Signed in"),
                 );
+            }
+            EngineEvent::Found {
+                request_id,
+                account_id,
+                messages,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Search) => {
+                // What the server found joins the mail this device holds,
+                // and so the search; nothing is replaced that is held.
+                let fresh: Vec<Message> = messages
+                    .into_iter()
+                    .filter(|message| st.mailbox.get(message.id).is_none())
+                    .collect();
+                st.ingest_fetched(doc, &account_id, &fresh);
+                for message in fresh {
+                    st.mailbox.insert(message);
+                }
             }
             // A watch outlives its request: what it hears is answered for
             // any account this device still holds.
@@ -4117,7 +4249,10 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::undo::UndoControl
+    );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
@@ -4127,9 +4262,13 @@ impl Widget for MailApp {
             // The folders show the active account's mail, whichever way it
             // became active.
             let mut st = self.shared.borrow_mut();
-            let active = st.accounts.active_config();
-            if st.mailbox.account.email != active.email {
-                st.mailbox.set_account(active);
+            let shown = if st.all_inboxes {
+                AccountConfig::default()
+            } else {
+                st.accounts.active_config()
+            };
+            if st.mailbox.account.email != shown.email {
+                st.mailbox.set_account(shown);
             }
         }
         if self.first_run.take_action() {
@@ -4141,6 +4280,8 @@ impl Widget for MailApp {
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
         self.drain_compose_attachment();
+        self.drain_attachment_opening();
+        self.post_server_search();
         if self.compose.wants_address_book() {
             let book = {
                 let st = self.shared.borrow();
@@ -4232,6 +4373,7 @@ impl Widget for MailApp {
         self.deliver_effect_replies();
         self.flush_server_outbox();
         self.compose.settle(state, path);
+        self.keep_compose_headers(state);
         if !self.shared.borrow().seeded {
             self.register_hydrated_messages(state);
         }
@@ -4671,7 +4813,8 @@ impl Widget for MailApp {
             && (self.awaiting_engine
                 || self.setup_validation.is_some()
                 || self.setup_discovery.is_some()))
-            || self.compose_attachment_rx.is_some();
+            || self.compose_attachment_rx.is_some()
+            || self.attachment_opening.is_some();
         let background = pending.then(|| {
             let deadline = self
                 .background_poll_deadline
@@ -4685,6 +4828,8 @@ impl Widget for MailApp {
             .chain(self.nav.next_wake_deadline())
             .chain(self.next_refresh_at())
             .chain(self.setup_discovery_due)
+            .chain(self.compose.headers_due_at())
+            .chain(self.server_search.as_ref().map(|(_, at)| *at))
             .min()
     }
 
@@ -4714,6 +4859,15 @@ impl Widget for MailApp {
         if let Some(sheet) = &mut self.setup {
             sheet.dialog.mark_drawn();
         }
+    }
+}
+
+/// A notice's Undo goes through the host's undo, the same as Ctrl+Z.
+impl ui::undo::UndoControl for MailApp {
+    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
+        self.nav
+            .take_toast_action()
+            .map(|_| ui::undo::UndoRequest::Undo)
     }
 }
 
@@ -5073,6 +5227,23 @@ impl MailApp {
         if !attachment.is_downloadable() {
             return Err("attachment content is not downloaded yet".into());
         }
+        let mut attachment = attachment;
+        if attachment.content.is_empty() && attachment.kept {
+            // Kept on this device rather than in memory.
+            let account = self
+                .shared
+                .borrow()
+                .mailbox
+                .get(message_id)
+                .map(|message| message.account.clone())
+                .unwrap_or_default();
+            attachment.content = self
+                .store
+                .attachment(&account, message_id, index)
+                .ok_or_else(|| {
+                    format!("{} is no longer kept on this device", attachment.filename)
+                })?;
+        }
         if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
             return Err(format!(
                 "{} is too large to save here; open it in Files instead",
@@ -5113,6 +5284,91 @@ impl MailApp {
     /// Ask to save the attachment `index` of `message` through the effect
     /// every caller uses, so the window's own button, the palette and an
     /// agent save it the same way.
+    /// Search the servers for `text` a moment after it stops changing: a
+    /// word of three letters or more, once.
+    pub(crate) fn search_servers(&mut self, text: &str) {
+        let text = text.trim();
+        if self.engine.is_none()
+            || text.chars().count() < SERVER_SEARCH_MIN_CHARS
+            || text == self.server_searched
+        {
+            self.server_search = None;
+            return;
+        }
+        self.server_search = Some((
+            text.to_owned(),
+            ui::time::now() + std::time::Duration::from_millis(SERVER_SEARCH_DEBOUNCE_MS),
+        ));
+        self.dirty = true;
+    }
+
+    /// Ask every account's server for the search text that is due.
+    fn post_server_search(&mut self) {
+        let due = self
+            .server_search
+            .as_ref()
+            .is_some_and(|(_, at)| ui::time::now() >= *at);
+        if !due {
+            return;
+        }
+        let Some((text, _)) = self.server_search.take() else {
+            return;
+        };
+        let accounts: Vec<AccountConfig> = self
+            .shared
+            .borrow()
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| account.config.clone())
+            .filter(|config| !config.email.is_empty())
+            .collect();
+        for account in accounts {
+            self.post_engine(EngineRequest::search(account, text.clone()));
+        }
+        self.server_searched = text;
+    }
+
+    /// Open attachment `index` of `message` in the app that shows its kind
+    /// (a picture in Photos, a PDF in the PDF viewer), handing it over as
+    /// a file of this app's own.
+    fn open_attachment(&mut self, message: MessageId, index: usize) {
+        let (name, bytes) = match self.attachment_to_save(&message.to_string(), index) {
+            Ok(found) => found,
+            Err(error) => {
+                self.shared.borrow_mut().status = Some(error);
+                return;
+            }
+        };
+        let Some(path) = self.store.opening(&name) else {
+            // Nowhere to put it on this host: save it instead.
+            self.request_attachment_save(message, index);
+            return;
+        };
+        if let Err(error) = std::fs::write(&path, &bytes) {
+            self.shared.borrow_mut().status = Some(format!("Couldn’t open {name}: {error}"));
+            return;
+        }
+        self.attachment_opening = Some((name, ui::portal::LaunchRequest::open(path).send()));
+        self.dirty = true;
+    }
+
+    /// Say why an attachment did not open, once the host answers.
+    fn drain_attachment_opening(&mut self) {
+        let Some((name, channel)) = self.attachment_opening.as_ref() else {
+            return;
+        };
+        let failure = match channel.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(ui::portal::LaunchOutcome::Failed(error)) => Some(error),
+            Ok(_) | Err(TryRecvError::Disconnected) => None,
+        };
+        if let Some(error) = failure {
+            self.shared.borrow_mut().status = Some(format!("Couldn’t open {name}: {error}"));
+        }
+        self.attachment_opening = None;
+    }
+
     fn request_attachment_save(&self, message: MessageId, index: usize) {
         if let Err(error) = self.attachment_to_save(&message.to_string(), index) {
             self.shared.borrow_mut().status = Some(error);
@@ -6271,6 +6527,130 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             EngineRequest::Fetch { account: fetched, folder: Folder::Inbox, .. }
                 if fetched.email == account.email
         ));
+    }
+
+    /// Every inbox together lists each account's mail, and a reply to a
+    /// message goes from the account it came to.
+    #[test]
+    fn all_inboxes_list_every_account_and_replies_go_from_the_owner() {
+        let (mut app, _doc) = app();
+        let (first, second) = {
+            let st = app.shared.borrow();
+            (
+                st.accounts.accounts[0].config.email.clone(),
+                st.accounts.accounts[1].config.email.clone(),
+            )
+        };
+        let to_first = fetched(&first, 1, 1, 100);
+        let to_second = fetched(&second, 2, 1, 200);
+        let (first_id, second_id) = (to_first.id, to_second.id);
+        {
+            let mut st = app.shared.borrow_mut();
+            st.mailbox.insert(to_first);
+            st.mailbox.insert(to_second);
+        }
+        let listed = |app: &MailApp| -> Vec<MessageId> {
+            app.shared
+                .borrow()
+                .list_rows()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        };
+        assert!(
+            !listed(&app).contains(&second_id),
+            "the open account lists its own mail"
+        );
+        app.shared
+            .borrow_mut()
+            .push_command(Command::OpenAllInboxes);
+        app.apply_commands(&mut ui::widget::Edits::lend(
+            &mut crate::resource::TestMail::doc(),
+        ));
+        app.sync(&crate::resource::TestMail::doc(), &automerge::ROOT);
+        let rows = listed(&app);
+        assert!(
+            rows.contains(&first_id) && rows.contains(&second_id),
+            "{rows:?}"
+        );
+        assert_eq!(
+            crate::sidebar::selected_row(&app.shared.borrow()).as_deref(),
+            Some(crate::sidebar::ALL_INBOXES)
+        );
+        app.open_reply(second_id);
+        assert_eq!(app.compose.sending_from(), Some(second.as_str()));
+        assert_eq!(app.sending_account().email, second);
+    }
+
+    /// Searching asks every account's server once the text stops changing,
+    /// and what the servers find joins the mail the search reads.
+    #[test]
+    fn a_search_asks_the_servers_and_keeps_what_they_find() {
+        let (mut app, mut doc) = app();
+        let (outgoing, requests) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        app.search_servers("in");
+        assert!(app.server_search.is_none(), "two letters search only here");
+        app.search_servers("invoice");
+        app.post_server_search();
+        assert!(
+            requests.try_recv().is_err(),
+            "not while the text may change"
+        );
+        app.server_search = app
+            .server_search
+            .take()
+            .map(|(text, _)| (text, ui::time::now()));
+        app.post_server_search();
+        let posted: Vec<EngineRequest> = requests.try_iter().collect();
+        assert_eq!(
+            posted.len(),
+            app.shared.borrow().accounts.accounts.len(),
+            "every account is asked"
+        );
+        let EngineRequest::Search {
+            request_id,
+            account,
+            text,
+        } = posted[0].clone()
+        else {
+            panic!("a search: {posted:?}");
+        };
+        assert_eq!(text, "invoice");
+        app.search_servers("invoice");
+        assert!(
+            app.server_search.is_none(),
+            "the same text is not asked again"
+        );
+
+        let mut old = fetched(&account.email, 9, 1, 10);
+        old.server = None;
+        let old_id = old.id;
+        incoming
+            .send(EngineEvent::Found {
+                request_id,
+                account_id: account.email.clone(),
+                messages: vec![old],
+            })
+            .unwrap();
+        incoming
+            .send(EngineEvent::Completed {
+                request_id,
+                kind: EngineRequestKind::Search,
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            crate::search::message_entries(&app.shared.borrow().mailbox)
+                .iter()
+                .any(|entry| entry.anchor.as_deref()
+                    == Some(format!("mail.message:{old_id}").as_str())),
+            "what the server found is searched"
+        );
     }
 
     struct InterleavedEngineFixture {

@@ -188,6 +188,8 @@ pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
     pub ttl_remaining: Duration,
+    /// What its one button does ("Undo"), if it has one.
+    pub action: Option<String>,
 }
 
 /// Top-right notification stack with a configurable maximum entry count
@@ -218,6 +220,14 @@ pub struct ToastStack {
     /// control under the pointer, and where. A change needs another draw;
     /// `None` until drawn in the current theme.
     painted: Option<PaintedToasts>,
+    /// Each card's button, where the last draw painted it.
+    action_rects: Vec<Option<Rect>>,
+    /// The card whose button is under the pointer, now and as last drawn.
+    action_hovered: Option<usize>,
+    action_hovered_painted: Option<usize>,
+    /// The text of the notice whose button was pressed, until the owner
+    /// takes it.
+    activated: Option<String>,
 }
 
 /// [`ToastStack::painted`].
@@ -261,6 +271,10 @@ impl ToastStack {
             laid_out: 0,
             theme: Theme::dark(),
             painted: None,
+            action_rects: Vec::new(),
+            action_hovered: None,
+            action_hovered_painted: None,
+            activated: None,
         }
     }
 
@@ -281,13 +295,34 @@ impl ToastStack {
     /// Push a new toast. If the stack is at capacity the oldest entry
     /// is dropped to make room (FIFO drop policy).
     pub fn push(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.push_toast(text.into(), kind, None);
+    }
+
+    /// Push a notice with one button, `action` ("Undo"). Pressing it takes
+    /// the notice down; [`Self::take_activated`] then names the notice.
+    pub fn push_with_action(
+        &mut self,
+        text: impl Into<String>,
+        kind: ToastKind,
+        action: impl Into<String>,
+    ) {
+        self.push_toast(text.into(), kind, Some(action.into()));
+    }
+
+    /// The text of the notice whose button was pressed since the last call.
+    pub fn take_activated(&mut self) -> Option<String> {
+        self.activated.take()
+    }
+
+    fn push_toast(&mut self, text: String, kind: ToastKind, action: Option<String>) {
         // Charge elapsed time only to entries that existed during that time.
         // A new notice gets its full lifetime even if the previous frame stalled.
         self.advance(crate::time::now());
         let toast = Toast {
-            text: text.into(),
+            text,
             kind,
             ttl_remaining: self.default_ttl,
+            action,
         };
         self.toasts.push(toast);
         // Drop oldest entries until we are back within the cap.
@@ -395,6 +430,14 @@ impl ToastStack {
             y0 + TOAST_HEIGHT,
         );
         dismiss_rect(card, &self.theme)
+    }
+
+    /// The card whose button is at `point`, as last painted.
+    fn action_at(&self, point: Point) -> Option<usize> {
+        self.action_rects
+            .iter()
+            .position(|rect| rect.is_some_and(|rect| rect.contains(point)))
+            .filter(|index| *index < self.toasts.len())
     }
 
     /// Dismiss the toast at `idx` (no-op if out of range).
@@ -1747,6 +1790,7 @@ impl Widget for ToastStack {
         }
 
         let mut y = self.rect.y0;
+        let mut action_rects = Vec::with_capacity(self.toasts.len());
         for (index, toast) in self.toasts.iter().enumerate() {
             let card_rect = Rect::new(
                 self.rect.x0,
@@ -1754,20 +1798,22 @@ impl Widget for ToastStack {
                 self.rect.x0 + TOAST_WIDTH,
                 y + TOAST_HEIGHT,
             );
+            let mut card = ToastCard::new(&toast.text, toast.kind)
+                .closable(true)
+                .close_hovered(self.close_hovered == Some(index));
+            if let Some(action) = &toast.action {
+                card = card.action(action, self.action_hovered == Some(index));
+            }
             // Route through the shared card renderer so an in-app toast and a
             // desktop notification are pixel-identical (HIG §8).
-            paint_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                card_rect,
-                &ToastCard::new(&toast.text, toast.kind)
-                    .closable(true)
-                    .close_hovered(self.close_hovered == Some(index)),
+            let hit = paint_card(scene, transform, text_renderer, theme, card_rect, &card);
+            action_rects.push(
+                (toast.action.is_some() && hit.primary_action_rect.area() > 0.0)
+                    .then_some(hit.primary_action_rect),
             );
             y += TOAST_HEIGHT + TOAST_GAP;
         }
+        self.action_rects = action_rects;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1785,13 +1831,19 @@ impl Widget for ToastStack {
                 self.close_hovered = self
                     .card_at(self.last_cursor)
                     .filter(|&index| self.close_rect(index).contains(self.last_cursor));
+                self.action_hovered = self.action_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(idx) = self.card_at(self.last_cursor) {
+                if let Some(idx) = self.action_at(self.last_cursor) {
+                    self.activated = self.toasts.get(idx).map(|toast| toast.text.clone());
+                    self.dismiss(idx);
+                    self.hovered = false;
+                    *ctx.handled = true;
+                } else if let Some(idx) = self.card_at(self.last_cursor) {
                     self.dismiss(idx);
                     self.hovered = false;
                     *ctx.handled = true;
@@ -1812,6 +1864,7 @@ impl Widget for ToastStack {
             .as_ref()
             .is_none_or(|(cards, close_hovered, rect)| {
                 *close_hovered != self.close_hovered
+                    || self.action_hovered != self.action_hovered_painted
                     || *rect != self.rect
                     || cards.len() != self.toasts.len()
                     || cards
@@ -1822,6 +1875,7 @@ impl Widget for ToastStack {
     }
 
     fn mark_drawn(&mut self) {
+        self.action_hovered_painted = self.action_hovered;
         self.painted = Some((
             self.toasts
                 .iter()
@@ -1873,6 +1927,47 @@ mod tests {
         assert!(!stack.needs_redraw(), "the notice it painted needs none");
         stack.dismiss(0);
         assert!(stack.needs_redraw(), "a dismissed notice needs a frame");
+    }
+
+    /// A notice's one button ("Undo") is reported to its owner once and
+    /// takes the notice down; a press elsewhere on the card does not report
+    /// it.
+    #[test]
+    fn a_notice_button_is_reported_once_and_takes_the_notice_down() {
+        let mut stack = ToastStack::new();
+        stack.push_with_action("Archived", ToastKind::Success, "Undo");
+        lay_out(&mut stack);
+        let mut scene = Scene::new();
+        Widget::draw(
+            &mut stack,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let button = stack
+            .action_rects
+            .first()
+            .copied()
+            .flatten()
+            .expect("the notice shows its button");
+        let at = button.center();
+        dispatch(
+            &mut stack,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: (at.x, at.y).into(),
+            },
+        );
+        assert!(
+            stack.needs_redraw(),
+            "the button under the pointer lights up"
+        );
+        dispatch(&mut stack, &crate::synthetic_input::mouse_press());
+        assert_eq!(stack.take_activated().as_deref(), Some("Archived"));
+        assert!(stack.is_empty(), "the notice is done with");
+        assert_eq!(stack.take_activated(), None, "and reported once");
     }
 
     fn lay_out(stack: &mut ToastStack) {

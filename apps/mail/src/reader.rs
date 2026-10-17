@@ -254,6 +254,8 @@ struct Flow<'a, 'b> {
     y: f64,
     pointer: Point,
     attachments: Vec<(Rect, MessageId, usize)>,
+    /// The save buttons beside them.
+    saves: Vec<(Rect, MessageId, usize)>,
 }
 
 impl Flow<'_, '_> {
@@ -382,6 +384,22 @@ impl Flow<'_, '_> {
                 .paint(self.ctx.scene, self.ctx.transform, self.ctx.text, theme);
             self.attachments.push((rect, message.id, index));
             x += w + gap;
+            // Beside it, saving it as a file somewhere of the person's
+            // choosing; the chip itself opens it.
+            if attachment.is_downloadable() {
+                let save = Rect::new(x, self.y, x + h, self.y + h);
+                Button::paint(
+                    self.ctx.scene,
+                    self.ctx.transform,
+                    self.ctx.text,
+                    theme,
+                    &ButtonFace::icon_only(save, Icon::Download, "Save")
+                        .control_size(ControlSize::Small)
+                        .hovered(save.contains(self.pointer)),
+                );
+                self.saves.push((save, message.id, index));
+                x += h + gap;
+            }
         }
         self.y += h;
     }
@@ -402,6 +420,8 @@ pub struct MessageReader {
     pointer: Point,
     /// Attachment chips `(rect, message, index)` as last painted.
     attachments: Vec<(Rect, MessageId, usize)>,
+    /// The save button beside each attachment chip, as last painted.
+    attachment_saves: Vec<(Rect, MessageId, usize)>,
     /// The "Load images" / "Block images" button as last painted.
     remote_button: Option<Rect>,
     /// The conversation the scroll offset belongs to.
@@ -457,6 +477,7 @@ impl MessageReader {
             theme: Theme::dark(),
             pointer: Point::new(-1.0, -1.0),
             attachments: Vec::new(),
+            attachment_saves: Vec::new(),
             remote_button: None,
             shown: None,
             html_engine: None,
@@ -666,6 +687,7 @@ impl MessageReader {
         let messages = state.selected_thread_messages();
         let Some(head) = messages.last().copied() else {
             self.attachments.clear();
+            self.attachment_saves.clear();
             self.remote_button = None;
             self.html_view_rect = None;
             self.bodies.clear();
@@ -711,6 +733,7 @@ impl MessageReader {
             y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
+            saves: Vec::new(),
         };
 
         // The conversation's subject, and how many messages it holds.
@@ -818,8 +841,10 @@ impl MessageReader {
             flow.y + scroll - r.y0
         };
         let attachments = std::mem::take(&mut flow.attachments);
+        let saves = std::mem::take(&mut flow.saves);
         flow.ctx.scene.pop_layer();
         self.attachments = attachments;
+        self.attachment_saves = saves;
         self.region.set_content_size(r.width(), content_h);
         self.region.paint_bars(flow.ctx.scene, t, theme);
         drop(flow);
@@ -897,7 +922,7 @@ impl MessageReader {
             return true;
         }
         if let Some((_, message, index)) = self
-            .attachments
+            .attachment_saves
             .iter()
             .find(|(rect, _, _)| rect.contains(point))
             .copied()
@@ -905,6 +930,17 @@ impl MessageReader {
             self.shared
                 .borrow_mut()
                 .push_intent(Intent::SaveAttachment(message, index));
+            return true;
+        }
+        if let Some((_, message, index)) = self
+            .attachments
+            .iter()
+            .find(|(rect, _, _)| rect.contains(point))
+            .copied()
+        {
+            self.shared
+                .borrow_mut()
+                .push_intent(Intent::OpenAttachment(message, index));
             return true;
         }
         false
@@ -985,6 +1021,7 @@ impl MessageReader {
         (
             self.attachments
                 .iter()
+                .chain(&self.attachment_saves)
                 .position(|(rect, _, _)| rect.contains(point)),
             self.remote_button.is_some_and(|rect| rect.contains(point)),
             self.quote_buttons
@@ -1030,6 +1067,7 @@ impl Widget for MessageReader {
     ) {
         if self.shared.borrow().bulk_selecting {
             self.attachments.clear();
+            self.attachment_saves.clear();
             self.remote_button = None;
             self.html_view_rect = None;
             self.bodies.clear();
@@ -1120,7 +1158,14 @@ impl Widget for MessageReader {
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Save attachment");
+            return Some("Open");
+        }
+        if self
+            .attachment_saves
+            .iter()
+            .any(|(rect, _, _)| rect.contains(point))
+        {
+            return Some("Save");
         }
         None
     }
@@ -1320,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attachment_chip_asks_the_app_to_save_through_the_portal() {
+    fn an_attachment_chip_opens_it_and_its_button_saves_it_through_the_portal() {
         let shared = shared();
         let id = message_from(&shared, "billing@lumen-energy.example");
         let mut reader = reader_for(&shared, id, 760.0, 900.0);
@@ -1331,6 +1376,18 @@ mod tests {
             .expect("the attachment is a chip");
         assert_eq!(message, id);
         assert!(reader.press(rect.center()), "chip press consumed");
+        assert!(
+            shared.borrow_mut().take_intents().iter().any(|intent| matches!(
+                intent,
+                Intent::OpenAttachment(found, found_index) if *found == id && *found_index == index
+            )),
+            "the chip opens the attachment"
+        );
+        let (save, _, _) = *reader
+            .attachment_saves
+            .first()
+            .expect("a downloaded attachment can be saved");
+        assert!(reader.press(save.center()));
         assert!(
             shared.borrow_mut().take_intents().iter().any(|intent| matches!(
                 intent,

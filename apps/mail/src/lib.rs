@@ -60,6 +60,8 @@ pub mod autoconfig;
 pub mod compose;
 pub(crate) mod connect;
 pub mod engine;
+#[cfg(all(test, feature = "live"))]
+pub(crate) mod fake_imap;
 pub mod header;
 pub mod html_mail;
 pub mod html_text;

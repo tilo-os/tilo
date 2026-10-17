@@ -1227,6 +1227,12 @@ fn holds_account(state: &crate::state::MailState, address: &str) -> bool {
 }
 
 impl ResourceSurface<Mail, MailEffect> for MailApp {
+    /// Someone searches: the servers are asked too, for mail older than
+    /// what this device keeps; what they find joins the entries below.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.search_servers(query.text());
+    }
+
     /// Every message already loaded, outside Trash: its subject, sender and
     /// body come from the engine, not the document.
     fn search_entries(&self) -> Vec<SearchEntry> {

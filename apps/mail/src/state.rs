@@ -22,7 +22,7 @@ use ui::framework::Dispatcher;
 
 use crate::actions::IngestBaseline;
 use crate::engine::EngineRequest;
-use crate::model::{Draft, Folder, Mailbox, MessageId, Thread};
+use crate::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
 use crate::resource::{Mail, mailbox};
 use ui::framework::Submit;
 
@@ -145,6 +145,8 @@ pub enum Intent {
     /// Panes intentionally carry only a stable message id + attachment index;
     /// the root revalidates both before it opens the host chooser.
     SaveAttachment(MessageId, usize),
+    /// Open an attachment in the app that shows its kind.
+    OpenAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
@@ -160,6 +162,8 @@ pub enum Command {
     ContactRecipients,
     /// Show `folder` of account `index`.
     OpenFolder(usize, Folder),
+    /// Show every account's inbox in one list.
+    OpenAllInboxes,
     /// Open the account sheet for an account (`None` adds one).
     AccountSettings(Option<usize>),
     /// Start a new message.
@@ -204,6 +208,11 @@ pub struct MailState {
     /// read-on-open action from being queued.
     pub inspection: Option<MessageId>,
     pub status: Option<String>,
+    /// The status tells of a change the person may want back: its notice
+    /// offers Undo.
+    pub status_undo: bool,
+    /// The list shows every account's inbox at once.
+    pub all_inboxes: bool,
     /// Why the active account cannot check mail, as last said; `None`
     /// while it works. A refresh that fails the same way says nothing new.
     pub sync_error: Option<String>,
@@ -298,6 +307,8 @@ impl MailState {
             remote_senders: std::collections::BTreeSet::new(),
             inspection: None,
             status: None,
+            status_undo: false,
+            all_inboxes: false,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
             fetching_first: false,
@@ -517,6 +528,7 @@ impl MailState {
     /// document, so this deliberately has no Automerge write.
     pub fn set_active_account(&mut self, idx: usize) {
         self.accounts.set_active(idx);
+        self.all_inboxes = false;
         // The folders show the chosen account's mail.
         self.mailbox.set_account(self.accounts.active_config());
         self.dirty = true;
@@ -525,6 +537,40 @@ impl MailState {
     pub fn toggle_account_collapsed(&mut self, idx: usize) {
         self.accounts.toggle_collapsed(idx);
         self.dirty = true;
+    }
+
+    /// Show every account's inbox in one list, newest first.
+    pub fn open_all_inboxes(&mut self) {
+        self.all_inboxes = true;
+        self.folder = Folder::Inbox;
+        self.mailbox.set_account(AccountConfig::default());
+        self.selected = self
+            .current_threads()
+            .first()
+            .and_then(|thread| thread.message_ids.last().copied());
+        let accounts: Vec<AccountConfig> = self
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| account.config.clone())
+            .filter(|config| !config.email.is_empty())
+            .collect();
+        for account in accounts {
+            self.push_intent(Intent::Engine(EngineRequest::fetch(account, Folder::Inbox)));
+        }
+        self.push_intent(Intent::ShowOverview);
+        self.dirty = true;
+    }
+
+    /// The account a message belongs to, when this device holds it: what a
+    /// reply to it is sent from.
+    pub fn account_of(&self, id: MessageId) -> Option<AccountConfig> {
+        let owner = &self.mailbox.get(id)?.account;
+        self.accounts
+            .accounts
+            .iter()
+            .find(|account| !owner.is_empty() && account.config.email == *owner)
+            .map(|account| account.config.clone())
     }
 
     pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
@@ -736,8 +782,17 @@ impl MailState {
                 ids.len()
             }
         };
+        // What moved or changed state can be taken back from its notice; a
+        // purge is gone for good.
+        self.status_undo = affected > 0 && action != BulkAction::Purge;
         self.dirty = true;
         affected
+    }
+
+    /// Say `text` with an Undo beside it.
+    fn say_undoable(&mut self, text: &str) {
+        self.status = Some(text.to_owned());
+        self.status_undo = true;
     }
 
     pub fn reselect_after_remove(&mut self, _doc: &mut ui::widget::Edits<'_>) {
@@ -838,6 +893,7 @@ impl MailState {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Archive);
                 self.after_remove(doc, was_selected);
+                self.say_undoable("Archived");
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
@@ -852,6 +908,7 @@ impl MailState {
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
                     self.submit(doc, Self::message_paths(id).folder.set(to));
+                    self.say_undoable("Moved to Trash");
                 } else if purging {
                     self.submit(
                         doc,
@@ -866,11 +923,13 @@ impl MailState {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Inbox);
                 self.after_remove(doc, was_selected);
+                self.say_undoable("Moved to Inbox");
             }
             CtxAction::Junk => {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Junk);
                 self.after_remove(doc, was_selected);
+                self.say_undoable("Moved to Junk");
             }
         }
     }
