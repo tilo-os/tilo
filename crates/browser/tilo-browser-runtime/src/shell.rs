@@ -368,7 +368,11 @@ impl BrowserShell {
             .with_chrome(chrome.clone())
             .with_tilo_mark();
         bar.set_host_label(offers.host.clone());
-        let tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
+        let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
+        // Offered only where the page holds a destination for reports.
+        if chrome.shared.feedback.borrow().is_some() {
+            tilo_menu = tilo_menu.with_feedback();
+        }
         let empty = Rc::new(Cell::new(workspace_is_empty(&tree)));
         let launchpad = CollaborationLaunchpad::new(|_| 0.0).with_copy(welcome_copy(offers.mac));
         let area = Stack::new()
@@ -509,6 +513,33 @@ impl BrowserShell {
             });
         } else {
             self.handle.open_search(None);
+        }
+    }
+
+    /// Feedback about the window in front, in the one private composer.
+    fn open_feedback(&self) {
+        let focused = self.handle.read(|tree| {
+            tilo_desktop::feedback::focused(tree, |app| {
+                crate::desktop::known_application(app).map(str::to_owned)
+            })
+        });
+        let subject = match focused {
+            // Asked again from the composer: it keeps its subject.
+            tilo_desktop::feedback::Focused::Composer => None,
+            tilo_desktop::feedback::Focused::Nothing => Some(None),
+            tilo_desktop::feedback::Focused::App(subject) => Some(Some(subject)),
+        };
+        if let (Some(subject), Some(feedback)) =
+            (subject, self.chrome.shared.feedback.borrow().as_ref())
+            && let Err(error) = feedback.about(subject)
+        {
+            web_sys::console::warn_1(&format!("feedback: {error}").into());
+        }
+        match self.handle.read(tilo_desktop::feedback::composer_tab) {
+            Some((.., tab)) => {
+                self.handle.focus_tab(tab);
+            }
+            None => self.launch(tilo_desktop::feedback::PACKAGE),
         }
     }
 
@@ -868,6 +899,10 @@ impl Widget for BrowserShell {
             changed = true;
         }
         changed |= self.tilo_menu.settle();
+        if self.tilo_menu.take_feedback() {
+            self.open_feedback();
+            changed = true;
+        }
         let menu_open = self.tilo_menu.is_menu_open();
         if self.menu_shown.replace(menu_open) != menu_open {
             self.bar.set_tilo_menu_open(menu_open);

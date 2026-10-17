@@ -109,7 +109,7 @@ fn stage() -> Stage {
     );
     Stage {
         bar,
-        menu: TiloMenu::new(AboutVariant::Browser, &links),
+        menu: TiloMenu::new(AboutVariant::Browser, &links).with_feedback(),
         rect: Rect::ZERO,
     }
 }
