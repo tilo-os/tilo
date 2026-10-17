@@ -3674,12 +3674,12 @@ impl ChatApp {
             if y > panel.y1 {
                 break;
             }
-            let display = if self.is_me(&person.id) {
-                self.user_name(&person.id)
-            } else if person.is_agent {
+            // Named as the room names them, numbered when shared: the same
+            // label as their lines in the timeline.
+            let display = if person.is_agent && !self.is_me(&person.id) {
                 format!("{} (agent)", person.name)
             } else {
-                person.name.clone()
+                self.user_name(&person.id)
             };
             let status = match voice {
                 Some(ch) => format!("In {ch}"),

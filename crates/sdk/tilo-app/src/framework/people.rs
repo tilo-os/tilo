@@ -6,14 +6,16 @@
 //! called — and the host knows the names: the room's roster announces them
 //! with the people who are present. A view resolves an id when it shows it,
 //! so a renamed person, or one whose name arrived after their edit, reads
-//! correctly everywhere at once.
+//! correctly everywhere at once. Names are the room's labels: people who
+//! share a name carry the number presence tells them apart by
+//! ([`ui_core::presence::ParticipantLabels`]), and the participant reading
+//! is shown their own name like anyone else's.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui_core::LocalState;
-use ui_core::permissions::UserId;
 use ui_core::presence::PresenceCtx;
 
 /// The names the host knows for the participants of the window's room.
@@ -24,44 +26,47 @@ pub struct People {
     revision: LocalState<u64>,
     /// The participant this window is for, when someone edits it.
     me: Option<Rc<str>>,
+    /// The name this device knows its person by, for `me` until the room
+    /// names them.
+    local: Option<Rc<str>>,
 }
 
 #[derive(Default, PartialEq)]
 struct Roster {
+    /// Each participant the room names, as presence labels them.
     names: HashMap<String, String>,
-    agents: Vec<String>,
-    /// The name this session's participant goes by, when the room said.
+    /// The label this session's participant goes by, when the room said.
     own: Option<String>,
 }
-
-/// What an id reads as when the participant is this window's own and the
-/// host has not said their name.
-const YOU: &str = "You";
 
 impl People {
     pub(crate) fn new(me: Option<&str>) -> Self {
         Self {
             roster: Rc::default(),
             revision: LocalState::new(0),
+            local: me.and_then(|_| {
+                ui_core::local_identity::bound()
+                    .map(|identity| identity.display_name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
+                    .map(Rc::from)
+            }),
             me: me.map(Rc::from),
         }
     }
 
-    /// The name to show for `id`: the roster's, the window's own participant
-    /// as "You" until the room names them, else the id itself — what a
-    /// record written before ids were names holds, and what a capture's
-    /// fixture people are called.
+    /// The name to show for `id`: the roster's label; for the window's own
+    /// participant before the room names them, the name this device knows
+    /// its person by; else the id itself — what a record written before ids
+    /// were names holds, and what a capture's fixture people are called.
     pub fn name(&self, id: &str) -> String {
         let roster = self.roster.borrow();
         if let Some(name) = roster.names.get(id) {
-            return if roster.agents.iter().any(|agent| agent == id) {
-                ui_core::history_source::agent_display_label(name)
-            } else {
-                name.clone()
-            };
+            return name.clone();
         }
-        if self.me.as_deref() == Some(id) {
-            return roster.own.clone().unwrap_or_else(|| YOU.to_owned());
+        if self.me.as_deref() == Some(id)
+            && let Some(own) = roster.own.as_deref().or(self.local.as_deref())
+        {
+            return own.to_owned();
         }
         id.to_owned()
     }
@@ -82,16 +87,10 @@ impl People {
         let next = Roster {
             names: presence
                 .names
-                .iter()
-                .map(|(UserId(id), name)| (id.clone(), name.clone()))
-                .collect(),
-            agents: presence
-                .names
                 .keys()
-                .filter(|user| presence.is_agent(user))
-                .map(|UserId(id)| id.clone())
+                .map(|user| (user.0.clone(), presence.display_name(user)))
                 .collect(),
-            own: presence.self_name().map(str::to_owned),
+            own: presence.self_label(),
         };
         if *self.roster.borrow() == next {
             return false;
@@ -119,6 +118,7 @@ impl std::fmt::Debug for People {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("People")
             .field("me", &self.me)
+            .field("local", &self.local)
             .field("known", &self.roster.borrow().names.len())
             .field("revision", &self.revision.get())
             .finish()
@@ -128,11 +128,16 @@ impl std::fmt::Debug for People {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui_core::permissions::UserId;
 
     #[test]
-    fn an_id_reads_as_the_rosters_name_you_or_itself() {
+    fn an_id_reads_as_the_rosters_name_or_itself() {
         let people = People::new(Some("me-id"));
-        assert_eq!(people.name("me-id"), "You");
+        assert_eq!(
+            people.name("me-id"),
+            "me-id",
+            "nobody is called \"You\": an unnamed self reads as its id"
+        );
         assert_eq!(
             people.name("Alice"),
             "Alice",
@@ -151,5 +156,10 @@ mod tests {
         assert_eq!(people.name("me-id"), "Ada");
         assert!(people.is_me("me-id"));
         assert_eq!(people.revision().get(), 1);
+
+        presence.set_display_name(UserId("peer-id".into()), "ada");
+        assert!(people.follow(&presence));
+        assert_eq!(people.name("me-id"), "Ada (1)");
+        assert_eq!(people.name("peer-id"), "ada (2)");
     }
 }

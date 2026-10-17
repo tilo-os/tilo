@@ -5659,16 +5659,20 @@ impl RoomActivityPane {
             .unwrap_or_else(|| self.person_label(id))
     }
 
-    /// A participant id as people read it: their name, "You", or a short
-    /// handle, never the raw key.
+    /// A participant id as people read it: their name (the reader's own
+    /// too), or a short handle, never the raw key.
     pub(super) fn person_label(&self, id: &str) -> String {
         let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         let authors = self.source.authors();
         if authors.is_registered(&handle) {
             return authors.resolve(&handle).name;
         }
-        if id == self.local_user() {
-            return t("workspace-settings-you");
+        if id == self.local_user()
+            && let Some(name) = ui::local_identity::bound()
+                .map(|identity| identity.display_name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+        {
+            return name;
         }
         if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return format!(

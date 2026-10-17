@@ -426,7 +426,9 @@ impl BrowserShell {
             self.expanded = None;
         }
         let here = self.chrome.here.borrow();
-        let own_label = here.own_label().unwrap_or("You").to_owned();
+        let own_label = here
+            .own_shown()
+            .unwrap_or_else(tilo_desktop::here::guest_label);
         let own_rgb = here
             .own_rgb()
             .unwrap_or_else(|| ui::presence::user_color(&own_label));
