@@ -17,6 +17,12 @@ use crate::{Theme, tokens::colors::mix8};
 
 const PERIOD_SECONDS: f64 = 120.0;
 
+/// The still composition the greeter and the lock screen both draw. Any
+/// phase is a valid frame; this one keeps the band of light clear of the
+/// credentials. Both hold it still, so lock and login look the same and
+/// neither repaints the output at a cadence of its own.
+pub const STILL_SECONDS: f64 = 0.0;
+
 /// Whether the caller should schedule animation frames for this backdrop.
 ///
 /// High contrast omits decorative geometry entirely. Reduced motion preserves
