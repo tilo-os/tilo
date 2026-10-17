@@ -25,6 +25,10 @@ pub mod stream;
 pub mod surface_decoder;
 pub mod throttle;
 
+// Streaming consumers share decoder admission without depending on the peer protocol.
+#[cfg(feature = "unit-chain")]
+pub use neighbour_wire::unit_chain;
+
 pub use decoder::{
     DecodedFrame, MAX_DECODED_HEIGHT, MAX_DECODED_PIXELS, MAX_DECODED_RGBA_BYTES,
     MAX_DECODED_WIDTH, VideoDecoder,
