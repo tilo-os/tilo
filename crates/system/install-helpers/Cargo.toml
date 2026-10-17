@@ -68,7 +68,6 @@ libc.workspace = true
 uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
 # Strict base64 of SSH public keys, as base64.b64decode(validate=True).
-base64.workspace = true
 hex.workspace = true
 # No-follow opens of the copied handoff files and the effective user, without
 # FFI.
@@ -80,10 +79,12 @@ serde_json.workspace = true
 sha2.workspace = true
 # The export cache's receipt: a private temporary file renamed into place.
 tempfile.workspace = true
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 accounts = { path = "../accounts" }
+base64.workspace = true
 
 [lints]
 workspace = true

@@ -19,6 +19,7 @@ use iroh_blobs::provider::events::{
 use std::time::Instant;
 
 use crate::smart::history::TOGETHER_WINDOW;
+use crate::smart::kept_history::KeptHistory;
 
 /// A scanned page: large enough to live in the file-backed area, the way a
 /// PDF or a photo does.
@@ -41,6 +42,18 @@ const BENCH_LINK: Link = Link {
 fn page_bytes(index: usize) -> Vec<u8> {
     let seed = u64::try_from(index).unwrap() * 2 + 1;
     crate::test_bytes::pseudo(PAGE_BYTES, seed)
+}
+
+/// The workspace whose history the tests keep.
+const WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(0x7110_0951);
+/// A flush delay no test waits out: the keeper stays asleep.
+const NEVER: Duration = Duration::from_secs(3600);
+
+fn files_paths(files: &[(&str, String)]) -> Vec<String> {
+    files
+        .iter()
+        .map(|(dir, name)| format!("{dir}/{name}"))
+        .collect()
 }
 
 fn page_names(count: usize) -> Vec<(&'static str, String)> {
@@ -115,6 +128,8 @@ struct RemoteFolder {
     fs: QuickFS,
     /// `(inode, content id)` in the order the files were given.
     files: Vec<(u64, Hash)>,
+    /// `directory/name` of each file, in the same order.
+    paths: Vec<String>,
     /// The peer's store, alive for as long as it serves.
     source_store: ContentStore,
     router: Router,
@@ -126,6 +141,7 @@ impl RemoteFolder {
     /// `files` are `(directory under the root, name)`; the content of the
     /// `n`th file is [`page_bytes`]`(n)`.
     async fn with_files(files: &[(&str, String)], link: Option<Link>) -> Self {
+        let files_given = files;
         let source = Endpoint::bind(presets::Minimal).await.unwrap();
         let source_store = ContentStore::memory();
         let mut hashes = Vec::with_capacity(files.len());
@@ -173,11 +189,73 @@ impl RemoteFolder {
         Self {
             fs,
             files,
+            paths: files_paths(files_given),
             source_store,
             router,
             source,
             client,
         }
+    }
+
+    /// Keep the mount's opened-together history under `cache_root`,
+    /// writing `flush_delay` after a change.
+    fn keep_history(self, cache_root: &std::path::Path, flush_delay: Duration) -> Self {
+        Self {
+            fs: self
+                .fs
+                .with_kept_prefetch_history_after(cache_root, WORKSPACE, flush_delay),
+            ..self
+        }
+    }
+
+    /// Restart the mount the way a reboot does: the old mount goes away
+    /// (its keeper writes the last change), and the new one reads the
+    /// namespace back from its saved bytes, so inodes are handed out afresh
+    /// and, resolving the files last first, differently. The predictor is
+    /// fresh; the content store and the peer are the same. `kept` keeps the
+    /// history under that cache root, as before the restart.
+    fn restart(self, kept: Option<(&std::path::Path, Duration)>) -> Self {
+        let hydrator = Arc::clone(&self.fs.hydrator);
+        let saved = self.fs.ns().save();
+        let Self {
+            fs,
+            paths,
+            source_store,
+            router,
+            source,
+            client,
+            ..
+        } = self;
+        drop(fs);
+        let mut namespace = Namespace::from_bytes("prediction", &saved).unwrap();
+        let mut files: Vec<(u64, Hash)> = paths
+            .iter()
+            .rev()
+            .map(|path| {
+                let ino = namespace.resolve_path_ino(path).unwrap();
+                (ino, namespace.hash_for(ino).unwrap())
+            })
+            .collect();
+        files.reverse();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::new(Mutex::new(namespace)), hydrator, heuristics);
+        let fs = match kept {
+            Some((root, delay)) => fs.with_kept_prefetch_history_after(root, WORKSPACE, delay),
+            None => fs,
+        };
+        Self {
+            fs,
+            files,
+            paths,
+            source_store,
+            router,
+            source,
+            client,
+        }
+    }
+
+    fn kept(&self) -> &KeptHistory {
+        self.fs.kept_history.as_deref().unwrap()
     }
 
     fn with_acl(self, acl: crate::acl::WorkspaceAcl, identity: crate::acl::IdentityKey) -> Self {
@@ -375,5 +453,235 @@ async fn time_to_first_byte_of_the_next_page() {
         for predict in [false, true] {
             timed_paging(scenario, order, predict).await;
         }
+    }
+}
+
+/// Whether an open of file `from` predicts file `to` right now.
+fn predicts(folder: &RemoteFolder, from: usize, to: usize) -> bool {
+    let (ino, _) = folder.files[from];
+    let hash = folder.files[to].1;
+    folder
+        .fs
+        .predictive_candidates(ino)
+        .iter()
+        .any(|(candidate, _)| *candidate == hash)
+}
+
+/// Files opened together before a restart still predict each other after
+/// it, although every inode was handed out afresh; without the kept
+/// history the restart forgets them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_opened_together_still_predict_each_other_after_a_restart() {
+    // Phase `a_restart_without_the_kept_history_forgets`.
+    {
+        let folder = RemoteFolder::with_files(&report_and_chart(), None).await;
+        seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
+        assert!(predicts(&folder, 0, 1), "warm before the restart");
+        let folder = folder.restart(None);
+        assert!(
+            !predicts(&folder, 0, 1),
+            "cold after a restart that forgets"
+        );
+        folder.close().await;
+    }
+    // Phase `the_kept_history_is_warm_after_a_restart`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+            .await
+            .keep_history(root.path(), NEVER);
+        seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
+        let before: Vec<u64> = folder.files.iter().map(|(ino, _)| *ino).collect();
+        let folder = folder.restart(Some((root.path(), NEVER)));
+        let after: Vec<u64> = folder.files.iter().map(|(ino, _)| *ino).collect();
+        assert_ne!(before, after, "the restart hands out new inodes");
+        assert!(
+            folder.kept().path().exists(),
+            "the old mount kept its history"
+        );
+        assert!(!folder.is_local(1).await);
+        folder.open_and_time_first_byte(0).await;
+        folder.settle().await;
+        assert!(
+            folder.is_local(1).await,
+            "the chart opened with the report before the restart arrives with it after"
+        );
+        assert!(predicts(&folder, 1, 0), "and the report with the chart");
+        folder.close().await;
+    }
+}
+
+/// Opening files only records into memory and wakes the keeper: however
+/// many opens, nothing is written on the request path, and a burst of
+/// opens costs one write once it is over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opening_files_never_writes_the_kept_history() {
+    const BURST: usize = 20;
+    // Phase `no_write_on_the_request_path`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+            .await
+            .keep_history(root.path(), NEVER);
+        for open in 0..BURST {
+            folder.fs.predict_after_open(folder.files[open % 2].0);
+            assert_eq!(folder.kept().writes(), 0, "open {open} wrote");
+            assert!(!folder.kept().path().exists(), "open {open} wrote");
+        }
+        folder.close().await;
+    }
+    // Phase `a_burst_of_opens_is_one_write`.
+    {
+        const DELAY: Duration = Duration::from_secs(2);
+        let root = tempfile::tempdir().unwrap();
+        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+            .await
+            .keep_history(root.path(), DELAY);
+        let started = Instant::now();
+        for open in 0..BURST {
+            folder.fs.predict_after_open(folder.files[open % 2].0);
+        }
+        assert!(
+            started.elapsed() < DELAY,
+            "the burst outlasted the flush delay"
+        );
+        assert_eq!(folder.kept().writes(), 0);
+        tilo_test_env::within("the keeper writes after the burst", async {
+            while folder.kept().writes() == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        tokio::time::sleep(DELAY * 2).await;
+        assert_eq!(folder.kept().writes(), 1, "one burst, one write");
+        assert!(folder.kept().path().exists());
+        folder.close().await;
+    }
+}
+
+fn kept_pairs(folder: &RemoteFolder) -> usize {
+    folder
+        .fs
+        .access_history
+        .lock()
+        .unwrap()
+        .pairs(Instant::now())
+        .len()
+}
+
+/// Turning prefetching off in Settings forgets the history, in memory and
+/// on disk, learns nothing while it is off, and a restart finds nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn turning_prefetch_off_forgets_the_kept_history() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = RemoteFolder::with_files(&report_and_chart(), None)
+        .await
+        .keep_history(root.path(), NEVER);
+    seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
+    assert!(folder.kept().flush().unwrap());
+    assert!(folder.kept().path().exists());
+
+    // The storage socket's `SetCachePolicy`, which Settings'
+    // `set-prefetch { on: false }` sends.
+    let (policies, kept) = crate::cache_policy::CachePolicies::load(
+        None,
+        Arc::clone(&folder.fs.heuristics),
+        Arc::clone(folder.fs.hydrator.store.files()),
+    );
+    kept.unwrap();
+    policies
+        .set(runtime_fs::storage::CachePolicy {
+            prefetch: false,
+            budget_bytes: None,
+        })
+        .unwrap();
+    assert!(
+        !folder.kept().path().exists(),
+        "the kept file goes with the switch"
+    );
+    assert_eq!(kept_pairs(&folder), 0, "and so does what is in memory");
+
+    for _ in 0..3 {
+        folder.fs.predict_after_open(folder.files[0].0);
+        folder.fs.predict_after_open(folder.files[1].0);
+    }
+    assert_eq!(
+        kept_pairs(&folder),
+        0,
+        "nothing is learned while prefetching is off"
+    );
+    assert!(!folder.kept().flush().unwrap());
+    assert!(!folder.kept().path().exists());
+
+    let folder = folder.restart(Some((root.path(), NEVER)));
+    assert!(!predicts(&folder, 0, 1), "a restart finds nothing");
+    folder.close().await;
+}
+
+/// A kept file that is torn or altered is deleted and never trusted, not
+/// even in part.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_corrupt_kept_history_is_discarded() {
+    let root = tempfile::tempdir().unwrap();
+    // A real file first, kept by a mount with a warm pair.
+    let mut folder = RemoteFolder::with_files(&report_and_chart(), None)
+        .await
+        .keep_history(root.path(), NEVER);
+    seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
+    assert!(folder.kept().flush().unwrap());
+    let path = folder.kept().path().to_owned();
+    let valid = std::fs::read(&path).unwrap();
+    let mut altered = valid.clone();
+    altered[20] ^= 1;
+    for (case, bytes) in [
+        ("torn", valid[..valid.len() - 1].to_vec()),
+        ("altered", altered),
+        ("garbage", b"not a history".to_vec()),
+    ] {
+        // Stop the mount first, so what it keeps on its way out is replaced
+        // by the damaged bytes before the next one starts.
+        folder = folder.restart(None);
+        std::fs::write(&path, &bytes).unwrap();
+        folder = folder.restart(Some((root.path(), NEVER)));
+        assert!(!path.exists(), "the {case} file is deleted");
+        assert_eq!(kept_pairs(&folder), 0, "nothing of the {case} file is used");
+    }
+    folder.close().await;
+}
+
+/// The headless measurement of the first read of a file opened together
+/// with another before a restart, opened a [`DWELL`] after that other one
+/// over [`BENCH_LINK`]: cold (the history forgotten, as before it was kept)
+/// and warm (the kept history). Opt-in through [`BENCH_ENV`].
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_read_after_restart() {
+    const ROUNDS: usize = 7;
+    if std::env::var_os(BENCH_ENV).is_none() {
+        return;
+    }
+    for warm in [false, true] {
+        let mut reads = Vec::with_capacity(ROUNDS);
+        let mut local = 0_usize;
+        for _ in 0..ROUNDS {
+            let root = tempfile::tempdir().unwrap();
+            let folder = RemoteFolder::with_files(&report_and_chart(), Some(BENCH_LINK))
+                .await
+                .keep_history(root.path(), NEVER);
+            seed_opened_together(&folder.fs, &[folder.open_of(0), folder.open_of(1)]);
+            let folder = folder.restart(warm.then_some((root.path(), NEVER)));
+            folder.open_and_time_first_byte(0).await;
+            tokio::time::sleep(DWELL).await;
+            local += usize::from(folder.is_local(1).await);
+            reads.push(folder.open_and_time_first_byte(1).await);
+            folder.close().await;
+        }
+        reads.sort();
+        eprintln!(
+            "PERF after-restart history={} partner first read p50 {:.2} ms max {:.2} ms; \
+             local before open {local}/{ROUNDS}",
+            if warm { "kept" } else { "forgotten" },
+            percentile(&reads, 50).as_secs_f64() * 1e3,
+            reads.last().unwrap().as_secs_f64() * 1e3,
+        );
     }
 }

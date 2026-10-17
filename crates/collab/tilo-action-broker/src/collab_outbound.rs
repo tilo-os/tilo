@@ -310,7 +310,8 @@ impl PeerPublisher {
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording {
     use super::{ArtifactId, PeerPresence, PeerPublishSink, SignedOp};
-    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::sync::{Mutex, MutexGuard};
+    use tilo_lock::MutexRecover as _;
 
     /// What actually reached the wire, in order.
     #[derive(Debug, Clone, PartialEq)]
@@ -351,7 +352,7 @@ pub mod recording {
 
         /// The record, still readable after a panicking test thread poisoned it.
         fn sent(&self) -> MutexGuard<'_, Vec<Sent>> {
-            self.sent.lock().unwrap_or_else(PoisonError::into_inner)
+            self.sent.lock_recover()
         }
     }
 

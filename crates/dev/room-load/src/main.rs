@@ -101,6 +101,12 @@ pub struct HostArgs {
     /// people are watching.
     #[arg(long)]
     pub max_spectators: Option<usize>,
+    /// The room's governor holds the chat record guests write from the
+    /// start, as a persistent room seeds its chat: the guests' sealed
+    /// writes then reach the governor's copy, which follows, reads and
+    /// compacts them with the channel keys it stewards.
+    #[arg(long)]
+    pub seeded_chat: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -139,6 +145,13 @@ pub struct DriveArgs {
     /// as the room's one spectator person.
     #[arg(long)]
     pub spectator_members: bool,
+    /// Chat posts written before the first guest arrives, as a long-lived
+    /// room's chat holds: every guest joining is sent that history.
+    #[arg(long, default_value_t = 0)]
+    pub history: usize,
+    /// Guests who write `--history` between them, then leave.
+    #[arg(long, default_value_t = 20)]
+    pub historians: usize,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -331,6 +344,9 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     if let Some(max) = args.host.max_spectators {
         command.arg("--max-spectators").arg(max.to_string());
     }
+    if args.host.seeded_chat {
+        command.arg("--seeded-chat");
+    }
     if let Some(arenas) = args.malloc_arenas {
         command.env("MALLOC_ARENA_MAX", arenas.to_string());
     }
@@ -360,6 +376,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
     let stats = Arc::new(stats::Stats::default());
     let spectator_stats = Arc::new(stats::Stats::default());
     let (stop_tx, stop) = tokio::sync::watch::channel(false);
+    let (quiet_tx, quiet) = tokio::sync::watch::channel(false);
     let shared = Arc::new(guest::Shared {
         args: args.drive.clone(),
         relay,
@@ -369,8 +386,11 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         spectator_stats: spectator_stats.clone(),
         started: Instant::now(),
         stop,
+        quiet,
+        sent: std::sync::Mutex::default(),
     });
 
+    let history_s = write_history(&shared, pid).await?;
     let cpu0 = procfs::Sample::of(pid).unwrap_or_default().cpu_s;
     let begun = Instant::now();
     let begun_unix_s = std::time::SystemTime::now()
@@ -466,6 +486,8 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         .load(std::sync::atomic::Ordering::Relaxed)
         - received0) as f64
         / held;
+    let _ = quiet_tx.send(true);
+    let settled = settle(&shared, args.host.seeded_chat).await;
     let _ = stop_tx.send(true);
     while tokio::time::timeout(Duration::from_secs(10), guests.join_next())
         .await
@@ -487,6 +509,9 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         "spectators": args.drive.spectators,
         "spectator_members": args.drive.spectator_members,
         "max_spectators": args.host.max_spectators,
+        "seeded_chat": args.host.seeded_chat,
+        "history": args.drive.history,
+        "history_s": history_s,
         "host_threads": args.host_threads,
     });
     let host = serde_json::json!({
@@ -515,12 +540,133 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         }
         fields.insert("host_log".into(), log_digest(&host_log()));
         fields.insert("timings".into(), timings(&host_log(), begun_unix_s));
+        fields.insert("settled".into(), settled.clone());
     }
     let _ = std::fs::remove_file(host_log());
     println!("{}", serde_json::to_string_pretty(&summary)?);
     drop(child.stdin.take());
     let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+    let missing = settled
+        .get("missing_in_governor")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    if missing > 0 {
+        anyhow::bail!("the room's governor never held {missing} of the guests' chat posts");
+    }
     Ok(())
+}
+
+/// Have `--historians` guests write `--history` chat posts between them,
+/// wait until every one is committed and the host's upkeep of the chat has
+/// had its quiet moment, and return how long it took.
+async fn write_history(shared: &Arc<guest::Shared>, host: u32) -> anyhow::Result<f64> {
+    let args = &shared.args;
+    if args.history == 0 {
+        return Ok(0.0);
+    }
+    let begun = Instant::now();
+    let historians = args.historians.clamp(1, args.history);
+    let mut writing = tokio::task::JoinSet::new();
+    for index in 0..historians {
+        let count = args.history / historians + usize::from(index < args.history % historians);
+        writing.spawn(guest::historian(shared.clone(), index, count));
+    }
+    // Progress, and whose CPU it costs, so a run stopped while writing
+    // still says how far it got and which side was the bottleneck.
+    let mut progress = tokio::time::interval(Duration::from_secs(30));
+    progress.tick().await;
+    loop {
+        tokio::select! {
+            written = writing.join_next() => match written {
+                Some(written) => written?.map_err(|error| anyhow::anyhow!("history: {error}"))?,
+                None => break,
+            },
+            _ = progress.tick() => {
+                let sent = shared.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
+                let cpu = |pid| procfs::Sample::of(pid).map_or(0.0, |sample| sample.cpu_s);
+                eprintln!(
+                    "history: {sent} of {} sent after {:.0}s; cpu so far: host {:.0}s, guests {:.0}s",
+                    args.history,
+                    begun.elapsed().as_secs_f64(),
+                    cpu(host),
+                    cpu(std::process::id()) - cpu(host),
+                );
+            }
+        }
+    }
+    eprintln!(
+        "history: {} posts in {:.1}s",
+        args.history,
+        begun.elapsed().as_secs_f64()
+    );
+    // The host compacts a channel once it has been quiet for a moment.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    Ok(begun.elapsed().as_secs_f64())
+}
+
+/// Once guests post nothing more: wait until each post is committed and,
+/// with a seeded chat, until the governor's copy of the chat holds every
+/// one, as a CRDT replica that took in the same changes must.
+async fn settle(shared: &guest::Shared, seeded: bool) -> serde_json::Value {
+    use std::sync::atomic::Ordering;
+    const SETTLE: Duration = Duration::from_secs(60);
+    let begun = Instant::now();
+    let stats = &shared.stats;
+    let unsettled = || {
+        stats
+            .chat_tx
+            .load(Ordering::Relaxed)
+            .saturating_sub(stats.committed.load(Ordering::Relaxed))
+    };
+    while unsettled() > 0 && begun.elapsed() < SETTLE {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let committed_s = begun.elapsed().as_secs_f64();
+    let posted: std::collections::HashSet<String> = shared
+        .sent
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .cloned()
+        .collect();
+    let mut settled = serde_json::json!({
+        "posted": posted.len(),
+        "uncommitted": unsettled(),
+        "committed_s": committed_s,
+    });
+    if !seeded {
+        return settled;
+    }
+    let mut missing = posted.len();
+    loop {
+        if let Ok((200, body)) = shared.service.post_with("/record", &[], Vec::new()).await
+            && let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&body)
+        {
+            let held: std::collections::HashSet<&str> = reply
+                .get("changes")
+                .and_then(serde_json::Value::as_array)
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect()
+                })
+                .unwrap_or_default();
+            missing = posted
+                .iter()
+                .filter(|hash| !held.contains(hash.as_str()))
+                .count();
+        }
+        if missing == 0 || begun.elapsed() >= SETTLE {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if let Some(fields) = settled.as_object_mut() {
+        fields.insert("missing_in_governor".into(), missing.into());
+        fields.insert("governor_s".into(), begun.elapsed().as_secs_f64().into());
+    }
+    settled
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {

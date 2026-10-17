@@ -24,6 +24,8 @@ required-features = ["filesystem"]
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]
 default = ["filesystem"]
+# External licensed simulator; never enabled by ordinary filesystem tests.
+rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
 document-media = ["dep:runtime-fs"]
 filesystem = [
@@ -136,11 +138,19 @@ path = "tests/native_sync_bench.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "gdrive-rystic-volume"
+path = "tests/gdrive_rystic_volume.rs"
+required-features = ["rystic-tests"]
+
+[[test]]
 name = "cloud_mount"
 path = "tests/cloud_mount.rs"
 required-features = ["filesystem"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The opt-in simulator test exercises the same independent-import engine as Files.
+tilo-cloud-files = { version = "0.1.0", path = "../../platform/tilo-cloud-files", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true

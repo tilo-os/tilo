@@ -3,6 +3,10 @@ import importlib.util
 from pathlib import Path
 import stat
 import lzma
+import os
+import signal
+import subprocess
+import sys
 from unittest.mock import patch
 import tempfile
 import unittest
@@ -62,6 +66,39 @@ class InitramfsTests(unittest.TestCase):
             for data in (bad_numeric, symlink, hardlink):
                 with self.assertRaises(verifier.VerificationError):
                     self.verify(bytes(data))
+
+    def test_deadline_kills_descendants_after_tool_leader_exits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pidfile = Path(temporary) / 'descendant-pid'
+            tool = (
+                'import subprocess,sys; from pathlib import Path; '
+                'child=subprocess.Popen([sys.executable,"-c","import signal; signal.pause()"]); '
+                f'Path({str(pidfile)!r}).write_text(str(child.pid))'
+            )
+            script = f'''
+import importlib.util,sys,time
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('verifier', {str(SPEC.origin)!r})
+verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+try:
+    with verifier.child([sys.executable, '-c', {tool!r}], scratch=Path({temporary!r}),
+                        deadline=time.monotonic()+0.5) as output:
+        output.read(1)
+except verifier.VerificationError:
+    sys.exit(0)
+sys.exit(1)
+'''
+            try:
+                result = subprocess.run([sys.executable, '-c', script], capture_output=True,
+                                        text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(pidfile.exists(), 'tool must actually launch its descendant')
+            finally:
+                if pidfile.exists():
+                    try:
+                        os.kill(int(pidfile.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_resource_and_format_limits(self):
         with self.subTest(phase="expansion_budget_and_child_deadline_reject"):

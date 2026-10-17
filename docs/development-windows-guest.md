@@ -4,11 +4,11 @@ The ARM image carries a separate x86 Windows compatibility rootfs. Its current
 consumer requires the traditional Wine pair, including both x86-64 and i686
 loaders. Fedora's stock Wine packages do not satisfy that consumer contract.
 
-Dispatch **Build / Windows compatibility payloads**
-(`build-windows-compat.yml`) with `payload=windows-guest`. Its `windows-guest`
-job packages the Wine RPMs its own `build` and `pair` jobs just produced, on the
-tooling image of its `native-inputs` job; it does not compile the browser or
-the OS.
+Run `t dispatch publish-windows-guest --ref main`. Its `image-windows-guest`
+check packages the Wine RPMs the `wine-build-<target>` and `image-wine-paired` checks
+just produced, on the `image-wine-tools` image; it does not compile the browser or the
+OS. `publish-windows-guest` pushes every image the guest names and sets main's
+`windows-guest-candidate` pointer.
 
 Each completed stage publishes its digest immediately. The always-retained
 `guest-evidence/inputs.json` records completed inputs, even if a later stage

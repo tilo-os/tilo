@@ -125,7 +125,7 @@ pub(crate) fn agent_reply() -> String {
 pub(crate) fn record_work(summons: &str, work: &crate::model::AgentWork) -> Invoke<Chat> {
     Chat::RECORD_WORK.with(chat::RecordWork {
         message: Id::from_raw(summons),
-        work: work.to_update(),
+        work: work_update(work),
         say: None,
     })
 }
@@ -133,4 +133,56 @@ pub(crate) fn record_work(summons: &str, work: &crate::model::AgentWork) -> Invo
 /// The id of the call row of the voice channel `channel`.
 pub(crate) fn call_row(channel: &str) -> String {
     format!("{}/call", item("channels", channel))
+}
+
+/// `work` as an agent reports it.
+fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
+    use crate::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
+
+    let (state, app, did, about) = match &work.state {
+        AgentWorkState::Taken => ("taken", None, None, None),
+        AgentWorkState::Waiting { app } => ("waiting", Some(app.clone()), None, None),
+        AgentWorkState::Doing { did, about } => {
+            ("doing", None, Some(did.clone()), Some(about.clone()))
+        }
+        AgentWorkState::Done { did } => ("done", None, Some(did.clone()), None),
+        AgentWorkState::Refused => ("refused", None, None, None),
+    };
+    crate::record::WorkUpdate {
+        state: state.into(),
+        app,
+        did,
+        about,
+        route: work.reasoning.as_ref().map(|reasoning| {
+            match reasoning.route {
+                AgentRoute::Model => "model",
+                AgentRoute::Floor => "floor",
+            }
+            .to_owned()
+        }),
+        why: work
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.why.clone()),
+        trace: work
+            .trace
+            .iter()
+            .map(|step| {
+                let (outcome, why) = match &step.outcome {
+                    AgentStepOutcome::Asked => ("asked", None),
+                    AgentStepOutcome::Applied => ("applied", None),
+                    AgentStepOutcome::NoChange => ("no_change", None),
+                    AgentStepOutcome::Refused { why } => ("refused", Some(why.clone())),
+                };
+                crate::record::StepUpdate {
+                    id: step.id.clone(),
+                    sequence: step.sequence,
+                    resource: step.resource.clone(),
+                    label: step.label.clone(),
+                    outcome: outcome.into(),
+                    why,
+                }
+            })
+            .collect(),
+    }
 }

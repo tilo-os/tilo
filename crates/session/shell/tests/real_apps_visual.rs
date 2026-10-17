@@ -17,7 +17,7 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::frame::FrameBuilder;

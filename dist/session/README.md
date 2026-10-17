@@ -79,7 +79,10 @@ platform-storage minting the setup screen does), GNOME input sources seeded
 in the user's dconf database as a GNOME user has them (`de+nodeadkeys`,
 `compose:ralt`; `guest.sh gnome-input`), SDDM autologin into
 `tilo.desktop`, then Settings, Notes, Files and Terminal opened through
-Super+Space search on the VM's keyboard (QMP). The first login must import the
+Super+Space search on the VM's keyboard (QMP). The VM has two KMS cards
+(`virtio-vga` and `virtio-gpu-pci`, one connector each), and the compositor's
+last `DRM topology` line must show an output driven on both (check H06), as on
+a hybrid laptop whose panel and external ports hang off different GPUs. The first login must import the
 GNOME input settings into the session's `settings.json` (`de:nodeadkeys`,
 Compose on Right Alt, the import's completion marker; check H05), and the lock
 screen password and app names are then typed on that German layout, so the

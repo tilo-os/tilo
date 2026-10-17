@@ -1,5 +1,7 @@
 //! Actual-core adapters to the one delivery policy projection.
-use super::{BoundedNative, DeviceCert, PeerCore, StatePeer, SystemTime};
+use super::{BoundedNative, DeviceCert, PeerCore};
+#[cfg(test)]
+use super::{StatePeer, SystemTime};
 use crate::state::bounded::{BoundedPeerError, PeerLimits};
 #[derive(Debug, PartialEq, Eq)]
 pub enum PeerDeliveryPolicyError {
@@ -100,8 +102,10 @@ pub(in crate::state) fn bounded<'peer>(
         digest,
     })
 }
+#[cfg(test)]
 impl StatePeer {
-    /// Allocating legacy data projection, with no resource/owner qualification.
+    /// Allocating legacy data projection, with no resource/owner qualification:
+    /// the reference the bounded native projection is checked against.
     /// Host then device are supplied by the parent's authenticated source.
     ///
     /// # Errors

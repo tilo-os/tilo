@@ -12,6 +12,16 @@ pub(super) struct Rooms {
     pub(super) joined: Arc<Joined>,
 }
 
+impl Rooms {
+    /// The `profile`'s own room and those it `joined`.
+    pub(super) fn new(profile: &Arc<ProfileWorkspace>, joined: &Arc<Joined>) -> Self {
+        Self {
+            profile: Arc::clone(profile),
+            joined: Arc::clone(joined),
+        }
+    }
+}
+
 impl WorkspaceAuthority for Rooms {
     /// The profile's own workspaces, then each joined room as its
     /// governance describes it. Joined rooms are never written to the
@@ -74,6 +84,16 @@ impl WorkspaceMembership for Rooms {
 pub(super) struct Owners {
     pub(super) own: Arc<dyn OwnerCommitService>,
     pub(super) joined: Arc<Joined>,
+}
+
+impl Owners {
+    /// `own` commits for the profile's room; each room it `joined`, its owner.
+    pub(super) fn new(own: Arc<dyn OwnerCommitService>, joined: &Arc<Joined>) -> Self {
+        Self {
+            own,
+            joined: Arc::clone(joined),
+        }
+    }
 }
 
 impl OwnerCommitService for Owners {

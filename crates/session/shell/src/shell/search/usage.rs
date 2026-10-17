@@ -9,12 +9,13 @@
 
 use std::cmp::Reverse;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_search::Frecency;
 
 use super::SearchResult;
+use tilo_lock::MutexRecover as _;
 
 /// Most a row's usage can add: enough to order ties and the empty palette,
 /// far less than the gap between two match tiers.
@@ -50,8 +51,7 @@ fn usage() -> MutexGuard<'static, Usage> {
                 .unwrap_or_default();
             Mutex::new(Usage { path, frecency })
         })
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
 }
 
 fn now() -> u64 {

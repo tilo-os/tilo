@@ -15,8 +15,8 @@ and log. `summarize` reads a sweep's reports and derives:
 - what 100 concurrent guests cost on each `[room_node.*]` of
   tools/perf/prices.toml.
 
-The perf-room-capacity check in t.toml (`t dispatch perf-room-capacity`)
-runs both on a node of known size; docs/benchmarks/room-host-capacity-2026-10.md
+The Perf / room host capacity workflow (.forgejo/workflows/perf-room-capacity.yml)
+runs both on a runner of known size; docs/benchmarks/room-host-capacity-2026-10.md
 records a run.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep
@@ -94,6 +94,21 @@ def plan(which: str) -> list[Run]:
     runs.append(Run("caps", "caps", ("--guests", str(CAP_GUESTS), "--spectators", str(CAP_SPECTATORS),
                                      "--spectator-members", "--max-guests", str(CAP_GUESTS),
                                      "--max-spectators", str(CAP_SPECTATORS))))
+    # A room whose sealed chat has run for days: 50k posts before the first
+    # guest, then guests joining and chatting. Join time against the history
+    # each newcomer is sent. The host keeps its state in memory: on a shared
+    # node's disk each write's sync took 100 ms and more, so writing the
+    # history measured the disk's other tenants, not the room.
+    in_memory = (("TMPDIR", "/dev/shm"),)
+    runs.append(Run("history50k-g100", "history",
+                    # The flag last: `run_seconds` reads the options in pairs.
+                    ("--guests", "100", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
+                     "--history", "50000", "--historians", "200", "--seeded-chat"), in_memory))
+    # The same at a size that writes in a minute: what each history post
+    # costs the host and the guests.
+    runs.append(Run("history2k-g20", "history",
+                    ("--guests", "20", "--ramp", "5", "--chat-every", "0.5", "--chat-bytes", "60",
+                     "--history", "2000", "--historians", "20", "--seeded-chat"), in_memory))
     if which != "full":
         pattern = re.compile(which)
         runs = [run for run in runs if pattern.search(run.name)]
@@ -149,7 +164,9 @@ def run_seconds(run: Run) -> float:
     args = dict(zip(run.args[::2], run.args[1::2]))
     guests = float(args.get("--guests", "50")) / float(args.get("--ramp", "20"))
     spectators = float(args.get("--spectators", "0")) / 50.0
-    return max(guests, spectators) + 60 + float(args.get("--join-timeout", "60")) + 300
+    # The history is written first, at twenty posts a second at least.
+    history = float(args.get("--history", "0")) / 20.0
+    return history + max(guests, spectators) + 60 + float(args.get("--join-timeout", "60")) + 300
 
 
 def sweep(binary: Path, out: Path, which: str) -> int:
@@ -161,14 +178,23 @@ def sweep(binary: Path, out: Path, which: str) -> int:
         prefix = "".join(f"{name}={value} " for name, value in run.env)
         print(f"== {run.name}: {prefix}{' '.join(command)}", flush=True)
         code, stdout, stopped = bench(command, out / f"{run.name}.log", run_seconds(run), run.env)
-        report = json.loads(stdout) if code == 0 else None
+        # A bench that measured and then failed its own check (a write the
+        # governor never held) still printed its report.
+        try:
+            report = json.loads(stdout) if stdout.strip() else None
+        except json.JSONDecodeError:
+            report = None
         (out / f"{run.name}.json").write_text(
             json.dumps({"name": run.name, "kind": run.kind, "args": list(run.args), "env": dict(run.env), "exit": code,
                         "stopped": stopped, "report": report}, indent=2),
             encoding="utf-8")
-        if report is None:
+        if code != 0:
             failed.append(run.name)
             print(f"   {run.name}: {stopped or f'exited {code}'}; see {run.name}.log", flush=True)
+            # The job's log is all a dispatched sweep shows: the end of why.
+            tail = (out / f"{run.name}.log").read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            for line in tail:
+                print(f"   | {line}", flush=True)
     if failed:
         print(f"failed runs: {', '.join(failed)}", file=sys.stderr)
     return 1 if failed else 0

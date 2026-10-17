@@ -14,7 +14,12 @@
 //! never with the tree held, which the loop takes every tick. Inbound
 //! network events wait for it, in the order they arrived, rather than the
 //! loop waiting; and the governed-room reads of chrome's window transfers
-//! take only an owner already open.
+//! take only an owner already open. The session broker, built on the loop
+//! at session start and usually the owner's first user, only starts the
+//! open: its synchronous answers say the owner is opening, and its commits
+//! wait for it in their own futures. The rest of binding that broker (its
+//! invocation journal, MLS vault and channel state) runs on the
+//! session-start worker: the loop only starts it, polls it and installs it.
 
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
@@ -366,19 +371,7 @@ fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
 fn open_in_progress(
     tree: &WorkspaceTreeHandle,
 ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-    let runtime = tree.read().native_runtime.clone();
-    let (held, holding) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let holder = std::thread::spawn(move || {
-        let opening = runtime.opening();
-        let _ = held.send(());
-        let _ = released.recv_timeout(SLOW_PUBLICATION);
-        drop(opening);
-    });
-    holding
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the other open takes the writer");
-    (release, holder)
+    test_open_in_progress(tree, SLOW_PUBLICATION)
 }
 
 fn departed(seed: u8) -> iroh::EndpointId {
@@ -515,4 +508,181 @@ fn the_loop_reads_governed_rooms_without_opening_the_owner() {
         !governed,
         "a room no owner governs is ungoverned once the owner is open"
     );
+}
+
+#[test]
+fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
+    use crate::shell::broker_services::{NATIVE_OWNER_OPENING, NativeOwnerCommitService};
+    use std::sync::Arc;
+    use tilo_action_broker::services::WorkspaceMemberships;
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let room = active_room(&tree).to_string();
+    let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+    let network = Arc::new(network);
+    // The session starts with no owner open: the broker's services, built
+    // on the frame loop, are its first users. Each of the broker's owner
+    // services (commits, document reads, memberships, tasks) is a
+    // `NativeOwnerCommitService`; the task review resolves its own.
+    let (release, holder) = open_in_progress(&tree);
+
+    let (built, syncs) = on_a_slow_disk(|| {
+        timed(|| {
+            let commit = NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network)));
+            let review = crate::shell::task_review::NativeTaskReview::new(
+                tree.clone(),
+                Some(Arc::clone(&network)),
+            );
+            (commit, review)
+        })
+    });
+    let ((commit, review), took) = built;
+
+    assert_eq!(
+        syncs, 0,
+        "building the session broker's services synced the state file on the frame loop"
+    );
+    assert!(
+        took <= FRAME,
+        "building the session broker's services took {took:?} with the owner still opening, over one frame ({FRAME:?})"
+    );
+    let review = review.expect("an owner still opening is not a missing one");
+    // A synchronous question says the owner is opening, never that there
+    // is none, and never answers from a guessed owner.
+    assert_eq!(
+        OwnerCommitService::health(&commit).expect_err("health while the owner opens"),
+        NATIVE_OWNER_OPENING
+    );
+    assert_eq!(
+        WorkspaceMemberships::task_snapshot(&commit, &room)
+            .expect_err("a task snapshot while the owner opens"),
+        NATIVE_OWNER_OPENING
+    );
+    assert!(
+        review.requires_room(&room),
+        "a room read as needing no task review before the owner that knows had opened"
+    );
+
+    // A commit waits for the open in its own future, instead of failing
+    // closed or running without the owner.
+    let pending = commit.commit(OwnerCommitRequest {
+        room: "not a room".into(),
+        operation: CommitOperation::RetiredAgentRuntime,
+    });
+    let committing = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime for the commit")
+            .block_on(pending)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !committing.is_finished(),
+        "a commit gave up on an owner still opening"
+    );
+    drop(release);
+    holder.join().expect("the other open");
+    let committed = committing.join().expect("the commit's thread");
+    assert_eq!(
+        committed.map(drop),
+        Err("invalid native room".to_string()),
+        "the commit did not go on against the opened owner"
+    );
+
+    until_opened(&network);
+    OwnerCommitService::health(&commit).expect("the broker answers from the owner once it opened");
+    WorkspaceMemberships::health(&commit)
+        .expect("membership answers from the owner once it opened");
+}
+
+/// What the loop does to bring the session broker up, at session start and
+/// on the tick first login completes: start binding it, poll the start each
+/// tick, install what it produced. Binding opens the broker's invocation
+/// journal (a directory sync on every open), its vault and its channel
+/// state, so on a thread that may not sync it fails. Here each loop-side
+/// call returns within a frame and makes no sync, and the broker still
+/// comes up with its journal open, because the binding ran on the
+/// session-start worker.
+#[test]
+#[cfg(target_os = "linux")]
+#[serial_test::serial(process_env)]
+fn the_loop_brings_the_session_broker_up_without_waiting_for_the_disk() {
+    use crate::compositor::session_bootstrap::{
+        finish_session_collab_broker, service_socket_is_live, start_session_collab_broker,
+    };
+    use std::sync::Arc;
+    let runtime = tempfile::tempdir().expect("a runtime directory for the broker's socket");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+    let network = Arc::new(network);
+    let journal = {
+        let mut name = path.into_os_string();
+        name.push(".invocations");
+        std::path::PathBuf::from(name)
+    };
+
+    let ((broker, unavailable, ticks, slowest), syncs) =
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            on_a_slow_disk(|| {
+                let wake: crate::session_runtime::Wake = Arc::new(|| {});
+                let (start, started) =
+                    timed(|| start_session_collab_broker(Some(&network), tree.clone(), wake));
+                let mut slowest = started;
+                let mut ticks = 0_usize;
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_secs(30))
+                    .expect("deadline");
+                let outcome = loop {
+                    let (polled, took) = timed(|| start.poll());
+                    ticks = ticks.saturating_add(1);
+                    slowest = slowest.max(took);
+                    if let Some(outcome) = polled {
+                        break outcome;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "the session broker never came up off the loop"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+                    tree.clone(),
+                    crate::shell::hosted_inputs::HostedTileInputs::default(),
+                );
+                let (broker, installed) = timed(|| finish_session_collab_broker(&chrome, outcome));
+                let unavailable = chrome.borrow().collab_unavailable.clone();
+                (broker, unavailable, ticks, slowest.max(installed))
+            })
+        });
+
+    assert_eq!(
+        syncs, 0,
+        "bringing the session broker up synced on the frame loop's thread"
+    );
+    assert!(
+        slowest <= FRAME,
+        "a loop-side step of bringing the session broker up took {slowest:?} over {ticks} ticks, over one frame ({FRAME:?})"
+    );
+    let broker =
+        broker.unwrap_or_else(|| panic!("the session broker did not come up: {unavailable:?}"));
+    assert!(
+        unavailable.is_none(),
+        "a session whose broker came up reports collaboration unavailable: {unavailable:?}"
+    );
+    assert!(
+        service_socket_is_live(&launcher::services::collab_socket()),
+        "the broker that came up is not listening where the launcher dials"
+    );
+    assert!(
+        journal.is_dir(),
+        "the broker came up without opening its invocation journal at {}",
+        journal.display()
+    );
+    drop(broker);
 }

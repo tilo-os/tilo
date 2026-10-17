@@ -101,6 +101,18 @@ function notchLines(lines,wheelDelta,perNotch,axis) {
 }
 const applicationCommands=new Set(['a','b','f','i','k','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
+/** The keys that move the caret or delete in text: with the word modifier
+ * (Ctrl, Option on a Mac) or the line modifier (Cmd on a Mac) they still
+ * edit text, so they are the app's, not the browser's. */
+const textEditingKeys=new Set(['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End']);
+/** Whether `event` is a modified text-editing key: Ctrl+Backspace, Ctrl+Shift+Left
+ * and the like; on a Mac, Option or Cmd with them. Alt+Left/Right off a Mac
+ * stay the browser's history keys. */
+function isModifiedTextEdit(event,mac) {
+  if(!textEditingKeys.has(String(event.key??'')))return false;
+  if(mac)return Boolean(event.altKey||event.metaKey)&&!event.ctrlKey;
+  return Boolean(event.ctrlKey)&&!event.altKey&&!event.metaKey;
+}
 const desktopChordKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','KeyO',
   'Digit1','Digit2','Digit3','Digit4','Digit5','Digit6','Digit7','Digit8','Digit9']);
 /** The desktop's own chords (the browser shell's `chord`): Super with a
@@ -126,6 +138,7 @@ export function keyboardRoute(event,composing,mac) {
   const altGraph=Boolean(event.ctrlKey&&event.altKey&&!event.metaKey);
   if(key==='Dead')return 'text';
   if(key.length===1&&(!primary||altGraph))return 'text';
+  if(isModifiedTextEdit(event,mac))return 'forward';
   if(primary||event.metaKey||event.altKey)return 'browser';
   if(['Alt','Control','Meta','Shift'].includes(key))return 'modifier';
   return 'forward';
@@ -191,6 +204,8 @@ export function beforeInputRoute(event,composing) {
   if(['insertLineBreak','insertParagraph'].includes(event.inputType))return {kind:'key',key:'Enter'};
   if(event.inputType==='deleteContentBackward')return {kind:'key',key:'Backspace'};
   if(event.inputType==='deleteContentForward')return {kind:'key',key:'Delete'};
+  if(event.inputType==='deleteWordBackward')return {kind:'key',key:'Backspace',ctrlKey:true};
+  if(event.inputType==='deleteWordForward')return {kind:'key',key:'Delete',ctrlKey:true};
   return {kind:'ignore'};
 }
 export function transactionComplete(transaction) {

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use account_custody::{Capability, Custodian, CustodyError, GrantState, OAuthIssuer, OAuthUse};
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::{
     EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
@@ -24,6 +25,7 @@ use agent_provider_config::{
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use std::future::Future;
+use tilo_lock::MutexRecover as _;
 use tilo_model_gateway::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
     MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
@@ -528,7 +530,12 @@ fn configured_profile(profile_id: &str) -> Result<ProviderProfile, String> {
 }
 
 fn secret_status(profile_id: &str) -> Result<bool, String> {
-    let _ = configured_profile(profile_id)?;
+    let profile = configured_profile(profile_id)?;
+    if profile.sign_in.is_some() {
+        // A sign-in is "configured" while custody can still refresh it;
+        // Settings shows anything else as "Sign in again".
+        return Ok(sign_in_state(&profile)? == GrantState::Usable);
+    }
     Ok(SecretVault::open()
         .get(&vault_id(profile_id)?)
         .is_some_and(|secret| !secret.password.is_empty()))
@@ -557,6 +564,14 @@ fn selection_configured(
     if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
         return Err("provider endpoint is invalid".into());
     }
+    if profile.sign_in.is_some() {
+        // Minting a token may refresh it over the network; locally, only
+        // whether custody still holds a refreshable grant can be told.
+        return match sign_in_state(&profile)? {
+            GrantState::Usable => Ok(()),
+            GrantState::Missing | GrantState::SignInAgain => Err(SIGN_IN_AGAIN.into()),
+        };
+    }
     if let Some(secret) = plan_secret(&profile)? {
         // Header parsing is local and never includes credential bytes in errors.
         let header = match protocol {
@@ -577,9 +592,7 @@ static VAULT_WRITES: Mutex<()> = Mutex::new(());
 
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let mut key = Zeroizing::new(api_key);
     if key.trim().is_empty() || key.len() > 16 * 1024 {
         return Err("API key is empty or too large".into());
@@ -594,9 +607,7 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 
 fn remove_key(profile_id: &str) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
-    let _serial = VAULT_WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _serial = VAULT_WRITES.lock_recover();
     let mut vault = SecretVault::open();
     vault.remove(&vault_id(profile_id)?);
     vault.save();
@@ -611,9 +622,16 @@ const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
 // request (`ProviderFailure::unprocessed`), in `plan_send`.
 const RETRY_ATTEMPTS: u32 = 4;
 /// Every POST one Plan may make, the first included.
-const PLAN_ATTEMPTS: u32 = 3;
+const PLAN_ATTEMPTS: u32 = 5;
 const FIRST_RETRY_WAIT: Duration = Duration::from_millis(500);
 const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(4);
+/// The first pause before a Plan asks a refusing provider again, doubled
+/// each time up to [`LONGEST_PLAN_WAIT`]. A shared hosted quota (Vertex AI's
+/// dynamic shared quota answers HTTP 429 while it is busy) stays busy for
+/// tens of seconds, not the second a single client's rate limit lasts, so a
+/// Plan rides it out for as long as its own budget leaves room to answer.
+const FIRST_PLAN_WAIT: Duration = Duration::from_secs(1);
+const LONGEST_PLAN_WAIT: Duration = Duration::from_secs(8);
 const ROOM_TO_ANSWER: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -674,12 +692,85 @@ fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, Str
         if !profile.models.iter().any(|model| model.id == model_id) {
             return Err("model is not configured for this provider".into());
         }
-        let secret = plan_secret(&profile)?;
-        Ok((profile, secret))
+        let (secret, until) = if profile.sign_in.is_some() {
+            let (token, until) = sign_in_token(&profile, tilo_clock::unix_now(), Instant::now())?;
+            (Some(token), until)
+        } else {
+            (plan_secret(&profile)?, None)
+        };
+        Ok(((profile, secret), until))
     })
 }
 
-/// How long a resolved profile and key are reused at most. Changes to
+/// What a Google sign-in's provider asks for when it has to be renewed
+/// interactively.
+const SIGN_IN_AGAIN: &str = "the Google sign-in for this provider has ended; sign in again in \
+                             Settings, Agent Models";
+
+/// The use a Google sign-in grant of a model provider is refreshed through.
+const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
+
+/// How long before a minted access token's expiry it stops being reused, so
+/// a kept token is never one custody already counts as due for refresh
+/// (custody refreshes within a minute of expiry) and a request still
+/// reaches the provider while it is valid.
+const TOKEN_MARGIN: u64 = 90;
+
+/// The vault id of `profile_id`'s sign-in grant, after the same check
+/// [`vault_id`] makes.
+fn grant_id(profile_id: &str) -> Result<AccountId, String> {
+    vault_id(profile_id)?;
+    Ok(AccountId::new(agent_provider_config::sign_in_grant_id(
+        profile_id,
+    )))
+}
+
+fn sign_in_state(profile: &ProviderProfile) -> Result<GrantState, String> {
+    if !profile.signs_in_with_google() {
+        return Err("provider signs in with an unsupported issuer".into());
+    }
+    Custodian::live()
+        .oauth_grant_state(&grant_id(&profile.id)?)
+        .map_err(|error| error.to_string())
+}
+
+/// A current access token for `profile`'s Google sign-in, refreshed by
+/// custody when due (the refresh token never leaves it), and the instant
+/// after which it must not be reused.
+fn sign_in_token(
+    profile: &ProviderProfile,
+    now_unix: u64,
+    now: Instant,
+) -> Result<(Zeroizing<String>, Option<Instant>), String> {
+    if !profile.signs_in_with_google() {
+        return Err("provider signs in with an unsupported issuer".into());
+    }
+    let grant = grant_id(&profile.id)?;
+    // A refresh reseals the grant: one read-modify-write of the vault, like
+    // a key set through this gateway.
+    let _serial = VAULT_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (token, expires) = Custodian::live()
+        .oauth_access_token_with_expiry(&grant, GOOGLE_MODELS, false)
+        .map_err(|error| match error {
+            CustodyError::NeedsAuthentication => SIGN_IN_AGAIN.to_string(),
+            CustodyError::Offline => "Google could not be reached to renew the sign-in".into(),
+            other => format!("Google sign-in failed: {other}"),
+        })?;
+    Ok((token, expires.map(|unix| reuse_until(unix, now_unix, now))))
+}
+
+/// The instant a token expiring at `expires_unix` stops being reused.
+fn reuse_until(expires_unix: u64, now_unix: u64, now: Instant) -> Instant {
+    let left = expires_unix
+        .saturating_sub(now_unix)
+        .saturating_sub(TOKEN_MARGIN);
+    now.checked_add(Duration::from_secs(left)).unwrap_or(now)
+}
+
+/// How long a resolved profile and key are reused at most (a minted access
+/// token only until shortly before it expires, see [`reuse_until`]). Changes to
 /// `settings.json` or the vault, and keys set or removed through this
 /// gateway, take effect at once; this bounds what no file records, chiefly
 /// the keyring holding the vault's key: once it is locked, a Plan within
@@ -737,13 +828,10 @@ impl ProfileSources {
     /// nothing is kept.
     fn current() -> Option<Self> {
         let root = accounts::config_root()?;
-        // As `settings_store::settings_path`: the session document a sandbox
-        // names, else the one under the same config root as the vault.
-        let settings = std::env::var_os("TILO_SESSION_SETTINGS")
-            .filter(|path| !path.is_empty())
-            .map_or_else(|| root.join("settings.json"), PathBuf::from);
+        // The session document a sandbox names, else the one under the same
+        // config root as the vault.
         Some(Self {
-            settings,
+            settings: settings_store::settings_path()?,
             vault: accounts::vault_dir_in(&root).join("vault.enc"),
         })
     }
@@ -775,6 +863,8 @@ struct CachedProfile {
     model_id: String,
     stamp: SourceStamp,
     read_at: Instant,
+    /// When the credential itself stops being usable (a minted token).
+    until: Option<Instant>,
     resolved: ResolvedProfile,
 }
 
@@ -790,22 +880,21 @@ impl ProfileCache {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// The profile and key for `(profile id, model id)`: the kept ones while
     /// `stamp`, taken just before this call, is the one they were read
-    /// under and they are younger than [`PROFILE_REUSE`]; else `read`'s,
-    /// kept when stamped and nothing was forgotten meanwhile. A failed read
-    /// is never kept.
+    /// under, they are younger than [`PROFILE_REUSE`] and the credential is
+    /// short of the instant `read` said it stops being usable; else
+    /// `read`'s, kept when stamped and nothing was forgotten meanwhile. A
+    /// failed read is never kept.
     fn resolve(
         &self,
         (profile_id, model_id): (&str, &str),
         stamp: Option<SourceStamp>,
         now: Instant,
-        read: impl FnOnce() -> Result<ResolvedProfile, String>,
+        read: impl FnOnce() -> Result<(ResolvedProfile, Option<Instant>), String>,
     ) -> Result<ResolvedProfile, String> {
         let same =
             |entry: &CachedProfile| entry.profile_id == profile_id && entry.model_id == model_id;
@@ -825,8 +914,9 @@ impl ProfileCache {
         };
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let resolved = read()?;
-        if let Some(stamp) = stamp {
+        let (resolved, until) = read()?;
+        // A credential already past its reuse is used for this call only.
+        if let Some(stamp) = stamp.filter(|_| until.is_none_or(|until| now < until)) {
             let mut state = self.lock();
             if state.generation == generation {
                 state.entries.retain(|entry| !same(entry));
@@ -835,6 +925,7 @@ impl ProfileCache {
                     model_id: model_id.to_owned(),
                     stamp,
                     read_at: now,
+                    until,
                     resolved: resolved.clone(),
                 });
             }
@@ -859,6 +950,7 @@ impl ProfileCache {
 
 fn fresh(entry: &CachedProfile, now: Instant) -> bool {
     now.saturating_duration_since(entry.read_at) < PROFILE_REUSE
+        && entry.until.is_none_or(|until| now < until)
 }
 
 /// A missing credential means unauthenticated only for a literal loopback
@@ -1077,6 +1169,16 @@ fn outbound_body(
         return Err("plan body must be a JSON object".into());
     };
     let capped = model_output_limit(profile, model_id, &object)?;
+    if profile.signs_in_with_google() && ends_with_model_turn(&object) {
+        // Gemini on Vertex AI refuses such a request outright ("Requests
+        // ending with a model turn are not supported"); say why here
+        // instead of spending a round trip on it.
+        return Err(
+            "Google Vertex AI cannot continue the model's own reply: the conversation must end \
+             with a user or tool message"
+                .into(),
+        );
+    }
     object.insert("model".into(), serde_json::Value::String(model_id.into()));
     match profile.protocol {
         ProviderProtocol::OpenAiCompatible => {
@@ -1140,6 +1242,18 @@ fn outbound_body(
         object.insert(capped_field.into(), serde_json::Value::from(limit));
     }
     Ok(serde_json::Value::Object(object))
+}
+
+/// Whether the last message of a request is the model's (an assistant
+/// prefill).
+fn ends_with_model_turn(object: &serde_json::Map<String, serde_json::Value>) -> bool {
+    object
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|messages| messages.last())
+        .and_then(|message| message.get("role"))
+        .and_then(serde_json::Value::as_str)
+        == Some("assistant")
 }
 
 /// Anthropic's limit on `cache_control` breakpoints in one request.
@@ -1736,6 +1850,10 @@ struct StreamCall {
     id: String,
     name: String,
     arguments: String,
+    /// Provider metadata the call must be replayed with: Gemini on Vertex AI
+    /// signs each call (`extra_content.google.thought_signature`) and
+    /// refuses the next turn when a replayed call lacks its signature.
+    extra_content: Option<serde_json::Value>,
 }
 
 /// Rebuilds a `chat.completion` body from `chat.completion.chunk` deltas.
@@ -1749,6 +1867,10 @@ struct StreamAssembly {
     malformed_reasoning_content: bool,
     refusal: Option<String>,
     calls: Vec<StreamCall>,
+    /// The message's own provider metadata (Gemini's signature of a text
+    /// answer), replayed with it like a call's. Boxed: it is rare, and the
+    /// assembly is one variant of [`Wire`].
+    extra_content: Option<Box<serde_json::Value>>,
     /// Tool calls at an index below this one are complete.
     frontier: usize,
     finish: Option<String>,
@@ -1829,6 +1951,12 @@ impl StreamAssembly {
             self.refusal.get_or_insert_default().push_str(refusal);
             output = true;
         }
+        if let Some(extra) = delta
+            .and_then(|delta| delta.get("extra_content"))
+            .filter(|extra| extra.is_object())
+        {
+            self.extra_content = Some(Box::new(extra.clone()));
+        }
         for call in delta
             .and_then(|delta| delta.get("tool_calls"))
             .and_then(serde_json::Value::as_array)
@@ -1866,6 +1994,9 @@ impl StreamAssembly {
                 .and_then(serde_json::Value::as_str)
             {
                 slot.arguments.push_str(arguments);
+            }
+            if let Some(extra) = call.get("extra_content").filter(|extra| extra.is_object()) {
+                slot.extra_content = Some(extra.clone());
             }
             output = true;
         }
@@ -1909,14 +2040,23 @@ impl StreamAssembly {
                 .calls
                 .into_iter()
                 .map(|call| {
-                    serde_json::json!({
+                    let mut replay = serde_json::json!({
                         "id": call.id,
                         "type": "function",
                         "function": { "name": call.name, "arguments": call.arguments },
-                    })
+                    });
+                    if let (Some(extra), Some(object)) =
+                        (call.extra_content, replay.as_object_mut())
+                    {
+                        object.insert("extra_content".into(), extra);
+                    }
+                    replay
                 })
                 .collect();
             message.insert("tool_calls".into(), calls);
+        }
+        if let Some(extra) = self.extra_content {
+            message.insert("extra_content".into(), *extra);
         }
         serde_json::json!({
             "id": self.id,
@@ -2493,7 +2633,7 @@ async fn send_provider(
         unprocessed: false,
         status: None,
     };
-    for header in provider_transform::headers(profile.protocol, secret).map_err(refused)? {
+    for header in provider_transform::profile_headers(profile, secret).map_err(refused)? {
         let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
             // As before: a key that cannot be a header fails before any send.
             .map_err(|_| refused("provider transport failed".into()))?;
@@ -2656,6 +2796,21 @@ fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
         .min(LONGEST_RETRY_WAIT)
 }
 
+/// The pause before a Plan's retry `retry` (1-based): what the provider asked
+/// for, else a doubling backoff from [`FIRST_PLAN_WAIT`].
+fn plan_retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
+    if let Some(wait) = asked_for {
+        return wait;
+    }
+    let doubling = 1u32
+        .checked_shl(retry.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    FIRST_PLAN_WAIT
+        .checked_mul(doubling)
+        .unwrap_or(LONGEST_PLAN_WAIT)
+        .min(LONGEST_PLAN_WAIT)
+}
+
 async fn while_busy<L, W, WF, A, AF>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
 where
     L: Fn() -> Option<Duration>,
@@ -2740,7 +2895,7 @@ where
             Ok(answer) => return Ok(answer),
             Err(failure) => failure,
         };
-        let waiting = retry_wait(
+        let waiting = plan_retry_wait(
             made,
             match failure.again {
                 Again::Soon(asked_for) => asked_for,
@@ -3247,6 +3402,73 @@ mod tests {
         assert_eq!(provider_error_detail(long.as_bytes()), "");
         assert_eq!(provider_error_detail(b"<html>bad gateway</html>"), "");
         assert_eq!(provider_error_detail(b""), "");
+    }
+
+    /// The request a Google Vertex AI profile sends: the checked model id
+    /// under its publisher, every field the endpoint accepts left in place
+    /// (each verified against Vertex AI's OpenAI-compatible endpoint), and a
+    /// conversation ending with the model's own turn refused locally.
+    #[test]
+    fn a_vertex_plan_keeps_its_fields_and_refuses_a_trailing_model_turn() {
+        let vertex = agent_provider_config::ProviderProfile::google_vertex(
+            "tilo-509618",
+            "global",
+            "gemini-4-argon",
+        );
+        let caller = serde_json::json!({
+            "model": "anything",
+            "max_completion_tokens": 4096,
+            "parallel_tool_calls": false,
+            "tool_choice": "required",
+            "tools": [{"type": "function", "function": {"name": "plan", "parameters": {"type": "object"}}}],
+            "messages": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"}
+            ]
+        });
+        let sent = outbound_body(&vertex, "google/gemini-4-argon", caller.clone(), true).unwrap();
+        assert_eq!(sent["model"], "google/gemini-4-argon");
+        assert_eq!(sent["stream"], true);
+        assert_eq!(
+            sent["stream_options"],
+            serde_json::json!({"include_usage": true})
+        );
+        assert_eq!(sent["max_completion_tokens"], 4096);
+        assert_eq!(sent["parallel_tool_calls"], false);
+        assert_eq!(sent["tool_choice"], "required");
+        let mut prefill = caller;
+        prefill["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
+        let refused =
+            outbound_body(&vertex, "google/gemini-4-argon", prefill.clone(), false).unwrap_err();
+        assert!(refused.contains("Vertex AI"), "{refused}");
+        // Other providers accept a prefill; nothing changes for them.
+        assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false).is_ok());
+    }
+
+    /// Chunks as Vertex AI streams two signed parallel calls: the assembled
+    /// body replays each call's signature, the message's own too.
+    #[test]
+    fn stream_assembly_keeps_gemini_signatures() {
+        let mut assembly = StreamAssembly::default();
+        let signature = serde_json::json!({"google": {"thought_signature": "c2ln"}});
+        assembly.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            {"extra_content": signature, "function": {"arguments": "{\"query\":\"mail\"}", "name": "list_operations"}, "id": "call_1", "index": 0, "type": "function"}]}}]}));
+        assembly.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            {"function": {"arguments": "{\"query\":\"calendar\"}", "name": "list_operations"}, "id": "call_2", "index": 1, "type": "function"}]}}]}));
+        assembly.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"content": "", "role": "assistant", "extra_content": signature}, "finish_reason": "tool_calls"}],
+            "usage": {"completion_tokens": 40}}));
+        let completion = assembly.into_completion();
+        let message = &completion["choices"][0]["message"];
+        assert_eq!(message["tool_calls"][0]["extra_content"], signature);
+        assert!(message["tool_calls"][1].get("extra_content").is_none());
+        assert_eq!(
+            message["tool_calls"][1]["function"]["arguments"],
+            "{\"query\":\"calendar\"}"
+        );
+        assert_eq!(message["extra_content"], signature);
     }
 
     #[test]

@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 # Event and task dates and times are model values.
@@ -52,6 +53,13 @@ pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the time-zone database through its engine library in the runtime
+# bundle (libtilo_timezone_engine.so, crates/runtime/engines/timezone)
+# instead of the runtime. The release collection enables it
+# (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
+# links chrono-tz statically, because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-timezone-engine/thin"]
 # The CalDAV transport runs on the app runtime and is a no-op without a
 # configured account.
 default = ["live"]
@@ -60,6 +68,8 @@ live = ["tilo-dav/oauth"]
 [dev-dependencies]
 account-custody = { path = "../../crates/system/account-custody" }
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, features = ["test-support"] }
+# Reads the signed manifest's offers to check them against what the app publishes.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["chrono", "test-support"] }
 tempfile.workspace = true
 mail = { path = "../mail" }

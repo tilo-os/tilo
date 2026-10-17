@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::task::AbortHandle;
 
 pub use crate::wake::WakeHandle;
@@ -48,11 +49,7 @@ impl<T> LocalState<T> {
 
     /// Read the current value without exposing the backing lock.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
-        let value = self
-            .inner
-            .value
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let value = self.inner.value.read_recover();
         read(&value)
     }
 
@@ -77,11 +74,7 @@ impl<T> LocalState<T> {
         if !self.inner.wake.authorize_publication() {
             return None;
         }
-        let mut current = self
-            .inner
-            .value
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.inner.value.write_recover();
         let revision = self.next_revision()?;
         *current = value;
         self.inner.revision.store(revision, Ordering::Release);
@@ -103,11 +96,7 @@ impl<T> LocalState<T> {
         if !self.inner.wake.authorize_publication() {
             return false;
         }
-        let mut value = self
-            .inner
-            .value
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut value = self.inner.value.write_recover();
         let Some(revision) = self.next_revision() else {
             return false;
         };
@@ -445,13 +434,7 @@ impl<T> LatestTask<T> {
     /// Abort the future started by [`Self::spawn`], if one is running, and
     /// remember `next` as the one to abort later.
     fn replace_task(&self, next: Option<AbortHandle>) {
-        let previous = std::mem::replace(
-            &mut *self
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            next,
-        );
+        let previous = std::mem::replace(&mut *self.task.lock_recover(), next);
         if let Some(previous) = previous {
             previous.abort();
         }
@@ -517,10 +500,7 @@ impl<T> LatestTask<T> {
     where
         T: Send + Sync + 'static,
     {
-        let mut generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generation = self.generation.lock_recover();
         let run = generation.checked_add(1).filter(|next| *next != u64::MAX)?;
         self.replace_task(None);
         // Keep generation and state publication in one critical section so a
@@ -545,10 +525,7 @@ impl<T> LatestTask<T> {
 
     /// Fallible form of [`Self::cancel`].
     pub fn try_cancel(&self, cancelled: T) -> bool {
-        let mut generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generation = self.generation.lock_recover();
         let Some(next) = generation.checked_add(1) else {
             return false;
         };
@@ -579,10 +556,7 @@ impl<T> TaskCompletion<T> {
         if self.run == 0 || !self.writer.wake.is_active() {
             return false;
         }
-        let generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.generation.lock_recover();
         *generation == self.run
     }
 
@@ -590,10 +564,7 @@ impl<T> TaskCompletion<T> {
     /// Returns whether the value was accepted. The captured owner may close
     /// after authorization and suppress notification without revoking it.
     pub fn complete(self, value: T) -> bool {
-        let generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.generation.lock_recover();
         if self.run == 0 || *generation != self.run {
             return false;
         }

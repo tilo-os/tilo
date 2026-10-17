@@ -52,6 +52,8 @@ pub mod fs;
 #[cfg(feature = "filesystem")]
 pub mod full_replica;
 #[cfg(feature = "filesystem")]
+pub mod fuse_session;
+#[cfg(feature = "filesystem")]
 pub mod history;
 #[cfg(feature = "filesystem")]
 pub mod hydration;
@@ -233,7 +235,6 @@ pub use record_replication::{
 pub use record_repository::{
     MAX_RECORD_OPERATIONS, MAX_RECORD_VERSIONS, MAX_REPOSITORY_RECORDS, RecordRepository,
     RecordRepositoryError, RecordRepositoryKey, RecordTransactionCheckpoint,
-    RecordTransactionStatus,
 };
 #[cfg(feature = "filesystem")]
 pub use record_subscription::{

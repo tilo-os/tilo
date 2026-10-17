@@ -283,7 +283,7 @@ def near(rows: list, at, tol=45.0) -> list:
 
 
 def saturated_near(png: str, at, radius: int = 70) -> int:
-    """Count vivid pixels near `at`; -1 when Pillow is missing.
+    """Count vivid pixels near `at`; Pillow is required for pixel evidence.
 
     The desktop is a low-saturation surface and a peer's caret and name
     pill are drawn in a palette hue, so this makes "it is on screen" a
@@ -292,8 +292,8 @@ def saturated_near(png: str, at, radius: int = 70) -> int:
     """
     try:
         from PIL import Image
-    except ImportError:
-        return -1
+    except ImportError as error:
+        raise RuntimeError("cursor pixel proof requires Pillow") from error
     im = Image.open(png).convert("RGB")
     w, h = im.size
     px = im.load()
@@ -445,11 +445,8 @@ def main() -> int:
                           timeout=20)
             if check(f"a frame was captured from {s.name}'s session", bool(ok)):
                 hits = saturated_near(p, at)
-                if hits < 0:
-                    print("  SKIP  pixel check (Pillow not installed)")
-                else:
-                    check(f"{other}'s cursor is drawn on {s.name}'s screen", hits > 40,
-                          f"{hits} vivid px within 70 of {at}")
+                check(f"{other}'s cursor is drawn on {s.name}'s screen", hits > 40,
+                      f"{hits} vivid px within 70 of {at}")
                 print(f"        {p}")
 
         print()

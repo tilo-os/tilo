@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::shell::i18n::{t, t_args};
 
 use os_actions::{LinkKind, LinkStatus, VolumeState};
+use tilo_lock::MutexRecover as _;
 use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 use ui::floating_surface::HostNetworkStatus;
@@ -101,6 +102,12 @@ impl SystemStatus {
 
     /// For the tray's accessible name and tests asserting on meaning.
     pub fn summary(&self) -> String {
+        self.reading().unwrap_or_else(|| t("status-summary-empty"))
+    }
+
+    /// The readings the machine has, joined, or `None` while it has none:
+    /// for a surface that would rather show nothing than a stand-in line.
+    pub fn reading(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         match &self.link {
             Some(l) if l.kind == LinkKind::Wired => parts.push(l.name.clone().map_or_else(
@@ -131,11 +138,7 @@ impl SystemStatus {
                 t_args("status-battery", &[("percent", pct.into())])
             });
         }
-        if parts.is_empty() {
-            t("status-summary-empty")
-        } else {
-            parts.join(" · ")
-        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
 
@@ -309,11 +312,7 @@ impl StatusBridge {
     }
 
     fn wait_for_frame_request(&self) {
-        let mut guard = self
-            .frame_interest
-            .lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self.frame_interest.lock.lock_recover();
         while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
             guard = self
                 .frame_interest
@@ -528,6 +527,7 @@ mod tests {
             assert!(!s.battery_is_low());
             assert!(!s.audio_is_silent(), "unknown volume is not silence");
             assert_eq!(s.summary(), "System status");
+            assert_eq!(s.reading(), None, "nothing read means nothing to show");
         }
 
         // Phase `a_machine_with_no_battery_draws_no_battery`.

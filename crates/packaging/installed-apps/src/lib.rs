@@ -42,6 +42,12 @@ pub struct InstalledApp {
     pub opens_mime_types: Vec<String>,
     /// Normalized URI schemes from `[providers].schemes`.
     pub opens_uri_schemes: Vec<String>,
+    /// `[providers].secondary`: another app claiming the same resource is
+    /// the default for it.
+    pub opens_secondary: bool,
+    /// The signed manifest's `[[offers]]`: actions the app offers while it
+    /// is not running, which the action catalogue lists for it.
+    pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
 }
 
 impl InstalledApp {
@@ -49,7 +55,12 @@ impl InstalledApp {
     /// when the manifest is missing (the payload was deleted behind the
     /// registry's back) or unreadable.
     fn from_package(entry: &InstalledPackage) -> Option<Self> {
-        let manifest = tilo_app_package::view::read_manifest(&entry.manifest_path).ok()?;
+        // One decode of the signed manifest: the view and the offers are
+        // both read from it.
+        let source = std::fs::read_to_string(&entry.manifest_path).ok()?;
+        let signed = tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()?;
+        let offers = signed.offers.clone();
+        let manifest = tilo_app_package::view::ManifestView::try_from(signed).ok()?;
         let package_id = if manifest.package_id.is_empty() {
             entry.id.clone()
         } else {
@@ -76,6 +87,8 @@ impl InstalledApp {
             opens_extensions: manifest.opens_ext.clone(),
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
+            opens_secondary: manifest.opens_secondary,
+            offers,
         })
     }
 
@@ -121,6 +134,21 @@ impl InstalledApp {
         self.signed_manifest()
             .map(|manifest| manifest.resources.kinds)
             .unwrap_or_default()
+    }
+
+    /// Whether the signed manifest's `[capabilities]` lists `capability`
+    /// (a `tilo-caps` name such as `open-uri`), required or optional; never
+    /// for an unreadable manifest.
+    #[must_use]
+    pub fn declares_capability(&self, capability: &str) -> bool {
+        self.signed_manifest().is_some_and(|manifest| {
+            let declared = manifest.capabilities;
+            declared
+                .required
+                .iter()
+                .chain(&declared.optional)
+                .any(|name| name == capability)
+        })
     }
 
     fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
@@ -257,7 +285,9 @@ mod tests {
             "so.tilo.viewer",
             &manifest(
                 "id = \"so.tilo.viewer\"\nname = \"Viewer\"\nversion = \"2.0.0\"\nkind = \"app\"",
-                "[entrypoint]\nbin = \"bin/viewer\"\ntype = \"gui\"\n",
+                "[entrypoint]\nbin = \"bin/viewer\"\ntype = \"gui\"\n\
+                 [[offers]]\nresource = \"viewer.shelf\"\naction = \"show-recent\"\n\
+                 label = \"Show recent\"\nkind = \"read\"\noperation = \"view\"\n",
             ),
         );
         let tool = install(
@@ -294,12 +324,23 @@ mod tests {
         assert_eq!(viewer.display_name, "Viewer");
         assert_eq!(viewer.version, "2.0.0");
         assert!(viewer.has_gui);
+        let offered = viewer
+            .offers
+            .iter()
+            .map(|offer| (offer.resource.as_str(), offer.action.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            offered,
+            [("viewer.shelf", "show-recent")],
+            "the actions its signed manifest offers while it is closed"
+        );
         let tool = apps
             .iter()
             .find(|app| app.package_id == "so.tilo.tool")
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
+        assert!(tool.offers.is_empty());
     }
 
     #[test]
@@ -472,6 +513,8 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
             }
         };
         assert!(app(signed).declared_resource_kinds().is_empty());

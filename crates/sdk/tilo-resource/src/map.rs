@@ -175,6 +175,13 @@ impl<T: 'static> MapEntries for Map<T> {
     fn insert_moved(&mut self, key: String, staged: &mut dyn Any) -> Result<(), ModelError> {
         self.entries.insert_moved(key, staged)
     }
+
+    /// The keys of the chunks `self` and `before` do not share: a map
+    /// changed since it was cloned from `before` differs only there.
+    fn differing_keys<'a>(&'a self, before: &'a dyn Any) -> Option<Vec<&'a str>> {
+        let before = before.downcast_ref::<Self>()?;
+        Some(self.entries.differing_keys(&before.entries))
+    }
 }
 
 /// A map reconciled key by key, as a `BTreeMap<String, T>` is.

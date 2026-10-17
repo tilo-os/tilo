@@ -489,8 +489,10 @@ fn image_paste_into_a_fresh_empty_note_is_undoable() {
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "keyboard");
     let after = app.read_document(|doc| read::page_blocks(doc, page));
-    assert_eq!(after.len(), 1);
+    // The picture, then the empty line the caret goes on.
+    assert_eq!(after.len(), 2);
     assert!(after[0].text.starts_with("![Pasted image](asset:"));
+    assert_eq!(after[1].text, "");
     assert!(app.undo());
     assert_eq!(
         app.read_document(|doc| read::page_blocks(doc, page)),
@@ -531,12 +533,15 @@ fn image_paste_excludes_a_column_zero_endpoint_and_preserves_peer_text_through_u
     *clipboard.image.lock().unwrap() = Some(image_bytes());
     paste(&mut app, "keyboard");
     let after = app.read_document(|doc| read::page_blocks(doc, page));
-    assert_eq!(after.len(), 3);
+    // The selected line becomes the picture and an empty line for the
+    // caret; the lines after it are untouched.
+    assert_eq!(after.len(), 4);
     assert!(after[0].text.starts_with("![Pasted image](asset:"));
-    assert_eq!(after[1..], before[1..]);
+    assert_eq!(after[1].text, "");
+    assert_eq!(after[2..], before[1..]);
     app.merge_peer(&mut peer).unwrap();
     assert_eq!(
-        app.read_document(|doc| read::page_blocks(doc, page)[2].text.clone()),
+        app.read_document(|doc| read::page_blocks(doc, page)[3].text.clone()),
         "Peer After"
     );
     assert!(app.undo());
@@ -627,7 +632,8 @@ fn image_paste_replaces_empty_rows_and_selected_separators_without_touching_the_
         let after = app.read_document(|doc| read::page_blocks(doc, page));
         let image_at = usize::from(!empty);
         assert!(after[image_at].text.starts_with("![Pasted image](asset:"));
-        assert_eq!(after[image_at + 1..], before[1..]);
+        assert_eq!(after[image_at + 1].text, "", "the caret's line under it");
+        assert_eq!(after[image_at + 2..], before[1..]);
         if !empty {
             assert_eq!(after[0], before[0]);
         }

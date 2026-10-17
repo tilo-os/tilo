@@ -12,6 +12,7 @@ use tilo_projector::control::{ConnectStage, ProjectorEvent};
 
 use super::Helpers;
 use super::paths::SessionPaths;
+use tilo_lock::MutexRecover as _;
 
 type Waker = Box<dyn FnOnce() + Send>;
 
@@ -35,7 +36,7 @@ pub(crate) struct SessionControl {
 
 impl SessionControl {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Asks the session to stop, waking every waiter and every registered

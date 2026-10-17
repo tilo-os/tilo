@@ -15,6 +15,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{self as wl_compositor, BufferAssignment, SurfaceAttributes};
 
 use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
+use tilo_lock::MutexRecover as _;
 
 pub struct ClientCursor {
     status: CursorImageStatus,
@@ -94,11 +95,7 @@ fn read_cursor_surface(surface: &WlSurface, output_scale: f64) -> Option<Arc<Cur
         let hotspot = states
             .data_map
             .get::<CursorImageSurfaceData>()
-            .map(|data| {
-                data.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .hotspot
-            })
+            .map(|data| data.lock_recover().hotspot)
             .unwrap_or_default();
         let scale = crate::compositor::state::committed_surface_scale(states);
         let mut attrs = states.cached_state.get::<SurfaceAttributes>();

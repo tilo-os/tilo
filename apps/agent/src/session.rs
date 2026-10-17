@@ -18,8 +18,14 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
+mod confirmation;
 mod native_task;
 mod outstanding;
+mod selection_prompt;
+
+/// The most characters the Task Center carrier of a non-workspace task
+/// takes in one update.
+const LEGACY_TASK_MESSAGE_CHARS: usize = 280;
 
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
@@ -162,12 +168,6 @@ fn task_action_from_offer(
         (None, Some(_)) => 0,
         (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
     };
-    if !matches!(
-        offer.descriptor.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::None
-    ) {
-        return Err("Tasks cannot invoke an action requiring human confirmation".into());
-    }
     if !offer.wants_content() {
         tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
             .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
@@ -220,6 +220,12 @@ pub struct Config {
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
     pub content: tilo_content::ContentStore,
+    /// Applications started beside the agent whose actions its first run
+    /// waits for ([`Session::await_companions`]).
+    pub companions: Vec<String>,
+    /// The model the desktop chose for this agent, when it launched it with
+    /// one; otherwise the Settings default this process can read, if any.
+    pub provider: Option<crate::providers::ProviderSelection>,
 }
 
 pub struct Session {
@@ -237,6 +243,9 @@ pub struct Session {
     /// task loop surveys.
     broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     next_broker_request: u64,
+    /// The companions not yet seen in the catalogue, until the first run
+    /// waited for them; empty afterwards.
+    awaiting_companions: Vec<String>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -310,13 +319,14 @@ impl Session {
             "joined the room; waiting for the document"
         );
         let is_managed = managed.is_some();
+        let cfg_companions = cfg.companions.clone();
         let chooser = match managed {
             Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
                 anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
                 chooser
             }
-            None => default_selection().map_or_else(
+            None => cfg.provider.clone().or_else(default_selection).map_or_else(
                 || Chooser::new(false, cfg.model_timeout),
                 |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
             ),
@@ -331,6 +341,7 @@ impl Session {
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
             memory: agent_loop::Memory::default(),
+            awaiting_companions: cfg_companions,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
@@ -348,7 +359,9 @@ impl Session {
     /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
-            std::sync::Arc::new(crate::transform::GatewayModel),
+            std::sync::Arc::new(crate::transform::GatewayModel {
+                launched: self.chooser.selection().cloned(),
+            }),
             self.cfg.content.clone(),
         );
         // The transforms are published under the agent's own route; a
@@ -382,23 +395,24 @@ impl Session {
                 }
                 Some(CollabEvent::Invocation {
                     id,
+                    invocation,
                     resource,
                     action,
                     argument,
                     actor,
                     context,
-                    ..
                 }) => {
-                    let update = transforms.start(
-                        id,
+                    if let Some(update) = transforms.start(
+                        crate::transform::Directed { id, invocation },
                         &resource,
                         &action,
                         argument.as_deref(),
                         &actor,
                         context.as_deref(),
-                    );
-                    self.link
-                        .send(&CollabRequest::UpdateInvocation { id, update })?;
+                    ) {
+                        self.link
+                            .send(&CollabRequest::UpdateInvocation { id, update })?;
+                    }
                 }
                 Some(CollabEvent::InvocationCancellation { id }) => {
                     if let Some(update) = transforms.cancel(id) {
@@ -488,9 +502,12 @@ impl Session {
                         }
                     };
                     let message = match finish.reply {
-                        // The model's own reply is the durable chat answer. The
-                        // Task Center carrier bounds it to 280 characters.
-                        Some(reply) => reply.chars().take(280).collect(),
+                        // The model's own reply is the durable chat answer. A
+                        // workspace task keeps the whole of it (an answer to a
+                        // question is the task's result); the older Task Center
+                        // carrier bounds it to 280 characters.
+                        Some(reply) if self.native_task.is_some() => reply,
+                        Some(reply) => reply.chars().take(LEGACY_TASK_MESSAGE_CHARS).collect(),
                         None => format!("Completed {completed} broker-approved action(s)"),
                     };
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
@@ -722,7 +739,17 @@ impl Session {
         })?;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
-            Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
+            Err(error) if confirmation::is_awaiting(&error) => {
+                match self.await_confirmation(run, (action, arguments), invocation)? {
+                    Ok(update) => update,
+                    Err(stop) => return Ok(Err(stop)),
+                }
+            }
+            Err(error) => {
+                return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
+                    error,
+                ))));
+            }
         };
         if self.native_task.is_none() {
             self.publish_task_interaction(run, action, &update, 0);
@@ -1241,6 +1268,7 @@ mod tests {
             task_id: "task:review".into(),
             title: "Review draft".into(),
             instruction: None,
+            subject: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
@@ -1360,6 +1388,8 @@ mod tests {
                             ui::permissions::KindSet::READ_UNDOABLE,
                         ),
                         content: tilo_content::ContentStore::memory(),
+                        companions: Vec::new(),
+                        provider: None,
                     },
                     link,
                     chooser: Chooser::new(false, Duration::ZERO),
@@ -1369,6 +1399,7 @@ mod tests {
                     broker_surfaces: Vec::new(),
                     next_broker_request: 1,
                     memory: agent_loop::Memory::default(),
+                    awaiting_companions: Vec::new(),
                     broker_revision: 0,
                     catalogue_cache: None,
                     turn: None,

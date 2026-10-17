@@ -2007,6 +2007,34 @@ wakes. The root that owns the client returns it from
 reach the connection. Tests stand in for the session with
 `RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
 
+#### Actions offered while the app is closed
+
+A running app's actions are in the catalogue, and after it closes the broker
+keeps offering what it published in that workspace. An app that has never run
+in a workspace has published nothing there, so the manifest names the entry
+points it wants found anyway, signed with the rest of the package:
+
+```toml
+[[offers]]
+resource  = "calendar.calendar"   # the resource exactly as the app publishes it
+action    = "show-tasks"
+label     = "Show tasks"
+kind      = "read"                # read | undoable (default) | outside
+operation = "view"                # document | effect (default) | view
+# confirm = true                  # a person confirms before it runs
+```
+
+The catalogue lists each offer for the app in every workspace where it is
+installed and not running, as `application:<room>:<app>`, to callers who may
+open the app and use an action of that kind. A confirmed offer asks before
+anything starts. Invoking one launches the app and delivers the invocation once
+the app publishes the action, which its own published contract then admits. An
+action the app published in the workspace before is listed from that instead
+of the manifest. Only actions without parameters are offered; the running app
+publishes the full typed contract. `app.` and `tilo-ui-bound:` resources are
+reserved. Check the offers against what the app publishes in a test, as
+Calendar's `the_actions_the_manifest_offers_while_closed_are_published` does.
+
 ### Localization
 
 `tilo-app new` creates `locales/en-US.ftl` and a generated `src/locales.rs`

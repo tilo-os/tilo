@@ -86,6 +86,7 @@ use crate::auth::{AuthenticatedPeer, PeerRole};
 use crate::peer::AgentRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::WorkspaceRuntime;
+use tilo_lock::RwLockRecover as _;
 
 /// How a room admits devices beyond its exact membership.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -373,10 +374,7 @@ impl RelayTrust<'_> {
         workspace_id: u64,
         now_ns: u64,
     ) -> Result<(), DenyReason> {
-        let agents = self
-            .agents
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let agents = self.agents.read_recover();
         match agents.get(device) {
             None => Ok(()),
             Some(None) => Err(DenyReason::AgentWithdrawn),
@@ -399,8 +397,7 @@ impl RelayTrust<'_> {
         now_ns: u64,
     ) -> Option<tilo_relay_protocol::delegation::Delegation> {
         self.agents
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_recover()
             .get(device)
             .cloned()
             .flatten()
@@ -668,9 +665,12 @@ pub(crate) fn decide_in(
 
 /// Whether `role`'s preset lets its members make undoable changes across a
 /// governed room ([`tilo_action_policy::roles::role_rules`]): the roles that
-/// write records.
+/// write records. A Moderator writes as an Editor does, and moderates too.
 pub(crate) fn role_writes(role: collab_types::Role) -> bool {
-    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
+    matches!(
+        role,
+        collab_types::Role::Owner | collab_types::Role::Moderator | collab_types::Role::Editor
+    )
 }
 
 #[cfg(test)]

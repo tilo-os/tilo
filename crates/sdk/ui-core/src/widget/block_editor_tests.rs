@@ -1166,14 +1166,12 @@ fn block_typography_scales_and_bands_each_kind() {
         let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
-        let (label_width, _) = renderer.measure("1.", BlockKind::Paragraph.font_size(), None);
-        let origin = numbered_prefix_origin(
-            line_rect,
-            line_rect.x0 - gutter,
-            f64::from(label_width),
-            BlockKind::Paragraph.font_size(),
-            2.0,
-            large.tokens.metrics.icon_label_gap,
+        let (origin, _) = list_marker::ordinal_placement(
+            numbered_line,
+            line_rect.x0 - gutter + numbered_line.text_inset(&large),
+            "1.",
+            &large,
+            &mut renderer,
         );
         let caret = numbered_line.caret_rect(&large, 0);
         assert!(
@@ -1450,8 +1448,18 @@ fn code_fences_copy_highlight_and_render_formulas() {
         assert!(!editor.take_edit_ops().is_empty());
     }
 
+    fn accessibility_root_is_the_document_node_without_its_blocks() {
+        let mut editor = BlockEditor::from_markdown("# Title\n\nBody\n\n- item\n");
+        editor.set_focus(true);
+        let mut full = Widget::accessibility(&editor).unwrap();
+        assert!(!full.children.is_empty());
+        full.children.clear();
+        assert_eq!(Widget::accessibility_root(&editor), Some(full));
+    }
+
     code_copy_targets_are_bounded_and_copy_complete_runs();
     fenced_languages_get_ephemeral_syntax_roles();
+    accessibility_root_is_the_document_node_without_its_blocks();
     formula_fence_reserves_preview_below_editable_source();
     formula_mode_is_persisted_and_visual_edits_emit_native_source();
 }
@@ -2539,6 +2547,35 @@ fn a_block_fields_suggestion_timer_wakes_the_editor() {
     );
 }
 
+/// Resting at the end of a misspelled word, or coming back to one, offers
+/// its correction with no further input: the wake its line asked for brings
+/// a frame, and that frame repaints the line with the chip on it.
+#[test]
+fn a_word_settling_under_the_caret_repaints_its_line_with_the_suggestion() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    editor.set_focus(true);
+    editor.focus_block(0, CursorPlacement::End);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_spell_language("en_US");
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    editor.settle_caret_suggestion_at(now);
+    editor.dirty = false;
+
+    editor.settle_caret_suggestion_at(now + crate::text_edit::SUGGESTION_SETTLE);
+    assert!(
+        editor.dirty,
+        "the settled word's suggestion repaints the editor"
+    );
+    editor.dirty = false;
+    editor.settle_caret_suggestion_at(now + crate::text_edit::SUGGESTION_SETTLE * 2);
+    assert!(
+        !editor.dirty,
+        "an offer already shown asks for nothing more"
+    );
+}
+
 #[test]
 fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_read_only() {
     let mut editor = BlockEditor::new();
@@ -2569,4 +2606,51 @@ fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_rea
     );
     editor.set_read_only(true);
     assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
+}
+
+/// The editing keys every text field has, in the rich-text editor too: word
+/// deletion with Ctrl, word-wise selection with Ctrl+Shift, and deleting a
+/// selection.
+#[test]
+fn ctrl_backspace_and_word_selection_edit_by_words() {
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    fn named(key: NamedKey) -> WindowEvent {
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(key),
+            None,
+            ElementState::Pressed,
+        ))
+    }
+
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("hello brave world")]);
+    editor.focus_block(0, CursorPlacement::Byte(17));
+    let mut ctrl = Dispatch::new().modifiers(ModifiersState::CONTROL);
+    ctrl.send(&mut editor, &named(NamedKey::Backspace));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "hello brave ",
+        "Ctrl+Backspace deletes a word"
+    );
+
+    Dispatch::new()
+        .modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT)
+        .send(&mut editor, &named(NamedKey::ArrowLeft));
+    // A selection inside one paragraph is that line's; Delete shows its extent.
+    dispatch(&mut editor, &named(NamedKey::Delete));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "hello ",
+        "Delete removes the selection"
+    );
+
+    editor.focus_block(0, CursorPlacement::Byte(0));
+    ctrl.send(&mut editor, &named(NamedKey::Delete));
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "",
+        "Ctrl+Delete deletes the next word and the space after it"
+    );
 }

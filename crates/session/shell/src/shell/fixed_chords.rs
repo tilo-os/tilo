@@ -272,7 +272,8 @@ pub fn all_chords() -> impl Iterator<Item = FixedChord> {
 
 /// The keyboard-map section of `docs/shell-navigation-keyboard-map.md`
 /// between its fixed-chord markers, rendered from the table.
-pub fn keyboard_map_markdown() -> String {
+#[cfg(test)]
+fn keyboard_map_markdown() -> String {
     use std::fmt::Write as _;
     let mut out = String::from("| Intent | Keyboard |\n|---|---|\n");
     for entry in FIXED_CHORDS.iter() {

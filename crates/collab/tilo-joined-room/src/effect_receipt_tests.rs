@@ -3,6 +3,10 @@ use crate::application_record::tests::{Fixture, fixture};
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_audit() {
     let mut fixture = fixture();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
@@ -74,7 +78,11 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
     let messages = reopened
         .with_current(room, |view| {
             let mut peer = view.peer().clone();
-            assert!(peer.remove_member(member.user_public_key, &fixture.key, fixture.now)?);
+            assert!(peer.governance_mut().remove_member(
+                member.user_public_key,
+                &fixture.key,
+                fixture.now
+            )?);
             peer.durable_mutation_messages(
                 view.peer(),
                 &fixture.key,
@@ -233,6 +241,10 @@ fn enroll_remote_history_member(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 fn effect_archived_signed_history_admits_and_reopens_remote_member_without_governor_blobs() {
     let mut fixture = fixture();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
@@ -262,6 +274,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     let signed_root = fixture
         .governor
         .peer()
+        .workspace()
         .workspace_effect_history_root()
         .unwrap();
     assert!(signed_root.is_some());
@@ -274,7 +287,10 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             assert_eq!(view.device(), &member);
             assert_ne!(view.device(), view.governor());
             assert_eq!(view.record.effect_history_root, None);
-            assert_eq!(view.peer().workspace_effect_history_root()?, signed_root);
+            assert_eq!(
+                view.peer().workspace().workspace_effect_history_root()?,
+                signed_root
+            );
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
                     view.peer().admitted_room().unwrap(),
@@ -311,7 +327,10 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         .unwrap()
         .with_current(room, |view| {
             assert_eq!(view.record.effect_history_root, None);
-            assert_ne!(view.peer().workspace_effect_history_root()?, signed_root);
+            assert_ne!(
+                view.peer().workspace().workspace_effect_history_root()?,
+                signed_root
+            );
             assert_eq!(
                 tilo_desktop_model::projection::workspace_effect_receipts_of(
                     view.peer().admitted_room().unwrap(),
@@ -532,7 +551,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
             );
             assert_eq!(
                 view.record.effect_history_root,
-                view.peer().workspace_effect_history_root()?
+                view.peer().workspace().workspace_effect_history_root()?
             );
             Ok(())
         })
@@ -561,6 +580,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     let admitted_root = fixture
         .governor
         .peer()
+        .workspace()
         .workspace_effect_history_root()
         .unwrap();
     let local_root = reopened

@@ -257,6 +257,55 @@ impl Project {
         Ok(())
     }
 
+    /// Replace range
+    ///
+    /// Replace a range of one file's text with `text`, or insert `text` at a
+    /// caret, counting characters; the rest of the file stays as it is. A
+    /// place a person selected is passed exactly as given.
+    #[action]
+    pub fn replace_range(
+        &mut self,
+        #[param(
+            "Where: a range or a caret in one file, in characters",
+            place = "files"
+        )]
+        at: tilo_resource::Place,
+        #[param("The text that replaces the range")] text: String,
+    ) -> Result<(), Refusal> {
+        let (file, start, end) = match &at {
+            tilo_resource::Place::Range { item, start, end } => {
+                (item, (*start).min(*end), (*start).max(*end))
+            }
+            tilo_resource::Place::Caret { item, at } => (item, *at, *at),
+            tilo_resource::Place::Item(_) => {
+                return Err(Refusal::new("name a range or a caret in the file"));
+            }
+        };
+        let entry = self
+            .files
+            .get(&Id::from(file.clone()))
+            .ok_or("no such file")?;
+        if entry.kind != EntryKind::File {
+            return Err(Refusal::new("a folder has no text"));
+        }
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(Refusal::new("the text is larger than a file holds"));
+        }
+        let source = self.buffers.get_mut(file).ok_or("the file has no text")?;
+        match &mut source.initial {
+            // A text not yet stored is edited where it is.
+            Some(initial) => {
+                *initial = splice_chars(initial, start, end, &text)
+                    .ok_or("the range lies outside the file's text")?;
+            }
+            // A stored text is spliced in the document when the record is
+            // stored, against the text it holds then, which this record may
+            // not have read.
+            None => source.splice = Some((start, end - start, text)),
+        }
+        Ok(())
+    }
+
     /// Delete
     ///
     /// Delete the file and its text, or the folder once it is empty.
@@ -601,6 +650,23 @@ fn valid_name(name: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// `text` with characters `start..end` replaced by `insert`, or `None` when
+/// the range runs past its end.
+fn splice_chars(text: &str, start: usize, end: usize, insert: &str) -> Option<String> {
+    let byte = |chars: usize| {
+        text.char_indices()
+            .map(|(index, _)| index)
+            .chain(std::iter::once(text.len()))
+            .nth(chars)
+    };
+    let (from, to) = (byte(start)?, byte(end)?);
+    let mut next = String::with_capacity(text.len() - (to - from) + insert.len());
+    next.push_str(text.get(..from)?);
+    next.push_str(insert);
+    next.push_str(text.get(to..)?);
+    Some(next)
+}
+
 /// The SHA-256 of `text`, as a contextual edit names the text it was made
 /// against.
 #[must_use]
@@ -622,6 +688,9 @@ pub struct Source {
     initial: Option<String>,
     /// Whether a new text is the same object on every device that makes it.
     shared: bool,
+    /// A splice (characters at, deleted, inserted) written into the stored
+    /// text when the record is stored.
+    splice: Option<(usize, usize, String)>,
 }
 
 impl PartialEq for Source {
@@ -630,6 +699,7 @@ impl PartialEq for Source {
             && self.text == other.text
             && self.initial == other.initial
             && self.shared == other.shared
+            && self.splice == other.splice
     }
 }
 
@@ -642,6 +712,7 @@ impl Source {
             text: None,
             initial: Some(text.into()),
             shared: false,
+            splice: None,
         }
     }
 
@@ -892,12 +963,40 @@ impl Model for Source {
             text: None,
             initial: None,
             shared: false,
+            splice: None,
         })
     }
 
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let Some(text) = &self.initial else {
-            slot.object(doc, ObjType::Text)?;
+            let object = slot.object(doc, ObjType::Text)?;
+            if let Some((at, delete, insert)) = &self.splice {
+                let current = doc.text(&object)?;
+                let length = current.chars().count();
+                if at.checked_add(*delete).is_none_or(|end| end > length) {
+                    return Err(ModelError::Refused(
+                        "the range lies outside the file's text".into(),
+                    ));
+                }
+                let removed: usize = current
+                    .chars()
+                    .skip(*at)
+                    .take(*delete)
+                    .map(char::len_utf8)
+                    .sum();
+                if current.len() - removed + insert.len() > MAX_TEXT_BYTES {
+                    return Err(ModelError::Refused(format!(
+                        "the edit would make the file larger than {MAX_TEXT_BYTES} bytes"
+                    )));
+                }
+                tilo_resource::TextEdit::Splice {
+                    at: *at,
+                    delete: *delete,
+                    insert: insert.clone(),
+                }
+                .apply_under(doc, &object)
+                .map_err(refused)?;
+            }
             return Ok(());
         };
         let shared = match (slot.current(doc)?, slot) {

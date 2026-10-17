@@ -33,6 +33,9 @@ aarch64 = "aarch64"
 required = ["files.paths"]
 optional = ["clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri"]
 
+[resources]
+kinds = ["files.folder", "tilo.accounts"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -67,6 +70,7 @@ open-uri = "via-host"
 collab = "optional@1"
 tilo-fs = "optional@1"
 tools = "optional@1"
+shell-ui = "optional@1"
 
 [entrypoint]
 bin             = "bin/file-explorer"

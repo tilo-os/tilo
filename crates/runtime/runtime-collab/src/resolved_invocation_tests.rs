@@ -82,6 +82,7 @@ where
             );
             let channel = ChannelHandle {
                 inner: Rc::new(connection.bootstrap()),
+                descriptors: None,
             };
             tilo_test_env::within("the RPC under test", action(channel)).await;
             task.abort();

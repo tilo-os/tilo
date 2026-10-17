@@ -27,6 +27,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use media::audio_output::{CHANNELS, MAX_SAMPLES, Output, RATE};
 use serde_json::Value;
+use tilo_lock::MutexRecover as _;
 
 /// At most this much PCM waits per tab (100 ms): the latency ceiling.
 const MAX_BUFFERED_FRAMES: usize = RATE as usize / 10;
@@ -187,9 +188,7 @@ impl Mixer {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     fn attach(&self, rate: u32, channels: u16) -> u64 {
@@ -352,9 +351,7 @@ impl PageAudio {
     }
 
     fn slot(&self) -> MutexGuard<'_, Option<(Arc<Mixer>, u64, u16)>> {
-        self.stream
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.stream.lock_recover()
     }
 }
 

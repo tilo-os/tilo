@@ -21,6 +21,7 @@ use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
 use tilo_desktop_model::{RoomId, Workspace};
+use tilo_lock::MutexRecover as _;
 
 /// The resource an app's device-signature request names. A signature is
 /// asked for one of the app's own actions, so a grant letting an app sign
@@ -62,6 +63,11 @@ pub trait ChannelKeySource: Send + Sync + 'static {
 pub trait PersonRecordKinds: Send + Sync + 'static {
     /// The person-record kinds `app_id` declares; empty for none.
     fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
+
+    /// `app_id` attached naming `surface`, the surface file it was started
+    /// with. A host that runs no package of the app may take it as the
+    /// app's surface; by default it is ignored and only a package's counts.
+    fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 }
 
 /// A host that knows no app's person records: nothing is signed in the
@@ -128,18 +134,11 @@ struct ClientConnection {
 }
 impl Drop for ClientConnection {
     fn drop(&mut self) {
-        self.clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.id);
+        self.clients.lock_recover().remove(&self.id);
     }
 }
 fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
-    for stream in clients
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .values()
-    {
+    for stream in clients.lock_recover().values() {
         let _ = stream.shutdown(Shutdown::Both);
     }
 }
@@ -183,7 +182,7 @@ pub fn spawn(
                         };
                         let Some(id) = next_client.checked_add(1) else { break; };
                         next_client = id;
-                        thread_clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, cancellation);
+                        thread_clients.lock_recover().insert(id, cancellation);
                         let connection = ClientConnection { id, clients: thread_clients.clone() };
                         workers.retain(|worker| !worker.is_finished());
                         match thread::Builder::new()
@@ -247,6 +246,9 @@ fn serve(
         return;
     }
     let handshake = negotiated.handshake;
+    if let Some(surface) = &handshake.surface {
+        person.attached(&handshake.app_id, surface.as_bytes());
+    }
     let Some(room) = RoomId::parse(&handshake.workspace_id) else {
         let _ = write_action_frame(
             &mut stream,
@@ -474,6 +476,23 @@ fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
     }
 }
 
+/// The denial for a document op the receipt does not admit, naming why: an
+/// app told only "denied" cannot tell a missing grant from a change it
+/// failed to name.
+fn denial(
+    decided: Result<collab_types::Receipt, collab_types::receipt::ReceiptRefusal>,
+) -> Option<Response> {
+    match decided {
+        Ok(collab_types::Receipt::Admit) => None,
+        Ok(collab_types::Receipt::Hold) => Some(Response::Denied(
+            "the app's surface is not here to decide this document action".into(),
+        )),
+        Err(refusal) => Some(Response::Denied(format!(
+            "workspace role or capability denies this document action: {refusal}"
+        ))),
+    }
+}
+
 /// Validate the entire unsigned document envelope before lending it the
 /// certified device signature. The app cannot turn this into a generic
 /// signing oracle: workspace/app are fixed by the launch handshake, artifact
@@ -561,25 +580,22 @@ fn sign_collaboration_op(
         let allows = |node: &tilo_action_policy::TreePath, kind| {
             workspace.answer_at(&principal_id, node, kind, unix_now()) == Answer::Allow
         };
-        Some(
-            collab_types::decide_op(
-                &op,
-                &record,
-                None,
-                None,
-                &collab_types::Surfaces::process(),
-                &allows,
-            )
-            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
-        )
+        Some(collab_types::decide_op(
+            &op,
+            &record,
+            None,
+            None,
+            &collab_types::Surfaces::process(),
+            &allows,
+        ))
     });
-    let allowed = match decided {
+    let decided = match decided {
         None => return Response::Denied("workspace is not available".into()),
         Some(None) => return Response::Denied("identity is not a workspace member".into()),
-        Some(Some(allowed)) => allowed,
+        Some(Some(decided)) => decided,
     };
-    if !allowed {
-        return Response::Denied("workspace role or capability denies this document action".into());
+    if let Some(denied) = denial(decided) {
+        return denied;
     }
     let signing_bytes = match op.signing_bytes() {
         Ok(bytes) => bytes,
@@ -1410,6 +1426,7 @@ params = []
             &Handshake {
                 workspace_id: room.to_string(),
                 app_id: "so.tilo.notes".into(),
+                surface: None,
             },
         )
         .expect("handshake");
@@ -1570,6 +1587,7 @@ params = []
             &Handshake {
                 workspace_id: RoomId::new().to_string(),
                 app_id: "so.tilo.file-explorer".into(),
+                surface: None,
             },
         )
         .unwrap();

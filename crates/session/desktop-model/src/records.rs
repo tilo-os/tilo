@@ -75,6 +75,7 @@ mod tests {
             route: WorkspaceTaskRoute::Manual,
             status: WorkspaceTaskStatus::Queued,
             resource: None,
+            subject: None,
             created_at: 1,
             updated_at: 1,
             audit: Vec::new(),

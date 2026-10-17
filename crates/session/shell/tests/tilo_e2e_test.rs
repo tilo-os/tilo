@@ -468,30 +468,35 @@ fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
 fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     // Phase `chrome_file_drop_appends_tab_and_bumps_revision`.
     {
-        // Production-path counterpart: `ChromeState::handle_file_drop` (invoked on
-        // `WindowEvent::DroppedFile`) and `apply_workspace_drop_from_path`.
+        // Production path: `ChromeState::handle_file_drop_at_placement`, what a
+        // `WindowEvent::DroppedFile` onto a group reaches.
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let before_rev = chrome.borrow().revision;
-        let before_tab_count = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups
-            [0]
-        .tabs
-        .len();
+        let (group_id, before_tab_count) = {
+            let state = chrome.borrow();
+            let group = &state.tree().desktop.workspaces[0].strips[0].window_groups[0];
+            (group.id, group.tabs.len())
+        };
 
         let tab_id = chrome
             .borrow_mut()
-            .handle_file_drop(std::path::Path::new("/tmp/main.ts"))
+            .handle_file_drop_at_placement(
+                std::path::Path::new("/tmp/main.ts"),
+                shell::shell::tab_binding::Placement::TabIn(group_id),
+            )
             .expect("tab_id");
 
         let st = chrome.borrow();
         assert!(
             st.revision > before_rev,
-            "handle_file_drop should bump the chrome revision so widgets re-sync"
+            "a file drop should bump the chrome revision so widgets re-sync"
         );
         let group = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert_eq!(group.active_tab, tab_id);
         assert_eq!(group.tabs.len(), before_tab_count + 1);
-        assert_eq!(group.tabs.last().unwrap().title, "main.ts");
+        let dropped = group.tabs.iter().find(|tab| tab.id == tab_id).unwrap();
+        assert_eq!(dropped.title, "main.ts");
     }
 
     // Phase `overview_button_click_toggles_overview_overlay`.

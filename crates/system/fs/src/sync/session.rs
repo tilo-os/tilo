@@ -59,6 +59,7 @@ use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1};
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
 use crate::workspace_authority::{AuthorityRequest, AuthorityResponse, WorkspaceAuthority};
+use tilo_lock::MutexRecover as _;
 
 pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/2";
 pub const SESSION_PROTOCOL_VERSION: u16 = 2;
@@ -872,10 +873,7 @@ impl SessionProtocol {
         }
         write_frame(send, &SessionFrameV1::Done).await?;
         let (before, mut state) = {
-            let mut namespace = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut namespace = self.namespace.lock_recover();
             (
                 namespace.heads(),
                 namespace.begin_sync_with(&peer.device_public_key),
@@ -886,18 +884,12 @@ impl SessionProtocol {
         // may not have agreed on what both sides hold.
         if matches!(exchanged, Ok(true)) {
             self.namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock_recover()
                 .finish_sync_with(peer.device_public_key, &state);
         }
         // Records that arrived before the placements this exchange brought
         // are projected now, not at this device's next pass.
-        let changed = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads()
-            != before;
+        let changed = self.namespace.lock_recover().heads() != before;
         if changed
             && let Some(records) = &self.records
             && let Some(materializer) = &records.materializer
@@ -956,18 +948,10 @@ impl SessionProtocol {
                 None => Vec::new(),
             };
             if !message.is_empty() {
-                let _ = self
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .sync_receive(state, &message);
+                let _ = self.namespace.lock_recover().sync_receive(state, &message);
             }
             let gate = self.publication_gate().await;
-            let reply = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .sync_generate(state);
+            let reply = self.namespace.lock_recover().sync_generate(state);
             drop(gate);
             let done = message.is_empty() && reply.is_none();
             let reply = reply
@@ -999,11 +983,7 @@ impl SessionProtocol {
         let heads: Vec<automerge::ChangeHash> =
             heads.iter().map(|h| automerge::ChangeHash(*h)).collect();
         let gate = self.publication_gate().await;
-        let delta = self
-            .namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .changes_since(&heads);
+        let delta = self.namespace.lock_recover().changes_since(&heads);
         drop(gate);
         if !delta.is_empty() {
             let binding = NamespaceBindingV1::sign(
@@ -1197,8 +1177,7 @@ impl SessionPool {
         }
         if self
             .legacy
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&addr.id)
             .is_some_and(|until| Instant::now() < *until)
         {
@@ -1258,10 +1237,7 @@ impl SessionPool {
             }
             Err(error) if protocol_unsupported(&error) => {
                 if let Some(until) = Instant::now().checked_add(LEGACY_RETRY) {
-                    self.legacy
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(addr.id, until);
+                    self.legacy.lock_recover().insert(addr.id, until);
                 }
                 Ok(None)
             }
@@ -1378,9 +1354,7 @@ pub(super) async fn sync_namespace(
     }
     let peer = session.peer.device_public_key;
     let (before, mut state) = {
-        let mut namespace = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut namespace = namespace.lock_recover();
         (namespace.heads(), namespace.begin_sync_with(&peer))
     };
     let mut completed = false;
@@ -1390,10 +1364,7 @@ pub(super) async fn sync_namespace(
             Some(repository) => Some(repository.publication_gate().read().await),
             None => None,
         };
-        let message = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .sync_generate(&mut state);
+        let message = namespace.lock_recover().sync_generate(&mut state);
         drop(gate);
         let sent_nothing = message.is_none();
         let message = message
@@ -1425,10 +1396,7 @@ pub(super) async fn sync_namespace(
             None => Vec::new(),
         };
         if !reply.is_empty() {
-            let _ = namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .sync_receive(&mut state, &reply);
+            let _ = namespace.lock_recover().sync_receive(&mut state, &reply);
         }
         if sent_nothing && reply.is_empty() {
             completed = true;
@@ -1436,9 +1404,7 @@ pub(super) async fn sync_namespace(
         }
     }
     let _ = send.finish();
-    let mut namespace = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut namespace = namespace.lock_recover();
     if completed {
         namespace.finish_sync_with(peer, &state);
     }
@@ -1458,8 +1424,7 @@ pub(super) async fn pull_namespace(
     policy: &PeerPolicy,
 ) -> Result<(bool, Vec<u8>)> {
     let heads = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .heads()
         .into_iter()
         .map(|h| h.0)
@@ -1504,9 +1469,7 @@ pub(super) async fn pull_namespace(
     )
     .map_err(|error| anyhow!("refusing the peer's namespace changes: {error}"))?;
     let delta = payload.bytes;
-    let mut ns = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ns = namespace.lock_recover();
     let before = ns.heads();
     let resolution = ns.apply_remote_and_resolve(&delta).unwrap_or_default();
     let changed = ns.heads() != before;
@@ -2111,9 +2074,7 @@ pub(super) async fn collect_replica_acks(
         if observations.is_empty() {
             continue;
         }
-        let mut registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = registry.lock_recover();
         registry.batch(|registry| {
             for (revision, observation) in observations {
                 let observed = observation.observed_at_ms;

@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use tilo_tray_host::{IconRasteriser, Tray};
+use tilo_tray_host::{IconRasteriser, OwnerResolver, Tray};
 
 #[cfg(test)]
 mod tests;
@@ -22,8 +22,28 @@ pub fn icon_rasteriser() -> IconRasteriser {
     })
 }
 
+/// Which app keeps an item in the tray, proven from the registering
+/// process with the checks notifications use: the Flatpak whose sandbox it
+/// runs in (its connection is normally the sandbox's xdg-dbus-proxy), else
+/// the host app a launch by this shell started. An app that lives on in the
+/// tray is reopened through its item ([`crate::shell::host_apps`]).
+pub fn owner_resolver() -> OwnerResolver {
+    Arc::new(owner_of_process)
+}
+
+#[cfg(target_os = "linux")]
+fn owner_of_process(pid: u32) -> Option<String> {
+    crate::notifications::verified_flatpak_app_id(pid)
+        .or_else(|| crate::shell::launcher::verified_package_for_descendant(pid))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn owner_of_process(_pid: u32) -> Option<String> {
+    None
+}
+
 /// The session's tray, served by [`tilo_tray_host::watcher::serve`].
 pub fn global() -> &'static Arc<Tray> {
     static TRAY: OnceLock<Arc<Tray>> = OnceLock::new();
-    TRAY.get_or_init(|| Tray::new(icon_rasteriser()))
+    TRAY.get_or_init(|| Tray::with_owner_resolver(icon_rasteriser(), owner_resolver()))
 }

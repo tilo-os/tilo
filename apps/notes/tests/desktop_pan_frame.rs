@@ -1,7 +1,9 @@
 //! Six Notes windows in the desktop surface the browser desktop hosts apps
 //! in, panned by coalesced trackpad wheels. A pan moves laid-out windows and
 //! nothing else, so a wheel's own host tick is left to the frame, and that
-//! frame, which nothing new reached, neither ticks, syncs nor publishes.
+//! frame, which nothing new reached, neither ticks, syncs nor publishes, nor
+//! asks the windows' History again what the frame before it answered, nor
+//! draws a window at rest again.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -104,10 +106,23 @@ fn calls(rows: &[Sample], phase: &str) -> usize {
 
 #[test]
 fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
+    // This is one continuous gesture. A slow host must not turn a frame
+    // into the desktop's swipe-end deadline, which legitimately changes
+    // focus and syncs the windows. Exercise that deadline separately below.
+    ui::time::testing::with_monotonic_time(ui::time::now(), assert_quiet_pan_frames);
+}
+
+fn assert_quiet_pan_frames() {
     ui::i18n::I18nManager::init("en-US");
     let f = NotebookFixture::rich();
     let checkout = component_support::notebook(&f);
     let (mut harness, handle) = six_notes(&f, &checkout);
+    warm_windows(&mut harness, &handle);
+
+    assert_pan_frames(&mut harness, &handle);
+}
+
+fn warm_windows(harness: &mut FrameHarness, handle: &DesktopHandle) {
     let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
     assert!(max > 0.0, "six windows overflow the strip");
     // One pan across the strip and back first, as the browser's
@@ -115,26 +130,30 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     // first frame on screen does once.
     for (dx, end) in [(-120.0, max), (120.0, 0.0)] {
         for _ in 0..200 {
-            if (pan_offset(&handle) - end).abs() < 0.5 {
+            if (pan_offset(handle) - end).abs() < 0.5 {
                 break;
             }
-            wheel(&mut harness, dx);
+            wheel(harness, dx);
             harness.poll_frame().unwrap();
         }
         assert!(
-            (pan_offset(&handle) - end).abs() < 0.5,
+            (pan_offset(handle) - end).abs() < 0.5,
             "the first pan reaches {end}"
         );
     }
+}
 
+fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
     let frames: usize = 60;
-    let start = pan_offset(&handle);
+    let start = pan_offset(handle);
     let quiet = harness.quiet_frames();
+    let settled = harness.settled_history_frames();
+    let replayed = harness.replayed_window_draws();
     let ((), rows) = observe(|| {
         for index in 0..frames {
             let dx = if (index / 10) % 2 == 0 { -6.0 } else { 6.0 };
-            wheel(&mut harness, dx);
-            wheel(&mut harness, dx);
+            wheel(harness, dx);
+            wheel(harness, dx);
             assert!(harness.poll_frame().unwrap(), "each wheel pair is a frame");
             let stats = harness.last_relayout();
             assert!(
@@ -145,7 +164,7 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         }
     });
     assert!(
-        (pan_offset(&handle) - start).abs() < 0.01,
+        (pan_offset(handle) - start).abs() < 0.01,
         "every wheel panned the strip"
     );
     // A pan changes no document, focus or declaration, and a view-only
@@ -153,15 +172,34 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     // host tick (no interaction since the last frame left one pending), no
     // sync of any window, no undo publication and so no resource discovery.
     assert_eq!(
-        harness.quiet_frames() - quiet,
+        harness
+            .quiet_frames()
+            .checked_sub(quiet)
+            .expect("quiet frame count never decreases"),
         u64::try_from(frames).unwrap(),
         "every pan frame was quiet: {rows:?}"
+    );
+    // Nor does it ask each window's History again whether the app still
+    // has the document owners it registered, or whether a committed
+    // frontier moved: the frame before asked, and its witness proves that
+    // nothing either reads has moved since. Each such question walks a
+    // whole app.
+    assert_eq!(
+        harness
+            .settled_history_frames()
+            .checked_sub(settled)
+            .expect("settled history frame count never decreases"),
+        u64::try_from(frames).unwrap(),
+        "every pan frame took its History answer from the frame before: {rows:?}"
     );
     for phase in [
         "ui.host_tick",
         "ui.frame_sync",
         "ui.publish_undo_status",
         "ui.bound_discovery_miss",
+        "ui.history_root_validation",
+        "ui.history_heads",
+        "ui.settle_replayed_draws",
     ] {
         assert_eq!(
             calls(&rows, phase),
@@ -183,14 +221,157 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         "{records} record admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
     );
+    assert_pan_frames_replay(harness, replayed, frames);
 
     // Any change still reaches its own frame: a click into a window syncs
     // the windows and publishes undo on the frame that shows it.
     let ((), rows) = observe(|| harness.click_at(300.0, 450.0));
+    assert_eq!(
+        calls(&rows, "ui.settle_replayed_draws"),
+        1,
+        "the replayed windows are drawn again before the click: {rows:?}"
+    );
     assert!(
         calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,
         "a click syncs and publishes on its frame: {rows:?}"
     );
+    assert!(
+        calls(&rows, "ui.history_root_validation") >= WINDOWS,
+        "a click's frame asks every window's History again: {rows:?}"
+    );
+}
+
+#[test]
+fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
+    ui::i18n::I18nManager::init("en-US");
+    // Either the parked host wakes at the deadline, or the next wheel
+    // arrives after it. Neither is a view-only continuation of the pan.
+    for next_wheel in [false, true] {
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            let f = NotebookFixture::rich();
+            let checkout = component_support::notebook(&f);
+            let (mut harness, handle) = six_notes(&f, &checkout);
+            warm_windows(&mut harness, &handle);
+            let active = handle.snapshot("g", vec![]).active;
+            wheel(&mut harness, -1200.0);
+            assert!(harness.poll_frame().unwrap());
+            let offset = pan_offset(&handle);
+            assert!(offset > 0.0, "the gesture panned the strip");
+            let deadline = harness
+                .frame_schedule()
+                .next_wake_deadline
+                .expect("a pan schedules its end even without further input");
+            assert!(deadline > ui::time::now(), "the gesture has not ended");
+            ui::time::testing::with_monotonic_time(
+                deadline
+                    .checked_sub(ui::time::Duration::from_nanos(1))
+                    .expect("the gesture deadline is at least one nanosecond"),
+                || {
+                    let quiet = harness.quiet_frames();
+                    let (_, rows) = observe(|| harness.poll_frame().unwrap());
+                    assert_eq!(
+                        harness.quiet_frames(),
+                        quiet + 1,
+                        "not due before the deadline"
+                    );
+                    assert_eq!(calls(&rows, "ui.frame_sync"), 0, "{rows:?}");
+                },
+            );
+            let quiet = harness.quiet_frames();
+            let ((), rows) = ui::time::testing::with_monotonic_time(deadline, || {
+                observe(|| {
+                    if next_wheel {
+                        wheel(&mut harness, -6.0);
+                        wheel(&mut harness, -6.0);
+                    }
+                    assert!(
+                        harness.poll_frame().unwrap(),
+                        "the gesture's end gets a frame"
+                    );
+                })
+            });
+            assert_eq!(harness.quiet_frames(), quiet, "ending a pan is not quiet");
+            assert_ne!(
+                handle.snapshot("g", vec![]).active,
+                active,
+                "focus follows the pan"
+            );
+            for phase in ["ui.frame_sync", "ui.publish_undo_status"] {
+                assert!(calls(&rows, phase) > 0, "{phase} must run: {rows:?}");
+            }
+            if !next_wheel {
+                assert_eq!(
+                    pan_offset(&handle).to_bits(),
+                    offset.to_bits(),
+                    "focus does not reframe the strip"
+                );
+                assert!(
+                    harness
+                        .frame_schedule()
+                        .next_wake_deadline
+                        .is_none_or(|next| next > deadline),
+                    "the deadline was consumed"
+                );
+            }
+        });
+    }
+}
+
+/// A window at rest is not drawn again on a pan frame: the frame shows its
+/// last drawing moved by the pan. Every one of `frames` pan frames since
+/// `replayed` replayed at least one window, and the last shows what a frame
+/// drawing every window shows. Panned once more, the next frame replays
+/// again (the first frame after a full one may draw).
+fn assert_pan_frames_replay(harness: &mut FrameHarness, replayed: u64, frames: usize) {
+    let windows = harness.replayed_window_draws().saturating_sub(replayed);
+    assert!(
+        windows >= u64::try_from(frames).unwrap(),
+        "{windows} windows replayed over {frames} pan frames"
+    );
+    let shown = harness.render_rgba();
+    let before = harness.replayed_window_draws();
+    harness.settle_replayed_draws();
+    assert_eq!(
+        harness.replayed_window_draws(),
+        before,
+        "settling draws every window"
+    );
+    let drawn = harness.render_rgba();
+    assert_eq!(
+        ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&shown, &drawn),
+        0,
+        "a pan frame that replayed windows shows what drawing them shows; they differ within {:?}",
+        differing_bounds(&shown, &drawn, 1800)
+    );
+    for _ in 0..2 {
+        wheel(harness, -6.0);
+        assert!(harness.poll_frame().unwrap());
+    }
+    assert!(harness.replayed_window_draws() > before);
+}
+
+/// The pixel rectangle `(x0, y0, x1, y1)` holding every pixel of two
+/// `width`-wide RGBA frames that differs by more than antialiasing, to say
+/// where a failed comparison looked different.
+fn differing_bounds(a: &[u8], b: &[u8], width: usize) -> Option<(usize, usize, usize, usize)> {
+    a.chunks_exact(4)
+        .zip(b.chunks_exact(4))
+        .enumerate()
+        .filter(|(_, (x, y))| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
+        .map(|(index, _)| {
+            (
+                index.checked_rem(width).unwrap_or(0),
+                index.checked_div(width).unwrap_or(0),
+            )
+        })
+        .fold(None, |bounds, (x, y)| {
+            Some(bounds.map_or(
+                (x, y, x, y),
+                |(x0, y0, x1, y1): (usize, usize, usize, usize)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                },
+            ))
+        })
 }
 
 /// How many widgets lie inside a hosted component.

@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
 use vello::wgpu;
 
 /// Quiet time after the last request before trimming.
@@ -135,7 +136,7 @@ impl Drop for DeviceRegistration {
 }
 
 fn devices() -> MutexGuard<'static, Vec<(u64, wgpu::Device)>> {
-    DEVICES.lock().unwrap_or_else(PoisonError::into_inner)
+    DEVICES.lock_recover()
 }
 
 /// Have every trim return what `device` freed, while the registration lives.
@@ -160,11 +161,7 @@ pub fn request() {
     let Some(trimmer) = trimmer() else {
         return;
     };
-    trimmer
-        .schedule
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .request(Instant::now());
+    trimmer.schedule.lock_recover().request(Instant::now());
     trimmer.wake.notify_one();
 }
 
@@ -194,8 +191,7 @@ pub fn request_after(delay: Duration) {
     };
     trimmer
         .schedule
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .request_at(after(Instant::now(), delay));
     trimmer.wake.notify_one();
 }
@@ -209,8 +205,7 @@ pub fn request_when_quiet() {
     };
     trimmer
         .schedule
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .request_quiet(Instant::now());
     trimmer.wake.notify_one();
 }
@@ -233,10 +228,7 @@ pub(crate) fn settle(timeout: Duration) -> bool {
     let deadline = after(Instant::now(), timeout);
     loop {
         let served = trimmer().is_none_or(|trimmer| {
-            let schedule = trimmer
-                .schedule
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let schedule = trimmer.schedule.lock_recover();
             schedule.pending.is_none() && !schedule.trimming
         });
         if served {
@@ -272,19 +264,13 @@ fn trimmer() -> Option<&'static Trimmer> {
 }
 
 fn serve(trimmer: &'static Trimmer) {
-    let mut schedule = trimmer
-        .schedule
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut schedule = trimmer.schedule.lock_recover();
     loop {
         let now = Instant::now();
         if schedule.take(now) {
             drop(schedule);
             trim();
-            schedule = trimmer
-                .schedule
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            schedule = trimmer.schedule.lock_recover();
             schedule.trimming = false;
             if schedule.serving_set_time {
                 STARTUP_TRIMMED.store(true, Ordering::Release);

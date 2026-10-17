@@ -140,6 +140,16 @@ pub trait ShellPayloads: Send + Sync + 'static {
     /// `None` for everyone.
     fn audience(&self, body: &[u8]) -> Option<BTreeSet<[u8; 32]>>;
 
+    /// Whether only the steward of a channel reads `body`: what a member
+    /// sends the device governing its room, which every other member
+    /// ignores. A host governing the room itself stewards it, so it
+    /// delivers such a body to no member and replays it to none. `false`
+    /// unless the adapter knows.
+    fn steward_only(&self, body: &[u8]) -> bool {
+        let _ = body;
+        false
+    }
+
     /// An upper bound on the memory one decoded body holds beyond its bytes,
     /// for the store's bounded-work accounting.
     fn decoded_overhead(&self) -> usize;

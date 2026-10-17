@@ -19,8 +19,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::metrics::{
     METRICS_FILE, MetricsSnapshot, room_relay_root, room_textfile_dir,
 };
@@ -206,7 +207,7 @@ impl Ops {
     /// The current mode: the operator's `mode` file wins over the
     /// environment's initial one, and is looked at once a second.
     pub fn mode(&self) -> Mode {
-        let mut cached = self.mode.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.mode.lock_recover();
         if cached.0.elapsed() >= MODE_POLL {
             let from_file = std::fs::read_to_string(self.state.join(MODE_FILE))
                 .ok()
@@ -242,10 +243,7 @@ impl Ops {
     /// Takes one report token; false when reports arrive too fast
     /// across all visitors.
     pub fn admit_report(&self) -> bool {
-        let mut bucket = self
-            .report_bucket
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut bucket = self.report_bucket.lock_recover();
         let now = Instant::now();
         let refill = now.duration_since(bucket.at).as_secs_f64() * REPORT_RATE;
         bucket.tokens = (bucket.tokens + refill).min(REPORT_BURST);
@@ -660,6 +658,22 @@ pub fn mode_command(state: &Path, args: &[String]) -> Result<()> {
     }
 }
 
+/// Save `snapshot` as the relay under `root` does, stamped as written now.
+///
+/// The save is durable, so on a busy disk its fsync can take longer than
+/// [`RELAY_FRESH`] while the file keeps the time the write began. Tests that
+/// check what a fresh snapshot renders stamp it once the save returns, so they
+/// test rendering rather than how long the disk took.
+#[cfg(test)]
+pub(crate) fn save_fresh_metrics(root: &Path, snapshot: &MetricsSnapshot) -> Result<()> {
+    tilo_relay_protocol::metrics::save_metrics(root, snapshot)?;
+    std::fs::File::options()
+        .write(true)
+        .open(root.join(METRICS_FILE))?
+        .set_modified(SystemTime::now())?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
@@ -689,7 +703,7 @@ mod tests {
         // room is started with.
         let room = room_relay_root(&crate::room::relay_state(&state.join("room")));
         std::fs::create_dir_all(&room).unwrap();
-        tilo_relay_protocol::metrics::save_metrics(
+        save_fresh_metrics(
             &room,
             &MetricsSnapshot {
                 sessions_open: 7,

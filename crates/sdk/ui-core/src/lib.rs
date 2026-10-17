@@ -228,6 +228,8 @@ pub mod storage;
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
+#[cfg(any(test, feature = "lazy-hyphenation", feature = "lazy-image-decode"))]
+mod deferred;
 pub mod personal_dictionary;
 pub mod text_assistance;
 pub mod text_break;
@@ -264,6 +266,7 @@ pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
+pub mod shared_selection;
 pub mod shell_tabs;
 mod standalone_history;
 mod standalone_history_host;
@@ -320,6 +323,8 @@ pub(crate) const HANG_BOUND: time::Duration = time::Duration::from_secs(30);
 pub use accesskit;
 pub use automerge;
 pub use taffy;
+/// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
+pub use tilo_lock as lock;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
@@ -414,6 +419,12 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
+
+/// The word-boundary corrections every text field applies, for an input
+/// method that commits whole words itself (the on-screen keyboard).
+pub mod autocorrect {
+    pub use spellcheck::contraction;
+}
 pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
@@ -457,8 +468,7 @@ pub use history_source::{
     participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
-    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
-    SemanticActivity, StatusOrigin, StatusSharing,
+    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
@@ -494,7 +504,8 @@ pub use text_selection::{
     clipboard_copy_primary, clipboard_paste, clipboard_paste_image, clipboard_paste_primary,
     extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, next_char_boundary,
     next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
-    prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
+    prev_word_boundary_chars, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,
+    word_boundaries_chars,
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 

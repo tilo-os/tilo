@@ -205,6 +205,10 @@ fn check_status(registry: &str, secrets: &SecretStore) -> Result<Option<String>,
     Ok(status.as_ref().map(registry_client::status_summary))
 }
 
+/// How long a copied secret key stays on the clipboard: time to paste it into
+/// a CI secret in a browser.
+const KEY_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Create or copy the key now, on the UI thread: the clipboard lives there.
 fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
     match effect {
@@ -220,7 +224,9 @@ fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
         }
         KeyEffect::CopySecret => {
             let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
-            ui::text_selection::clipboard_copy(&hex::encode(key.to_bytes()));
+            if !ui::try_clipboard_copy_secret(&hex::encode(key.to_bytes()), KEY_ON_CLIPBOARD_FOR) {
+                return Err("Could not copy the key to the clipboard".into());
+            }
             Ok(Notice::success("publisher-secret-copied")
                 .explained("publisher-secret-copied-detail"))
         }

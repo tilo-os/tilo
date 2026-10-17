@@ -32,6 +32,8 @@ pub(crate) fn launch_request()
         placement: crate::shell::tab_binding::Placement::NewGroup,
         portal_workspace_id: None,
         requested_at: std::time::Instant::now(),
+        // Continuing a document needs the launch's own arguments.
+        reopen_from_tray: false,
     })
 }
 

@@ -111,6 +111,7 @@ impl NativeStateWitness {
     pub(crate) fn retained_owners(&self) -> usize {
         self.0.strong_count()
     }
+    #[cfg(test)]
     pub(crate) fn authority_is_current(
         &self,
         storage: &NativeAuthorityStorage,
@@ -118,13 +119,32 @@ impl NativeStateWitness {
     ) -> bool {
         self.authority_status(storage, room).is_ok()
     }
+    #[cfg(test)]
     pub(crate) fn authority_status(
         &self,
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
     ) -> Result<(), AuthorityRejection> {
+        self.authority_status_awaiting(storage, room, |_| false)
+    }
+    /// [`Self::authority_status`], except that a `storage` this writer has
+    /// since moved past is not stale while `exporting` says the record the
+    /// writer accepted instead (its digest) is still on its way to the
+    /// observer. An owner publication accepts its record before the policy
+    /// export carrying it is published; that export judges again when it
+    /// lands, so the gap between the two withdraws nothing by itself.
+    pub(crate) fn authority_status_awaiting(
+        &self,
+        storage: &NativeAuthorityStorage,
+        room: crate::shell::state::RoomId,
+        exporting: impl FnOnce([u8; 32]) -> bool,
+    ) -> Result<(), AuthorityRejection> {
         let runtime = self.0.upgrade().ok_or(AuthorityRejection::WriterRetired)?;
-        NativeStateRuntime(runtime).authority_status(storage, room)
+        NativeStateRuntime(runtime).authority_status(storage, room, exporting)
+    }
+    /// Whether both witnesses observe the same writer.
+    pub(crate) fn same_writer(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
     }
 }
 impl std::fmt::Debug for NativeStateRuntime {
@@ -302,6 +322,7 @@ impl NativeStateRuntime {
         &self,
         storage: &NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
+        exporting: impl FnOnce([u8; 32]) -> bool,
     ) -> Result<(), AuthorityRejection> {
         if !self.healthy() {
             return Err(AuthorityRejection::WriterFenced);
@@ -311,7 +332,10 @@ impl NativeStateRuntime {
         }
         let expected = digest(storage).map_err(|_| AuthorityRejection::InvalidSnapshot)?;
         let current = *self.0.accepted.lock();
-        if current.is_some_and(|current| current != expected) {
+        if let Some(current) = current
+            && current != expected
+            && !exporting(current)
+        {
             return Err(AuthorityRejection::StaleAcceptedSnapshot);
         }
         if storage.requires(room) {

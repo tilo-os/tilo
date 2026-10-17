@@ -47,8 +47,8 @@ use channel_crypto::{
     Access, ChannelContentKeys, ChannelMember, ChannelSteward, MemberEvent, VaultKey,
 };
 use collab_types::{
-    ArtifactId, ChannelId, ChannelRoute, ContentRetention, Ed25519PublicKey, EncryptionMetadata,
-    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
+    ChannelId, ChannelRoute, Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1,
+    MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -1151,36 +1151,6 @@ impl ChannelKeyAccess {
         (access, generation)
     }
 
-    /// Seal an ephemeral frame only with a key this device already holds for
-    /// this exact room and channel. Observation never requests channel access,
-    /// creates a group or rejoins a removed member. The caller must already
-    /// have validated the publisher's current room admission and record route.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing, waiting or removed channels, a mismatched room, an
-    /// unavailable service, or a sealing failure.
-    pub fn seal_existing_live(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        artifact: ArtifactId,
-        plaintext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let service = self
-            .inner
-            .lock()
-            .map_err(|_| "channel service unavailable")?;
-        let keys = service
-            .existing_keys(room, channel)
-            .ok_or("no current key for the admitted record")?;
-        let sealed = keys
-            .seal_content(artifact, ContentRetention::Delta, plaintext)
-            .map_err(|error| error.to_string());
-        drop(service);
-        sealed
-    }
-
     /// Open `envelope`, a new sealed write to one of `room`'s channels, for
     /// the durable owner that holds the channel's keys. Only under the
     /// channel's current epoch, and only while this device reads the
@@ -1221,28 +1191,6 @@ impl ChannelKeyAccess {
         drop(service);
         keys.open_content(envelope.artifact, &metadata, &ciphertext)
             .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-
-    /// Seal `plaintext`, a record's merged snapshot, for `artifact` on
-    /// `channel` under the channel's current epoch as a checkpoint: the
-    /// ciphertext of a sealed compaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when this device holds no current key for the
-    /// channel or sealing fails.
-    pub fn seal_current_checkpoint(
-        &self,
-        room: RoomId,
-        channel: ChannelId,
-        artifact: ArtifactId,
-        plaintext: &[u8],
-    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let (ChannelAccess::Ready(keys), _) = self.access(room, channel) else {
-            return Err("this device holds no key for the record's channel".into());
-        };
-        keys.seal_content(artifact, ContentRetention::Checkpoint, plaintext)
             .map_err(|error| error.to_string())
     }
 
@@ -1735,6 +1683,7 @@ pub mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+    use collab_types::{ArtifactId, ContentRetention};
     use std::sync::atomic::Ordering;
 
     struct Device {
@@ -1850,22 +1799,6 @@ mod tests {
         assert!(member.service.existing_keys(room_id, channel).is_none());
         assert_eq!(member.service.generation(), generation);
         assert!(!member.service.members.get(&channel).unwrap().rejoin);
-        let access = ChannelKeyAccess::new(member.service);
-        assert!(
-            access
-                .seal_existing_live(room_id, channel, ArtifactId::new(), b"semantic event")
-                .is_err()
-        );
-        assert!(
-            !access
-                .inner
-                .lock()
-                .unwrap()
-                .members
-                .get(&channel)
-                .unwrap()
-                .rejoin
-        );
     }
 
     #[test]
@@ -1926,42 +1859,6 @@ mod tests {
         );
         member.access(room_id, channel);
         assert_eq!(member_wakes.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn live_sealing_requires_an_existing_key_for_the_exact_room() {
-        let room = Arc::new(Room::default());
-        let room_id = RoomId::new();
-        let channel = ChannelId::new();
-        let dir = tempfile::tempdir().unwrap();
-        let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
-        let access = ChannelKeyAccess::new(owner.service);
-        let artifact = ArtifactId::new();
-        assert!(
-            access
-                .seal_existing_live(room_id, channel, artifact, b"event")
-                .is_err()
-        );
-        assert!(access.inner.lock().unwrap().stewards.is_empty());
-        let (ChannelAccess::Ready(keys), _) = access.access(room_id, channel) else {
-            panic!("explicit fixture admission must provide keys");
-        };
-        let generation = access.generation();
-        let (metadata, sealed) = access
-            .seal_existing_live(room_id, channel, artifact, b"event")
-            .unwrap();
-        assert_eq!(
-            keys.open_current_content(artifact, &metadata, &sealed)
-                .unwrap()
-                .as_slice(),
-            b"event"
-        );
-        assert_eq!(access.generation(), generation);
-        assert!(
-            access
-                .seal_existing_live(RoomId::new(), channel, artifact, b"event")
-                .is_err()
-        );
     }
 
     #[test]
@@ -2818,7 +2715,7 @@ mod tests {
     /// checkpoint that opens as a new write; a new write still opens only
     /// under the current epoch.
     #[test]
-    fn a_key_holder_opens_history_and_seals_a_current_checkpoint() {
+    fn a_key_holder_opens_history_and_a_current_checkpoint() {
         use collab_types::OpKind;
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
@@ -2853,8 +2750,8 @@ mod tests {
             keys.open_history_write(room_id, &old).unwrap(),
             b"before the rotation"
         );
-        let sealed = keys
-            .seal_current_checkpoint(room_id, channel, artifact, b"merged record")
+        let sealed = current
+            .seal_content(artifact, ContentRetention::Checkpoint, b"merged record")
             .unwrap();
         assert_eq!(sealed.0.epoch, current.epoch());
         assert_eq!(sealed.0.retention(), Some(ContentRetention::Checkpoint));

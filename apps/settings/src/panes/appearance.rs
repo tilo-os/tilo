@@ -8,8 +8,10 @@
 //! exactly like Region & Formats owns the locale.
 //!
 //! Controls:
-//! - **Wallpaper** — a picture chosen through the file-chooser portal and
-//!   applied through the Wallpaper portal, on this workspace or every one.
+//! - **Wallpaper** — one of the pictures the system ships, shown the moment
+//!   it is chosen, or a picture of the person's own, chosen through the
+//!   file-chooser portal and applied through the Wallpaper portal, on this
+//!   workspace or every one.
 //! - **Theme** — a named preset ([`crate::prefs::AppearancePrefs::THEMES`]),
 //!   or "Automatic": light by day, dark by night.
 //! - **Day and night** — when "Automatic" and a scheduled Night Light switch:
@@ -25,15 +27,45 @@
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
-use ui::widget::{AppModel, Button, ModelPath, Widget};
+use ui::widget::{AppModel, ModelPath, Widget};
 use vello::kurbo::Rect;
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::panes::keyboard_shortcuts::DesktopControls;
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, card, note, row, rows, value_row};
+use crate::widgets::{Item, SettingsSection, block, card, note, rows, value_row};
+
+/// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
+const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
+
+/// The shipped wallpapers whose thumbnails this system has installed, with
+/// those thumbnails, decoded once per process.
+fn installed_thumbnails() -> &'static [(
+    &'static tilo_wallpapers::Wallpaper,
+    vello::peniko::ImageData,
+)] {
+    static THUMBNAILS: std::sync::OnceLock<
+        Vec<(
+            &'static tilo_wallpapers::Wallpaper,
+            vello::peniko::ImageData,
+        )>,
+    > = std::sync::OnceLock::new();
+    THUMBNAILS.get_or_init(|| {
+        tilo_wallpapers::all()
+            .iter()
+            .filter_map(|wallpaper| {
+                let decoded = wallpaper.decode_thumbnail()?;
+                Some((
+                    wallpaper,
+                    ui::raster::rgba8(decoded.rgba, decoded.width, decoded.height),
+                ))
+            })
+            .collect()
+    })
+}
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
@@ -201,6 +233,8 @@ struct AppearanceInspection<'a> {
     sunset: &'a str,
     wallpaper_scope: &'a str,
     wallpaper_target: &'a str,
+    /// The wallpaper the desktop shows, as `appearance.wallpaper` names it.
+    wallpaper: &'a str,
 }
 
 impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
@@ -221,6 +255,8 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
             sunset: &prefs.sunset,
             wallpaper_scope: &prefs.wallpaper_scope,
             wallpaper_target: &prefs.wallpaper_target,
+            wallpaper: tilo_wallpapers::choice(prefs.wallpaper.as_deref())
+                .map_or("", tilo_wallpapers::value_of),
         }
     }
 }
@@ -286,8 +322,9 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     let accept = t("settings-appearance-choose");
     let pictures = t("settings-appearance-pictures");
     let confirm = t("settings-appearance-confirm-preview");
-    Ok(cx.thread(
-        move |_| {
+    Ok(crate::device_read::job(
+        cx,
+        move || {
             let pick = ui::portal::PickRequest::open(&title, &accept)
                 .filter(
                     ui::portal::FileFilter::new(&pictures)
@@ -349,6 +386,7 @@ struct Shown {
     sunset: LocalState<String>,
     wallpaper_scope: LocalState<String>,
     wallpaper_target: LocalState<String>,
+    hide_top_bar: LocalState<bool>,
 }
 
 impl Shown {
@@ -364,6 +402,7 @@ impl Shown {
             sunset: LocalState::new(String::new()),
             wallpaper_scope: LocalState::new(String::new()),
             wallpaper_target: LocalState::new(String::new()),
+            hide_top_bar: LocalState::new(false),
         };
         shown.show(prefs);
         shown
@@ -388,6 +427,11 @@ impl Shown {
 pub struct AppearancePane {
     cx: PaneCx,
     prefs: Followed<AppearancePrefs>,
+    /// The desktop's chrome preferences (the top bar), kept beside the
+    /// shell's other desktop controls.
+    desktop: Followed<DesktopControls>,
+    /// The desk widgets' choices, edited on this pane too.
+    desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     shown: Shown,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
@@ -400,11 +444,16 @@ impl AppearancePane {
     /// `wallpaper_status`.
     pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
         let prefs = cx.follow::<AppearancePrefs>();
+        let desktop = cx.follow::<DesktopControls>();
+        let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
         let shown = Shown::of(prefs.get());
+        shown.hide_top_bar.set(desktop.get().hide_top_bar);
         let status_shown = wallpaper_status.get();
         Self {
             cx,
             prefs,
+            desktop,
+            desk,
             shown,
             wallpaper_status,
             status_shown,
@@ -476,6 +525,20 @@ impl AppearancePane {
             ]),
         );
 
+        let desktop_card = card(
+            &t("settings-appearance-desktop-card"),
+            rows(vec![
+                self.cx
+                    .row(t("settings-appearance-hide-top-bar"))
+                    .described(t("settings-appearance-hide-top-bar-desc"))
+                    .id("appearance.hide_top_bar")
+                    .toggle(
+                        &self.shown.hide_top_bar,
+                        DesktopControls::paths().hide_top_bar,
+                    ),
+            ]),
+        );
+
         let resolved = self.prefs().resolve_theme();
         let motion = if resolved.reduce_motion {
             t("settings-appearance-on")
@@ -507,6 +570,8 @@ impl AppearancePane {
             self.wallpaper_card(),
             theme_card,
             self.schedule_card(),
+            desktop_card,
+            self.desk_widgets_card(),
             access_card,
             preview,
             explainer,
@@ -516,7 +581,7 @@ impl AppearancePane {
     fn wallpaper_card(&self) -> SettingsSection {
         let cx = &self.cx;
         let mut body: Vec<Item> = vec![
-            note(&t("settings-appearance-wallpaper-body")),
+            block(Box::new(self.wallpaper_picker())),
             cx.row(t("settings-appearance-use-for"))
                 .id("appearance.wallpaper_scope")
                 .choice(
@@ -543,18 +608,60 @@ impl AppearancePane {
                             .ok_or_else(|| format!("`{shown}` is not offered"))
                     },
                 ),
-            row(Box::new(cx.bind_invocation(
-                Button::new(
-                    "appearance.wallpaper.choose",
-                    &t("settings-appearance-choose-picture"),
-                ),
-                AppearanceEffect::ChooseWallpaper,
-            ))),
         ];
         if let Some(status) = &self.status_shown {
             body.push(note(status));
         }
         card(&t("settings-appearance-wallpaper-card"), rows(body))
+    }
+
+    /// The shipped pictures this system has installed, each choosing itself
+    /// the moment it is pressed, then the person's own picture. The chosen
+    /// one is marked.
+    fn wallpaper_picker(&self) -> ui::widget::MediaGrid {
+        self.wallpaper_picker_of(installed_thumbnails())
+    }
+
+    fn wallpaper_picker_of(
+        &self,
+        thumbnails: &[(
+            &'static tilo_wallpapers::Wallpaper,
+            vello::peniko::ImageData,
+        )],
+    ) -> ui::widget::MediaGrid {
+        let chosen = tilo_wallpapers::choice(self.prefs().wallpaper.as_deref());
+        let mut cards: Vec<ui::widget::MediaCard> = thumbnails
+            .iter()
+            .map(|(wallpaper, thumbnail)| {
+                let id = wallpaper.id.as_str();
+                let card = ui::widget::MediaCard::new(
+                    format!("appearance.wallpaper.{id}"),
+                    ui::widget::MediaSource::Image(thumbnail.clone()),
+                )
+                .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
+                .title(t(&format!("settings-wallpaper-{id}")))
+                .meta(wallpaper.author.as_str())
+                .selected(chosen == Some(tilo_wallpapers::Choice::Bundled(wallpaper)));
+                self.cx
+                    .bind_field_with(card, AppearancePrefs::paths().wallpaper, move |()| {
+                        Ok(Some(id.to_owned()))
+                    })
+            })
+            .collect();
+        cards.push(
+            self.cx.bind_invocation(
+                ui::widget::MediaCard::new(
+                    "appearance.wallpaper.choose",
+                    ui::widget::MediaSource::Kind(ui::icons::Icon::Image),
+                )
+                .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
+                .title(t("settings-appearance-your-picture"))
+                .meta(t("settings-appearance-choose-picture"))
+                .selected(chosen == Some(tilo_wallpapers::Choice::Custom)),
+                AppearanceEffect::ChooseWallpaper,
+            ),
+        );
+        ui::widget::MediaGrid::new(cards).with_size(ui::widget::MediaSize::Small)
     }
 
     fn schedule_card(&self) -> SettingsSection {
@@ -636,6 +743,9 @@ impl Widget for AppearancePane {
             self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.
             self.composed.invalidate();
+        }
+        if self.desktop.refresh() {
+            self.shown.hide_top_bar.set(self.desktop.get().hide_top_bar);
         }
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
@@ -804,6 +914,56 @@ mod tests {
         assert!(intent.reduce_motion);
     }
 
+    /// "Hide the top bar" is a desktop control: the toggle writes the
+    /// `desktop_controls` section the shell reloads live, leaves the section's
+    /// other keys alone, and the pane follows a change made elsewhere.
+    #[test]
+    fn the_top_bar_toggle_writes_the_desktop_controls_and_follows_them() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        edit_field(&mut app, "settings.desktop-controls", "vim_mode", true).unwrap();
+        edit_field(&mut app, "settings.desktop-controls", "hide_top_bar", true).unwrap();
+        let controls = app.settings::<DesktopControls>().get();
+        assert!(controls.hide_top_bar);
+        assert!(controls.vim_mode, "the other desktop control is kept");
+        let section = app
+            .settings::<DesktopControls>()
+            .document()
+            .section("desktop_controls");
+        let stored: settings_store::hardware::DesktopControlsConfig =
+            serde_json::from_value(serde_json::Value::Object(section)).unwrap();
+        assert!(
+            stored.hide_top_bar,
+            "the shell's schema reads the same leaf"
+        );
+
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
+        assert!(!pane.shown.hide_top_bar.get(), "visible by default");
+        cx.settings::<DesktopControls>()
+            .update(|controls| controls.hide_top_bar = true)
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        assert!(pane.shown.hide_top_bar.get());
+
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(
+            node_map
+                .values()
+                .filter_map(|&widget| unsafe { (*widget).test_id() })
+                .any(|id| id == "appearance.hide_top_bar"),
+            "the pane offers the toggle"
+        );
+        assert!(
+            crate::categories::Category::Appearance.matches("top bar"),
+            "searching for the top bar lands here"
+        );
+    }
+
     #[test]
     fn searching_for_wallpaper_lands_on_the_wallpaper_control() {
         use crate::categories::Category;
@@ -835,6 +995,103 @@ mod tests {
         }
     }
 
+    /// Choosing a shipped wallpaper writes `appearance.wallpaper`, where the
+    /// compositor reads it; a picture the system does not ship is refused
+    /// and changes nothing.
+    #[test]
+    fn choosing_a_shipped_wallpaper_writes_the_shared_section() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        assert_eq!(app.settings::<AppearancePrefs>().get().wallpaper, None);
+        edit_field(&mut app, APPEARANCE, "wallpaper", "dunes").unwrap();
+        let settings = app.settings::<AppearancePrefs>();
+        assert_eq!(settings.get().wallpaper.as_deref(), Some("dunes"));
+        let section = settings.document().section("appearance");
+        assert_eq!(
+            settings_store::appearance::WALLPAPER.from_section(&section),
+            Some("dunes".to_owned())
+        );
+        assert!(edit_field(&mut app, APPEARANCE, "wallpaper", "no-such-picture").is_err());
+        edit_field(&mut app, APPEARANCE, "wallpaper", tilo_wallpapers::CUSTOM).unwrap();
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().wallpaper.as_deref(),
+            Some(tilo_wallpapers::CUSTOM)
+        );
+    }
+
+    /// The picker offers every shipped picture and the person's own, and
+    /// marks the one the desktop shows: the default before anything is
+    /// chosen, then whatever the section names.
+    #[test]
+    fn the_wallpaper_picker_marks_the_chosen_picture() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let thumbnails: Vec<_> = tilo_wallpapers::all()
+            .iter()
+            .map(|wallpaper| {
+                (
+                    wallpaper,
+                    ui::raster::rgba8(vec![128u8; 16 * 10 * 4], 16, 10),
+                )
+            })
+            .collect();
+        let selected = |pane: &AppearancePane| -> Vec<(String, bool)> {
+            use ui::widget::Widget as _;
+            pane.wallpaper_picker_of(&thumbnails)
+                .children()
+                .iter()
+                .map(|card| {
+                    let id = card.test_id().unwrap_or_default().to_owned();
+                    let chosen = card.accessibility().is_some_and(|node| node.state.selected);
+                    (id, chosen)
+                })
+                .collect()
+        };
+        let pane = AppearancePane::new(cx.clone(), LocalState::new(None));
+        let cards = selected(&pane);
+        let default = tilo_wallpapers::default_wallpaper().unwrap();
+        assert_eq!(cards.len(), tilo_wallpapers::all().len() + 1);
+        assert_eq!(
+            cards.last().map(|(id, _)| id.as_str()),
+            Some("appearance.wallpaper.choose")
+        );
+        let chosen: Vec<&str> = cards
+            .iter()
+            .filter(|(_, chosen)| *chosen)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(chosen, vec![format!("appearance.wallpaper.{}", default.id)]);
+
+        cx.settings::<AppearancePrefs>()
+            .update(|prefs| prefs.wallpaper = Some(tilo_wallpapers::CUSTOM.into()))
+            .unwrap();
+        let pane = AppearancePane::new(cx, LocalState::new(None));
+        let chosen: Vec<String> = selected(&pane)
+            .into_iter()
+            .filter(|(_, chosen)| *chosen)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(chosen, vec!["appearance.wallpaper.choose".to_owned()]);
+    }
+
+    /// The picker names every shipped picture in every language Settings
+    /// speaks.
+    #[test]
+    fn every_shipped_wallpaper_has_a_name_in_every_language() {
+        for (locale, text) in [
+            ("en-US", include_str!("../../locales/en-US.ftl")),
+            ("de-DE", include_str!("../../locales/de-DE.ftl")),
+        ] {
+            for wallpaper in tilo_wallpapers::all() {
+                let key = format!("settings-wallpaper-{} = ", wallpaper.id);
+                assert!(
+                    text.lines().any(|line| line.starts_with(&key)),
+                    "{locale} has no name for {}",
+                    wallpaper.id
+                );
+            }
+        }
+    }
+
     /// Without a person at the window nothing opens the file chooser.
     #[test]
     fn only_a_window_someone_uses_chooses_a_wallpaper() {
@@ -845,6 +1102,9 @@ mod tests {
         );
     }
 }
+
+#[path = "appearance/desk_widgets.rs"]
+mod desk_widgets;
 
 #[cfg(test)]
 #[path = "appearance/inspection_tests.rs"]

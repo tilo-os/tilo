@@ -255,6 +255,24 @@ pub(crate) const READ_TYPE: &str = "tilo.resource.read";
 /// nested resource of that id. It is a view: it changes nothing, needs only
 /// read permission and is checked like every other action.
 fn read_spec() -> tilo_actions::ActionSpec {
+    read_spec_for(None)
+}
+
+/// Bind a document read to one of the readable resource's own children.
+/// These declarations never apply to live surface rows or external resources.
+fn offer_document_reads(resource: &mut tilo_actions::Resource, eligible: &dyn Fn(&str) -> bool) {
+    if eligible(resource.id.as_str()) && !resource.actions.iter().any(|spec| spec.id == "read") {
+        resource
+            .actions
+            .push(read_spec_for(Some(resource.id.as_str())));
+    }
+    for child in &mut resource.children {
+        offer_document_reads(child, eligible);
+    }
+}
+
+fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
+    let item = item.map(str::to_owned);
     let mut spec = tilo_actions::ActionSpec::typed_operation(
         "read",
         "Read the content",
@@ -274,11 +292,14 @@ fn read_spec() -> tilo_actions::ActionSpec {
                 "A change id, exact causal frontier, or checkpoint name (default: current)",
             )
             .nullable(),
-        ],
-        |args| {
+        ]
+        .into_iter()
+        .filter(|param| item.is_none() || param.name != "item")
+        .collect(),
+        move |args| {
             tilo_actions::EncodedAction::encode_operation(
                 READ_TYPE,
-                &serde_json::json!({ "item": args.text("item"), "version": args.text("version") }),
+                &serde_json::json!({ "item": item.as_deref().or_else(|| args.text("item")), "version": args.text("version") }),
             )
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: READ_TYPE.into(),
@@ -2183,7 +2204,12 @@ impl RootPublishes for ResourceRoot {
             self.typed.read(doc).ok()
         };
         let state = current.unwrap_or_else(|| self.typed.state());
-        let child = self.typed.child(&*state, doc, id);
+        let mut child = self.typed.child(&*state, doc, id);
+        if self.resource.readable
+            && let Some(child) = &mut child
+        {
+            offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+        }
         let mut row = None;
         self.surfaces(&mut |surface| {
             if row.is_none() {
@@ -2994,6 +3020,41 @@ impl AppWidget for Unopened {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_document_reads_are_bound_to_their_own_resource() {
+        let mut child = tilo_actions::Resource::new("book/page/body", "text", "Body");
+        child.children.push(tilo_actions::Resource::new(
+            "private-child",
+            "account",
+            "Secret account",
+        ));
+        offer_document_reads(&mut child, &|id| id == "book/page/body");
+        assert!(
+            child.children[0].actions.is_empty(),
+            "eligibility is not inherited"
+        );
+        let read = &child.actions[0];
+        assert!(read.contract.reads_document());
+        let encoded = read.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, READ_TYPE);
+        let payload: serde_json::Value = tilo_actions::decode_json(&encoded.payload).unwrap();
+        assert_eq!(payload["item"], "book/page/body");
+        assert!(
+            read.build_json(
+                serde_json::json!({"item": "another/book"})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err()
+        );
+        let encoded = read
+            .build_json(serde_json::json!({"version": "past"}).as_object().unwrap())
+            .unwrap();
+        let payload: serde_json::Value = tilo_actions::decode_json(&encoded.payload).unwrap();
+        assert_eq!(payload["item"], "book/page/body");
+        assert_eq!(payload["version"], "past");
+    }
 
     /// The ids the framework keeps are the ones it publishes on every
     /// app: the generic actions, `open`, `read`, history and presentation.

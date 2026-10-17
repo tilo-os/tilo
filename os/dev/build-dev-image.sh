@@ -36,6 +36,10 @@
 #                     that label (built elsewhere) is used as it is. The base is
 #                     built with os/dev/local-inputs.sh, which resolves the RPM
 #                     snapshot, kernel and owner key for this machine.
+#   TILO_DEV_BASE_CREATED  the base's time tilo-vm orders dev bases by (RFC 3339;
+#                     default: the base's commit time, see below). A base whose
+#                     clock is its Fedora base's and RPM snapshot's
+#                     (tools/ci/publish/os-image.sh) is given its commit's time here
 #   TILO_DEV_IMAGE    tag for the dev image (default localhost/tilo-vm:latest);
 #                     must name tilo-vm, never the production image
 #   TILO_DEV_DISK     0 builds the container only (default 1)
@@ -57,7 +61,7 @@ set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,59p' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
@@ -175,7 +179,7 @@ base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null |
 # The base's commit time (its org.tilo.source-date-epoch label, else .Created,
 # which production builds clamp to it); tilo-vm compares it
 # with the base of the image a VM runs, so a VM is not moved onto an older base.
-base_created="$(tilo_image_source_time "$base")"
+base_created="${TILO_DEV_BASE_CREATED:-$(tilo_image_source_time "$base")}"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
 # The caller opts in to the same repository-scoped compiler cache used by CI.

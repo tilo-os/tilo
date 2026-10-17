@@ -1,10 +1,12 @@
 """tools/extensions/resolve.py without network, dnf or rpm.
 
-The real run happens in extension-manifests.yml, inside each published image.
+The real run happens in t's extension-manifests-{x86_64,aarch64} checks
+(tools/ci/publish/extension-manifests.sh), inside each published image.
 """
 
 import datetime
 import hashlib
+import http.client
 import importlib.machinery
 import importlib.util
 import io
@@ -110,6 +112,35 @@ class Fingerprint(unittest.TestCase):
         self.assertIn('"5a21779b0a9aca5bb5638fa2177fbbd69c074ed1611aaab0071468cbb6c24e13"', device_test)
         for rpm_line in self.RPM.splitlines():
             self.assertIn(rpm_line, device_test)
+
+
+class BaseObservation(unittest.TestCase):
+    def test_incomplete_rpm_observation_cannot_become_a_base(self):
+        fingerprint = "bash 0:1-1.x86_64\n"
+        installed = "bash 0 1 1 x86_64 base\n"
+        for first, second in (("", installed), (fingerprint, ""),
+                              (fingerprint, "bad line\n"),
+                              (fingerprint, "bash invalid 1 1 x86_64 base\n"),
+                              (fingerprint, installed + "truncated\n"),
+                              (fingerprint, "other 0 1 1 x86_64 base\n")):
+            with self.subTest(first=first, second=second), \
+                    mock.patch.object(Path, "read_text", return_value='ID=fedora\nVERSION_ID=44\n'), \
+                    mock.patch.object(resolver.os, "uname", return_value=mock.Mock(machine="x86_64")), \
+                    mock.patch.object(resolver, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, first), subprocess.CompletedProcess([], 0, second)]):
+                with self.assertRaises(resolver.ResolveError):
+                    resolver.probe_base(IMAGE, "fedora")
+
+    def test_valid_base_observation_keeps_constraints(self):
+        with mock.patch.object(Path, "read_text", return_value='ID=fedora\nVERSION_ID=44\n'), \
+                mock.patch.object(resolver.os, "uname", return_value=mock.Mock(machine="x86_64")), \
+                mock.patch.object(resolver, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, "bash 0:1-1.x86_64\n"),
+                    subprocess.CompletedProcess([], 0, "bash 0 1 1 x86_64 base\n")]):
+            observed = resolver.probe_base(IMAGE, "fedora")
+        self.assertEqual(observed.installed["bash"].spec, "bash-1-1.x86_64")
+        self.assertEqual(observed.packages_sha256,
+                         resolver.base_packages_sha256(["bash 0:1-1.x86_64\n"]))
 
 
 class VersionComparison(unittest.TestCase):
@@ -391,6 +422,17 @@ class Urls(unittest.TestCase):
         self.assertEqual(calls.count("https://gone/a.rpm"), 3)
         self.assertTrue(any("dropping https://stale/a.rpm" in line for line in log))
 
+    def test_interrupted_http_body_retries_and_can_use_another_mirror(self):
+        urls = ["https://first/a.rpm", "https://second/a.rpm"]
+        fetch = mock.Mock(side_effect=[http.client.IncompleteRead(b"partial", 100),
+                                       (5, "digest", urls[0])])
+        self.assertEqual(resolver.live_urls(urls[:1], 5, "digest", fetch, log=lambda _: None), urls[:1])
+        self.assertEqual(fetch.call_count, 2)
+        fetch = mock.Mock(side_effect=[http.client.IncompleteRead(b"", 100)] * 3
+                         + [(5, "digest", urls[1])])
+        self.assertEqual(resolver.live_urls(urls, 5, "digest", fetch, log=lambda _: None), urls[1:])
+        self.assertEqual(fetch.call_count, 4)
+
     def test_a_redirect_to_plain_http_is_refused(self):
         handler = resolver.HttpsOnly()
         request = urllib.request.Request("https://codecs.fedoraproject.org/x.rpm")
@@ -481,7 +523,13 @@ class Emission(unittest.TestCase):
                                   "gstreamer1-plugins-ugly-1:1.28.7-1.fc44.x86_64",
                                   "openh264-2.6.0-1.fc44.x86_64"): ("x264-libs",)}
         self.keyring = FakeKeyring()
-        patch = mock.patch.object(resolver, "rpm_header", fake_header)
+        def header(path):
+            result = fake_header(path)
+            result["epoch"] = str(next(nv.epoch for entries in self.dnf.packages.values()
+                                       for nv, _ in entries if nv.nvra == result["nvra"]))
+            return result
+
+        patch = mock.patch.object(resolver, "rpm_header", header)
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -531,6 +579,23 @@ class Emission(unittest.TestCase):
         ])
         self.assertEqual(sorted({repos for _, repos in self.keyring.verified}),
                          [("fedora-cisco-openh264",), ("rpmfusion-free-updates",), ("updates",)])
+
+    def test_a_partial_download_cannot_publish_an_available_part(self):
+        download = self.dnf.download
+
+        def partial(specs, destdir):
+            paths = download(specs, destdir)
+            return paths[1:]
+
+        with mock.patch.object(self.dnf, "download", side_effect=partial):
+            with self.assertRaisesRegex(resolver.ResolveError, "omitted selected"):
+                self.resolve()
+
+    def test_downloaded_epoch_must_match_the_selected_build(self):
+        nv, _ = self.dnf.packages["gstreamer1-plugins-ugly"][0]
+        with mock.patch.object(resolver, "rpm_header", side_effect=fake_header):
+            with self.assertRaisesRegex(resolver.ResolveError, "omitted selected.*" + nv.name):
+                self.resolve()
 
     def test_output_is_deterministic(self):
         first = resolver.render(self.resolve())

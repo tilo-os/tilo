@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -34,7 +35,9 @@ def record(added: int, measured: int = 1400, run: int = 55499, reason: str = REA
 
 class MeasureTest(unittest.TestCase):
     def bundle(self, size: int) -> pathlib.Path:
-        directory = pathlib.Path(tempfile.mkdtemp())
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = pathlib.Path(temporary.name)
         module = directory / ratchet.MODULE
         module.parent.mkdir(parents=True)
         module.write_bytes(b"\0" * size)
@@ -127,8 +130,38 @@ class BudgetRatchetTest(unittest.TestCase):
 
 
 class RevisionTest(unittest.TestCase):
+    def test_unobservable_base_is_not_treated_as_a_revision_without_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = pathlib.Path(directory)
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args],
+                                      check=True, capture_output=True, text=True)
+            git("init", "-q")
+            git("-c", "user.name=t", "-c", "user.email=t@invalid",
+                "commit", "--allow-empty", "-qm", "empty baseline")
+            self.assertIsNone(ratchet.load_at("HEAD", repo))
+            with self.assertRaisesRegex(RuntimeError, "cannot resolve"):
+                ratchet.load_at("absent-revision", repo)
+            path = repo / ratchet.DIRECTORY / "budget.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text(BUDGET.text)
+            git("add", ".")
+            git("-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-qm", "budget")
+            run = subprocess.run
+            for failed in ("ls-tree", "show"):
+                def fail_read(argv, *args, **kwargs):
+                    if failed in argv:
+                        return subprocess.CompletedProcess(argv, 128, "", "object read failed")
+                    return run(argv, *args, **kwargs)
+                with self.subTest(failed=failed), patch.object(ratchet.subprocess, "run", fail_read):
+                    with self.assertRaisesRegex(RuntimeError, "object read failed"):
+                        ratchet.load_at("HEAD", repo)
+            self.assertEqual(ratchet.load_at("HEAD", repo).totals(), BUDGET.totals())
+
     def test_reads_the_layout_of_a_revision(self) -> None:
-        repo = pathlib.Path(tempfile.mkdtemp())
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        repo = pathlib.Path(temporary.name)
         git = lambda *args: subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
         git("init", "-q")
         legacy = repo / ratchet.LEGACY

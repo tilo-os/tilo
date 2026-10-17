@@ -59,6 +59,9 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
+    "local-model-service": "the on-device model service the model gateway runs (apps use "
+                           "tilo-model-gateway without its default service feature)",
+    "rten": "the subject model's runtime, which runs in the model gateway daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
 # (crates/runtime/engines/): only its app maps them.
@@ -70,6 +73,32 @@ ENGINES = {
     "tilo-spotify-engine": "Spotify playback's engine library (libtilo_spotify_engine.so)",
     "tilo-spotify": "Spotify playback, which Music loads from libtilo_spotify_engine.so",
     "librespot": "the Spotify client, in libtilo_spotify_engine.so",
+    "tilo-paint-engine": "Canvas's painting engines' library (libtilo_paint_engine.so)",
+    "tilo-wet-media": "the wet-media simulation, which Canvas loads from libtilo_paint_engine.so",
+    "tilo-subject": "Canvas's subject mattes, in libtilo_paint_engine.so",
+    "tilo-segment": "matte refinement under tilo-subject, in libtilo_paint_engine.so",
+    "tilo-youtube-engine": "the YouTube client's engine library (libtilo_youtube_engine.so)",
+    "rustypipe": "the YouTube client, which Music and Tube load from libtilo_youtube_engine.so",
+    "rquickjs": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
+    "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
+    "account-custody": "online-account custody, which Mail and Settings load from "
+                       "libtilo_accounts_engine.so",
+    "tilo-oauth": "the OAuth client under account-custody, in libtilo_accounts_engine.so",
+    "cloud-source-dropbox": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-gdrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-icloud": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "cloud-source-onedrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
+    "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
+    "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
+    "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
+    "chrono-tz": "the time-zone database, which Calendar and Clocks load from "
+                 "libtilo_timezone_engine.so",
+    "tilo-contact-directory-engine": "the contact directory's engine library "
+                                     "(libtilo_contact_directory_engine.so)",
+    "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
+                              "libtilo_contact_directory_engine.so",
 }
 
 

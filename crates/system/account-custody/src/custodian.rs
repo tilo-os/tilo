@@ -81,6 +81,19 @@ impl From<OAuthError> for CustodyError {
     }
 }
 
+/// What custody holds for one `OAuth` grant, without releasing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantState {
+    /// Nothing is sealed under this id on this device: never signed in
+    /// here (a setting that roamed from another device), or forgotten.
+    Missing,
+    /// A grant custody can refresh.
+    Usable,
+    /// The provider revoked the grant, or it was sealed without offline
+    /// access: the person must sign in again.
+    SignInAgain,
+}
+
 /// The long-lived grant sealed in the vault's `token` field. Never handed
 /// out of this crate except to be sealed.
 #[derive(Deserialize)]
@@ -886,6 +899,25 @@ impl Custodian {
         self.begin_sign_in_for_capabilities(OAuthIssuer::Google, capabilities, None)
     }
 
+    /// Start Google sign-in for only the selected files and mail services.
+    ///
+    /// # Errors
+    /// No selected service, incompatible registrations, or a loopback failure.
+    pub fn begin_google_services_sign_in(
+        &self,
+        files: bool,
+        mail: bool,
+    ) -> Result<Authorization, CustodyError> {
+        let mut capabilities = Vec::new();
+        if files {
+            capabilities.push(crate::Capability::Files);
+        }
+        if mail {
+            capabilities.push(crate::Capability::Mail);
+        }
+        self.begin_sign_in_for_capabilities(OAuthIssuer::Google, &capabilities, None)
+    }
+
     /// Start sign-in for exactly the selected capabilities, without implicitly
     /// adding files. Google can combine files, mail and `CalDAV` in one consent.
     /// Every selected use must be configured under the same registration and
@@ -1070,6 +1102,30 @@ impl Custodian {
             return Err(CustodyError::NeedsAuthentication);
         };
         Ok(tokens.scope)
+    }
+
+    /// Whether `id`'s `OAuth` grant is there and still refreshable, for a
+    /// "Sign in again" status. A grant the provider revoked is kept as an
+    /// empty one when a refresh learns of it (see
+    /// [`Self::oauth_access_token`]), which reads here as
+    /// [`GrantState::SignInAgain`].
+    ///
+    /// # Errors
+    /// An unreadable vault.
+    pub fn oauth_grant_state(&self, id: &AccountId) -> Result<GrantState, CustodyError> {
+        let vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        let Some(secret) = vault.get(id) else {
+            return Ok(GrantState::Missing);
+        };
+        Ok(match decode_grant(&secret) {
+            Some((Grant::Oauth2 { tokens, .. }, _)) if !tokens.refresh_token.is_empty() => {
+                GrantState::Usable
+            }
+            _ => GrantState::SignInAgain,
+        })
     }
 
     /// Seal a sign-in result as `id`'s grant, replacing any earlier one.

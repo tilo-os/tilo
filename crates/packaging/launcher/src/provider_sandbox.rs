@@ -47,19 +47,28 @@ fn parse(text: &str) -> bool {
 /// below `system_dir`, with the store and the package root both controlled
 /// by root, so no user can place a package there.
 fn system_app(payload_root: &Path, system_dir: &Path) -> bool {
-    let (Ok(payload), Ok(system)) = (fs::canonicalize(payload_root), fs::canonicalize(system_dir))
-    else {
+    store_controlled_by(payload_root, system_dir, 0)
+}
+
+/// Whether `payload_root` lies canonically below `store`, with both owned by
+/// `owner` and writable by no one else.
+fn store_controlled_by(payload_root: &Path, store: &Path, owner: u32) -> bool {
+    let (Ok(payload), Ok(store)) = (fs::canonicalize(payload_root), fs::canonicalize(store)) else {
         return false;
     };
-    payload.starts_with(&system)
-        && payload != system
-        && [&system, &payload]
+    payload.starts_with(&store)
+        && payload != store
+        && [&store, &payload]
             .iter()
-            .all(|path| fs::metadata(path).is_ok_and(|metadata| root_controlled(&metadata)))
+            .all(|path| fs::metadata(path).is_ok_and(|metadata| controlled_by(&metadata, owner)))
 }
 
 fn root_controlled(metadata: &fs::Metadata) -> bool {
-    metadata.uid() == 0 && metadata.permissions().mode() & 0o022 == 0
+    controlled_by(metadata, 0)
+}
+
+fn controlled_by(metadata: &fs::Metadata, owner: u32) -> bool {
+    metadata.uid() == owner && metadata.permissions().mode() & 0o022 == 0
 }
 
 #[cfg(test)]
@@ -91,16 +100,33 @@ mod tests {
 
     #[test]
     fn system_apps_live_below_a_root_controlled_store() {
-        // `/usr` and `/usr/bin` are root-owned and not group/world-writable
-        // on every host these tests run on.
-        assert!(system_app(Path::new("/usr/bin"), Path::new("/usr")));
-        assert!(!system_app(Path::new("/usr"), Path::new("/usr")));
+        // A store owned by whoever runs the suite stands in for root's: a
+        // test job in a user namespace sees the host's `/usr` owned by the
+        // overflow uid, not by root.
         let dir = tempfile::tempdir().unwrap();
-        let package = dir.path().join("pkg");
-        fs::create_dir(&package).unwrap();
-        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o777)).unwrap();
+        let store = dir.path().join("store");
+        let package = store.join("pkg");
+        fs::create_dir_all(&package).unwrap();
+        for path in [&store, &package] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let owner = fs::metadata(&store).unwrap().uid();
+        assert!(store_controlled_by(&package, &store, owner));
+        assert!(!store_controlled_by(&store, &store, owner));
         assert!(
-            !system_app(&package, dir.path()),
+            !store_controlled_by(&package, &store, owner.wrapping_add(1)),
+            "a store someone else owns is not the system store"
+        );
+        assert!(!store_controlled_by(dir.path(), &store, owner));
+        fs::set_permissions(&package, fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(
+            !store_controlled_by(&package, &store, owner),
+            "a package others can write is not a system app"
+        );
+        fs::set_permissions(&package, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(
+            !store_controlled_by(&package, &store, owner),
             "a writable store is not the system store"
         );
         assert!(!system_app(&package, Path::new("/usr")));

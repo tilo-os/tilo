@@ -27,11 +27,12 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_lock::MutexRecover as _;
 
 const ENROLL: &str = "/usr/bin/tilo-enroll";
 const PKEXEC: &str = "/usr/bin/pkexec";
@@ -341,7 +342,7 @@ impl Pairing {
     }
 
     fn flights(&self) -> MutexGuard<'_, Flights> {
-        lock(&self.flights)
+        self.flights.lock_recover()
     }
 
     /// Look for a nearby device of `role`; the answer is the device found,
@@ -366,7 +367,7 @@ impl Pairing {
         let started = spawn_step(move || {
             let found = runner(&command, &AtomicBool::new(false))
                 .and_then(|finished| discovered(&finished));
-            let mut flights = lock(&flights);
+            let mut flights = flights.lock_recover();
             flights.discovering = false;
             let answer = found.map(|candidate| {
                 let value = candidate.answer(role);
@@ -424,7 +425,7 @@ impl Pairing {
         let role = approval.role;
         let started = spawn_step(move || {
             let ran = runner(&command, &stop);
-            let mut flights = lock(&flights);
+            let mut flights = flights.lock_recover();
             flights.approving = None;
             let answer = if stop.load(Ordering::Acquire) {
                 Err("the approval was rejected".to_string())
@@ -525,10 +526,6 @@ pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
         service: node_id(args.text("service").unwrap_or_default(), "service")?,
         workspace_ids,
     })
-}
-
-fn lock(flights: &Mutex<Flights>) -> MutexGuard<'_, Flights> {
-    flights.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn refuse_busy(flights: &Flights) -> Result<(), String> {
@@ -826,7 +823,7 @@ mod tests {
     fn lock_receiver(
         receiver: &Mutex<mpsc::Receiver<bool>>,
     ) -> MutexGuard<'_, mpsc::Receiver<bool>> {
-        receiver.lock().unwrap_or_else(PoisonError::into_inner)
+        receiver.lock_recover()
     }
 
     /// The step's answer; a step that never answers reads as that refusal,

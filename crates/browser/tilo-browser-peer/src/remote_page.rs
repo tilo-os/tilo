@@ -10,8 +10,9 @@
 //! in page (CSS) pixels.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
+use tilo_lock::MutexRecover as _;
 use tilo_paint_stream::Frame;
 use tilo_paint_stream::wire::{Payload, Receiver};
 use tilo_relay_protocol::legacy_window::InputEvent;
@@ -82,7 +83,7 @@ impl RemotePage {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Apply one stream frame. Returns whether what the page shows changed.

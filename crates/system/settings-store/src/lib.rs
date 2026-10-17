@@ -89,6 +89,7 @@ pub mod appearance;
 pub mod continuity;
 pub mod continuity_privacy;
 pub mod day_schedule;
+pub mod desk_widgets;
 pub mod device_displays;
 pub mod dictation;
 pub mod display_control;
@@ -128,7 +129,14 @@ pub use source::{
     writes_deferred_on_this_thread,
 };
 
-/// The file name under the Tilo config root.
+/// The directory under the Tilo config root that holds the settings document
+/// and nothing else of Tilo's: its lock, and the temp files a replace leaves
+/// for a moment. Settings, sandboxed, is given this directory and not the
+/// root beside it, which holds the identity store, the trust lists and the
+/// workspace tree.
+pub const SESSION_DIR: &str = "session";
+
+/// The settings document's file name.
 const FILE: &str = "settings.json";
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
@@ -140,19 +148,6 @@ pub fn config_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
-/// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
-/// environment, applying the same rules.
-pub fn config_root_from(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    Some(
-        tilo_paths::xdg::Base::Config
-            .resolve_from(xdg_config_home, home)?
-            .join("tilo"),
-    )
-}
-
 /// Resolve one settings file under the config root.
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
@@ -162,12 +157,81 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
 /// other than the remapped `$XDG_CONFIG_HOME`. Empty is ignored.
 pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
 
-/// The shared settings file: `<config root>/settings.json`, or the session
-/// document named by [`SESSION_SETTINGS_ENV`] when a sandbox remapped XDG.
+/// The shared settings file: `<config root>/session/settings.json`, or the
+/// session document named by [`SESSION_SETTINGS_ENV`] when a sandbox
+/// remapped XDG.
+///
+/// The document used to live at `<config root>/settings.json`. Resolving the
+/// path moves a document still there into place, once
+/// ([`adopt_legacy_document`]), so neither the session nor a reader started
+/// before the session loses the person's settings.
 pub fn settings_path() -> Option<PathBuf> {
     match std::env::var_os(SESSION_SETTINGS_ENV) {
         Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
-        _ => config_path(Path::new(FILE)),
+        _ => {
+            let root = config_root()?;
+            let path = settings_path_in(&root);
+            adopt_legacy_document(&root, &path);
+            Some(path)
+        }
+    }
+}
+
+/// Where the settings document lives under the config root `root`.
+pub fn settings_path_in(root: &Path) -> PathBuf {
+    root.join(SESSION_DIR).join(FILE)
+}
+
+/// Move a settings document left at `<root>/settings.json` into
+/// [`SESSION_DIR`], unless a document is already there. The move never
+/// replaces one, so two processes resolving the path at once move it once.
+/// Failing leaves the old document where it was and reads start from
+/// defaults, as for any unreadable document.
+///
+/// Remembers the last path it found settled, so the readers that poll the
+/// document's stamp do not look for the old one on every poll.
+fn adopt_legacy_document(root: &Path, path: &Path) {
+    static SETTLED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+    let mut settled = SETTLED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if settled.as_deref() == Some(path) {
+        return;
+    }
+    match move_legacy_document(root) {
+        Ok(true) => *settled = Some(path.to_path_buf()),
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "settings-store: could not move {} into {}: {error}",
+            root.join(FILE).display(),
+            root.join(SESSION_DIR).display()
+        ),
+    }
+}
+
+/// Whether the document is in [`SESSION_DIR`] under `root` once this returns:
+/// it was there, or the one left at the old path moved there.
+fn move_legacy_document(root: &Path) -> Result<bool, tilo_files::FsError> {
+    use tilo_files::{FsError, Kind, Location, VPath, blocking};
+    let invalid = |_| FsError::InvalidPath("settings document path");
+    let dir = match tilo_files::Dir::open(Location::Native(root.to_path_buf())) {
+        Ok(dir) => dir,
+        Err(FsError::NotFound) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let current = VPath::new(&format!("{SESSION_DIR}/{FILE}")).map_err(invalid)?;
+    if blocking::metadata(&dir, &current).is_ok() {
+        return Ok(true);
+    }
+    let legacy = VPath::new(FILE).map_err(invalid)?;
+    match blocking::metadata(&dir, &legacy) {
+        Ok(meta) if meta.kind == Kind::File && !meta.symlink => {}
+        _ => return Ok(false),
+    }
+    blocking::create_dir_all(&dir, &VPath::new(SESSION_DIR).map_err(invalid)?)?;
+    match blocking::rename_noreplace(&dir, &legacy, &current) {
+        Ok(()) | Err(FsError::AlreadyExists | FsError::NotFound) => Ok(true),
+        Err(error) => Err(error),
     }
 }
 
@@ -341,7 +405,7 @@ pub fn update_section_with_at(
     change: &mut SectionChange<'_>,
 ) -> std::io::Result<()> {
     let _lock = session::lock_copy(path)?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     let current = match doc.get(name) {
         Some(Value::Object(section)) => section.clone(),
         _ => Map::new(),
@@ -396,11 +460,22 @@ fn unisolated_test_write(
     )
 }
 
+// Display reads may be forgiving; a writer must not erase a file it cannot read.
+// Malformed JSON remains repairable, but I/O and UTF-8 failures are preserved.
+fn load_for_update(path: &Path) -> std::io::Result<Map<String, Value>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(parse(&text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(error) => Err(error),
+    }
+}
+
 /// [`update_section`] against an explicit path.
 ///
 /// # Errors
 ///
-/// Returns an error if the document can't be serialised or written.
+/// Returns an error if an existing document can't be read, or the merged document can't
+/// be serialised or written. A missing file starts empty; malformed JSON is still repaired.
 pub fn update_section_at(
     path: &Path,
     name: &str,
@@ -424,7 +499,7 @@ pub fn compare_update_section_at(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     if doc.get(name) != Some(&Value::Object(expected.clone())) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -443,13 +518,13 @@ pub fn compare_display_update_at(
     update: DisplayUpdate,
 ) -> std::io::Result<ConditionalUpdate> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        tilo_files::native::create_dir_all(parent)?;
     }
     let _lock = advisory_lock::FileLock::open(
         &session::lock_path(path),
         advisory_lock::LockMode::Exclusive,
     )?;
-    let mut document = load_at(path);
+    let mut document = load_for_update(path)?;
     if !update.matches(&document) {
         return Ok(ConditionalUpdate::Superseded);
     }
@@ -484,7 +559,7 @@ pub fn update_document_at(
         )?),
         _ => None,
     };
-    let mut doc = load_at(path);
+    let mut doc = load_for_update(path)?;
     change(&mut doc);
     write_atomic(path, &Value::Object(doc))
 }
@@ -564,13 +639,14 @@ mod tests {
         let error = update_section("notifications", values.clone())
             .expect_err("a hand-started harness wrote the caller's settings");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!home.join(".config/tilo/session/settings.json").exists());
         assert!(!home.join(".config/tilo/settings.json").exists());
 
         // A test that names its own config directory still writes there.
         let config = home.join("own-config");
         env.set("XDG_CONFIG_HOME", &config);
         update_section("notifications", values).expect("an explicit config directory");
-        assert!(config.join("tilo/settings.json").is_file());
+        assert!(config.join("tilo/session/settings.json").is_file());
         drop(env);
         let _ = std::fs::remove_dir_all(&home);
 
@@ -646,54 +722,7 @@ mod tests {
     // Path resolution: the divergence this crate ends
 
     #[test]
-    fn config_root_resolution_accepts_only_absolute_xdg_paths() {
-        // Phase `an_absolute_xdg_config_home_wins`.
-        {
-            let dir = tmpdir();
-            assert_eq!(
-                config_root_from(Some(dir.as_os_str()), Some("/home/ada".as_ref())),
-                Some(dir.join("tilo"))
-            );
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Phase `a_relative_xdg_config_home_is_ignored_not_joined`.
-        {
-            // The live bug: hand-rolled resolvers joined a relative value verbatim, so `settings.json`
-            // moved with the working directory while `dirs::config_dir()` readers stayed on
-            // `$HOME/.config` — one file, two locations, silently.
-            let root =
-                config_root_from(Some("relative/config".as_ref()), Some("/home/ada".as_ref()))
-                    .expect("falls back to $HOME/.config");
-            assert!(
-                root.is_absolute(),
-                "a settings path must never be relative: {root:?}"
-            );
-            assert_eq!(root, Path::new("/home/ada/.config/tilo"));
-        }
-        // Phase `an_empty_xdg_config_home_is_ignored`.
-        {
-            assert_eq!(
-                config_root_from(Some("".as_ref()), Some("/home/ada".as_ref())),
-                Some(PathBuf::from("/home/ada/.config/tilo"))
-            );
-            assert_eq!(
-                config_root_from(None, None),
-                None,
-                "no usable variable and no home names no config root"
-            );
-        }
-        // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
-        {
-            let home = tilo_paths::home();
-            assert_eq!(
-                config_root(),
-                config_root_from(
-                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-                    home.as_deref().map(Path::as_os_str),
-                )
-            );
-        }
-        // Phase `a_session_settings_env_wins_over_the_remapped_xdg_root`.
+    fn a_session_settings_env_wins_over_the_remapped_xdg_root() {
         {
             let session = tmpdir();
             let xdg = tmpdir();
@@ -705,6 +734,74 @@ mod tests {
             drop(env);
             let _ = std::fs::remove_dir_all(&session);
             let _ = std::fs::remove_dir_all(&xdg);
+        }
+    }
+
+    #[test]
+    fn the_document_lives_in_its_own_directory_and_an_old_one_moves_there() {
+        // Phase `a_fresh_root_names_the_session_directory`.
+        {
+            let xdg = tmpdir();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let path = settings_path().expect("a config root");
+            assert_eq!(path, xdg.join("tilo/session/settings.json"));
+            update_section(
+                "region",
+                json!({"units": "metric"}).as_object().unwrap().clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                load_section_at(&xdg.join("tilo/session/settings.json"), "region")["units"],
+                "metric"
+            );
+            assert!(
+                !xdg.join("tilo/settings.json").exists(),
+                "nothing is written beside the identity store and trust lists"
+            );
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
+        // Phase `a_document_at_the_old_path_moves_once_and_keeps_every_section`.
+        {
+            let xdg = tmpdir();
+            let root = xdg.join("tilo");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"appearance":{"theme":"Light"},"region":{"units":"imperial"}}"#,
+            )
+            .unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            assert_eq!(load_section("appearance")["theme"], "Light");
+            assert_eq!(load_section("region")["units"], "imperial");
+            assert!(!root.join("settings.json").exists(), "the old copy is gone");
+            assert!(root.join("session/settings.json").is_file());
+            // A later document at the old path is not taken over the current one.
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"region":{"units":"metric"}}"#,
+            )
+            .unwrap();
+            assert_eq!(load_section("region")["units"], "imperial");
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
+        // Phase `the_session_records_stay_under_the_root`.
+        {
+            let xdg = tmpdir();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let paths = SessionPaths::configured().expect("a config root");
+            assert_eq!(paths.copy, xdg.join("tilo/session/settings.json"));
+            assert_eq!(paths.person, xdg.join("tilo/records/person.json"));
+            assert_eq!(paths.device, xdg.join("tilo/records/device.json"));
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
         }
     }
 
@@ -758,6 +855,35 @@ mod tests {
             assert_eq!(bool_at(&doc, "display", "hidpi"), Some(true));
             assert_eq!(bool_at(&doc, "display", "mode"), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_refuses_unreadable_input_without_replacing_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // A symlink loop fails even for privileged test runners, unlike mode bits.
+        symlink("settings.json", &path).unwrap();
+        let read_error = std::fs::read_to_string(&path).unwrap_err();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.raw_os_error(), read_error.raw_os_error());
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("settings.json")
+        );
+    }
+
+    #[test]
+    fn a_merge_does_not_replace_non_utf8_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bytes = b"{\"region\":\"\xff\"}";
+        std::fs::write(&path, bytes).unwrap();
+        let error = update_section_at(&path, "display", Map::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     // Non-destructive writes

@@ -25,6 +25,7 @@ pub const SLOW_TREE_WAIT: Duration = Duration::from_millis(20);
 struct Holder {
     at: &'static Location<'static>,
     since: Instant,
+    thread: std::thread::ThreadId,
 }
 
 /// The `SLOW-TREE-LOCK` line for a wait of `elapsed` by `waiter`, when it is
@@ -82,6 +83,9 @@ struct TreeCell {
     policy: parking_lot::Mutex<PolicySnapshot>,
     /// The writer holding `lock` now, for a waiter that has to name it.
     holder: parking_lot::Mutex<Option<Holder>>,
+    /// The policy revision the current writer promised a launch it started,
+    /// which its release then publishes; 0 when it promised none.
+    reserved_revision: AtomicU64,
 }
 
 /// The parts of the tree an authorization decision reads: each
@@ -175,6 +179,7 @@ pub struct WorkspaceTreeWriteGuard<'a> {
     generation: &'a AtomicU64,
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
     holder: &'a parking_lot::Mutex<Option<Holder>>,
+    reserved_revision: &'a AtomicU64,
     /// The workspace showing when the guard was taken, and where it was taken:
     /// a write that moves the desktop to another workspace is logged with
     /// its writer, since the active workspace has several.
@@ -191,6 +196,7 @@ impl WorkspaceTreeHandle {
             generation: AtomicU64::new(0),
             policy,
             holder: parking_lot::Mutex::new(None),
+            reserved_revision: AtomicU64::new(0),
         }))
     }
 
@@ -247,6 +253,7 @@ impl WorkspaceTreeHandle {
         *self.0.holder.lock() = Some(Holder {
             at,
             since: Instant::now(),
+            thread: std::thread::current().id(),
         });
         WorkspaceTreeWriteGuard {
             active_on_entry: guard.desktop.active,
@@ -255,6 +262,7 @@ impl WorkspaceTreeHandle {
             generation: &self.0.generation,
             policy: &self.0.policy,
             holder: &self.0.holder,
+            reserved_revision: &self.0.reserved_revision,
         }
     }
 
@@ -281,8 +289,37 @@ impl WorkspaceTreeHandle {
     }
 
     /// The revision of the authorization state the tree holds now.
+    ///
+    /// Asked by the thread that holds the tree for writing (a launch started
+    /// in the middle of a write, such as a restored window opening while the
+    /// frame updates the tree), this cannot wait for the read lock: that
+    /// thread would wait on itself. The state it means is the one its write
+    /// is building, which has no revision until the write is released. So
+    /// the write is promised a fresh revision, which its release assigns and
+    /// publishes even when it changed no policy, and a launch waiting for
+    /// that publication is not left waiting for a save that never comes.
     pub fn policy_revision(&self) -> u64 {
+        if self.held_by_this_thread() {
+            return self.reserve_policy_revision();
+        }
         self.read().policy_revision
+    }
+
+    fn held_by_this_thread(&self) -> bool {
+        self.holder_now()
+            .is_some_and(|holder| holder.thread == std::thread::current().id())
+    }
+
+    /// Only the thread holding the write lock calls this, so the check and
+    /// the store cannot race another writer.
+    fn reserve_policy_revision(&self) -> u64 {
+        let reserved = self.0.reserved_revision.load(Ordering::Acquire);
+        if reserved != 0 {
+            return reserved;
+        }
+        let fresh = next_policy_revision();
+        self.0.reserved_revision.store(fresh, Ordering::Release);
+        fresh
     }
 
     /// A weak handle to the same tree.
@@ -376,14 +413,22 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
             }
             changed
         };
-        if changed {
+        let reserved = self.reserved_revision.swap(0, Ordering::AcqRel);
+        if changed || reserved != 0 {
             // A later state than any published or captured before it. Taken
             // while the write lock is held, so a reader sees this value with
-            // the state it names.
-            self.guard.policy_revision = next_policy_revision();
+            // the state it names. A launch made during this write already
+            // captured the reserved one, so that is the revision to publish.
+            self.guard.policy_revision = if reserved == 0 {
+                next_policy_revision()
+            } else {
+                reserved
+            };
             // And the save that publishes it, submitted now rather than left
             // to whichever caller mutated the tree remembering to save.
             self.guard.queue_save();
+        }
+        if changed {
             tilo_identity_host::policy_change::announce();
         }
     }
@@ -492,16 +537,18 @@ mod tests {
         });
 
         // A layout-only write: the watch stays armed and unwoken, unless
-        // another test of this process announced meanwhile.
+        // another test of this process announced meanwhile. An announcement
+        // counts the epoch up before it wakes, so whether one came is read
+        // after the wait: read before it, one landing during the wait woke
+        // the watch and failed the test in a parallel run.
         let before = watch.arm();
         handle.write().desktop.external_revision = 9;
         drop(handle.try_write().expect("nobody holds the tree"));
-        if tilo_identity_host::policy_change::epoch() == before {
-            assert!(
-                wakes.recv_timeout(Duration::from_millis(200)).is_err(),
-                "a write that changed no policy woke the watch"
-            );
-        }
+        let woke = wakes.recv_timeout(Duration::from_millis(200)).is_ok();
+        assert!(
+            !woke || tilo_identity_host::policy_change::epoch() != before,
+            "a write that changed no policy woke the watch"
+        );
 
         // A new owner: announced.
         let _ = watch.arm();
@@ -526,6 +573,65 @@ mod tests {
         wakes
             .recv_timeout(Duration::from_secs(5))
             .expect("stewarding a room woke the armed watch");
+    }
+
+    /// A launch started while its own thread holds the tree for writing (a
+    /// restored window opening during the frame's update) asks for the
+    /// policy revision. It used to wait for the read lock its own thread
+    /// held, and the compositor stopped. It now gets the revision the write
+    /// will publish, without waiting.
+    #[test]
+    fn the_writer_asking_for_the_policy_revision_gets_the_one_its_release_publishes() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let before = handle.policy_revision();
+        let writer = handle.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let guard = writer.write();
+            let promised = writer.policy_revision();
+            let again = writer.policy_revision();
+            drop(guard);
+            let _ = done.send((promised, again));
+        });
+        let (promised, again) = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("asking for the policy revision while writing must not wait on the write");
+        assert_eq!(promised, again, "one write promises one revision");
+        assert!(
+            promised > before,
+            "the promise is newer than any published state"
+        );
+        assert_eq!(
+            handle.policy_revision(),
+            promised,
+            "releasing the write assigns the revision it promised, though no policy changed"
+        );
+        handle.write().desktop.external_revision = 3;
+        assert_eq!(
+            handle.policy_revision(),
+            promised,
+            "a later write that promised nothing and changed no policy keeps it"
+        );
+    }
+
+    /// Another thread asking while the tree is written waits for the write
+    /// and sees the state it leaves; only the writer itself is answered from
+    /// the promise.
+    #[test]
+    fn another_thread_asking_during_a_write_waits_for_its_release() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let mut guard = handle.write();
+        let reader = handle.clone();
+        let asked = std::thread::spawn(move || reader.policy_revision());
+        let _ = guard.append_empty_workspace("Granted");
+        std::thread::sleep(Duration::from_millis(50));
+        drop(guard);
+        let seen = asked.join().unwrap();
+        assert_eq!(
+            seen,
+            handle.policy_revision(),
+            "the reader saw the released state"
+        );
     }
 
     #[test]

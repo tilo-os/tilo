@@ -166,7 +166,7 @@ fn put_metadata(store: &dyn Store, value: &impl Serialize) -> Result<[u8; 32], S
     put(store, &bytes)
 }
 fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String> {
-    let index: Index = match view.peer.workspace_checkpoint_root()? {
+    let index: Index = match view.peer.workspace().workspace_checkpoint_root()? {
         None => Index::default(),
         Some(hash) => read(store, hash)?,
     };
@@ -308,7 +308,7 @@ pub(crate) fn validate_restore(
     store: &dyn Store,
 ) -> Result<(), String> {
     if view.device() != view.governor() {
-        view.peer.workspace_checkpoint_root()?;
+        view.peer.workspace().workspace_checkpoint_root()?;
         return Ok(());
     }
     for ack in index(view, store)?.checkpoints.values() {
@@ -406,7 +406,7 @@ impl NativeWorkspaceOwner {
             if view.device() != view.governor() {
                 return Err("checkpoint requires the actual governing owner".into());
             }
-            view.peer.check_checkpoint_writer(key, now)
+            view.peer.workspace().check_checkpoint_writer(key, now)
         })?;
         match &request.command {
             CheckpointCommand::Capture { name, routes } => {
@@ -486,12 +486,21 @@ impl NativeWorkspaceOwner {
         {
             return Err("native checkpoint lacks current governor signing custody".into());
         }
-        candidate.peer.check_checkpoint_writer(key, now)?;
-        candidate.peer.check_checkpoint_namer(caller, now)?;
+        candidate
+            .peer
+            .workspace()
+            .check_checkpoint_writer(key, now)?;
+        candidate
+            .peer
+            .workspace()
+            .check_checkpoint_namer(caller, now)?;
         for route in capture.routes {
-            candidate
-                .peer
-                .check_checkpoint_reader(caller, &route.app, &route.record, now)?;
+            candidate.peer.workspace().check_checkpoint_reader(
+                caller,
+                &route.app,
+                &route.record,
+                now,
+            )?;
         }
         let mut index = index(&candidate, self.0.store.as_ref())?;
         if let Some(ack) = retry(&index, request)? {
@@ -556,6 +565,7 @@ impl NativeWorkspaceOwner {
         let address = put_metadata(self.0.store.as_ref(), index)?;
         candidate
             .peer
+            .workspace_mut()
             .set_workspace_checkpoint_root(address, key, now)?;
         let generation = candidate
             .generation()
@@ -580,6 +590,7 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     /// Absent custody, denied current route, missing content or failed publication.
+    #[cfg(test)]
     pub fn bind_checkpoint_name(
         &self,
         room: RoomId,
@@ -609,8 +620,14 @@ impl NativeWorkspaceOwner {
         {
             return Err("native checkpoint naming lacks governor custody".into());
         }
-        candidate.peer.check_checkpoint_writer(key, now)?;
-        candidate.peer.check_checkpoint_namer(caller, now)?;
+        candidate
+            .peer
+            .workspace()
+            .check_checkpoint_writer(key, now)?;
+        candidate
+            .peer
+            .workspace()
+            .check_checkpoint_namer(caller, now)?;
         let mut index = index(&candidate, self.0.store.as_ref())?;
         let ack = index
             .checkpoints
@@ -618,7 +635,7 @@ impl NativeWorkspaceOwner {
             .ok_or("native checkpoint id absent")?;
         let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
         for entry in &checkpoint.entries {
-            candidate.peer.check_checkpoint_reader(
+            candidate.peer.workspace().check_checkpoint_reader(
                 caller,
                 &entry.route.app,
                 &entry.route.record,
@@ -668,7 +685,7 @@ impl NativeWorkspaceOwner {
                 .ok_or("native checkpoint name is dangling")?;
             let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
             for entry in &checkpoint.entries {
-                view.peer.check_checkpoint_reader(
+                view.peer.workspace().check_checkpoint_reader(
                     caller,
                     &entry.route.app,
                     &entry.route.record,
@@ -700,7 +717,7 @@ impl NativeWorkspaceOwner {
                 .ok_or("native checkpoint id absent")?;
             let checkpoint = manifest(self.0.store.as_ref(), room, ack)?;
             for entry in &checkpoint.entries {
-                view.peer.check_checkpoint_reader(
+                view.peer.workspace().check_checkpoint_reader(
                     caller,
                     &entry.route.app,
                     &entry.route.record,

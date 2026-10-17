@@ -39,6 +39,7 @@ use crate::transport::{
     HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 #[derive(serde::Deserialize)]
 struct FullReplicaStatusProof {
@@ -250,10 +251,7 @@ impl HandshakeTrust {
     }
 
     fn replace_authority_roots(&self, roots: HashSet<[u8; 32]>) {
-        *self
-            .authority_roots
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = roots;
+        *self.authority_roots.write_recover() = roots;
     }
 
     async fn refresh(&self, workspaces: &WorkspaceRegistry) {
@@ -261,13 +259,7 @@ impl HandshakeTrust {
             return;
         }
         let mut roots = self.base_roots.as_ref().clone();
-        roots.extend(
-            self.authority_roots
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .copied(),
-        );
+        roots.extend(self.authority_roots.read_recover().iter().copied());
         let runtimes = workspaces
             .lock()
             .await
@@ -280,13 +272,7 @@ impl HandshakeTrust {
         let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
         users.sort_unstable();
         let next = TrustPolicy::AllowList { users };
-        let previous = std::mem::replace(
-            &mut *self
-                .live_policy
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            next.clone(),
-        );
+        let previous = std::mem::replace(&mut *self.live_policy.write_recover(), next.clone());
         if narrows(&previous, &next) {
             crate::authority_epoch::bump();
         }
@@ -943,6 +929,10 @@ impl Relay {
         if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
             governance.attach(rooms.clone());
         }
+        #[cfg(any(feature = "agents", feature = "web"))]
+        if let Some(rooms) = &rooms {
+            handler.compactor.steward_with(Arc::new(rooms.clone()));
+        }
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
@@ -1199,8 +1189,7 @@ impl Relay {
         self.web
             .relay
             .agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_recover()
             .insert(delegation.device_public_key, Some(delegation));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
@@ -2188,9 +2177,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
 fn lock_peer_relay_tasks(
     tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
 ) -> std::sync::MutexGuard<'_, Vec<AbortOnDrop>> {
-    tasks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    tasks.lock_recover()
 }
 
 /// Register a spawned task on the peer-relay task list (see
@@ -2480,12 +2467,7 @@ impl ProtocolHandler for ManagementProtocol {
                 // Apply it here too rather than wait for the log to be read
                 // back: this process stops serving its own revoked identity
                 // now. A conflicting entry is the log reader's to reject.
-                let applied = self
-                    .identity
-                    .revocations
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(revocation);
+                let applied = self.identity.revocations.write_recover().insert(revocation);
                 if matches!(applied, Ok(true)) {
                     crate::authority_epoch::bump();
                 }
@@ -2799,11 +2781,7 @@ impl PeerRelayDialer {
         let mut backoff_ms: u64 = 1_000;
         loop {
             let ep = endpoint.clone();
-            let current_revocations = identity
-                .revocations
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let current_revocations = identity.revocations.read_recover().clone();
             match RelayClient::connect(
                 ep,
                 addr.clone(),
@@ -4239,11 +4217,7 @@ mod tests {
         trust.refresh(&workspaces).await;
 
         assert_eq!(
-            trust
-                .live_policy
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            trust.live_policy.read_recover().clone(),
             TrustPolicy::AllowList {
                 users: vec![hex::encode(own_user), hex::encode(operator_pin)]
             }

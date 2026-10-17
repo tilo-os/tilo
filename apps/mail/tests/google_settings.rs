@@ -157,6 +157,7 @@ fn gmail_permission_or_capability_failure_saves_nothing_and_can_retry_files_only
         );
         assert!(root.store().is_empty());
         assert!(root.vault().get(&"ada@example.org".into()).is_none());
+        pane.select_account_services(true, false, "sync").unwrap();
         pane.command(AccountViewCommand::Submit);
         assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
         assert!(

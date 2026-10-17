@@ -30,9 +30,15 @@ fn namespace_control_is_distinct_from_directory_privacy() {
 #[test]
 fn namespace_control_rejects_foreign_owned_directory_without_mutation() {
     // An ordinary principal meets a foreign owner at `/`. Root owns `/`, so
-    // as root (CI) the foreign owner is a directory handed to `nobody`.
+    // as root the foreign owner is a directory handed to `nobody`, which root
+    // without CAP_CHOWN (a job sandbox) cannot make.
     let effective = rustix::process::geteuid();
     let foreign = if effective.is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(65534),
+            "root needs a directory owned by nobody"
+        );
         let temp = tempfile::tempdir().unwrap();
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
         rustix::fs::chown(

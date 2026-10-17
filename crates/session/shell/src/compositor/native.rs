@@ -135,14 +135,27 @@ fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
     }
 }
 
+/// The workspace hosts of each room this session holds, by room, when the
+/// backend is headless: their viewers (web members) watch that room's
+/// windows through them.
+type RoomHosts =
+    std::collections::BTreeMap<tilo_desktop_model::RoomId, std::collections::HashSet<u64>>;
+
+/// Every host in `hosts`, whichever room it hosts.
+fn all_hosts(hosts: &RoomHosts) -> std::collections::HashSet<u64> {
+    hosts.values().flatten().copied().collect()
+}
+
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
 ///
-/// `viewer_hosts` are the peer handles of the active room's workspace hosts
-/// when the backend is headless: its viewers watch through that host (which
-/// decides which of them see and control what), so every legacy window of
-/// the active workspace is shared with it, not only the explicitly shared.
+/// `viewer_hosts` are each room's workspace hosts when the backend is
+/// headless: its viewers watch through that host (which decides which of
+/// them see and control what), so every legacy window of a workspace whose
+/// room has one is shared with it, not only the explicitly shared. A headless
+/// machine's "active" workspace is nobody's screen, so every room counts; a
+/// room's windows go only to that room's hosts.
 ///
 /// `personal` are the person's other devices showing a tab, by tab: a legacy
 /// window streams to each device showing its tab, in whichever workspace it
@@ -152,12 +165,13 @@ fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
     watched: bool,
-    viewer_hosts: &std::collections::HashSet<u64>,
+    viewer_hosts: &RoomHosts,
     personal: &PersonalViewers,
 ) -> DesiredShares {
     if !watched {
         return HashMap::new();
     }
+    let hosts = all_hosts(viewer_hosts);
     let mut desired = HashMap::new();
     for workspace in &tree.desktop.workspaces {
         let active = workspace.id == tree.desktop.active;
@@ -171,15 +185,16 @@ fn desired_legacy_shares(
                 continue;
             };
             let mut peers = std::collections::HashSet::new();
-            if active {
-                if let Some(shared) = workspace
+            if active
+                && let Some(shared) = workspace
                     .shared_surfaces
                     .iter()
                     .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
-                {
-                    peers.extend(shared);
-                }
-                peers.extend(viewer_hosts);
+            {
+                peers.extend(shared);
+            }
+            if let Some(room_hosts) = viewer_hosts.get(&workspace.room) {
+                peers.extend(room_hosts);
             }
             let mut decode_limits = HashMap::new();
             if let Some(viewers) = personal.get(&tab.id) {
@@ -191,7 +206,7 @@ fn desired_legacy_shares(
             if !peers.is_empty() {
                 // Hosts bridge the window to web members, which draw pages
                 // themselves; any other viewer decodes video.
-                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
+                let paint = peers.iter().all(|peer| hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -217,7 +232,7 @@ struct LegacyShareInputs {
     tree: u64,
     /// Whether the backend was watched once the plan had asked for it.
     watched: bool,
-    viewer_hosts: std::collections::HashSet<u64>,
+    viewer_hosts: RoomHosts,
     personal: PersonalViewers,
 }
 
@@ -245,7 +260,7 @@ impl LegacySharePlan {
     fn refresh(
         &mut self,
         tree: &crate::shell::state::WorkspaceTreeHandle,
-        viewers: (std::collections::HashSet<u64>, PersonalViewers),
+        viewers: (RoomHosts, PersonalViewers),
         watched: bool,
         watch: impl FnOnce(bool) -> bool,
     ) -> bool {
@@ -263,12 +278,11 @@ impl LegacySharePlan {
         }
         let (desired, watched) = {
             let tree = tree.read();
-            // A headless session whose active room has a host shows its
-            // legacy windows to the host's viewers (browsers that opened
-            // them), and the person's other devices the windows they show:
-            // it paints and encodes while it has a viewer, and stops with
-            // the last.
-            let for_host = (!viewer_hosts.is_empty() && has_legacy_windows(&tree))
+            // A headless session whose rooms have hosts shows their legacy
+            // windows to the hosts' viewers (browsers that opened them), and
+            // the person's other devices the windows they show: it paints and
+            // encodes while it has a viewer, and stops with the last.
+            let for_host = has_hosted_legacy_windows(&tree, &viewer_hosts)
                 || hosts_viewed_window(&tree, &personal);
             let watched = watch(for_host);
             let desired = desired_legacy_shares(&tree, watched, &viewer_hosts, &personal);
@@ -295,7 +309,7 @@ impl LegacySharePlan {
 
     /// The headless host viewers and the person's devices the shares were
     /// derived for.
-    fn viewers(&self) -> Option<(&std::collections::HashSet<u64>, &PersonalViewers)> {
+    fn viewers(&self) -> Option<(&RoomHosts, &PersonalViewers)> {
         self.inputs
             .as_ref()
             .map(|inputs| (&inputs.viewer_hosts, &inputs.personal))
@@ -392,14 +406,18 @@ fn shown_hosted_windows(
 }
 
 /// Whether the active workspace shows a legacy window.
-fn has_legacy_windows(tree: &crate::shell::state::WorkspaceTree) -> bool {
-    tree.desktop.active_workspace().is_some_and(|workspace| {
-        workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+/// Whether a workspace whose room has a host holds a legacy window.
+fn has_hosted_legacy_windows(tree: &crate::shell::state::WorkspaceTree, hosts: &RoomHosts) -> bool {
+    tree.desktop.workspaces.iter().any(|workspace| {
+        hosts
+            .get(&workspace.room)
+            .is_some_and(|room| !room.is_empty())
+            && workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
     })
 }
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
@@ -408,8 +426,11 @@ use crate::compositor::control_invocation::{
     ControlInvocation, ControlInvocationPoll, InvocationProgress,
 };
 use crate::compositor::control_listing::{HeldListing, ListingStamp, ListingWait};
+#[cfg(test)]
+use crate::compositor::session_bootstrap::spawn_session_collab_broker;
 use crate::compositor::session_bootstrap::{
-    LoadedSession, load_session_tree, service_socket_is_live, spawn_session_collab_broker,
+    LoadedSession, finish_session_collab_broker, load_session_tree, service_socket_is_live,
+    start_session_collab_broker,
 };
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
@@ -417,7 +438,6 @@ use crate::compositor::test_control::{
     parse_request, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
-use crate::shell::overlay_host::PeerSyncRequest;
 
 /// The lock surface hides the complete desktop tree.  Its background widgets
 /// may legitimately keep animating (an opening app, a video, a closing
@@ -609,23 +629,34 @@ impl AnimationSettle {
 /// Who a painted tick's motion belongs to, for the frame trace
 /// ([`metrics::FrameSample::paint_animations`]). Naming a content widget
 /// walks the widget tree, so the label is worked out when the set of
-/// animating sources (or the chrome) changes and kept while it does not:
-/// it names the owners as of the start of that run of motion, which is the
-/// run an idle desktop that keeps painting is stuck in.
+/// animating sources (or the chrome) changes, and otherwise at most once per
+/// [`ANIMATION_LABEL_REFRESH`]. The set of sources does not see which content
+/// widget animates: one window's opening can hand the motion on to another
+/// widget with the same `content` source, and a label kept for the whole run
+/// named the window that had long since settled.
 #[derive(Default)]
 struct AnimationTraceLabel {
     key: Option<(crate::shell::frame::AnimationDemand, bool, u64)>,
+    walked: Option<Instant>,
     label: &'static str,
 }
+
+/// How long a frame-trace motion label is kept while its sources stay the same.
+const ANIMATION_LABEL_REFRESH: Duration = Duration::from_secs(1);
 
 impl AnimationTraceLabel {
     fn label(
         &mut self,
         key: (crate::shell::frame::AnimationDemand, bool, u64),
+        now: Instant,
         owners: impl FnOnce() -> Vec<String>,
     ) -> &'static str {
-        if self.key != Some(key) {
+        let stale = self
+            .walked
+            .is_none_or(|at| now.saturating_duration_since(at) >= ANIMATION_LABEL_REFRESH);
+        if self.key != Some(key) || stale {
             self.key = Some(key);
+            self.walked = Some(now);
             self.label = metrics::intern_animations(&animation_trace_label(&owners(), key.1));
         }
         self.label
@@ -1479,18 +1510,25 @@ fn revalidate_native_agent_markers(
                 })
                 .is_some_and(|identity| identity.agent_key == marker.agent)
     });
+    // A composer opened on a selection stands beside no marker, so only the
+    // agent's admission (the identity revision) and suppression close it.
+    let about_selection = frame
+        .host_mut()
+        .agent_quick_composer_mut()
+        .about_selection();
     if let Some(owner) = frame.host_mut().agent_quick_composer_mut().owner().cloned()
         && (suppressed
-            || !current.values().any(|source| {
-                source.launch.workspace_id == owner.room
-                    && source
-                        .agents
-                        .get(&owner.agent)
-                        .and_then(|actor| {
-                            broker.as_ref()?.certified_marker_agent(&owner.room, actor)
-                        })
-                        .is_some_and(|identity| identity.agent_key == owner.agent)
-            })
+            || !about_selection
+                && !current.values().any(|source| {
+                    source.launch.workspace_id == owner.room
+                        && source
+                            .agents
+                            .get(&owner.agent)
+                            .and_then(|actor| {
+                                broker.as_ref()?.certified_marker_agent(&owner.room, actor)
+                            })
+                            .is_some_and(|identity| identity.agent_key == owner.agent)
+                })
             || broker
                 .as_ref()
                 .and_then(|source| source.identity_revision(&owner.room))
@@ -1783,8 +1821,9 @@ fn start_chooser_service(
     }
 }
 
-/// Open the files apps asked the chooser service to open, each in the app
-/// that owns its type, in the asking app's workspace.
+/// Open the files and links apps asked the chooser service to open, each in
+/// the app that owns its type or claims its scheme, in the asking app's
+/// workspace.
 fn pump_chooser_opens(
     service: &crate::compositor::chooser_service::ChooserService,
     chrome: &crate::shell::chrome_state::Chrome,
@@ -1803,6 +1842,7 @@ fn pump_chooser_opens(
         }
         let _ = open.reply.send(outcome);
     }
+    service.open_requested_links(chrome);
 }
 
 /// Answer an app's request about its own tab. The app id is the one the
@@ -2293,6 +2333,19 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::SelectionCapable => {
+                    frame_builder
+                        .host_mut()
+                        .note_selection_capable(connection, &app_id);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection } => {
+                    // The app id is the launcher's: a selection is only ever
+                    // credited to the app that holds it, and only while it
+                    // is focused.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_ask_agent(&app_id, selection);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
                     // offer its own windows' pages.
@@ -2327,6 +2380,9 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);
+                frame_builder
+                    .host_mut()
+                    .forget_selection_capable(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -2353,6 +2409,17 @@ fn pump_floating_surface_service(
                 changed = true;
             }
         }
+    }
+    // The ask-agent chord asks the focused app for its selection, or opens
+    // the composer itself once that app had its moment to answer.
+    for connection in frame_builder
+        .host_mut()
+        .route_ask_agent_chord(Instant::now())
+    {
+        service.send(
+            connection,
+            &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
+        );
     }
     // Apps whose pages someone started or stopped watching.
     for (connection, watched) in state.paint_watch_changes() {
@@ -2903,6 +2970,9 @@ struct TestControlConn {
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
+    /// Wakes the loop when the stream can take more of a response the
+    /// socket did not take whole; registered only while one is unfinished.
+    output_wake: Option<calloop::RegistrationToken>,
     closed: bool,
     /// An `actions_invoke` answered once it is admitted, or once it settles.
     pending_invocation: Option<ControlInvocation>,
@@ -2993,6 +3063,7 @@ impl TestControlConn {
             admin: false,
             admin_identity_dir: None,
             wake: None,
+            output_wake: None,
             closed: false,
             pending_invocation: None,
             pending_listing: None,
@@ -3024,6 +3095,55 @@ impl TestControlConn {
         ) {
             Ok(token) => self.wake = Some(token),
             Err(error) => eprintln!("tilo compositor: test_control conn wake source: {error}"),
+        }
+    }
+
+    /// Keep a wake on the stream's room for output exactly while a response
+    /// is partly written. A response larger than the socket's send buffer
+    /// (a full action listing is megabytes) is written as far as the socket
+    /// takes it and the rest retained; the read wake never fires for the
+    /// driver draining it, so without this an idle compositor sent the next
+    /// piece only when something unrelated woke it, seconds apart, and a
+    /// listing took a minute to arrive. Level-triggered: every pump writes
+    /// until the socket would block, so it fires again only once the driver
+    /// has read, and a driver that stops reading leaves it quiet.
+    fn watch_output(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        let unfinished = !self.closed && self.output_offset < self.output.len();
+        match (unfinished, self.output_wake.is_some()) {
+            (true, false) => {
+                let clone = match self.reader.get_ref().try_clone() {
+                    Ok(clone) => clone,
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control output wake clone: {error}");
+                        return;
+                    }
+                };
+                match handle.insert_source(
+                    Generic::new(clone, Interest::WRITE, Mode::Level),
+                    |_, _, _| Ok(PostAction::Continue),
+                ) {
+                    Ok(token) => self.output_wake = Some(token),
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control output wake source: {error}");
+                    }
+                }
+            }
+            (false, true) => {
+                if let Some(token) = self.output_wake.take() {
+                    handle.remove(token);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Remove every wake this connection registered with the loop.
+    fn unwatch(&mut self, handle: &calloop::LoopHandle<'static, State>) {
+        for token in [self.wake.take(), self.output_wake.take()]
+            .into_iter()
+            .flatten()
+        {
+            handle.remove(token);
         }
     }
 
@@ -3787,6 +3907,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         reason = "one flat JSON literal with a line per dumped chrome field"
     )]
     fn chrome_state_json(&self) -> serde_json::Value {
+        // Read before the chrome is borrowed below: asking the widgets whether
+        // they animate reaches the top bar, which borrows the chrome itself.
+        let animating = self.fb.animation_owners();
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
         let native_broker = chrome
@@ -3844,6 +3967,10 @@ impl ControlState for FrameBuilderControlState<'_> {
             // (`live`), its app mark because the app holds secrets
             // (`withheld`), or its app mark for now (`none`).
             "window_switcher": self.fb.host().window_switcher_state_json(),
+            // Who asks for animation frames now: chrome sources by name, the
+            // deepest animating widgets by path with their geometry (and a
+            // window's frame state). Empty when the desktop may sleep.
+            "animating": animating,
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -4363,6 +4490,20 @@ fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
+fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
+    let notices = crate::shell::storage_notice::drain();
+    if notices.is_empty() {
+        return false;
+    }
+    frame_builder.with_chrome(|chrome| {
+        for notice in notices {
+            chrome.push_notification_full(notice);
+        }
+        chrome.bump();
+    });
+    true
+}
+
 /// Start XDG autostart entries once per login, as soon as there is a
 /// workspace to attribute them to (and whose X11 display they may use).
 fn run_autostart_once(frame_builder: &FrameBuilder) {
@@ -4392,10 +4533,27 @@ fn run_autostart_once(frame_builder: &FrameBuilder) {
 /// compositor can mint an external xdg-activation token before the child is
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
-fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+fn launch_queued_host_apps(
+    state: &mut State,
+    frame_builder: &mut FrameBuilder,
+    wake: &crate::session_runtime::Wake,
+) -> bool {
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
+        let reopened = {
+            let chrome = frame_builder.chrome();
+            let tree = chrome.tree();
+            crate::shell::host_apps::reopen_from_tray(
+                &request,
+                crate::tray::global(),
+                &tree,
+                Arc::clone(wake),
+            )
+        };
+        if reopened {
+            continue;
+        }
         tracing::info!(
             target: "shell::compositor::host_launch",
             desktop_id = %request.app.desktop_id,
@@ -4920,7 +5078,7 @@ fn execute_planned_action(
         }
         PlannedAction::Touchpad(edge) => {
             if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
-                apply_shell_gesture(fb, gesture);
+                apply_shell_gesture(fb, gesture, Instant::now());
             }
         }
         PlannedAction::KeyboardKey { key, pressed } => {
@@ -5302,9 +5460,7 @@ fn write_snapshot_png(
     let rgba = {
         // A panic elsewhere poisons the mutex without damaging what it guards
         // (an intact renderer or empty slot) — recover rather than compound the failure.
-        let mut slot = cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = cache.lock_recover();
         let stale = match slot.as_ref() {
             Some(renderer) => renderer.width != w || renderer.height != h,
             None => true,
@@ -5987,6 +6143,12 @@ fn dispatch_control_command(
         }
         test_control::Command::ProvisionTestIdentity => {
             (crate::compositor::dev_test_identity::respond(), Vec::new())
+        }
+        test_control::Command::DeadlockMainLoop => {
+            if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+                crate::compositor::watchdog::deadlock_this_thread_for_test();
+            }
+            (test_control::deadlock_main_loop_refused(), Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
@@ -7174,6 +7336,27 @@ mod spatial_edge_tests {
     }
 }
 
+/// Tell the person where "Send…" put their screenshot, or why it did not.
+fn notify_screenshot_sent(
+    frame_builder: &mut FrameBuilder,
+    sent: Result<crate::shell::screenshot_send::SendReceipt, String>,
+) {
+    match sent {
+        Ok(receipt) => frame_builder.with_chrome(|chrome| {
+            chrome.push_notification(
+                crate::shell::i18n::t("capture-screenshot-sent"),
+                receipt.message(),
+            );
+        }),
+        Err(error) => frame_builder.with_chrome(|chrome| {
+            chrome.push_error_notification(
+                crate::shell::i18n::t("capture-screenshot-not-sent"),
+                error,
+            );
+        }),
+    }
+}
+
 fn finish_nearby_drop(
     event: &WindowEvent,
     network: &crate::shell::network::ShellNetwork,
@@ -7194,8 +7377,7 @@ fn finish_nearby_drop(
             .is_some_and(|drag| drag.paths.as_slice() == [path.as_path()]);
         end_spatial_control(network, active);
         if matches {
-            let _ =
-                crate::shell::device_fabric_runtime::request_nearby_drop(network, &target, &path);
+            let _ = crate::shell::device_fabric_runtime::request_nearby_drop(&target, &path);
         }
         return Some(false);
     }
@@ -7333,6 +7515,7 @@ fn power_notification_to_incoming(
         contact_endpoint: None,
         sender_name: None,
         sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
+        incoming_call: false,
     }
 }
 
@@ -7431,8 +7614,27 @@ fn priority_route(
     }
 }
 
-/// How long an invite minted from the palette stays valid.
-const INVITE_EXPIRY_SECONDS: u64 = 3600;
+/// Start the device fabric's pump on its own thread, or say why not.
+fn start_device_fabric(
+    network: &Arc<crate::shell::network::ShellNetwork>,
+    notifications: &crate::notifications::NotificationBridge,
+) -> Option<
+    crate::shell::device_fabric_runtime::worker::FabricWorker<
+        crate::shell::device_fabric_runtime::FabricTurn,
+    >,
+> {
+    let runtime = crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
+        network,
+        notifications.clone(),
+    );
+    match crate::shell::device_fabric_runtime::spawn_worker(runtime, Arc::clone(network)) {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            tracing::error!(%error, "device fabric: could not start its thread");
+            None
+        }
+    }
+}
 
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
@@ -7816,31 +8018,31 @@ fn install_wifi_secret_bridge(
     }));
 }
 
-/// Start peer sync before the compositor loop runs, while nothing can launch
-/// yet. A failure leaves the session without sync.
-fn spawn_session_peer_sync(
-    frame_builder: &mut FrameBuilder,
-    state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
-) -> Option<Arc<crate::shell::network::ShellNetwork>> {
-    match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
-        Ok(handle) => Some(install_session_peer_sync(
-            frame_builder,
-            state,
-            tree_handle,
-            handle,
+/// Ask `PipeWire` whether recordings can take desktop sound and the
+/// microphone, on the session runtime: the probe runs `pw-record` and
+/// `wpctl`, each allowed 5 s. `None` when there is no runtime to ask on;
+/// capture then offers no audio tracks.
+fn start_recording_audio_probe(
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::session_runtime::PendingStart<(bool, bool)>> {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => Some(crate::session_runtime::start_blocking(
+            runtime.handle(),
+            wake,
+            || Ok(crate::compositor::capture::recording_audio_availability()),
         )),
         Err(error) => {
-            tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+            tracing::warn!(%error, "recording audio cannot be probed; capture offers no audio");
             None
         }
     }
 }
 
-/// Start peer sync from inside the running compositor loop. Building its
-/// runtime, reading the device key and binding the endpoint block, so they
-/// run on the session runtime; the finished network is delivered back
-/// through `wake` and installed with [`install_session_peer_sync`].
+/// Start peer sync for the compositor loop, at boot or when first login
+/// completes. Building its runtime, reading the device key and binding the
+/// endpoint block, so they run on the session runtime; the finished network
+/// is delivered back through `wake` and installed with
+/// [`install_session_peer_sync`].
 fn start_session_peer_sync(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     wake: crate::session_runtime::Wake,
@@ -7895,7 +8097,7 @@ fn install_legacy_streams(state: &mut State, net: &Arc<crate::shell::network::Sh
 fn install_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
     handle: crate::shell::network::ShellNetwork,
 ) -> Arc<crate::shell::network::ShellNetwork> {
     let _ = handle.join_default_workspace();
@@ -7915,7 +8117,7 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
-    install_window_hosting(&net, &tree_handle);
+    install_window_hosting(&net, tree_handle);
     let hosted_net = Arc::clone(&net);
     frame_builder.with_chrome(move |chrome| {
         chrome.window_transfers.set_hosted_rooms(Box::new(
@@ -7923,75 +8125,12 @@ fn install_session_peer_sync(
         ));
     });
     install_legacy_streams(state, &net);
-    let bridge_net = Arc::clone(&net);
-    frame_builder
-        .host_mut()
-        .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-            let active = tree_handle.read().desktop.active;
-            match req {
-                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
-                PeerSyncRequest::ExportIdentity => bridge_net
-                    .person_identity_card(active)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInviteFor {
-                    name,
-                    role,
-                    recipient_user_public_key,
-                } => bridge_net
-                    .issue_invite_bound_with_role(
-                        active,
-                        INVITE_EXPIRY_SECONDS,
-                        &name,
-                        recipient_user_public_key,
-                        role,
-                    )
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInvitation(terms) => bridge_net
-                    .issue_invitation(active, &terms)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => {
-                    bridge_net.accept_peer_invitation(active, &token)
-                }
-                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
-                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
-                PeerSyncRequest::ListPendingInvitations => {
-                    let room = tree_handle
-                        .read()
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| workspace.room)
-                        .ok_or_else(|| "no active workspace".to_string())?;
-                    Ok(
-                        crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                            bridge_net
-                                .pending_invitations(room)
-                                .into_iter()
-                                .map(|invite| {
-                                    crate::shell::overlay_host::PendingInvitationSummary {
-                                        id: invite.id,
-                                        name: invite.name,
-                                        role: invite.role,
-                                        expiry_unix_seconds: invite.expiry_unix_seconds,
-                                    }
-                                })
-                                .collect(),
-                        ),
-                    )
-                }
-                PeerSyncRequest::ResendInvitation(id) => bridge_net
-                    .resend_invitation(&id)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::CancelInvitation(id) => {
-                    if bridge_net.cancel_invitation(&id) {
-                        Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                            "canceled".into(),
-                        ))
-                    } else {
-                        Err("invitation is no longer pending".into())
-                    }
-                }
-            }
-        }));
+    // Invitations, redemptions and enrollments wait on relays and the
+    // disk: chrome's requests run on the network's worker, never here.
+    net.start_peer_sync_worker();
+    frame_builder.host_mut().set_peer_sync_worker(
+        crate::shell::overlay_host::PeerSyncWorker::for_network(&net),
+    );
     net
 }
 
@@ -8301,7 +8440,7 @@ impl PortalBackend {
         scene: &vello::Scene,
         documents: &crate::portal::DocumentStoreHandle,
     ) {
-        use crate::{portal::desktop_services::PortalResult, shell::state::FsMode};
+        use crate::portal::desktop_services::PortalResult;
         for command in self.capture_requests.try_iter().take(8) {
             match command {
                 PortalCaptureCommand::Screenshot { request, reply } => {
@@ -8342,30 +8481,17 @@ impl PortalBackend {
                         });
                         continue;
                     }
-                    let outcome = capture
-                        .capture_portal_screenshot(
-                            frame_builder,
-                            scene,
-                            request.target.unwrap_or(
-                                crate::portal::desktop_services::ScreenshotTarget::Screen,
-                            ),
-                            false,
-                        )
-                        .and_then(|host_path| {
-                            let published =
-                                documents.publish(&request.caller, &[host_path], FsMode::Read);
-                            let path = published.into_iter().next().ok_or_else(|| {
-                                "the document store rejected the screenshot".to_string()
-                            })?;
-                            crate::portal::file_chooser::file_uri(&path).ok_or_else(|| {
-                                "the document store returned a non-absolute screenshot path"
-                                    .to_string()
-                            })
-                        });
-                    let _ = reply.send(match outcome {
-                        Ok(uri) => PortalResult::Success(uri),
-                        Err(error) => PortalResult::Failed(error),
-                    });
+                    // The file is written off the loop; the caller is
+                    // answered once it is complete.
+                    capture.capture_portal_screenshot(
+                        frame_builder,
+                        scene,
+                        request
+                            .target
+                            .unwrap_or(crate::portal::desktop_services::ScreenshotTarget::Screen),
+                        false,
+                        answer_portal_screenshot(documents.clone(), request.caller, reply),
+                    );
                 }
                 PortalCaptureCommand::PickColor {
                     request_handle,
@@ -8434,6 +8560,34 @@ impl PortalBackend {
         };
         let _ = pending_request.reply.send(result);
         true
+    }
+}
+
+/// Answer a non-interactive portal screenshot request once its file is
+/// complete (on the capture worker): the file is republished through the
+/// caller's document subtree before its URI is returned.
+fn answer_portal_screenshot(
+    documents: crate::portal::DocumentStoreHandle,
+    caller: crate::portal::PortalCaller,
+    reply: std::sync::mpsc::SyncSender<crate::portal::desktop_services::PortalResult<String>>,
+) -> impl FnOnce(Result<std::path::PathBuf, String>) + Send + 'static {
+    use crate::portal::desktop_services::PortalResult;
+    move |saved| {
+        let outcome = saved.and_then(|host_path| {
+            let published =
+                documents.publish(&caller, &[host_path], crate::shell::state::FsMode::Read);
+            let path = published
+                .into_iter()
+                .next()
+                .ok_or_else(|| "the document store rejected the screenshot".to_string())?;
+            crate::portal::file_chooser::file_uri(&path).ok_or_else(|| {
+                "the document store returned a non-absolute screenshot path".to_string()
+            })
+        });
+        let _ = reply.send(match outcome {
+            Ok(uri) => PortalResult::Success(uri),
+            Err(error) => PortalResult::Failed(error),
+        });
     }
 }
 
@@ -8767,7 +8921,8 @@ mod live_power_settings_tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session_settings = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        settings_store::install_source(Some(session_settings.host_view().unwrap()));
+        let settings =
+            crate::shell::test_support::install_settings(session_settings.host_view().unwrap());
         let live = settings_store::live::LiveSettings::start(|| {});
         let mut follower = settings_store::live::SectionFollower::new(&live);
         let bridge = tilo_power_mgmt::PowerBridge::new();
@@ -8840,7 +8995,7 @@ mod live_power_settings_tests {
                 "locking by hand still works"
             );
         }
-        settings_store::install_source(None);
+        drop(settings);
     }
 }
 
@@ -9212,8 +9367,11 @@ pub fn run() {
     let identity_recovery =
         std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
             .is_some_and(|value| value == "1");
+    // A device enrolled without the root (a node's session) has its
+    // identity already; nobody sits at it to set one up.
     let identity_missing =
-        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
+        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
+            && !crate::shell::identity_provisioning::enrolled_device_ready();
     // The normal admin socket remains the real seat's. An owner can request
     // a separate semantic endpoint for headless work without enabling the
     // development input socket or changing first-use and lock handling.
@@ -9263,7 +9421,6 @@ pub fn run() {
     // session's identity and device key once when it starts. Start it after
     // first-login setup too, or it keeps the pre-identity view all session.
     let mut deferred_local_broker = !peer_sync_requested && onboarding_identity_dir.is_some();
-    let mut local_broker_due = false;
     if deferred_peer_sync {
         tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
@@ -9382,8 +9539,9 @@ pub fn run() {
     };
     let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
     let mut window_appearances = crate::compositor::floating_service::AppearanceDelivery::default();
-    let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
-    frame_builder.set_capture_audio_available(system_audio, microphone);
+    // Whether recordings can take sound is asked of PipeWire below, off the
+    // loop (three processes, up to 5 s each); until it answers, capture
+    // offers no audio tracks.
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
@@ -9425,14 +9583,20 @@ pub fn run() {
         state.selection_store(),
     );
 
-    // Peer sync is constructed here because this is the compositor that boots
-    // as the Tilo session.
-    let mut peer_sync = enable_peer_sync
-        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
-        .flatten();
-    let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
-        crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
-    });
+    // Peer sync belongs to this compositor, the one that boots as the Tilo
+    // session. Building it blocks (a runtime, the device key, the endpoint
+    // bind, identity reads that may save), so it starts off the loop once
+    // the loop runs (`network_start` below), the way first login starts it;
+    // the loop installs it, then the broker over it.
+    let mut peer_sync: Option<Arc<crate::shell::network::ShellNetwork>> = None;
+    // Started once, with the first network the loop installs: a thread that
+    // could not start is reported, not retried every turn.
+    let mut device_fabric_worker: Option<
+        crate::shell::device_fabric_runtime::worker::FabricWorker<
+            crate::shell::device_fabric_runtime::FabricTurn,
+        >,
+    > = None;
+    let mut device_fabric_tried = false;
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
     // Loop iterations since the last quiet trim was asked for.
@@ -9440,67 +9604,38 @@ pub fn run() {
     // When the presenter's strip layers are drawn again, once the desktop
     // rests after a frame that changed it ([`LAYER_WARM_SETTLE`]).
     let mut layer_warm_at: Option<Instant> = None;
-    // The session's CRDT fan-out broker, bound before the wayland socket is
-    // published (before any app launches) — an app resolves its collab
-    // descriptor once at spawn, so a broker arriving later is one it never gets.
+    // The session's CRDT fan-out broker. Lives in this process, not a unit
+    // of its own: a listener + fanout table over `ShellNetwork`, since the
+    // shell already owns the network stack, identity and permissions. Held
+    // to the end of `run()` so the socket outlives every app and unlinks with
+    // the session.
     //
-    // Lives in this process, not a unit of its own: a listener + fanout
-    // table over `ShellNetwork` (the Iroh handle above), since the shell
-    // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
+    // Binding it opens its invocation journal, its MLS vault and every
+    // channel's sealed state, so it binds on the session-start worker
+    // (`broker_start` below) and the loop installs it when it is up. An app
+    // resolves its collab descriptor once at spawn, so launches are held
+    // until then, and restored hosted tabs wait for it (`Starting`).
     // Onboarding withholds every app, so defer its broker too. That lets the
     // freshly authenticated transport be its outbound route as soon as the
     // person completes setup, with no stale local-only broker to replace.
-    let mut collab_broker = (!deferred_peer_sync && !deferred_local_broker)
-        .then(|| spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref()))
-        .flatten();
-    if let Some(broker) = collab_broker.as_ref() {
-        attach_collab_broker_bridges(&mut frame_builder, broker);
-        #[cfg(feature = "agent-control")]
-        spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
-        if let (Some(portal), Some(service)) =
-            (portal_backend.as_ref(), broker.native_media_service())
-        {
-            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
-        }
-    }
-    let mut local_session_lifecycle = collab_broker
-        .as_ref()
-        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
-    let mut realtime_fabric_bridge = collab_broker
-        .as_ref()
-        .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
-    if let (Some(runtime), Some(bridge)) = (
-        device_fabric_runtime.as_mut(),
-        realtime_fabric_bridge.as_ref(),
-    ) && let Some(adapter) = bridge.adapter()
-    {
-        runtime.set_realtime_adapter(adapter);
-    }
-    let mut remote_capture_runtime = realtime_fabric_bridge
-        .as_ref()
-        .and_then(
-            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker,
-        )
-        .map(|capture| {
-            std::sync::Arc::new(std::sync::Mutex::new(
-                crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
-                    capture,
-                ),
-            ))
-        });
-    if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-        crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
-        if let Some(runtime) = device_fabric_runtime.as_mut() {
-            runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
-        }
+    let mut collab_broker: Option<crate::shell::collab_broker::BrokerHandle> = None;
+    let mut local_session_lifecycle: Option<LocalSessionLifecycle> = None;
+    let mut realtime_fabric_bridge: Option<
+        crate::shell::collab_broker_capnp::RealtimeFabricAppBridge,
+    > = None;
+    let mut remote_capture_runtime: Option<
+        std::sync::Arc<
+            std::sync::Mutex<crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime>,
+        >,
+    > = None;
+    // A session that is not onboarding starts its services on the first
+    // tick: the network first when peer sync is on, else the local broker.
+    let boot_network = enable_peer_sync && !deferred_peer_sync;
+    let mut local_broker_due = !enable_peer_sync && !deferred_peer_sync && !deferred_local_broker;
+    if boot_network || local_broker_due {
+        crate::shell::launcher::hold_launches();
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
-    // Onboarding defers the broker; its start below says so then.
-    if !deferred_peer_sync && !deferred_local_broker {
-        crate::shell::in_process::set_session_services(
-            crate::shell::in_process::SessionServices::Listening,
-        );
-    }
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -9516,14 +9651,6 @@ pub fn run() {
     // guards. Recover those PID-qualified private names before binding this
     // session; clean exits already remove them explicitly below.
     remove_stale_private_wayland_endpoints(&crate::shell::launcher::runtime_dir());
-
-    // Read the session's own broker for pointer presence and relay it to the
-    // room's other hosts; subscribing by room is what makes a cursor crossing
-    // apps read as one peer moving, since presence is room-scoped. Only stood
-    // up when both halves exist — without peer sync, the overlay paints nothing.
-    if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
-        attach_peer_presence(&mut frame_builder, broker, net);
-    }
 
     // Seed the fullscreen-configure size so an early `set_fullscreen` fills the output before the first resize.
     state.output_size = size_to_signed(initial_size);
@@ -9790,26 +9917,27 @@ pub fn run() {
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
+    crate::shell::storage_notice::start(Arc::clone(&session_wake));
+    crate::app_icons::set_wake(Arc::clone(&session_wake));
+    crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
     // admitted or its job changes, not on the next unrelated wake.
     let _invocation_wake =
         crate::shell::search::invocation_wake::install(Arc::clone(&session_wake));
     notif_bridge.set_wake(Arc::clone(&session_wake));
-    if let Some(net) = peer_sync.as_ref() {
-        net.set_wake(Arc::clone(&session_wake));
-    }
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    // The network, once the loop installs it, takes the same wake and
+    // binds the hosted apps that use it.
     frame_builder.with_chrome(|chrome| {
+        // From here on the loop never waits on the disk to open a tab's
+        // record: the record store's thread opens it and wakes the loop.
+        chrome.open_records_without_waiting(Arc::clone(&session_wake));
         if let Some(apps) = chrome.hosted_inputs.in_process() {
-            let mut apps = apps.borrow_mut();
-            apps.bind_messaging_record_wake(Arc::clone(&session_wake));
-            if let Some(network) = peer_sync.as_ref() {
-                apps.bind_private_messages_network(network);
-                apps.bind_feedback_network(Arc::clone(network));
-            }
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
@@ -9823,7 +9951,22 @@ pub fn run() {
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
         crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
-    > = None;
+    > = boot_network
+        .then(|| start_session_peer_sync(tree_handle.clone(), Arc::clone(&session_wake)));
+    let mut recording_audio_probe = start_recording_audio_probe(Arc::clone(&session_wake));
+    // Whether desktop sound can be recorded, once the probe answers: only
+    // then does the device fabric offer this device's audio output.
+    let mut system_audio = false;
+    // Whether the launches held for the network fail when it does not come:
+    // first login asked for sync, while a boot whose network failed carries
+    // on local-only, as it always has.
+    let mut network_held_launches = false;
+    // The session broker binding on the session-start worker, with the
+    // network failure its held launches are reported with once it is up.
+    let mut broker_start: Option<(
+        crate::session_runtime::PendingStart<crate::compositor::session_bootstrap::BrokerStart>,
+        Option<String>,
+    )> = None;
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
@@ -10201,8 +10344,12 @@ pub fn run() {
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
-    // verbose aggregate line for development runs.
-    let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // verbose aggregate line for development runs. A profile the admin
+    // starts (`metrics::profile`) times the same phases for its duration,
+    // recording every span instead of logging the slow ones.
+    let loop_timing_env = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // Set at the top of every tick.
+    let mut loop_timing: bool;
     // A developer override: every painted frame takes as long as on a slow
     // machine, so per-frame layout steps see real long frame times.
     let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
@@ -10216,6 +10363,7 @@ pub fn run() {
                 if elapsed > pump_slowest.1 {
                     pump_slowest = ($name, elapsed);
                 }
+                metrics::profile::record_phase($name, elapsed, None);
                 pump_checkpoint = now;
             }
         }};
@@ -10226,7 +10374,8 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                metrics::profile::record_phase($name, elapsed, None);
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={}",
                         $name,
@@ -10243,12 +10392,14 @@ pub fn run() {
                 let started = Instant::now();
                 let value = $body;
                 let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(8) {
+                let items: usize = $count;
+                metrics::profile::record_phase($name, elapsed, Some(items));
+                if loop_timing_env && elapsed >= Duration::from_millis(8) {
                     eprintln!(
                         "PUMP-PHASE name={} elapsed_us={} items={}",
                         $name,
                         elapsed.as_micros(),
-                        $count
+                        items
                     );
                 }
                 value
@@ -10311,6 +10462,50 @@ pub fn run() {
             }
         };
     }
+    // Read input between the phases of a turn, and send at once each release
+    // of a key a client holds (`client_input::deliver_held_key_release`): a
+    // client repeats a held key until its release arrives, and the phases
+    // after this turn's input dispatch can outlast the repeat delay. All
+    // other input, presses included, waits in `pending_events`, in order,
+    // for the next turn's full dispatch.
+    macro_rules! deliver_held_key_releases {
+        () => {{
+            let placements = crate::compositor::backend::layout::placements(backend.outputs());
+            backend.poll_input(&mut |event| {
+                pending_events.push_back(crate::compositor::backend::layout::event_to_logical(
+                    &placements,
+                    event,
+                ));
+            });
+            if !pending_events.is_empty()
+                && !session.is_locked()
+                && client_input_allowed(&frame_builder)
+            {
+                let mut delivered = false;
+                for event in &pending_events {
+                    if let BackendEvent::Input(wev) | BackendEvent::PhysicalKey { event: wev, .. } =
+                        event
+                    {
+                        delivered |= client_input::deliver_held_key_release(&mut state, wev);
+                    }
+                }
+                if delivered && let Err(err) = display.flush_clients() {
+                    tracing::warn!(%err, "flushing an early key release failed");
+                }
+            }
+        }};
+    }
+    // From here the compositor thread turns this loop. A turn that stops for
+    // good is recorded and ends the process, so a hang hands the display back
+    // and the session returns to the login screen instead of needing the
+    // power button (`watchdog`). Start-up before it may wait without a bound
+    // on purpose: the seat is not ours until logind activates the session.
+    let watchdog = crate::compositor::watchdog::Watchdog::watch_this_thread(
+        crate::compositor::watchdog::Policy::COMPOSITOR,
+        crate::compositor::watchdog::end_process,
+    )
+    .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
+    .ok();
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -10319,7 +10514,9 @@ pub fn run() {
         let iter_t0 = Instant::now();
         crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
+        metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
+        loop_timing = loop_timing_env || metrics::profile::active();
         // A setting this loop changed that the settings worker could not store
         // went back to its previous value: say so (one atomic load when none did).
         if settings_store::deferred_failure_pending() {
@@ -10654,6 +10851,18 @@ pub fn run() {
         // outside this loop and reused every tick to avoid a per-frame
         // allocation on this hot path, and an event may expand into further
         // events that must run next, before anything the backend queued later.
+        // A Super held alone past its hold peeks on the wake its deadline
+        // asked for, with no new event to carry it.
+        if let Some(gesture) = super_tap.poll(Instant::now())
+            && !session.is_locked()
+        {
+            frame_builder.host_mut().super_gesture(
+                gesture,
+                &test_control_ctx.doc,
+                &test_control_ctx.root_obj,
+            );
+            session_changed = true;
+        }
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
             dispatched_input.note(&event);
@@ -10730,12 +10939,17 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
-                    // A lone Super tap opens global search. Observed ahead of every
-                    // branch below, so a chord one of them handles still disarms it.
-                    if super_tap.observe(wev) && !session.is_locked() {
-                        frame_builder
-                            .host_mut()
-                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                    // Super alone, tapped or held, opens the Super surface.
+                    // Observed ahead of every branch below, so a chord one of
+                    // them handles still disarms it.
+                    if let Some(gesture) = super_tap.observe(wev, Instant::now())
+                        && !session.is_locked()
+                    {
+                        frame_builder.host_mut().super_gesture(
+                            gesture,
+                            &test_control_ctx.doc,
+                            &test_control_ctx.root_obj,
+                        );
                         session_changed = true;
                     }
 
@@ -11158,11 +11372,11 @@ pub fn run() {
                             .set_zones(input_capture_zones(backend.outputs()));
                     }
                 }
-                BackendEvent::ShellGesture(action) => {
+                BackendEvent::ShellGesture(action, at) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_shell_gesture(&mut frame_builder, action);
+                        apply_shell_gesture(&mut frame_builder, action, at);
                         session_changed = true;
                     }
                 }
@@ -11340,8 +11554,9 @@ pub fn run() {
         crate::shell::launcher::expire_pending_placements();
         session_changed |=
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
-        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
+        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
+        session_changed |= post_storage_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {
             published.follow(
@@ -11642,7 +11857,9 @@ pub fn run() {
         for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
-                // running); when inhibited, un-latch so it re-fires the instant the last inhibitor releases, no fresh input needed.
+                // running). `tick_inhibited` already restarts the period while a hold is
+                // seen; one taken since then un-latches here, and the period restarts
+                // from the hold's last tick once it lets go.
                 if inhibit_registry.is_inhibited() {
                     session.cancel_suspend();
                     tracing::debug!(
@@ -12152,6 +12369,7 @@ pub fn run() {
         }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
+        deliver_held_key_releases!();
         let floating_surfaces = state
             .floating_toplevels
             .iter()
@@ -12168,6 +12386,14 @@ pub fn run() {
             })
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces_with_input(&floating_surfaces);
+        // Live calls and navigation float where the person left them; desk
+        // widgets share the edges with them and step past them.
+        frame_builder.host_mut().set_system_activity_rects(
+            floating_surfaces
+                .iter()
+                .map(|(_, _, rect, _)| *rect)
+                .collect(),
+        );
         state.sync_capture_protection();
         state.set_capture_placeholder_fill(
             crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
@@ -12280,24 +12506,18 @@ pub fn run() {
         // deciding whether to paint — drains a hosted terminal's PTY;
         // returns true when changed, itself a paint reason. Drain the
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
+        // Artwork the chrome asked for arrived from the icon resolver's
+        // thread: build the chrome again so tabs and rows show it.
+        if crate::app_icons::take_arrived() {
+            crate::shell::tab_binding::note_tab_artwork_changed(&mut tree_handle.write());
+        }
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
             pump_phase!("network-tick", net.frame_tick());
-            let runtime = device_fabric_runtime.get_or_insert_with(|| {
-                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
-                    net,
-                    notif_bridge.clone(),
-                )
-            });
-            if let Some(adapter) = realtime_fabric_bridge
-                .as_ref()
-                .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter)
-            {
-                runtime.set_realtime_adapter(adapter);
-            }
-            if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-                runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+            deliver_held_key_releases!();
+            if !std::mem::replace(&mut device_fabric_tried, true) {
+                device_fabric_worker = start_device_fabric(net, &notif_bridge);
             }
             // The desktop a cross-device pointer crosses into: the logical
             // one it moves in.
@@ -12310,20 +12530,28 @@ pub fn run() {
                     height,
                 });
             let app_focus = active_physical_gamepad_binding(&tree_handle.read());
-            runtime.set_local_app_focus(app_focus.clone());
-            pump_phase!(
-                "device-fabric-runtime",
-                runtime.pump(
-                    net,
-                    &state.selection_store(),
-                    crate::shell::device_fabric_runtime::LocalFabricCapabilities {
-                        display,
-                        pointer: true,
-                        keyboard: true,
-                        audio_output: system_audio,
-                    },
-                )
-            );
+            // The pump runs on its own thread; this hands it the turn's facts
+            // and returns at once.
+            if let Some(worker) = device_fabric_worker.as_ref() {
+                pump_phase!(
+                    "device-fabric-runtime",
+                    worker.tick(crate::shell::device_fabric_runtime::FabricTurn {
+                        selection: state.selection_store(),
+                        local: crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                            display,
+                            pointer: true,
+                            keyboard: true,
+                            audio_output: system_audio,
+                        },
+                        app_focus: app_focus.clone(),
+                        realtime_adapter: realtime_fabric_bridge.as_ref().and_then(
+                            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter,
+                        ),
+                        remote_capture: remote_capture_runtime.as_ref().map(std::sync::Arc::clone),
+                    })
+                );
+            }
+            deliver_held_key_releases!();
             pump_phase!(
                 "physical-gamepads",
                 crate::shell::physical_gamepad::pump_physical_gamepads(
@@ -12411,19 +12639,23 @@ pub fn run() {
             );
             let personal_viewers =
                 crate::shell::device_fabric_runtime::window_viewers(continuity_policy.current());
-            let viewer_hosts = if backend_kind == BackendKind::Headless {
-                let active_room = {
+            let viewer_hosts: RoomHosts = if backend_kind == BackendKind::Headless {
+                let rooms = {
                     let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                     let tree = tree_handle.read();
                     tree.desktop
-                        .active_workspace()
+                        .workspaces
+                        .iter()
                         .map(|workspace| workspace.room)
+                        .collect::<Vec<_>>()
                 };
-                active_room.map_or_else(std::collections::HashSet::new, |room| {
-                    net.viewer_hosts(room)
-                })
+                rooms
+                    .into_iter()
+                    .map(|room| (room, net.viewer_hosts(room)))
+                    .filter(|(_, hosts)| !hosts.is_empty())
+                    .collect()
             } else {
-                std::collections::HashSet::new()
+                RoomHosts::new()
             };
             let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
             let watched_before = backend.watched();
@@ -12447,6 +12679,7 @@ pub fn run() {
             // so it is told only when they were derived again.
             if replanned && let Some((viewer_hosts, personal_viewers)) = legacy_shares.viewers() {
                 let desired = &legacy_shares.desired;
+                let viewer_hosts = all_hosts(viewer_hosts);
                 state.set_headless_host_viewers(
                     desired
                         .iter()
@@ -12552,10 +12785,12 @@ pub fn run() {
                             let mounted = !stream.app_id.is_empty()
                                 && frame_builder.host_mut().mount_peer_stream(&stream);
                             if mounted {
-                                for frame in early_legacy_frames.take((source_peer, surface)) {
+                                for (seq, frame) in early_legacy_frames.take((source_peer, surface))
+                                {
                                     let _ = frame_builder.host_mut().push_peer_stream_frame(
                                         source_peer,
                                         surface,
+                                        seq,
                                         &frame,
                                         None,
                                     );
@@ -12574,17 +12809,19 @@ pub fn run() {
                             surface,
                             source_peer,
                             encoded_h264,
+                            seq,
                             ..
                         } => {
                             if frame_builder.host().has_peer_stream(source_peer, surface) {
                                 let _ = frame_builder.host_mut().push_peer_stream_frame(
                                     source_peer,
                                     surface,
+                                    seq,
                                     &encoded_h264,
                                     None,
                                 );
                             } else {
-                                early_legacy_frames.hold((source_peer, surface), encoded_h264);
+                                early_legacy_frames.hold((source_peer, surface), seq, encoded_h264);
                             }
                         }
                         crate::network::NeighbourMsg::SurfaceStreamEnd {
@@ -12631,10 +12868,11 @@ pub fn run() {
                     if !stream.app_id.is_empty()
                         && frame_builder.host_mut().mount_peer_stream(stream)
                     {
-                        for frame in early_legacy_frames.take((source_peer, surface)) {
+                        for (seq, frame) in early_legacy_frames.take((source_peer, surface)) {
                             let _ = frame_builder.host_mut().push_peer_stream_frame(
                                 source_peer,
                                 surface,
+                                seq,
                                 &frame,
                                 None,
                             );
@@ -12664,6 +12902,7 @@ pub fn run() {
             );
         }
         pump_checkpoint!("device-fabric-and-network");
+        deliver_held_key_releases!();
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
         // socket); the room set is re-read after every tree write, since a
@@ -12683,6 +12922,7 @@ pub fn run() {
             false
         };
         pump_checkpoint!("peer-presence");
+        deliver_held_key_releases!();
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
         for osd in transport_osds.drain() {
@@ -12716,6 +12956,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
+        deliver_held_key_releases!();
         if take_deferred_peer_sync_activation(&mut deferred_peer_sync, identity_setup_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
@@ -12723,6 +12964,7 @@ pub fn run() {
             // an app's first service descriptor sees the live broker.
             frame_builder.host_mut().set_peer_sync_enabled(true);
             crate::shell::launcher::hold_launches();
+            network_held_launches = true;
             network_start = Some(start_session_peer_sync(
                 tree_handle.clone(),
                 Arc::clone(&session_wake),
@@ -12803,7 +13045,134 @@ pub fn run() {
                 }
             }
         }
-        if !onboarding_active && let Some(path) = agent_door_due.take() {
+        let started = if std::mem::take(&mut local_broker_due) {
+            Some(None)
+        } else {
+            network_start
+                .as_ref()
+                .and_then(crate::session_runtime::PendingStart::poll)
+                .map(Some)
+        };
+        if let Some(outcome) = started {
+            network_start = None;
+            let start_failure = match outcome {
+                None => None,
+                Some(Ok(network)) => {
+                    peer_sync = Some(install_session_peer_sync(
+                        &mut frame_builder,
+                        &mut state,
+                        &tree_handle,
+                        network,
+                    ));
+                    if let Some(net) = peer_sync.as_ref() {
+                        net.set_wake(Arc::clone(&session_wake));
+                        frame_builder.with_chrome(|chrome| {
+                            if let Some(apps) = chrome.hosted_inputs.in_process() {
+                                let mut apps = apps.borrow_mut();
+                                apps.bind_private_messages_network(net);
+                                apps.bind_feedback_network(Arc::clone(net));
+                            }
+                        });
+                    }
+                    None
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+                    // Launches held for the network first login asked for
+                    // are reported; a boot carries on local-only.
+                    network_held_launches.then_some(error)
+                }
+            };
+            // Binding the broker opens its journal, vault and channel state:
+            // on the session-start worker, installed below when it is up.
+            // Launches stay held until then.
+            crate::shell::launcher::hold_launches();
+            broker_start = Some((
+                start_session_collab_broker(
+                    peer_sync.as_ref(),
+                    tree_handle.clone(),
+                    Arc::clone(&session_wake),
+                ),
+                start_failure,
+            ));
+        }
+        if let Some(answer) = recording_audio_probe
+            .as_ref()
+            .and_then(crate::session_runtime::PendingStart::poll)
+        {
+            recording_audio_probe = None;
+            match answer {
+                Ok((desktop_sound, microphone)) => {
+                    system_audio = desktop_sound;
+                    frame_builder.set_capture_audio_available(desktop_sound, microphone);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "recording audio probe ended without an answer; capture offers no audio");
+                }
+            }
+        }
+        if let Some(outcome) = broker_start.as_ref().and_then(|(start, _)| start.poll()) {
+            let start_failure = broker_start.take().and_then(|(_, failure)| failure);
+            collab_broker = finish_session_collab_broker(&frame_builder.chrome_handle(), outcome);
+            crate::shell::in_process::set_session_services(
+                crate::shell::in_process::SessionServices::Listening,
+            );
+            if let Some(broker) = collab_broker.as_ref() {
+                local_session_lifecycle = Some(install_native_session_lifecycle(
+                    broker,
+                    &session,
+                    onboarding_active,
+                ));
+                attach_collab_broker_bridges(&mut frame_builder, broker);
+                #[cfg(feature = "agent-control")]
+                spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
+                if let (Some(portal), Some(service)) =
+                    (portal_backend.as_ref(), broker.native_media_service())
+                {
+                    service
+                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                }
+                realtime_fabric_bridge = broker.realtime_fabric_bridge();
+                remote_capture_runtime = realtime_fabric_bridge
+                    .as_ref()
+                    .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
+                    .map(|capture| {
+                        std::sync::Arc::new(std::sync::Mutex::new(
+                            crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
+                                capture,
+                            ),
+                        ))
+                    });
+                if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+                    crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
+                }
+                if let Some(net) = peer_sync.as_ref() {
+                    attach_peer_presence(&mut frame_builder, broker, net);
+                }
+            }
+            // The broker now exists (local-only if the network failed).
+            // Launches that waited for a network that never came are
+            // reported, not silently started without it; later launches
+            // run normally.
+            match start_failure {
+                None => crate::shell::launcher::release_held_launches(),
+                Some(error) => {
+                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
+                        "launch-held-network-failed",
+                        &[("error", error.into())],
+                    ));
+                }
+            }
+            apps_changed = true;
+        }
+        // The agent door serves agents through the broker, so it opens once
+        // the broker's start has ended: an agent that connected earlier
+        // would be refused as unavailable while the broker was binding.
+        let broker_starting = network_start.is_some() || broker_start.is_some() || local_broker_due;
+        if !onboarding_active
+            && !broker_starting
+            && let Some(path) = agent_door_due.take()
+        {
             match crate::compositor::agent_door::bind(&path) {
                 Ok(listener) => {
                     tracing::info!(path = %path.display(), "agent door: listening");
@@ -12827,105 +13196,6 @@ pub fn run() {
                     tracing::info!(%reason, "agent door: not served in this session");
                 }
             }
-        }
-        let started = if std::mem::take(&mut local_broker_due) {
-            Some(None)
-        } else {
-            network_start
-                .as_ref()
-                .and_then(crate::session_runtime::PendingStart::poll)
-                .map(Some)
-        };
-        if let Some(outcome) = started {
-            network_start = None;
-            let start_failure = match outcome {
-                None => None,
-                Some(Ok(network)) => {
-                    peer_sync = Some(install_session_peer_sync(
-                        &mut frame_builder,
-                        &mut state,
-                        tree_handle.clone(),
-                        network,
-                    ));
-                    if let Some(net) = peer_sync.as_ref() {
-                        net.set_wake(Arc::clone(&session_wake));
-                        frame_builder.with_chrome(|chrome| {
-                            if let Some(apps) = chrome.hosted_inputs.in_process() {
-                                let mut apps = apps.borrow_mut();
-                                apps.bind_private_messages_network(net);
-                                apps.bind_feedback_network(Arc::clone(net));
-                            }
-                        });
-                    }
-                    None
-                }
-                Some(Err(error)) => {
-                    tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
-                    Some(error)
-                }
-            };
-            collab_broker =
-                spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
-            crate::shell::in_process::set_session_services(
-                crate::shell::in_process::SessionServices::Listening,
-            );
-            if let Some(broker) = collab_broker.as_ref() {
-                local_session_lifecycle = Some(install_native_session_lifecycle(
-                    broker,
-                    &session,
-                    onboarding_active,
-                ));
-                attach_collab_broker_bridges(&mut frame_builder, broker);
-                #[cfg(feature = "agent-control")]
-                spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
-                if let (Some(portal), Some(service)) =
-                    (portal_backend.as_ref(), broker.native_media_service())
-                {
-                    service
-                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
-                }
-                realtime_fabric_bridge = broker.realtime_fabric_bridge();
-                if let (Some(runtime), Some(bridge)) = (
-                    device_fabric_runtime.as_mut(),
-                    realtime_fabric_bridge.as_ref(),
-                ) && let Some(adapter) = bridge.adapter()
-                {
-                    runtime.set_realtime_adapter(adapter);
-                }
-                remote_capture_runtime = realtime_fabric_bridge
-                    .as_ref()
-                    .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
-                    .map(|capture| {
-                        std::sync::Arc::new(std::sync::Mutex::new(
-                            crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
-                                capture,
-                            ),
-                        ))
-                    });
-                if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-                    crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
-                    if let Some(runtime) = device_fabric_runtime.as_mut() {
-                        runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
-                    }
-                }
-                if let Some(net) = peer_sync.as_ref() {
-                    attach_peer_presence(&mut frame_builder, broker, net);
-                }
-            }
-            // The broker now exists (local-only if the network failed).
-            // Launches that waited for a network that never came are
-            // reported, not silently started without it; later launches
-            // run normally.
-            match start_failure {
-                None => crate::shell::launcher::release_held_launches(),
-                Some(error) => {
-                    crate::shell::launcher::fail_held_launches(&crate::shell::i18n::t_args(
-                        "launch-held-network-failed",
-                        &[("error", error.into())],
-                    ));
-                }
-            }
-            apps_changed = true;
         }
         if desktop_continuation
             .as_mut()
@@ -12968,13 +13238,14 @@ pub fn run() {
             lock_player = None;
             lock_pointer = None;
         }
+        deliver_held_key_releases!();
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
             .checked_sub(t_input_done)
             .unwrap_or_default();
         metrics.mark_pump(pump_total);
-        if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
+        if loop_timing_env && pump_slowest.1 > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-PUMP slowest={} elapsed={:?}",
                 pump_slowest.0, pump_slowest.1
@@ -13027,6 +13298,7 @@ pub fn run() {
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
                 || capture_executor.is_recording()
+                || capture_executor.has_finished_io()
                 || portal_backend
                     .as_ref()
                     .is_some_and(PortalBackend::capture_pending)
@@ -13192,10 +13464,11 @@ pub fn run() {
                 clients,
             );
             if animating && !session.is_locked() {
-                let owners = animation_trace
-                    .label((animation_demand, transition_run, revision), || {
-                        frame_builder.animation_owners()
-                    });
+                let owners = animation_trace.label(
+                    (animation_demand, transition_run, revision),
+                    Instant::now(),
+                    || frame_builder.animation_owners(),
+                );
                 metrics.mark_paint_animations(owners);
             }
         }
@@ -13334,6 +13607,11 @@ pub fn run() {
                         .with_hdr_layers(frame_builder.take_hdr_layers())
                         .with_backdrop(frame_builder.take_backdrop())
                 };
+                // Without this a window group's width spring stepped once and
+                // stopped: its once-per-drawn-frame token returns only when
+                // content is marked drawn, which this loop never does, and
+                // the group asked for animation frames forever.
+                frame_builder.frame_presented();
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
@@ -13420,27 +13698,23 @@ pub fn run() {
                                 }),
                             );
                         }
-                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                        CaptureOutcome::ScreenshotSendRequested { device, screenshot } => {
+                            // The capture worker read the screenshot; the
+                            // offer reads no file on the loop.
                             let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
                                 network: peer_sync.as_deref(),
                                 workspace_root: crate::shell::screenshot_send::workspace_files_root(
                                 ),
                             };
-                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
-                            {
-                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_notification(
-                                        crate::shell::i18n::t("capture-screenshot-sent"),
-                                        receipt.message(),
-                                    );
-                                }),
-                                Err(error) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_error_notification(
-                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
-                                        error,
-                                    );
-                                }),
-                            }
+                            let sent = crate::shell::screenshot_send::offer(
+                                &device,
+                                screenshot.take(),
+                                &mut bridge,
+                            );
+                            notify_screenshot_sent(&mut frame_builder, sent);
+                        }
+                        CaptureOutcome::ScreenshotSent(sent) => {
+                            notify_screenshot_sent(&mut frame_builder, sent);
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
@@ -13823,6 +14097,7 @@ pub fn run() {
         if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
         }
+        deliver_held_key_releases!();
         let t_paint_done = iter_t0.elapsed();
 
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
@@ -13911,6 +14186,7 @@ pub fn run() {
             } else if std::mem::take(&mut test_control_ctx.client_input_only) {
                 metrics.note_input(Instant::now());
             }
+            conn.watch_output(&event_loop.handle());
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
@@ -13928,10 +14204,8 @@ pub fn run() {
         // only watching cannot click one.
         chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
-            if conn.closed
-                && let Some(token) = conn.wake.take()
-            {
-                event_loop.handle().remove(token);
+            if conn.closed {
+                conn.unwatch(&event_loop.handle());
             }
             !conn.closed
         });
@@ -13940,6 +14214,7 @@ pub fn run() {
         if let Some(consent) = agent_door_consent.as_mut() {
             consent.pump(&frame_builder.chrome_handle());
         }
+        deliver_held_key_releases!();
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
         metrics.mark_testctl_cpu(testctl_cpu);
@@ -14047,9 +14322,7 @@ pub fn run() {
         );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
-        if (loop_timing || t_work_done > Duration::from_millis(100))
-            && t_work_done > Duration::from_millis(100)
-        {
+        if t_work_done > Duration::from_millis(100) {
             client_steps.mark("idle_callbacks");
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?} ({})",
@@ -14134,6 +14407,7 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                ("profile-end", metrics::profile::deadline()),
                 (
                     "app-action-authority",
                     crate::shell::launcher::action_authority::next_deadline(),
@@ -14145,6 +14419,17 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("super-hold", super_tap.deadline()),
+                (
+                    "network-retry",
+                    peer_sync
+                        .as_ref()
+                        .and_then(|network| network.next_deadline()),
+                ),
+                (
+                    "ask-agent",
+                    frame_builder.host().ask_agent_deadline(park_now),
+                ),
                 (
                     "dictation-service",
                     state.dictation_service_deadline(park_now),
@@ -14172,6 +14457,12 @@ pub fn run() {
                     control_invocation_deadline(&test_control_conns, park_now),
                 ),
                 ("control-followup", control_followup.then_some(park_now)),
+                // Input read between phases waits here for the next turn;
+                // its fd has already been drained, so nothing else wakes it.
+                (
+                    "queued-input",
+                    (!pending_events.is_empty()).then_some(park_now),
+                ),
                 (
                     "seat-input",
                     (!test_control_ctx.seat_events.is_empty()).then_some(park_now),
@@ -14188,7 +14479,14 @@ pub fn run() {
             ticks_since_trim = 0;
         }
         let t_sleep_start = Instant::now();
-        if let Err(err) = event_loop.dispatch(park, &mut state) {
+        if let Some(watchdog) = &watchdog {
+            watchdog.parking();
+        }
+        let dispatched = event_loop.dispatch(park, &mut state);
+        if let Some(watchdog) = &watchdog {
+            watchdog.unparked();
+        }
+        if let Err(err) = dispatched {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
@@ -14228,7 +14526,11 @@ pub fn run() {
     // The session is ending (logout, a close request, a run deadline): every
     // layout change queued for the state writer reaches the disk before the
     // next session can read it.
-    crate::shell::persist::wait_for_saves_within(Duration::from_secs(10));
+    // The watchdog still watches teardown and counts this wait among the
+    // bounded ones it lets pass.
+    crate::shell::persist::wait_for_saves_within(
+        crate::compositor::watchdog::SESSION_END_SAVE_FLUSH,
+    );
 
     // Stop the render thread and wait for the frame in flight, so a
     // half-presented frame cannot outlive its device or race backend teardown.
@@ -14256,9 +14558,7 @@ pub fn run() {
     // Close accepted control clients and their duplicated wake descriptors,
     // not merely the socket names, before publishing an unlocked handoff.
     for conn in &mut test_control_conns {
-        if let Some(token) = conn.wake.take() {
-            event_loop.handle().remove(token);
-        }
+        conn.unwatch(&event_loop.handle());
     }
     drop(test_control_conns);
     for token in [
@@ -14367,6 +14667,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
+        | crate::shell::osd::OsdKind::NoAgent
+        | crate::shell::osd::OsdKind::StartingAgent
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
@@ -14478,6 +14780,7 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+    use tilo_lock::MutexRecover as _;
 
     /// Automatic brightness is off by default, so on almost every desktop its
     /// worker has nothing to do: it waits for a settings change instead of
@@ -14842,19 +15145,32 @@ mod tests {
             ..Default::default()
         };
         let mut walks = 0;
+        let start = Instant::now();
         for _ in 0..3 {
-            let label = trace.label((demand, false, 7), || {
+            let label = trace.label((demand, false, 7), start, || {
                 walks += 1;
                 vec!["osk".to_string()]
             });
             assert_eq!(label, "osk");
         }
         assert_eq!(walks, 1, "the owners are looked up once per set of sources");
-        let _ = trace.label((demand, false, 8), || {
+        let _ = trace.label((demand, false, 8), start, || {
             walks += 1;
             vec!["osk".to_string()]
         });
         assert_eq!(walks, 2, "a chrome change looks them up again");
+
+        // The same sources, but the motion has passed from a window that
+        // settled to another widget: within a second the label says so.
+        let later = start
+            .checked_add(ANIMATION_LABEL_REFRESH)
+            .expect("a second after now");
+        let label = trace.label((demand, false, 8), later, || {
+            walks += 1;
+            vec!["content/DesktopSurface/TileHost@0,0 10x10".to_string()]
+        });
+        assert_eq!(walks, 3, "a label is not kept past its refresh");
+        assert_eq!(label, "content/DesktopSurface/TileHost");
     }
 
     #[test]
@@ -15924,7 +16240,8 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace.shared_surfaces.share(7, 9);
-        let none = std::collections::HashSet::new();
+        let room = workspace.room;
+        let none = RoomHosts::new();
         let nobody = std::collections::BTreeMap::new();
         let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
             crate::compositor::state::LegacyShare {
@@ -15945,7 +16262,7 @@ mod tests {
             !watched.contains_key(&8),
             "without a viewer host only explicit shares stream"
         );
-        let hosts = [42].into_iter().collect();
+        let hosts: RoomHosts = [(room, [42].into_iter().collect())].into_iter().collect();
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
@@ -15954,7 +16271,17 @@ mod tests {
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
             Some(&share("org.chromium.Chromium", 14, &[42], true)),
-            "a viewer host receives every legacy window of the active workspace"
+            "a viewer host receives every legacy window of the workspace whose room it hosts"
+        );
+        let elsewhere: RoomHosts = [(
+            tilo_desktop_model::RoomId::new(),
+            [43].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect();
+        assert!(
+            !desired_legacy_shares(&tree, true, &elsewhere, &nobody).contains_key(&8),
+            "another room's host receives none of this room's windows"
         );
         assert!(
             desired_legacy_shares(&tree, false, &hosts, &nobody).is_empty(),
@@ -15986,12 +16313,7 @@ mod tests {
             });
         tree.desktop.workspaces[0].shared_surfaces.share(7, 9);
         let tree = tree.shared();
-        let nobody = || {
-            (
-                std::collections::HashSet::new(),
-                std::collections::BTreeMap::new(),
-            )
-        };
+        let nobody = || (RoomHosts::new(), std::collections::BTreeMap::new());
         let viewers_of = |plan: &LegacySharePlan| {
             plan.shares.get(&7).map(|share| {
                 share
@@ -16041,7 +16363,7 @@ mod tests {
                 decode_limits: std::collections::BTreeMap::new(),
             }],
         )]);
-        let with_device = || (std::collections::HashSet::new(), personal.clone());
+        let with_device = || (RoomHosts::new(), personal.clone());
         assert!(plan.refresh(&tree, with_device(), true, |for_host| {
             assert!(
                 for_host,
@@ -16105,7 +16427,7 @@ mod tests {
             tree.desktop.workspaces.push(workspace);
         }
         tree.desktop.active = WorkspaceId(100);
-        let nobody = std::collections::HashSet::new();
+        let nobody = RoomHosts::new();
         let no_device = std::collections::BTreeMap::new();
 
         let started = Instant::now();
@@ -16193,7 +16515,7 @@ mod tests {
             // A tab this session does not host is somebody else's to stream.
             (777, vec![viewer(1, 501, 300, 300)]),
         ]);
-        let none = std::collections::HashSet::new();
+        let none = RoomHosts::new();
 
         let desired = desired_legacy_shares(&tree, true, &none, &personal);
         assert_eq!(
@@ -16689,11 +17011,7 @@ mod tests {
 
     impl Drop for HeldSessionWorkers {
         fn drop(&mut self) {
-            *self
-                .0
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            *self.0.0.lock_recover() = true;
             self.0.1.notify_all();
         }
     }
@@ -16711,10 +17029,7 @@ mod tests {
             let ready = ready.clone();
             drop(runtime.spawn(async move {
                 ready.send(()).expect("worker ready");
-                let released = gate
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let released = gate.0.lock_recover();
                 drop(
                     gate.1
                         .wait_while(released, |released| !*released)
@@ -18080,6 +18395,69 @@ mod tests {
         ));
     }
 
+    /// Profiling the live compositor is the device admin's alone: the
+    /// development test-control socket, the agent socket, an agent acting
+    /// over the admin socket and a locked session are all refused before
+    /// anything is recorded.
+    #[test]
+    fn compositor_profiling_is_refused_to_all_but_the_unlocked_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let start = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"profile-start@session-diagnostics", "args":{"seconds":5}});
+        let mut as_agent = start.clone();
+        as_agent["agent"] = serde_json::json!("peer");
+        for (agent_socket, admin, request) in [
+            (false, false, &start),
+            (true, false, &start),
+            (false, true, &as_agent),
+        ] {
+            let (server, client) = UnixStream::pair().unwrap();
+            let mut writer = client.try_clone().unwrap();
+            let mut reader = BufReader::new(client);
+            let mut conn = TestControlConn::new(server, agent_socket).unwrap();
+            conn.admin = admin;
+            writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+            pump_test_control_conn(
+                &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+            );
+            assert!(
+                matches!(
+                    socket_response(&mut reader),
+                    test_control::Response::Err { code, .. } if code == "not_permitted"
+                ),
+                "agent socket {agent_socket}, admin {admin}, request {request}"
+            );
+        }
+        let _ = session.request_lock(Instant::now());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        conn.admin = true;
+        writer.write_all(format!("{start}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(
+                socket_response(&mut reader),
+                test_control::Response::Err { .. }
+            ),
+            "a locked session refuses the owner too"
+        );
+        assert!(
+            !crate::compositor::metrics::profile::active(),
+            "no refused request started a profile"
+        );
+    }
+
     /// A driver's request often lands after its connection was accepted and
     /// found empty. The accepted stream must then wake an otherwise idle
     /// loop itself, rather than leave the request for an unrelated event.
@@ -18116,6 +18494,97 @@ mod tests {
             "the request did not wake the loop (slept {:?})",
             woke.elapsed()
         );
+    }
+
+    /// A response larger than the socket's send buffer (a full action
+    /// listing) goes out in pieces. Each piece the driver drains must wake an
+    /// otherwise idle loop to send the next, so the whole answer arrives
+    /// promptly; and a driver that is not reading must not keep it awake.
+    #[test]
+    fn a_response_larger_than_the_socket_buffer_reaches_a_reading_driver_while_idle() {
+        use std::io::Read as _;
+
+        let mut event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        client.set_nonblocking(true).expect("nonblocking driver");
+        let mut conn = TestControlConn::new(server, false).expect("server connection");
+        conn.watch(&event_loop.handle());
+        let response = test_control::Response::Answer(serde_json::json!({
+            "blob": "x".repeat(4 * 1024 * 1024),
+        }));
+        let mut expected = serialise_response(&response).into_bytes();
+        expected.push(b'\n');
+        assert_eq!(
+            queue_test_control_response(&mut conn, &response),
+            PendingConnectionProgress::OutputPending,
+            "the response must not fit the socket, or this proves nothing"
+        );
+        conn.watch_output(&event_loop.handle());
+
+        // The driver has not read yet: the full socket must not spin the loop.
+        let unread = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("dispatch before the driver reads");
+        assert!(
+            unread.elapsed() >= Duration::from_millis(150),
+            "a full socket woke the loop before the driver read anything"
+        );
+
+        let started = Instant::now();
+        let mut received = Vec::with_capacity(expected.len());
+        let mut chunk = vec![0_u8; 64 * 1024];
+        loop {
+            loop {
+                match client.read(&mut chunk) {
+                    Ok(0) => panic!("the connection closed mid-response"),
+                    Ok(read) => received.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("read the response: {error}"),
+                }
+            }
+            if received.len() == expected.len() {
+                break;
+            }
+            // Nothing but the drained socket can wake this loop.
+            let slept = Instant::now();
+            event_loop
+                .dispatch(Some(Duration::from_secs(30)), &mut state)
+                .expect("dispatch");
+            assert!(
+                slept.elapsed() < Duration::from_secs(10),
+                "the drained socket did not wake the idle loop (slept {:?})",
+                slept.elapsed()
+            );
+            let _ = flush_test_control_output(&mut conn);
+            conn.watch_output(&event_loop.handle());
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the response is still not through after {:?}",
+                started.elapsed()
+            );
+        }
+        assert_eq!(
+            received, expected,
+            "the response arrived whole and in order"
+        );
+        assert!(
+            conn.output_wake.is_none(),
+            "a finished response keeps no output wake"
+        );
+
+        // Done: the loop sleeps again.
+        let after = Instant::now();
+        event_loop
+            .dispatch(Some(Duration::from_millis(200)), &mut state)
+            .expect("idle dispatch after the response");
+        assert!(
+            after.elapsed() >= Duration::from_millis(150),
+            "the loop kept waking after the response was through"
+        );
+        conn.unwatch(&event_loop.handle());
     }
 
     // publishing the socket name for the nested dev loop
@@ -18451,7 +18920,7 @@ mod tests {
                 &mut ctx,
             );
             // If the renderer wasn't available the executor logged + returned with no
-            // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
+            // file — treat as a soft skip, as the snapshot tests do when `OffscreenRenderer::try_new` fails.
             if !path.exists() {
                 eprintln!(
                     "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \
@@ -18672,6 +19141,59 @@ mod tests {
         let summoned = &state.chrome_state_json()["wheel_summon"];
         assert_eq!(summoned["x"].as_f64(), Some(1180.0));
         assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    /// The state dump says who asks for animation frames, and asking must
+    /// not trip over the chrome the dump itself is reading: the top bar
+    /// borrows it to answer whether it needs drawing, and a dump that held
+    /// the borrow while asking aborted the compositor.
+    #[test]
+    fn state_dump_names_what_animates_with_the_top_bar_drawn() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            WorkspaceTree,
+        };
+        // A window asked for but not drawn yet holds animation frames, so the
+        // dump walks the content tree, top bar included.
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
+        workspace.strips.push(Strip::new(StripId(74), "Main"));
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 75,
+            tabs: vec![Tab {
+                id: 76,
+                title: "Opening".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.fixture".into(),
+                    surface_id: 0x7e57_0000_0027,
+                },
+            }],
+            active_tab: 76,
+            focus_history: Vec::new(),
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        tree.desktop.workspaces.push(workspace);
+        tree.set_active(WorkspaceId(73));
+        let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
+        let _ = fb.paint();
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+        };
+        let animating = state.chrome_state_json()["animating"].clone();
+        assert!(
+            animating
+                .as_array()
+                .is_some_and(|owners| owners.iter().any(|owner| owner
+                    .as_str()
+                    .is_some_and(|owner| owner.contains("ForeignSurfaceWidget")))),
+            "the dump names the opening window: {animating}"
+        );
     }
 
     /// `chrome.displays` names what is painted: every connected display and
@@ -19149,7 +19671,10 @@ mod tests {
                     .active_workspace()
                     .expect("active workspace")
                     .room;
-                let noted = tree.note_peer_present(room, 0x51, "alice");
+                let noted = tree.admit_collaborator_in_room(
+                    room,
+                    crate::shell::state::Collaborator::new("alice", "alice").with_session(0x51),
+                );
                 drop(tree);
                 assert!(noted);
             }
@@ -19721,24 +20246,24 @@ fn feed_touchpad_edge(
     }
 }
 
-/// Perform the navigation a claimed touchpad gesture resolved to — a second
-/// way to ask for something the shell already does, not a parallel model.
+/// Perform the navigation a claimed touchpad gesture, reported `at`,
+/// resolved to — a second way to ask for something the shell already does,
+/// not a parallel model.
 fn apply_shell_gesture(
     frame_builder: &mut FrameBuilder,
     action: crate::compositor::backend::drm::gestures::GestureAction,
+    at: Instant,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
     match action {
         GestureAction::StripPanUpdate { travel, began } => {
             frame_builder
                 .host_mut()
-                .update_active_strip_pan(travel, began);
+                .update_active_strip_pan(travel, began, at);
             return;
         }
-        GestureAction::StripPanEnd { .. } => {
-            frame_builder
-                .host_mut()
-                .end_active_strip_pan(Instant::now());
+        GestureAction::StripPanEnd { cancelled } => {
+            frame_builder.host_mut().end_active_strip_pan(at, cancelled);
             return;
         }
         _ => {}
@@ -20213,7 +20738,11 @@ mod gesture_wireup_tests {
             });
             let before = fb.chrome().tree().desktop.active;
             // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
-            apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchWorkspace(-1),
+                std::time::Instant::now(),
+            );
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
@@ -20235,7 +20764,11 @@ mod gesture_wireup_tests {
             });
             let workspace = fb.chrome().tree().desktop.active;
             let (_, focused) = fb.chrome().strip_focus();
-            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchStrip(1),
+                std::time::Instant::now(),
+            );
             assert_eq!(
                 fb.chrome().strip_focus().1,
                 focused + 1,
@@ -20251,18 +20784,34 @@ mod gesture_wireup_tests {
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert!(fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::HideOverview,
+                std::time::Instant::now(),
+            );
             assert!(!fb.chrome().overlays.overview);
         }
         // Phase `showing_an_already_open_overview_is_a_no_op`.
         {
             // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
             let mut fb = builder();
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             let revision = fb.chrome().revision;
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert_eq!(fb.chrome().revision, revision);
         }
     }
@@ -20740,6 +21289,7 @@ mod external_floating_security_tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 #[allow(

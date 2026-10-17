@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
 use vello::peniko::ImageData;
 use vello::wgpu;
 
@@ -61,9 +62,7 @@ pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64
     let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "linux")]
     probe_sampleable(device);
-    *PRESENT_DEVICE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(PresentDevice {
+    *PRESENT_DEVICE.lock_recover() = Some(PresentDevice {
         device: device.clone(),
         queue: queue.clone(),
         generation,
@@ -115,7 +114,7 @@ fn probe_sampleable(device: &wgpu::Device) {
                 })
         })
         .collect();
-    let mut known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut known = SAMPLEABLE.lock_recover();
     if known.formats != formats {
         known.version = known.version.wrapping_add(1);
         eprintln!(
@@ -143,7 +142,7 @@ fn probe_sampleable(device: &wgpu::Device) {
 /// checks pixel for pixel.
 #[cfg(target_os = "linux")]
 pub fn sampleable_formats() -> (u64, Vec<smithay::backend::allocator::Format>) {
-    let known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    let known = SAMPLEABLE.lock_recover();
     (known.version, known.formats.clone())
 }
 
@@ -155,8 +154,7 @@ pub fn sampleable(
     modifier: smithay::backend::allocator::Modifier,
 ) -> bool {
     SAMPLEABLE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .formats
         .iter()
         .any(|format| format.code == code && format.modifier == modifier)
@@ -164,10 +162,7 @@ pub fn sampleable(
 
 #[cfg(target_os = "linux")]
 fn present_device() -> Option<PresentDevice> {
-    PRESENT_DEVICE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    PRESENT_DEVICE.lock_recover().clone()
 }
 
 /// GPU-to-CPU readbacks of client frames since the process started. A frame
@@ -205,10 +200,7 @@ pub fn readback_count() -> u64 {
 fn import_total() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        IMPORTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .imports
+        IMPORTS.lock_recover().imports
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -360,10 +352,7 @@ impl GpuFrame {
     /// Give the client's buffer back through `lease` once this frame is gone
     /// and the GPU finished reading it.
     pub fn hold(&self, lease: BufferLease) {
-        self.leases
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(lease);
+        self.leases.lock_recover().push(lease);
     }
 
     /// A newer frame of the surface replaced this one; the buffer's release
@@ -389,7 +378,7 @@ impl GpuFrame {
     /// Its blob is empty: the presenting renderer draws it from the texture,
     /// any other renderer through the external image source.
     pub fn image(self: &Arc<Self>, crop: (u32, u32, u32, u32)) -> ImageData {
-        let mut cached = self.image.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cached = self.image.lock_recover();
         if let Some((at, image)) = cached.as_ref()
             && *at == crop
         {
@@ -680,8 +669,7 @@ fn retire(retiring: Retiring) {
     });
     let unsent = match sender {
         Some(sender) => sender
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .send(retiring)
             .err()
             .map(|std::sync::mpsc::SendError(unsent)| unsent),
@@ -739,7 +727,7 @@ fn summarise(window: &mut [Duration], releases: u64) -> ReleaseLatency {
 }
 
 fn note_release_latency(held: Duration) {
-    let mut stats = RELEASES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut stats = RELEASES.lock_recover();
     stats.window.push(held);
     let releases = stats.latest.releases.saturating_add(1);
     let mut window = std::mem::take(&mut stats.window);
@@ -766,10 +754,7 @@ fn note_release_latency(held: Duration) {
 /// Client buffer release latency — from a newer frame replacing the buffer's
 /// frame to the buffer going back — over the latest window.
 pub fn release_latency() -> ReleaseLatency {
-    RELEASES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .latest
+    RELEASES.lock_recover().latest
 }
 
 struct Registered {
@@ -794,7 +779,7 @@ fn registry() -> &'static Registry {
 
 impl Registry {
     fn register(&self, image: &ImageData, frame: &Arc<GpuFrame>, crop: Crop) {
-        let mut images = self.images.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut images = self.images.lock_recover();
         images.retain(|_, entry| entry.frame.strong_count() > 0);
         images.insert(
             image.data.id(),
@@ -810,16 +795,14 @@ impl Registry {
     /// Forget every image of `surface`: it was destroyed.
     fn forget_surface(&self, surface: u64) {
         self.images
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .retain(|_, entry| entry.surface != surface);
     }
 
     /// The live frame image `id` draws, and its crop.
     fn frame(&self, id: u64) -> Option<(Arc<GpuFrame>, Crop)> {
         self.images
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .get(&id)
             .and_then(|entry| Some((entry.frame.upgrade()?, entry.crop)))
     }
@@ -843,10 +826,7 @@ pub fn client_frame(image: &ImageData) -> Option<Arc<GpuFrame>> {
 pub fn forget_surface(surface: u64) {
     registry().forget_surface(surface);
     #[cfg(target_os = "linux")]
-    IMPORTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .forget_surface(surface);
+    IMPORTS.lock_recover().forget_surface(surface);
 }
 
 /// The client frames a queued frame draws, held until it was presented: the
@@ -902,10 +882,7 @@ pub struct AppliedFrames {
 /// since the last call. A renderer on any other device (`None`) draws them
 /// through the external image source.
 pub fn apply(renderer: &mut vello::Renderer, generation: Option<u64>, applied: &mut AppliedFrames) {
-    let images = registry()
-        .images
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let images = registry().images.lock_recover();
     applied.applied.retain(|id, image| {
         let live = images
             .get(id)
@@ -1326,10 +1303,10 @@ fn import_dmabuf_on(
             planes: handles.len(),
         });
     };
-    let source = IMPORTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_import((present.generation, surface), dmabuf.weak(), || {
+    let source = IMPORTS.lock_recover().get_or_import(
+        (present.generation, surface),
+        dmabuf.weak(),
+        || {
             let planes = [ui::dmabuf_import::PlaneRef {
                 fd: fd.as_fd(),
                 offset,
@@ -1347,7 +1324,8 @@ fn import_dmabuf_on(
                 },
             )
             .map_err(ImportFallback::Vulkan)
-        })?;
+        },
+    )?;
     // A texture of the buffer for this commit: the producer wrote it again
     // since the last, so its first use acquires the image from the foreign
     // queue family.
@@ -1404,7 +1382,7 @@ mod tests {
             format(Fourcc::Argb8888, 0x0500_0000_0000_0004),
         ];
         let version = {
-            let mut known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut known = SAMPLEABLE.lock_recover();
             known.version = known.version.wrapping_add(1);
             known.formats.clone_from(&sampled);
             known.version
@@ -1445,9 +1423,7 @@ mod tests {
             eprintln!("no wgpu adapter; skipping");
             return;
         };
-        *PRESENT_DEVICE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(present);
+        *PRESENT_DEVICE.lock_recover() = Some(present);
         let (width, height) = (64u32, 48u32);
         let row = u64::from(width) * 4;
         let whole = row * u64::from(height);
@@ -1846,8 +1822,7 @@ mod tests {
         let readbacks_now = || THREAD_READBACKS.with(std::cell::Cell::get);
         let imports_of_surface = || {
             IMPORTS
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+                .lock_recover()
                 .entries
                 .iter()
                 .filter(|entry| entry.surface == surface)
@@ -2204,8 +2179,7 @@ mod tests {
         // Two buffers were imported once each; every commit after made only a
         // new image over its memory, which acquired from the foreign queue.
         let imports = IMPORTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .entries
             .iter()
             .filter(|entry| entry.surface == surface || entry.surface == surface + 1)

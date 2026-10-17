@@ -425,3 +425,51 @@ fn external_primary_region_is_measured_editor_and_matches_wheel() {
     let m = metrics(&mut app);
     assert!(m.offset <= m.max_scroll());
 }
+
+/// Enter at the end of a long note in a short window: every new line is
+/// revealed with the page's bottom padding under it (one gutter clear of
+/// the floating save status), never flush against the window's edge.
+#[test]
+fn enter_at_the_end_of_a_long_note_keeps_the_caret_clear_of_the_bottom() {
+    let theme = Theme::dark();
+    let mut app = note_at(&tall_body(), 1000, 400, 1.0);
+    let last = panel(&mut app, |panel| panel.editor().blocks().len()) - 1;
+    assert!(panel(&mut app, |panel| panel.reveal_block(last)));
+    app.harness().relayout_at((1000, 400)).unwrap();
+    let key = |named| {
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(named),
+            None,
+            winit::event::ElementState::Pressed,
+        ))
+    };
+    dispatch(&mut app, &key(winit::keyboard::NamedKey::End));
+    app.harness().relayout_at((1000, 400)).unwrap();
+    let mut renderer = crate::component_support::renderer();
+    let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, &theme, 0.0);
+    let margin = f64::from(theme.tokens.spacing.s4)
+        + pill_height
+        + f64::from(theme.tokens.spacing.rhythm.group);
+    let blocks = last + 1;
+    for press in 1..=8 {
+        dispatch(&mut app, &key(winit::keyboard::NamedKey::Enter));
+        app.harness().relayout_at((1000, 400)).unwrap();
+        let (count, caret, bounds) = panel(&mut app, |panel| {
+            (
+                panel.editor().blocks().len(),
+                panel.editor().ime_cursor_rect().unwrap(),
+                panel.get_rect(),
+            )
+        });
+        assert_eq!(count, blocks + press, "Enter {press} adds a line");
+        assert!(
+            caret.y0 >= bounds.y0,
+            "Enter {press}: caret {caret:?} above the panel {bounds:?}"
+        );
+        assert!(
+            caret.y1 + margin <= bounds.y1 + 1.0,
+            "Enter {press}: caret {caret:?} must keep {margin}px of the page's bottom \
+             padding inside the panel {bounds:?}"
+        );
+    }
+}

@@ -14,6 +14,8 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+pub(crate) use publication_tests::edit as test_document_edit;
+#[cfg(test)]
 pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
@@ -107,6 +109,12 @@ impl Store for TreeStore {
         }
         // The encode is bounded: an oversized candidate is refused here.
         let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
+        // Taken before the writer accepts the record: from then until this
+        // export is published, the policy observers hold is the previous
+        // record's, and they must know its replacement is on the way rather
+        // than judge it withdrawn.
+        let export = matches!(change, Change::Room { .. })
+            .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
         // What the file must still hold: the record this tree last installed.
         let base = store::digest(&tree.native_authority).map_err(|e| e.to_string())?;
         let sequence = tree.native_runtime.next_sequence();
@@ -136,7 +144,9 @@ impl Store for TreeStore {
                 *tree = candidate;
                 // Only the acknowledged final admitted projection reaches authority exports.
                 tree.export_fs_capabilities();
-                crate::shell::launcher::action_authority::Export::of(&tree).submit();
+                if let Some(export) = export {
+                    export.submit();
+                }
             }
         }
         Ok(())
@@ -237,6 +247,30 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwner> {
     let runtime = tree.read().native_runtime.clone();
     runtime.owner_of(tree).ok().flatten()
+}
+
+/// Another open of `tree`'s writer, in progress on a thread of its own
+/// until the returned sender is dropped (or `longest` passed): every other
+/// open of the writer waits behind it, so the owner stays opening
+/// meanwhile.
+#[cfg(test)]
+pub(crate) fn test_open_in_progress(
+    tree: &WorkspaceTreeHandle,
+    longest: std::time::Duration,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let runtime = tree.read().native_runtime.clone();
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let opening = runtime.opening();
+        let _ = held.send(());
+        let _ = released.recv_timeout(longest);
+        drop(opening);
+    });
+    holding
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the other open takes the writer");
+    (release, holder)
 }
 
 #[cfg(test)]

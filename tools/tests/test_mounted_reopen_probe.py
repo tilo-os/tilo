@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
-import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -100,14 +99,16 @@ class MountedReopenProbeTests(unittest.TestCase):
             self.assertTrue((saved / 'failure.json').is_file())
             self.assertEqual(json.loads((saved / 'receipt.json').read_text())['exit_code'], 1)
 
-    def test_t_check_runs_the_probe_on_its_own_commit_and_keeps_evidence(self):
-        checks = {check['name']: check for check in tomllib.loads((ROOT / 't.toml').read_text())['check']}
-        check = checks['mounted-reopen']
-        self.assertIn('SOURCE_SHA=$(git rev-parse HEAD) python3 -I tools/ci/mounted_reopen_probe.py run', check['run'])
-        self.assertTrue(check['git'])
-        self.assertFalse(check['cache'])
-        self.assertFalse(check['default'])
-        self.assertEqual(check['outputs'], ['/target/mounted-reopen-probe/**'])
+    def test_workflow_is_manual_pinned_and_keeps_failure_artifacts(self):
+        source = (ROOT / '.forgejo/workflows/dev-mounted-reopen.yml').read_text()
+        self.assertIn('workflow_dispatch:', source)
+        self.assertNotIn('pull_request:', source)
+        self.assertNotIn('push:', source)
+        self.assertEqual(source.count('persist-credentials: false'), 3)
+        self.assertIn('runs-on: runner\n', source)
+        self.assertIn('if: always()', source)
+        self.assertIn('if-no-files-found: error', source)
+        self.assertNotIn('continue-on-error', source)
         fixture = (ROOT / 'crates/agent/agent-participant/tests/mounted_resource/driver.mjs').read_text()
         self.assertIn('130_000', fixture)
         self.assertIn("assert.equal(await tab.evaluate(entryOutcome), 'open'", fixture)

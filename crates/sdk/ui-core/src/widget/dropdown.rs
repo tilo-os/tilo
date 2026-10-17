@@ -85,17 +85,6 @@ fn menu_min_width() -> f64 {
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 
-/// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
-/// `f64` matrix math with no overflow trap, so it cannot panic regardless of
-/// operand magnitude.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix math and cannot panic"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (open/hover/focus/enabled/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -1496,7 +1485,7 @@ impl Widget for Dropdown {
                 scene,
                 &hint,
                 theme.text_dim,
-                translated(transform, rows.x0 + LIST_PAD, ty),
+                transform.pre_translate((rows.x0 + LIST_PAD, ty).into()),
                 None,
                 &theme.text(TextRole::Body),
             );
@@ -1563,10 +1552,8 @@ impl Widget for Dropdown {
                         scene,
                         keys,
                         keys_color,
-                        translated(
-                            transform,
-                            keys_x,
-                            row_top + (self.item_h - f64::from(keys_h)) / 2.0,
+                        transform.pre_translate(
+                            (keys_x, row_top + (self.item_h - f64::from(keys_h)) / 2.0).into(),
                         ),
                         None,
                         &theme.text(TextRole::Body),
@@ -1587,7 +1574,7 @@ impl Widget for Dropdown {
                     scene,
                     &shown,
                     color,
-                    translated(transform, row.x0 + LIST_PAD, ty),
+                    transform.pre_translate((row.x0 + LIST_PAD, ty).into()),
                     None,
                     &theme.text(TextRole::Body),
                 );

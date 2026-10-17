@@ -37,10 +37,11 @@
 //! launcher sandbox and reads nothing the job does not list.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
+use runtime_fs::blobs::BlobScope;
 use thiserror::Error;
 use tilo_actions::{ActionDescriptor, ActionOutput, Offload};
 use tilo_clock::unix_now_ms;
@@ -55,10 +56,16 @@ use crate::compute_session::{ComputeClient, ComputeSessionError};
 use crate::compute_transport::{ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate};
 use crate::mesh::DeviceKey;
 pub use crate::offload_content::{BindError, ReplicaContent, WorkspaceContent};
+pub use crate::offload_device::{
+    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, OffloadRelay,
+    REVOCATION_CHECK, RouteTrust, START_TIMEOUT, home_relay, start_route,
+};
+pub use crate::offload_media::{MediaFuture, RoomMedia, SessionMedia};
 pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
 };
 pub use crate::offload_route::OffloadRoute;
+use tilo_lock::MutexRecover as _;
 
 /// How long past a job's own lifetime its requester waits for the result
 /// before it gives up on the worker and runs the action itself.
@@ -99,8 +106,9 @@ pub enum RanOn {
 pub struct OffloadRun {
     /// The action's output, identical wherever it ran.
     pub output: ActionOutput,
-    /// Its outputs' byte digests, in order. Each is in the workspace content
-    /// ([`WorkspaceContent::manifest_of`] names its file version).
+    /// Its outputs' byte digests, in order. Each is in the workspace content:
+    /// a file version ([`WorkspaceContent::manifest_of`] names it) for an
+    /// [`Offloader::invoke`], the room's media for an [`Offloader::offload`].
     pub outputs: Vec<[u8; 32]>,
     /// Where it ran.
     pub ran_on: RanOn,
@@ -176,6 +184,9 @@ struct BoundInputs {
     distinct: Vec<([u8; 32], u64)>,
     /// The bytes of all of them, in invocation order.
     bytes: u64,
+    /// Whose document media the inputs are and the outputs are kept as;
+    /// `None` for workspace files, whose outputs become file versions.
+    media: Option<BlobScope>,
 }
 
 /// What the compute session is asked to do.
@@ -282,8 +293,7 @@ impl Offloader {
     pub fn wall_times(&self) -> Vec<WallTime> {
         let mut times: Vec<_> = self
             .wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .iter()
             .map(|((action, device), observed)| WallTime {
                 action: action.clone(),
@@ -323,6 +333,7 @@ impl Offloader {
             digests: Vec::with_capacity(job.inputs.len()),
             distinct: Vec::with_capacity(job.inputs.len()),
             bytes: 0,
+            media: None,
         };
         for (index, manifest) in job.inputs.iter().enumerate() {
             let (digest, len) = self
@@ -366,19 +377,21 @@ impl Offloader {
         }
     }
 
-    /// Run `offload` over `inputs` — content this device holds, by the
-    /// digest of its bytes, as the invoker's room reaches it — on the
-    /// best-placed other device, or say why it should run here. The caller
-    /// runs it here itself then, through the app's own handler, and reports
-    /// how long that took ([`Self::record_local`]).
+    /// Run `offload` over `inputs` — document media `scope`'s room reaches
+    /// on this device, by the digest of its bytes, read only through
+    /// `scope` — on the best-placed other device, and keep its outputs as
+    /// `scope`'s media; or say why it should run here. The caller runs it
+    /// here itself then, through the app's own handler, and reports how
+    /// long that took ([`Self::record_local`]).
     ///
     /// # Errors
     ///
-    /// Why it was not offloaded: an input not wholly on this device, no
-    /// better-placed device, or what failed remotely.
+    /// Why it was not offloaded: an input `scope` does not reach wholly
+    /// here, no better-placed device, or what failed remotely.
     pub async fn offload(
         &self,
         workspace_id: u64,
+        scope: &BlobScope,
         offload: &Offload,
         inputs: &[[u8; 32]],
     ) -> Result<OffloadRun, String> {
@@ -394,6 +407,7 @@ impl Offloader {
             digests: Vec::with_capacity(inputs.len()),
             distinct: Vec::with_capacity(inputs.len()),
             bytes: 0,
+            media: Some(scope.clone()),
         };
         for (index, digest) in inputs.iter().enumerate() {
             if bound.digests.contains(digest) {
@@ -401,7 +415,7 @@ impl Offloader {
             }
             let len = self
                 .content
-                .bind_blob(*digest)
+                .bind_blob(scope, *digest)
                 .await
                 .map_err(|error| format!("input {index}: {error}"))?;
             bound.digests.push(*digest);
@@ -412,12 +426,13 @@ impl Offloader {
             .await
     }
 
-    /// The bytes of `inputs` [`Self::offload`] would bind, once each.
+    /// The bytes of `inputs` [`Self::offload`] would bind through `scope`,
+    /// once each.
     ///
     /// # Errors
     ///
-    /// Names an input that is not wholly on this device.
-    pub async fn input_bytes(&self, inputs: &[[u8; 32]]) -> Result<u64, String> {
+    /// Names an input `scope`'s room does not reach wholly on this device.
+    pub async fn input_bytes(&self, scope: &BlobScope, inputs: &[[u8; 32]]) -> Result<u64, String> {
         let mut seen = Vec::with_capacity(inputs.len());
         let mut total = 0_u64;
         for (index, digest) in inputs.iter().enumerate() {
@@ -427,9 +442,14 @@ impl Offloader {
             seen.push(*digest);
             let len = self
                 .content
-                .blob_len(*digest)
+                .blob_len(scope, *digest)
                 .await
-                .map_err(|error| format!("input {index}: {error}"))?;
+                .map_err(|error| match error {
+                    BindError::NotLocal => {
+                        format!("input {index} is not the room's content on this device")
+                    }
+                    error => format!("input {index}: {error}"),
+                })?;
             total = total.saturating_add(len);
         }
         Ok(total)
@@ -443,16 +463,13 @@ impl Offloader {
 
     fn record(&self, offload: &Offload, device: DeviceKey, elapsed: Duration, input_bytes: u64) {
         let action = format!("{}:{}", offload.app, offload.entrypoint);
-        self.wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                (action, device),
-                Observed {
-                    elapsed,
-                    input_bytes,
-                },
-            );
+        self.wall_times.lock_recover().insert(
+            (action, device),
+            Observed {
+                elapsed,
+                input_bytes,
+            },
+        );
     }
 
     /// [`Self::remote`] over bound `inputs`, recorded and answered as an
@@ -475,7 +492,8 @@ impl Offloader {
         })
     }
 
-    /// The bytes of `digest`, an input bound or an output kept here.
+    /// The bytes of `digest`, an input bound or an output kept here, read
+    /// as it was bound.
     ///
     /// # Errors
     ///
@@ -526,8 +544,7 @@ impl Offloader {
     /// `input_bytes`; `None` before it has run it here.
     fn local_wall_ms(&self, action: &str, input_bytes: u64) -> Option<u64> {
         self.wall_times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .get(&(action.to_owned(), self.device))
             .map(|observed| observed.scaled_ms(input_bytes))
     }
@@ -617,7 +634,11 @@ impl Offloader {
             .await
             .map_err(|error| format!("output {}: {error}", hex::encode(digest)))?;
             remaining = remaining.saturating_sub(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-            self.content.store(*digest, &bytes).await?;
+            if let Some(scope) = &inputs.media {
+                self.content.keep_blob(scope, *digest, bytes).await?;
+            } else {
+                self.content.store(*digest, &bytes).await?;
+            }
         }
         Ok((worker, outputs))
     }

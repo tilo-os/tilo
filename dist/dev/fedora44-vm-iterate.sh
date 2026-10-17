@@ -108,6 +108,8 @@ cmd_bootstrap() {
         install -m 0755 "$repo_root/dist/ci/install-build-deps.sh" "$build_context/install-build-deps.sh"
         install -m 0755 "$repo_root/tools/ci/install-pdfium.sh" "$build_context/install-pdfium.sh"
         install -m 0644 "$repo_root/os/external-assets/github-assets.tsv" "$build_context/github-assets.tsv"
+        install -m 0755 "$repo_root/tools/ci/install-xwayland-satellite.sh" "$build_context/install-xwayland-satellite.sh"
+        install -D -m 0644 -t "$build_context/xwayland-satellite" "$repo_root"/os/external-assets/xwayland-satellite/*.patch
         podman build --tag "$image" --file "$repo_root/dist/dev/Containerfile.fedora44" "$build_context"
     fi
     if ! container_exists; then

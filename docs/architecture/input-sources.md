@@ -7,7 +7,7 @@ change the language used by one logged-in user.
 
 ## Durable contract
 
-The `input` object in `~/.config/tilo/settings.json` carries:
+The `input` object in `~/.config/tilo/session/settings.json` carries:
 
 ```json
 {

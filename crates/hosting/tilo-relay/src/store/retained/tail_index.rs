@@ -14,7 +14,8 @@
 //! so a retried frame is found exactly as before.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use tilo_lock::MutexRecover as _;
 
 /// Records remembered over every lineage (eight bytes each, plus the set's
 /// overhead: a few MiB at most). Past it, lineages are forgotten whole.
@@ -67,10 +68,7 @@ impl Index {
 
 fn index() -> MutexGuard<'static, Index> {
     static INDEX: OnceLock<Mutex<Index>> = OnceLock::new();
-    INDEX
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    INDEX.get_or_init(Mutex::default).lock_recover()
 }
 
 /// The part of a record digest the index keeps. A collision only sends a

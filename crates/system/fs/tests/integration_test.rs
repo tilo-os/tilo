@@ -75,15 +75,86 @@ async fn shutdown_fuse_fixture(
     endpoint: Endpoint,
     store: Arc<ContentStore>,
 ) {
-    session
-        .umount_and_join()
-        .expect("unmount and join FUSE session");
+    fs::fuse_session::unmount_and_join(session).expect("unmount and join FUSE session");
     endpoint.close().await;
     store
         .store()
         .shutdown()
         .await
         .expect("shut down blob store");
+}
+
+/// Negotiates `FUSE_ABORT_ERROR`, so an aborted connection fails the
+/// session's device read with `ECONNABORTED` on every abort rather than only
+/// when the read races an unmount's abort.
+struct AbortErrorFs;
+
+impl fuser::Filesystem for AbortErrorFs {
+    fn init(
+        &mut self,
+        _req: &fuser::Request,
+        config: &mut fuser::KernelConfig,
+    ) -> std::io::Result<()> {
+        config
+            .add_capabilities(fuser::InitFlags::FUSE_ABORT_ERROR)
+            .map_err(|_| std::io::Error::other("the kernel does not offer FUSE_ABORT_ERROR"))
+    }
+}
+
+/// The `fusectl` abort switch of the connection mounted at `mount`: its
+/// directory is named by the kernel's own device number, `major << 20 |
+/// minor` of the mount's device in `/proc/self/mountinfo`.
+fn fusectl_abort(mount: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let device = mountinfo.lines().rev().find_map(|line| {
+        let mut fields = line.split(' ');
+        let device = fields.nth(2)?;
+        (std::path::Path::new(fields.nth(1)?) == mount).then_some(device)
+    })?;
+    let (major, minor) = device.split_once(':')?;
+    let (major, minor): (u64, u64) = (major.parse().ok()?, minor.parse().ok()?);
+    let abort = std::path::PathBuf::from(format!(
+        "/sys/fs/fuse/connections/{}/abort",
+        (major << 20) | minor
+    ));
+    abort.exists().then_some(abort)
+}
+
+/// Unmounting aborts the kernel connection, and the session's blocked read
+/// can lose the race with that abort: it then fails with `ECONNABORTED`, not
+/// the usual `ENODEV`, and fuser hands that back as the session's error. The
+/// race is in the kernel and cannot be scheduled from here, so the abort
+/// error is negotiated and the connection aborted outright: the session
+/// thread then always ends on `ECONNABORTED`, which teardown must read as
+/// the end of the session.
+#[test]
+fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
+    require_fuse!();
+    let mount_dir = tempdir().expect("mount temp dir");
+    let mount = mount_dir
+        .path()
+        .canonicalize()
+        .expect("canonical mount path");
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName("quickfs_abort_error".into())];
+    let session = fuser::spawn_mount(AbortErrorFs, &mount, &config).expect("spawn FUSE session");
+    let abort = fusectl_abort(&mount);
+    if let Some(abort) = &abort {
+        std::fs::write(abort, b"1").expect("abort the FUSE connection");
+    }
+    let ended = fs::fuse_session::unmount_and_join(session);
+    // An aborted connection still holds its mount point; detach it so the
+    // temporary directory can go.
+    let _ = std::process::Command::new("fusermount3")
+        .args(["-u", "-q", "-z", "--"])
+        .arg(&mount)
+        .status();
+    tilo_test_env::require_capability!(
+        FuseControl,
+        abort.is_some(),
+        "aborting the connection needs fusectl mounted at /sys/fs/fuse/connections"
+    );
+    ended.expect("an aborted connection ends the session cleanly");
 }
 
 async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) {
@@ -458,8 +529,8 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
 
             let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
             assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
-            sa.umount_and_join().expect("unmount Alice session");
-            sb.umount_and_join().expect("unmount Bob session");
+            fs::fuse_session::unmount_and_join(sa).expect("unmount Alice session");
+            fs::fuse_session::unmount_and_join(sb).expect("unmount Bob session");
             shutdown_endpoint.close().await;
             shutdown_store
                 .store()
@@ -817,7 +888,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             assert!(listed.contains(&b"renamed-\xFE.txt".to_vec()));
 
             let snapshot = namespace.lock().unwrap().save();
-            session.umount_and_join().unwrap();
+            fs::fuse_session::unmount_and_join(session).unwrap();
             shutdown_endpoint.close().await;
             let reopened = Arc::new(Mutex::new(
                 Namespace::from_bytes("reopened", &snapshot).unwrap(),
@@ -832,7 +903,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mut after_restart = second_mount.path().to_path_buf();
             after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
             assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
-            session.umount_and_join().unwrap();
+            fs::fuse_session::unmount_and_join(session).unwrap();
             shutdown_endpoint.close().await;
             store.store().shutdown().await.unwrap();
         })

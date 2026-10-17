@@ -12,6 +12,7 @@ use crate::services::Launched;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_lock::MutexRecover as _;
 
 /// How long an `open` waits for the instance it started to connect: as long
 /// as a host keeps the launch record that instance connects with.
@@ -90,9 +91,7 @@ impl Opening {
 
 impl WorkspaceOpens {
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Opening>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0.lock_recover()
     }
 
     /// The `open` waiting for `peer` to publish, taken.

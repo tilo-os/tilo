@@ -346,7 +346,10 @@ def verify_package(out, architecture, source, sequence, trusted_key):
     require({key: proof.get(key) for key in expected} == expected, 'published engine provenance differs')
     require(proof['package_version'] == '0.1.' + sequence + '+g' + expected['source'], 'package source/version differs')
     require(proof['app_publisher'] == trusted_key, 'engine publisher differs from CI identity')
-    inventory = {path.name: digest(path) for path in package.iterdir() if path.is_file() and path.name != 'provenance.json'}
+    files = list(package.iterdir())
+    require(all(path.is_file() and not path.is_symlink() for path in files),
+            'engine package contains a nonregular member')
+    inventory = {path.name: digest(path) for path in files if path.name != 'provenance.json'}
     require(inventory == proof['files'], 'engine package inventory differs')
     tapps = list(package.glob('*.tapp'))
     require(len(tapps) == 1, 'one engine package required')

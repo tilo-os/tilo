@@ -5,7 +5,7 @@ kind = "word-processor.document"
 label = "Document"
 version = 1
 fields = [
-  { path = "body", type = "RichText", ops = "sha256:1ce89d3350d639da" },
+  { path = "body", type = "RichText", ops = "sha256:228bfc4bf4f5e079" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
   { path = "comments.*.anchor", type = "TextAnchor" },
   { path = "comments.*.author", type = "String", readonly = true },

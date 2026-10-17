@@ -325,8 +325,9 @@ fn quoted_after(hay: &str, needle: &str) -> Option<String> {
 }
 
 /// Build the ordered list of `firewall-cmd` commands that would realise
-/// `cfg`. Pure — no IO — so it is unit-testable.
-pub fn plan_commands(cfg: &FirewallConfig) -> Vec<String> {
+/// `cfg`, as the tests read it.
+#[cfg(test)]
+fn plan_commands(cfg: &FirewallConfig) -> Vec<String> {
     build_invocations(cfg).map_or_else(
         |error| vec![format!("Blocked: invalid configuration — {error}")],
         |plan| plan.iter().map(Invocation::display).collect(),

@@ -8,7 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Once, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Once};
+use ui::lock::MutexRecover as _;
 
 /// The activation URI scheme Notes owns.
 const SCHEME: &str = "tilo-notes";
@@ -25,7 +26,7 @@ struct Retries {
 static RETRIES: LazyLock<Mutex<Retries>> = LazyLock::new(Mutex::default);
 
 fn retries() -> MutexGuard<'static, Retries> {
-    RETRIES.lock().unwrap_or_else(PoisonError::into_inner)
+    RETRIES.lock_recover()
 }
 
 /// A click on "Try again", from whatever thread the platform reports it.

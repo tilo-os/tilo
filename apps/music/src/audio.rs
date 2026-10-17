@@ -49,6 +49,7 @@
 
 #[cfg(feature = "spotify-native")]
 pub(crate) use tilo_spotify as spotify_audio;
+use ui::lock::MutexRecover as _;
 #[cfg(feature = "audio")]
 mod pipeline_controls;
 
@@ -177,9 +178,7 @@ impl PcmCapture {
     #[cfg(feature = "audio")]
     fn record(&self, bytes: &[u8]) {
         let (state, changed) = &*self.0;
-        let mut pcm = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pcm = state.lock_recover();
         pcm.buffers += 1;
         for sample in bytes.chunks_exact(2) {
             if let [low, high] = *sample {
@@ -195,28 +194,20 @@ impl PcmCapture {
     #[cfg(feature = "audio")]
     fn note_rendered(&self) {
         let (state, changed) = &*self.0;
-        state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rendered += 1;
+        state.lock_recover().rendered += 1;
         changed.notify_all();
     }
 
     pub fn snapshot(&self) -> CapturedPcm {
-        *self
-            .0
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.0.0.lock_recover()
     }
 
     /// Wait until more audio arrives or is rendered, or `timeout` passes,
     /// returning the latest record either way.
+    #[cfg(test)]
     pub fn wait_for_more(&self, timeout: std::time::Duration) -> CapturedPcm {
         let (state, changed) = &*self.0;
-        let pcm = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pcm = state.lock_recover();
         let seen = *pcm;
         let (pcm, _) = changed
             .wait_timeout_while(pcm, timeout, |pcm| *pcm == seen)
@@ -771,7 +762,8 @@ impl AudioEngine {
         )
     }
 
-    /// Bounded test/probe helper; production frames call `pump` instead.
+    /// Bounded test helper; production frames call `pump` instead.
+    #[cfg(test)]
     #[cfg(feature = "audio")]
     pub fn wait_until_playing(&mut self, timeout: std::time::Duration) -> bool {
         let deadline = ui::time::now() + timeout;

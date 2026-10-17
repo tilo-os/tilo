@@ -1,83 +1,168 @@
-# Importing cloud files once
+# Connecting cloud accounts and importing files
 
-Dropbox and Google Drive accounts connected in Settings appear in Files as
-ongoing synced locations under `~/Remote/<account>`. Remote changes appear in
-these folders and edits made there are uploaded to the provider.
+In **Settings → Accounts**, connected accounts appear first. Use the single
+**Add account** section to choose any provider, including Google or Dropbox.
+Thunderbird settings import and existing browser identities remain below it.
+For Google, choose **Files**,
+**Mail**, or both; Mail appears in the Mail app after Gmail access and the mailbox
+identity have been verified. Choose **Keep files in sync** for an ongoing
+connection or **Import files once** for independent local copies, then select
+**Continue** to authorize the selected services in your browser.
 
-For an independent local copy, select an entry in either location and choose
-**Import once to Downloads** in its context menu. The destination is the user's
-XDG Downloads directory and must already exist. The entry can be a file or a
-folder. Name collisions get a new name rather than replacing existing files.
-The shared action chooser also offers **Import once to local folder…** on the
-entry, with a destination-folder parameter.
+After connecting, use **Browse files** or **Choose files to import…** in Settings,
+or open the account in Files' sidebar. For a one-time import, select the files
+or folders and choose a destination. A persistent sync connection is not required.
 
-Automation uses the same entry action, `import-once`, with
-`{"folder":"/absolute/local/destination"}`. Discover the entry's resource id
-through the Files action directory; for example:
+Cloud accounts offer two file modes:
+
+- **Sync** exposes the normal ongoing folder under `~/Remote/<account>`.
+  Edits to ordinary files there upload to the provider. Accounts saved before
+  the mode setting existed keep this behaviour.
+- **Import** appears in Files' places list without creating a filesystem mount.
+  Opening the account browses the provider through the storage daemon. Files
+  receives names, opaque IDs, revisions and file bytes, never provider credentials.
+
+In an import account, select one or more files or folders and choose **Import
+once…**. Files opens the desktop's shared writable-directory chooser. No
+Downloads destination is assumed. Cancelling the chooser writes nothing.
+The document-portal chooser displays system-owned read/write consent and exports
+only the selected destination; importing adds no broader filesystem or sandbox
+permission. The native shell chooser does not issue new grants: it offers only
+folders already writable by the app within its workspace scope.
+
+Folders are enumerated recursively with provider pagination. The transfer shows
+enumeration, preparation/export and copy progress, completed-entry and byte
+counts, and individual failures. **Cancel import** closes the active daemon read
+and discards its private incomplete staging data. Only completed top-level
+outputs are published, without replacing existing files. Completed outputs remain.
+If staging has been replaced or contains unexpected user data, cleanup refuses
+to delete it rather than risking those files.
+**Retry failed** starts another recorded operation for entries that did not
+complete; successful copies are not copied again. **Show destination** opens the
+chosen folder.
+
+Imports are ordinary independent files: later cloud edits do not change them,
+and editing an imported copy does not upload it. Existing files are never
+replaced. Each colliding name gets a fresh name. Destination components are
+opened without following symlinks, and output creation is relative to that
+anchored directory. Known synced cloud destinations are rejected both when the
+request is admitted and when it executes.
+
+## Native cloud documents
+
+Supported Google Docs, Sheets and Slides are exported by the daemon as Office
+files. Import streams the exported bytes, not provider-link JSON or a URL
+shortcut. Unsupported document types fail explicitly instead of producing a
+misleading local document. In synced Drive locations, native documents are
+read-only converted views: editing those exports cannot safely round-trip to
+the original cloud document. Files explains this distinction in the synced view.
+An independent imported copy is editable. Conversion can change formatting or
+omit provider-specific features; it is not a lossless native-document round trip.
+Drawings use an advertised SVG or PDF export. Forms and Sites have no supported
+independent representation in this workflow.
+
+Changing an existing synced account to import mode first checks for active writes
+and queued uploads, then freezes and stops its mount before committing the change.
+Pending work prevents the change; finish syncing and retry. An interrupted commit
+has an explicit recovery action in Settings and does not automatically restart
+writable sync underneath it.
+
+## Personal accounts and shared workspaces
+
+Permission to edit a workspace is not permission to use its host's personal
+cloud accounts. Fresh imports require the host person's admission and a private,
+single-use approval bound to the exact operation and selection. Replicated job
+records and caller-supplied account IDs do not grant source access. Account
+controls and account-resource catalogues are restricted to the host person.
+Imported copies become ordinary files subject to the destination's permissions.
+
+Directory and search responses enforce this boundary even for cached metadata.
+A public document parent does not make custom private children public: document
+read eligibility is explicit per child, and reads bind to that child's item.
+Unknown operation kinds remain publisher-private, even if their metadata carries
+a document-read tag. Public Notes documents remain discoverable without exposing
+personal account controls or source listings.
+
+## Actions and history
+
+Browse, selection, import, progress, cancellation, retry and reveal use the same
+typed Files effects as the visible controls. The public `import-cloud` effect
+accepts an optional `folder` argument for coordinate-free automation. Omitting it
+opens the shared writable-directory chooser, just as the visible button does.
+An explicit folder undergoes the same native destination checks before queuing.
+Cloud rows expose selection and folder-opening actions. Discover the current action directory with:
 
 ```sh
 tilo-control actions list
-tilo-control actions invoke PROVIDER ACTION_ID --args-json '{"folder":"/absolute/local/destination"}'
 ```
 
-The action resolves only a currently visible Dropbox or Drive entry. It uses
-Files' ordinary queued, undoable copy operation. Reads through the cloud mount
-hydrate bytes on demand; the result is a regular local copy, not a cache pin,
-shortcut to the mounted file, or another synced mount. Later cloud changes do
-not change it, and edits to the imported copy do not upload to the provider.
-Imports into known synced cloud folders, including symlink aliases, are refused.
-No filesystem grant or sandbox permission is added by importing. A destination
-outside the workspace's existing access still requires the usual file grant.
+Cloud imports enter Files' existing device-targeted document outbox. Destination
+admission must happen on the executing Files host: the `cloud-import` action
+refuses another device as its target before inspecting the destination. Invoke
+Files on the receiving device and choose the destination in its workspace
+instead. A sender's local inode is not receiving-device consent.
 
-## Google-native documents
+The canonical action records the destination path and pinned identity as durable,
+non-authoritative evidence. Historical replay, verification and undo preview only
+validate the payload and reconstruct the queued task; they need neither the
+original directory nor host identity or access to private sources. Fresh actions
+still require the immutable host person and device and revalidate the actual
+directory against that evidence. A caller-supplied witness grants no authority.
+The native worker must consume a host-memory, single-use approval bound to the
+exact outbox entry and payload. Replay never creates or renews that approval.
 
-Drive-native documents do not have ordinary downloadable file bytes. The mount
-projects them as provider link files containing the document id, MIME type,
-web URL and available export extensions. Import preserves that honest link
-representation; it does not claim to have downloaded an editable local document.
-The link may still open the live provider document. Download/export the desired
-format from the provider when a self-contained document is needed.
+The worker records the admitted directory identity and each actual output's
+identity and path. Undo refuses replaced outputs, renamed or replaced destinations,
+and symlink substitutions. Compensation uses anchored directories and no-replace
+moves; its Trash receipt retains the identities for redo. It does not alter the
+cloud originals. Approvals are not durable: unfinished operations after a host
+restart fail closed without contacting the source. Historical document replay
+cannot recreate them. Interrupted, unfinished outbox operations are not a durable
+resumable-download protocol; a new import needs fresh native admission.
 
-## Account connection
-
-In **Settings → External Accounts**, add Dropbox or Google Drive and complete
-browser authorization. For Google, choose **Connect files and Gmail** to request
-both file and mail permissions. The ordinary connect action requests files only.
-After combined consent, Settings saves the Drive location and a Gmail account;
-Mail follows the shared person-account record and shows the new Gmail account,
-including in an already-open session window. Gmail access and the mailbox identity are
-validated before saving either account; denied Drive or Gmail permission does
-not leave a partially connected pair. A Gmail row's **Sign in again** action
-renews mail authorization and checks that Google returned the same mailbox.
-
-Google sign-in requires a configured OAuth client and provider approval for the
-requested scopes. Gmail must be available to the Google account, and the client
-project must have the Gmail API enabled. These requirements cannot be supplied
-by a simulator or bypassed by saving a nominal Mail account.
-
-Importing does not disconnect, pause or reconfigure the source account. The
-original cloud location keeps syncing. Account setup and credential custody
-remain in Settings; Files never reads a provider credential. An account must be
-connected and mounted before Files can import from it.
+The compatibility `import-once` action on a mounted entry still accepts an
+explicit `folder` destination and uses the ordinary mounted-file copy path.
+It no longer has an automatic Downloads menu command. Provider-backed browse
+and streamed native exports are the import-account workflow described above.
 
 ## Verification
 
-`crates/system/fs/tests/cloud_mount.rs` exercises the production cloud volume's
-hydration, remote-change polling and local-write upload against the Dropbox and
-Drive fake HTTP providers. The Files test
-`one_time_cloud_import_is_an_independent_copy_through_the_action_door` invokes
-the published action over a mounted-folder fixture and verifies recursive
-copying, unchanged copies after source edits, independent local edits, native
-link preservation and rejection of a symlink alias to a cloud destination.
-A second test redirects a destination alias after admission and verifies the
-queued copy retains the validated local destination.
+`apps/file-explorer/src/cloud_transfer.rs` tests the real framed cloud client
+against a local protocol-service fake: exported bytes, collision receipts,
+recursive paginated folders, provider failure, cancellation/CloseRead, cleanup,
+malformed names and destination symlinks.
 
-`apps/settings/tests/xdg.rs` includes the cloud-storage acceptance tests for
-browser sign-in, credential handoff, mount creation, writes and removal.
-`apps/mail/tests/google_settings.rs` exercises combined Google consent through
-Settings and consumption/refresh by Mail, including partial or denied consent.
-Settings sign-in tests cover live-record rollback and Gmail reauthentication.
-Mail's `already_open_mail_adopts_settings_google_consent_on_sync` regression
-checks account appearance in an already-open window through production sync.
-All provider-account tests use isolated local HTTP fixtures; they do not log
-into a real person's Dropbox or Google account.
+`provider_actions_choose_destination_and_import_office_bytes_without_mount`
+opens an import account through its Files effect, selects a provider row, uses
+the shared recording host's writable-directory chooser, imports an Office ZIP
+payload, observes progress and recorded output paths, edits the independent
+copy and reveals its destination. Account projection tests check that import
+accounts have no mount and do not reserve synced folder names. Resource tests
+exercise queued imports and their undo records.
+
+The shell's directory-chooser tests inspect the actual shared picker request,
+including its trusted write intent and system-owned title and confirmation label.
+Backend tests observe the connected workspace grant store, explicit read-only
+versus writable export responses, cancellation and selected-only URIs. Native
+chooser-service tests reject read-only and out-of-scope destinations without
+adding workspace grants.
+
+A separate private-session-bus check with the host's external
+`xdg-document-portal` exercised directory `AddFull` exports: its per-app FUSE
+view accepted writes for the selected read/write directory, rejected writes for
+a read-only export, and exposed no sibling directory. This checks the external
+broker, not the complete chooser-to-frontend-to-broker path: the repository does
+not implement the XDG frontend's export step, and the private broker check was
+not driven by an application's returned chooser URI. Full hosted application
+access through that frontend remains an integration verification gap.
+
+The Settings acceptance test connects through isolated OAuth fixtures and drives
+the real storage daemon and published Files actions: Office exports, destination
+selection, progress, cancellation, retry, independent editing and undo. The hosted
+UX test renders those production widgets in light and dark themes, including
+narrow layouts and error states. Transition tests cover daemon restart and
+recovery of a pinned mode-change commit.
+
+These are not a login to a person's cloud account. They do not prove provider
+project approval or scope availability, full desktop access through the external
+XDG frontend, every process-crash scenario, or a lossless native-document round trip.

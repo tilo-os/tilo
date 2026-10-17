@@ -50,6 +50,18 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         let mut tree = super::super::persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
         let service = NativeOwnerCommitService::new(tree.shared(), None);
+        // Building the service only starts the owner's open, off this
+        // thread: the barrier under test is the commit's, after it.
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .unwrap();
+        while OwnerCommitService::health(&service).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the service's owner never opened"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(OwnerCommitService::requires_room(
             &service,
             &room.to_string()

@@ -104,6 +104,11 @@ pub struct PersistentArgs {
     /// A person made a Moderator once they joined; repeatable.
     #[arg(long = "moderator", value_name = "HEX")]
     pub moderators: Vec<String>,
+    /// A file of more owners and moderators, `{"owners": [hex],
+    /// "moderators": [hex]}`, read again whenever it changes, so a role is
+    /// granted or taken back while the room runs.
+    #[arg(long = "roles-file", value_name = "PATH")]
+    pub roles_file: Option<PathBuf>,
     /// An app authored into the room at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
@@ -1025,6 +1030,7 @@ pub(crate) async fn run(
     let governance = Governance {
         owners,
         moderators,
+        roles_file: persistent.roles_file.clone(),
         prune_after_mins: persistent.prune_after_mins,
         state: state.clone(),
         seed_apps: persistent.seed_apps.clone(),
@@ -1202,6 +1208,8 @@ fn slug_of(entry: &str) -> String {
 struct Governance {
     owners: BTreeSet<[u8; 32]>,
     moderators: BTreeSet<[u8; 32]>,
+    /// More owners and moderators, read again whenever the file changes.
+    roles_file: Option<PathBuf>,
     prune_after_mins: u64,
     state: PathBuf,
     seed_apps: Vec<String>,
@@ -1234,18 +1242,42 @@ impl Governance {
             .collect())
     }
 
-    fn remember_declared(&self) -> anyhow::Result<()> {
+    /// The owners and moderators declared now: the command line's and the
+    /// roles file's. A file that cannot be read declares nothing more.
+    fn current(&self) -> (BTreeSet<[u8; 32]>, BTreeSet<[u8; 32]>) {
+        let mut owners = self.owners.clone();
+        let mut moderators = self.moderators.clone();
+        if let Some(path) = &self.roles_file {
+            match read_json::<DeclaredRoles>(path) {
+                Ok(file) => {
+                    owners.extend(file.owners.iter().filter_map(|key| hex32(key)));
+                    moderators.extend(file.moderators.iter().filter_map(|key| hex32(key)));
+                }
+                Err(error) => eprintln!("persistent room: roles file unreadable: {error}"),
+            }
+        }
+        (owners, moderators)
+    }
+
+    /// When the roles file last changed, to take it in again.
+    fn roles_changed_at(&self) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.roles_file.as_ref()?)
+            .ok()?
+            .modified()
+            .ok()
+    }
+
+    fn remember_declared(
+        &self,
+        (owners, moderators): &(BTreeSet<[u8; 32]>, BTreeSet<[u8; 32]>),
+    ) -> anyhow::Result<()> {
         write_json(
             &self.declared_file(),
             &DeclaredRoles {
-                owners: self.owners.iter().map(hex::encode).collect(),
-                moderators: self.moderators.iter().map(hex::encode).collect(),
+                owners: owners.iter().map(hex::encode).collect(),
+                moderators: moderators.iter().map(hex::encode).collect(),
             },
         )
-    }
-
-    fn declared(&self) -> BTreeSet<[u8; 32]> {
-        self.owners.union(&self.moderators).copied().collect()
     }
 
     fn read_last_seen(&self) -> anyhow::Result<BTreeMap<[u8; 32], u64>> {
@@ -1281,15 +1313,11 @@ async fn reconcile_roles(
     previously_declared: &mut BTreeSet<[u8; 32]>,
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
-    let changes = role_changes(
-        &members,
-        &governance.owners,
-        &governance.moderators,
-        previously_declared,
-    );
+    let current = governance.current();
+    let changes = role_changes(&members, &current.0, &current.1, previously_declared);
     apply_role_changes(context, changes).await?;
-    governance.remember_declared()?;
-    *previously_declared = governance.declared();
+    governance.remember_declared(&current)?;
+    *previously_declared = current.0.union(&current.1).copied().collect();
     Ok(())
 }
 
@@ -1317,7 +1345,8 @@ async fn reset_now(context: &PersistentRoom, governance: &Governance) {
     }
 }
 
-/// Removes guests idle past the horizon, in batches.
+/// Removes guests idle past the horizon, in batches. A batch the room
+/// refuses stays seated until the next call.
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
@@ -1330,7 +1359,8 @@ async fn prune_idle(
     for member in members.iter().filter(|member| !member.removed) {
         last_seen.entry(member.user_public_key).or_insert(now);
     }
-    let mut keep = governance.declared();
+    let (owners, moderators) = governance.current();
+    let mut keep: BTreeSet<[u8; 32]> = owners.union(&moderators).copied().collect();
     keep.insert(spectator);
     let idle = idle_guests(&members, last_seen, &keep, now, governance.prune_after_mins);
     for batch in idle.chunks(PRUNE_BATCH) {
@@ -1339,7 +1369,7 @@ async fn prune_idle(
         // should cool their address down for.
         removed.extend(batch.iter().copied());
         let first = batch.first().copied().unwrap_or_default();
-        context
+        if let Err(error) = context
             .rooms
             .prune_members(
                 &context.room,
@@ -1348,13 +1378,26 @@ async fn prune_idle(
                 &batch,
             )
             .await
-            .map_err(|error| anyhow::anyhow!("prune {} guests: {error}", batch.len()))?;
+        {
+            // They keep their seats until the next tick tries again, and
+            // the room goes on serving, as after a failed reset: ending
+            // here dropped every visitor's session and turned each new one
+            // away while the room service restarted it.
+            for key in &batch {
+                removed.remove(key);
+            }
+            tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
+            break;
+        }
         for key in &batch {
             last_seen.remove(key);
         }
     }
     governance.write_last_seen(last_seen)
 }
+
+/// How often the operator's roles file is looked at for a change.
+const ROLES_FILE_EVERY_SECS: u64 = 2;
 
 async fn serve_operator(
     context: &PersistentRoom,
@@ -1385,8 +1428,19 @@ async fn serve_operator(
     ));
     let mut reset_tick = reset_interval(governance.reset_every);
     let mut last_online = None;
+    // The operator's roles file, looked at every few seconds: a role it
+    // grants or takes back reaches the room without a restart.
+    let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
+    let mut roles_seen = governance.roles_changed_at();
     loop {
         tokio::select! {
+            _ = roles_tick.tick(), if governance.roles_file.is_some() => {
+                let changed_at = governance.roles_changed_at();
+                if changed_at != roles_seen {
+                    roles_seen = changed_at;
+                    reconcile_roles(context, governance, &mut previously_declared).await?;
+                }
+            }
             _ = online_tick.tick() => {
                 let sessions = context.web.online_users();
                 let people = sessions.keys().filter(|user| **user != spectator).count();

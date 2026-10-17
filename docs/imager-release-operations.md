@@ -478,7 +478,7 @@ release and monitor workflows do not read them:
 ### Internal installer bundle
 
 Full Tilo without a USB stick (design spec
-`docs/superpowers/specs/2026-09-22-usb-free-install-design.md` §3) downloads a
+`docs/architecture/usb-free-install.md` §3) downloads a
 schema-2 internal installer bundle: a manifest plus two raw component images
 the Imager writes to staging partitions on the internal disk. Each native
 `medium` lane derives it from the live disk that has just passed the

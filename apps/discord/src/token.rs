@@ -6,7 +6,6 @@ use ui::secrets::SecretStore;
 
 pub const TOKEN_PURPOSE: &str = "bot-token";
 pub const TOKEN_ITEM: &str = "default";
-pub const WEBHOOK_PURPOSE: &str = "webhook";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenError {

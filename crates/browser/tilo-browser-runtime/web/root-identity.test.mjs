@@ -255,13 +255,15 @@ function memoryStorage() {
   return {map, get: async key => (map.has(key) ? structuredClone(map.get(key)) : undefined), put: async (key, value) => { map.set(key, structuredClone(value)); }, delete: async key => { map.delete(key); }};
 }
 
-test('a browser creates its person once, holds the root only wrapped, and asks to keep its storage', async () => {
+test('a browser creates its person once and holds the root only wrapped, asking the browser for nothing', async () => {
   const storage = memoryStorage();
   let persistAsked = 0;
   const persist = {persist: async () => { persistAsked += 1; return true; }};
   assert.equal(await browserIdentity({storage, create: false}), null);
   const first = await browserIdentity({storage, persist});
-  assert.equal(persistAsked, 1);
+  // Firefox answers persist() only once its prompt is dismissed: arriving
+  // must neither show that prompt nor wait on it.
+  assert.equal(persistAsked, 0);
   assert.match(first.userPublicKey, /^[0-9a-f]{64}$/);
   assert.equal(first.kept, false);
   assert.deepEqual(first.envelope.wraps, []);
@@ -270,8 +272,23 @@ test('a browser creates its person once, holds the root only wrapped, and asks t
   assert.ok(await signsAsRoot(first, first.userPublicKey));
   const again = await browserIdentity({storage, persist});
   assert.equal(again.userPublicKey, first.userPublicKey);
-  assert.equal(persistAsked, 1);
+  assert.equal(persistAsked, 0);
   assert.equal(currentIdentity(), again);
+});
+
+test('keeping a person asks to keep the site\'s storage, without waiting for the answer', async () => {
+  let asked = 0;
+  // A prompt nobody answers: persist() never settles.
+  const persist = {persist: () => { asked += 1; return new Promise(() => {}); }};
+  const person = await browserIdentity({storage: memoryStorage(), persist, credentials: fakeAuthenticator()});
+  await person.keepWithPasskey({rpId: 'example.com', userName: 'Brave Otter'});
+  assert.equal(person.kept, true);
+  assert.equal(asked, 1);
+  assert.match(await person.createRecoveryKey(), /\S/);
+  assert.equal(asked, 2);
+  // No storage manager, or one that throws: keeping goes on.
+  const bare = await browserIdentity({storage: memoryStorage(), persist: {persist: () => { throw new Error('no'); }}});
+  assert.match(await bare.createRecoveryKey(), /\S/);
 });
 
 test('keeping a person with a passkey lets a new browser sign in as them', async () => {

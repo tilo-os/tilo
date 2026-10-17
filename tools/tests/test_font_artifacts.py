@@ -64,6 +64,28 @@ class FontArtifactsTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "provenance"):
                     fc.prepared_root(SOURCE, "fixtures", cache, True)
 
+    def test_a_shared_cache_cannot_swap_a_catalog_manifest_and_its_fonts(self):
+        _, rows = fc.artifact_entries(SOURCE)
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary)
+            self.warm_cache(cache, rows)
+            with patch.object(fc.urllib.request, "urlopen", side_effect=AssertionError("offline network")):
+                root = fc.prepared_root(SOURCE, "fixtures", cache, True)
+                manifest = root / "manifest.toml"
+                manifest.write_bytes(manifest.read_bytes() + b"\n# rewritten\n")
+                with self.assertRaisesRegex(ValueError, "provenance"):
+                    fc.prepared_root(SOURCE, "fixtures", cache, True)
+
+    def test_the_artifact_cache_outlives_build_directories(self):
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target", "HOME": "/home/me"}, clear=True):
+            self.assertEqual(fc.default_cache(), Path("/home/me/.cache/tilo/test-env/font-artifacts"))
+        with patch.dict(os.environ, {"TILO_TEST_CACHE_DIR": "/cache/tests", "HOME": "/fresh"}, clear=True):
+            self.assertEqual(fc.default_cache(), Path("/cache/tests/font-artifacts"))
+        with patch.dict(os.environ, {"TILO_FONT_ASSET_CACHE": "/fonts", "HOME": "/home/me"}, clear=True):
+            self.assertEqual(fc.default_cache(), Path("/fonts"))
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target"}, clear=True):
+            self.assertEqual(fc.default_cache(), Path("/target/font-artifacts"))
+
     def test_self_contained_offline_catalog_is_verified_without_a_digest_cache(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

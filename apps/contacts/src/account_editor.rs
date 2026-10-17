@@ -714,7 +714,7 @@ mod tests {
     use crate::app::ContactsApp;
     use crate::model::Contact;
     use crate::resource::ContactsShell;
-    use tilo_contact_directory::routing::{AccountChoice, SenderAccount, routes, select_route};
+    use tilo_contact_directory::routing::{SenderAccount, routes};
     use ui::framework::ResourceSurface;
     use ui::framework::testing::TestApp;
 
@@ -1019,16 +1019,6 @@ mod tests {
         });
         let available = routes(&directory.get(), &Id::from_raw(&one), "signal", &senders);
         assert_eq!(available.len(), 2);
-        assert_eq!(
-            select_route(&available, None),
-            AccountChoice::SelectionRequired(available.clone())
-        );
-        let chosen = available.first().unwrap();
-        assert_eq!(
-            select_route(&available, Some(chosen)),
-            AccountChoice::Ready(chosen.clone())
-        );
-        assert_eq!(select_route(&[], Some(chosen)), AccountChoice::Unavailable);
     }
 
     #[test]

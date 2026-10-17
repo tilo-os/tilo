@@ -26,7 +26,8 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all Tilo | Super+Space, Super tapped alone | Search |
+| Search all Tilo | Super+Space | Search |
+| The Super surface: search, widgets, time, status, people | Super tapped alone (stays), Super held alone (peek) | — |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
@@ -49,6 +50,15 @@ strip changes context; switching a window or tab changes focus within it.
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
 | Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
 | Insert an emoji into the focused text field | Super+. | — |
+| Ask an agent about the focused window's selection | Super+C | "Ask agent…" in a text field, list row or context menu |
+
+Super+C (the chord Windows gives its assistant) opens the agent quick composer on
+what is selected in the focused window, set to queue a task about it. A Tilo
+app answers with the selection's place in its own resource, so the agent
+acts on exactly that range; any other app contributes the primary selection's
+text, which travels quoted in the instruction. The composer asks the agent
+asked last in the workspace, else its first live one; with no live agent the
+chord says so on screen.
 
 Shift+Print and Alt+Print skip the chooser: the capture is saved to
 `Pictures/Screenshots`, copied to the clipboard and announced by the same
@@ -85,7 +95,11 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
 Super tapped alone means Super pressed and released with no other key,
-click or scroll in between; any chord disarms it. Super+N is already the
+click or scroll in between, before the 300 ms hold; any chord disarms it.
+The tap opens the Super surface and it stays until Escape or a click
+outside. Held alone that long, Super opens the same surface as a peek,
+which closes when Super comes up unless something was typed or clicked
+in it; a chord pressed during the hold closes the peek and runs. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
 Center key). Shift carries the focused group in the direction the bare
 arrow moves focus; carrying past the first or last strip does nothing, and
@@ -96,7 +110,7 @@ settings file that still holds a previous default takes the new one. Super+F mak
 window group instead. Each resize step is 5% of the display's width. With
 one display, the move-to-display chords do nothing; displays are ordered left
 to right, then top to bottom. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
-Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+- and Ctrl+Alt+Delete are
+Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+-, Super+C and Ctrl+Alt+Delete are
 defaults, rebindable in Settings → Keyboard shortcuts.
 
 The magnifier zooms from 2× to 6×; zooming out of 2× turns it off, and

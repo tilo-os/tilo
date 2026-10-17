@@ -26,6 +26,7 @@ use super::{
     WebViewEvent,
 };
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
 
@@ -51,6 +52,11 @@ struct Shared {
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Wakes the host's supervisor when `failed` or `stopping` is set.
+    supervisor_bell: SupervisorBell,
+    /// How often the host's supervisor has looked at it: once at start and
+    /// once per change, never on a timer while the host runs.
+    supervisor_checks: AtomicU32,
     /// Set on the owner for another process's tab: its host events and
     /// frames go to that process instead of this endpoint.
     remote: Option<Arc<shared::Outbox>>,
@@ -94,23 +100,16 @@ impl Shared {
     }
 
     fn cancel_navigation(&self, request_id: u32) {
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         owners.pending.remove(&request_id);
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
     }
 
     fn fail_navigations(&self, message: &str) {
         let pending: Vec<_> = self
             .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .pending
             .iter()
             .map(|(&id, uri)| (id, uri.clone()))
@@ -130,17 +129,11 @@ impl Shared {
         };
         // Reserve the queue slot before send; hold ownership through enqueue
         // so an admission cannot race a completing request's reservation.
-        let mut owners = self
-            .navigations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owners = self.navigations.lock_recover();
         if owners.pending.remove(request_id).is_none() {
             return;
         }
-        let mut events = self
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut events = self.events.lock_recover();
         if events.len() >= 512 {
             if let Some(index) = events.iter().position(|event| {
                 !matches!(
@@ -166,16 +159,13 @@ impl Shared {
             return;
         }
         if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
-            self.stopping.store(true, Ordering::Release);
+            self.stop();
         }
         if matches!(
             event,
             WebViewEvent::RendererTerminated | WebViewEvent::TabClosed | WebViewEvent::TabDetached
         ) {
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
         }
         // Renderer termination is visual: the host names each affected owner
         // explicitly. Its delayed generic event cannot invalidate a recovery
@@ -239,13 +229,16 @@ impl Shared {
         self.wake();
     }
 
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        self.supervisor_bell.ring();
+    }
+
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
+            self.supervisor_bell.ring();
             self.fail_navigations(&message);
-            self.text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unavailable();
+            self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
             self.event(WebViewEvent::LoadFailed {
                 uri,
@@ -397,7 +390,7 @@ impl Runtime {
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        self.process.stopping.store(true, Ordering::Release);
+        self.process.stop();
         if self.link.is_some() {
             // The command writer sends what is queued, then hangs up; the
             // owner closes whatever this process left open.
@@ -409,11 +402,7 @@ impl Drop for Runtime {
         }
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
-        if let Some(supervisor) = self
-            .supervisor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+        if let Some(supervisor) = self.supervisor.lock_recover().take()
             && supervisor.thread().id() != std::thread::current().id()
         {
             let _ = supervisor.join();
@@ -421,9 +410,7 @@ impl Drop for Runtime {
     }
 }
 fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
-    let mut events = queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut events = queue.lock_recover();
     if let WebViewEvent::DownloadUpdated { id, .. } = &event {
         events.retain(
             |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
@@ -439,8 +426,7 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
 
 fn fail_routes(routes: &Routes, message: &str) {
     let endpoints: Vec<_> = routes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .values()
         .filter_map(Weak::upgrade)
         .collect();
@@ -499,6 +485,8 @@ impl UnavailableEngine {
                 navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                supervisor_bell: SupervisorBell::default(),
+                supervisor_checks: AtomicU32::new(0),
                 remote: None,
             },
         })
@@ -655,9 +643,7 @@ fn spawn_frame_reader(
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
-    slot.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
+    slot.lock_recover().take()
 }
 
 fn supervise_child(
@@ -666,8 +652,14 @@ fn supervise_child(
     supervisor_queue: &CommandQueue,
     supervisor_private_root: Option<&Path>,
 ) -> bool {
+    // The bell hangs before the first look, so a change after it rings.
+    let (watch, bell) = tilo_process::child::ExitWatch::new(&child);
+    supervisor_shared.supervisor_bell.hang(bell);
     let mut shutdown_started = None;
     let exited = loop {
+        supervisor_shared
+            .supervisor_checks
+            .fetch_add(1, Ordering::Relaxed);
         match child.try_wait() {
             Ok(Some(_)) => {
                 supervisor_shared.fail("Chromium engine exited".into());
@@ -685,20 +677,44 @@ fn supervise_child(
             let _ = child.kill();
             break child.wait().is_ok();
         }
+        let mut deadline = None;
         if supervisor_shared.stopping.load(Ordering::Acquire) {
             let began = shutdown_started.get_or_insert_with(crate::time::now);
-            if began.elapsed() >= Duration::from_secs(35) {
+            let Some(left) = HOST_SHUTDOWN_GRACE.checked_sub(began.elapsed()) else {
                 let _ = child.kill();
                 break child.wait().is_ok();
-            }
+            };
+            deadline = Some(left);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        watch.wait(deadline);
     };
     supervisor_queue.close();
     if exited && let Some(root) = supervisor_private_root {
         cleanup_private_root(root);
     }
     exited
+}
+
+/// How long a host asked to shut down has to exit before it is killed.
+const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(35);
+
+/// Wakes a host's supervisor when what it acts on changes: the host failing
+/// or a shutdown starting. With the host's own exit, which the supervisor's
+/// [`ExitWatch`](tilo_process::child::ExitWatch) sees, that is everything it
+/// waits for, so a running Browser costs no timer wakeups.
+#[derive(Default)]
+struct SupervisorBell(Mutex<Option<tilo_process::child::Bell>>);
+
+impl SupervisorBell {
+    fn ring(&self) {
+        if let Some(bell) = self.0.lock_recover().as_ref() {
+            bell.ring();
+        }
+    }
+
+    fn hang(&self, bell: tilo_process::child::Bell) {
+        *self.0.lock_recover() = Some(bell);
+    }
 }
 
 fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -792,6 +808,74 @@ fn launch_host(
     Ok(child)
 }
 
+/// What a starting host's supervisor needs: it serves the profile to other
+/// Browser processes, waits for the host to report ready and watches it until
+/// it exits.
+struct Starter {
+    child: Arc<Mutex<Option<std::process::Child>>>,
+    ready: std::sync::mpsc::Receiver<()>,
+    claim: Option<shared::Claim>,
+    runtime: Weak<Runtime>,
+    hub: Arc<shared::Hub>,
+    shared: Arc<Shared>,
+    queue: Arc<CommandQueue>,
+    private_root: Option<PathBuf>,
+    exited: Arc<AtomicBool>,
+}
+
+impl Starter {
+    fn run(self) {
+        let Some(mut child) = take_supervisor_child(&self.child) else {
+            self.shared
+                .fail("Chromium supervisor lost process ownership".into());
+            self.queue.close();
+            return;
+        };
+        // Other Browser windows of the profile join at once rather than
+        // waiting for the host: their tabs queue behind this one's.
+        let served = self
+            .claim
+            .as_ref()
+            .map(|claim| claim.serve(self.runtime.clone(), &self.hub))
+            .transpose();
+        let server = served.as_ref().ok().cloned().flatten();
+        if let Some(runtime) = self.runtime.upgrade()
+            && let Some(server) = &server
+        {
+            let _ = runtime.server.set(server.clone());
+        }
+        let started = served.and_then(|_| {
+            self.ready
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| format!("Chromium did not initialize: {error}"))
+        });
+        if let Err(error) = started {
+            // A host that exited first has already said why.
+            self.shared.fail(error);
+            self.queue.close();
+            let _ = child.kill();
+            let exited = child.wait().is_ok();
+            self.exited.store(exited, Ordering::Release);
+            if exited && let Some(root) = &self.private_root {
+                cleanup_private_root(root);
+            }
+        } else {
+            let exited = supervise_child(
+                child,
+                &self.shared,
+                &self.queue,
+                self.private_root.as_deref(),
+            );
+            self.exited.store(exited, Ordering::Release);
+        }
+        if self.exited.load(Ordering::Acquire)
+            && let Some(claim) = self.claim
+        {
+            claim.release_after_exit(server.as_ref());
+        }
+    }
+}
+
 fn valid_context_menu(value: &Value) -> bool {
     valid_id(value)
         && value["link"].as_str().is_some_and(|s| s.len() <= 8192)
@@ -813,7 +897,9 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the runtime/profile cannot be located, prepared, or initialized.
+    /// Returns an error if the runtime/profile cannot be located or prepared,
+    /// or the host cannot be started. A host that starts but never becomes
+    /// ready fails the page later, as a [`WebViewEvent::LoadFailed`].
     pub fn new() -> Result<Arc<Self>, String> {
         Self::new_with_extensions(&[])
     }
@@ -821,7 +907,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid extensions, unavailable runtime/profile, or helper initialization failure.
+    /// Returns an error for invalid extensions, unavailable runtime/profile, or a helper that cannot be started.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
             .map(PathBuf::from)
@@ -833,7 +919,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the private root is not owned, the runtime is missing, or initialization fails.
+    /// Returns an error if the private root is not owned, the runtime is missing, or the helper cannot be started.
     pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
         match host_path() {
             Ok(host) => Self::with_private_host(&host, root),
@@ -848,7 +934,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid extensions, profile preparation failure, or helper startup/initialization failure.
+    /// Returns an error for invalid extensions, profile preparation failure, or helper startup failure.
     pub fn with_profile_extensions(
         profile: &Path,
         extensions: &[PathBuf],
@@ -860,7 +946,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the profile cannot be prepared or the helper cannot start and initialize.
+    /// Returns an error if the profile cannot be prepared or the helper cannot start.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
         Self::with_host_extensions(host, profile, &[], None, None)
     }
@@ -870,7 +956,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
+    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot start.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
         if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
@@ -919,7 +1005,7 @@ impl ChromiumEngine {
         if self.runtime.service_session.is_none() || self.runtime.link.is_some() {
             return Err("This engine does not own a selected service profile".into());
         }
-        self.runtime.process.stopping.store(true, Ordering::Release);
+        self.runtime.process.stop();
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
         if let Some(supervisor) = self
@@ -1027,57 +1113,25 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(error.to_string());
         }
-        if let Err(error) = ready_rx.recv_timeout(Duration::from_secs(20)) {
-            shared.stopping.store(true, Ordering::Release);
-            tx.close();
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("Chromium did not initialize: {error}"));
-        }
-        let served = claim
-            .as_ref()
-            .map(|claim| claim.serve(Arc::downgrade(&runtime), &hub))
-            .transpose();
-        let server = match served {
-            Ok(server) => {
-                if let Some(server) = &server {
-                    let _ = runtime.server.set(server.clone());
-                }
-                server
-            }
-            Err(error) => {
-                shared.stopping.store(true, Ordering::Release);
-                tx.close();
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        // The host takes a second or more to initialize, longer on a loaded
+        // machine. Its window does not wait for it: commands queue until the
+        // host reads them, and the profile socket, the host's readiness and
+        // its supervision follow on a thread of their own. A host that never
+        // becomes ready fails the page as one that dies later does.
         let child = Arc::new(Mutex::new(Some(child)));
-        let supervisor_child = child.clone();
-        let supervisor_shared = shared.clone();
-        let supervisor_queue = tx.clone();
         let wait_for_private_cleanup = private_root.is_some() || service_session.is_some();
-        let supervisor_private_root = private_root;
-        let supervisor_exited = runtime.exited.clone();
-        let supervisor = spawn_named("chromium-supervisor", move || {
-            let Some(child) = take_supervisor_child(&supervisor_child) else {
-                supervisor_shared.fail("Chromium supervisor lost process ownership".into());
-                supervisor_queue.close();
-                return;
-            };
-            let exited = supervise_child(
-                child,
-                &supervisor_shared,
-                &supervisor_queue,
-                supervisor_private_root.as_deref(),
-            );
-            supervisor_exited.store(exited, Ordering::Release);
-            if let Some(claim) = claim {
-                claim.release_after_exit(server.as_ref());
-            }
-        });
-        let supervisor = match supervisor {
+        let starter = Starter {
+            child: child.clone(),
+            ready: ready_rx,
+            claim,
+            runtime: Arc::downgrade(&runtime),
+            hub,
+            shared: shared.clone(),
+            queue: tx.clone(),
+            private_root: private_root.clone(),
+            exited: runtime.exited.clone(),
+        };
+        let supervisor = match spawn_named("chromium-supervisor", move || starter.run()) {
             Ok(supervisor) => supervisor,
             Err(error) => {
                 if let Some(mut child) = take_supervisor_child(&child) {
@@ -1089,10 +1143,7 @@ impl ChromiumEngine {
             }
         };
         if wait_for_private_cleanup {
-            *runtime
-                .supervisor
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(supervisor);
+            *runtime.supervisor.lock_recover() = Some(supervisor);
         }
         cleanup_on_error.disarm();
         Ok(Arc::new(Self {
@@ -1217,12 +1268,7 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared
-            .open_tabs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.shared.open_tabs.lock_recover().drain(..).collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -1255,11 +1301,7 @@ impl WebViewEngine for ChromiumEngine {
                 return;
             }
             WebViewCommand::CancelScopedNavigation { request_id } => {
-                let _ordering = self
-                    .shared
-                    .navigation_commands
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let _ordering = self.shared.navigation_commands.lock_recover();
                 self.shared.cancel_navigation(request_id);
                 let error = if super::navigation_request_id(request_id) {
                     self.tx.push(json!({"op":"cancel_navigation","tab":self.tab,"request_id":request_id})).err()
@@ -1393,11 +1435,7 @@ impl Drop for ChromiumEngine {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
         let retire = {
-            let mut routes = self
-                .runtime
-                .routes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut routes = self.runtime.routes.lock_recover();
             if let Some(route) = routes.get_mut(&self.tab) {
                 *route = Weak::new();
                 true
@@ -1501,11 +1539,7 @@ fn route_native_event(
             shared.audio.stop();
         }
         if event_name == "text_input_result" {
-            shared
-                .text_input
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .reply(value);
+            shared.text_input.lock_recover().reply(value);
             shared.wake();
             return Ok(());
         }
@@ -1991,10 +2025,7 @@ impl CommandQueue {
         }
     }
     fn close(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .2 = true;
+        self.state.lock_recover().2 = true;
         self.ready.notify_all();
     }
 }

@@ -79,6 +79,23 @@ class RuntimeEngines(unittest.TestCase):
                 ASSEMBLER.runtime_engines(directory)
 
 
+class RuntimeEnginePaths(unittest.TestCase):
+    def test_engine_list_cannot_select_a_library_outside_the_build_directory(self):
+        with tempfile.TemporaryDirectory() as name:
+            parent = Path(name)
+            directory = parent / 'build'
+            directory.mkdir()
+            external = parent / 'liboutside.so'
+            external.write_bytes(b'outside library')
+            for entry in ('../liboutside.so', str(external), 'nested/liboutside.so'):
+                with self.subTest(entry=entry):
+                    (directory / 'runtime-engines').write_text(entry + '\n')
+                    (directory / 'nested').mkdir(exist_ok=True)
+                    (directory / 'nested/liboutside.so').write_bytes(b'nested library')
+                    with self.assertRaisesRegex(ValueError, 'not a built library'):
+                        ASSEMBLER.runtime_engines(directory)
+
+
 class RuntimeFonts(unittest.TestCase):
     def test_sdk_catalog_is_the_verified_standalone_payload(self):
         repo = SOURCE.parents[2]

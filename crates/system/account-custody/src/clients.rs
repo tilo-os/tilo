@@ -28,6 +28,7 @@ pub struct Scopes {
     pub identity: Vec<String>,
     pub music: Vec<String>,
     pub music_streaming: Vec<String>,
+    pub models: Vec<String>,
 }
 
 impl Scopes {
@@ -39,6 +40,7 @@ impl Scopes {
             Capability::Identity => &self.identity,
             Capability::Music => &self.music,
             Capability::MusicStreaming => &self.music_streaming,
+            Capability::Models => &self.models,
         }
     }
 }
@@ -237,6 +239,21 @@ mod tests {
             table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
             ["https://www.googleapis.com/auth/drive"]
         );
+        // Vertex AI asks for the cloud scope alone, in its own grant: none
+        // of the Google uses shares a scope with another.
+        let vertex = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
+        assert_eq!(
+            table.scopes(vertex),
+            ["https://www.googleapis.com/auth/cloud-platform"]
+        );
+        for other in [GMAIL, OAuthCloud::GoogleDrive.oauth_use()] {
+            assert!(
+                table
+                    .scopes(other)
+                    .iter()
+                    .all(|scope| !table.scopes(vertex).contains(scope))
+            );
+        }
         // Dropbox is storage only.
         assert!(
             table

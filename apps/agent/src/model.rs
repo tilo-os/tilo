@@ -91,6 +91,11 @@ struct ProviderConnection {
 }
 
 impl Chooser {
+    /// The provider this chooser asks, when it has one.
+    pub fn selection(&self) -> Option<&ProviderSelection> {
+        self.provider.as_ref().map(|provider| &provider.selection)
+    }
+
     /// `enabled` false forces the keyword vocabulary — for a run that must be
     /// reproducible, and for proving the fallback works.
     pub fn new(enabled: bool, timeout: Duration) -> Self {

@@ -25,6 +25,8 @@ pub mod backend;
 #[cfg(target_os = "linux")]
 pub mod capture;
 #[cfg(target_os = "linux")]
+pub(crate) mod capture_io;
+#[cfg(target_os = "linux")]
 pub mod chooser_service;
 #[cfg(target_os = "linux")]
 pub mod client_cursor;
@@ -132,6 +134,8 @@ pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
 pub mod touch_pointer;
+#[cfg(target_os = "linux")]
+pub mod watchdog;
 #[cfg(target_os = "linux")]
 pub mod window_previews;
 #[cfg(target_os = "linux")]

@@ -27,6 +27,39 @@ use serde::{Deserialize, Serialize};
 /// Account type ids of the cloud storage accounts Settings connects and the
 /// storage daemon mounts. One definition, so the two sides cannot disagree.
 pub mod cloud_types {
+    use serde::{Deserialize, Serialize};
+
+    /// Whether Files keeps a remote account mounted or copies it once.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum FilesMode {
+        Sync,
+        Import,
+    }
+
+    /// Non-secret Files mode metadata key.
+    pub const FILES_MODE_KEY: &str = "files_mode";
+    /// Optional identity of the linked email account.
+    pub const MAIL_ACCOUNT_ID_KEY: &str = "mail_account_id";
+
+    /// Legacy accounts sync. Unknown explicit modes fail closed.
+    pub fn files_mode(account: &crate::Account) -> Option<FilesMode> {
+        match account.config.get(FILES_MODE_KEY) {
+            None => Some(FilesMode::Sync),
+            Some(value) => serde_json::from_value(value.clone()).ok(),
+        }
+    }
+
+    /// Update Files mode without changing other connection metadata.
+    pub fn set_files_mode(config: &mut serde_json::Value, mode: FilesMode) {
+        if !config.is_object() {
+            *config = serde_json::json!({});
+        }
+        if let Some(config) = config.as_object_mut() {
+            config.insert(FILES_MODE_KEY.into(), serde_json::json!(mode));
+        }
+    }
+
     /// Google Drive.
     pub const GOOGLE_DRIVE: &str = "google-drive";
     /// `OneDrive` (personal or work/school) and `SharePoint` libraries.
@@ -56,9 +89,9 @@ pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
-    AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker,
-    CredentialCandidate, CredentialGrant, CredentialOwner, CredentialProposal, CredentialScope,
-    GeneratedPasswordPolicy, GrantLifetime, SecretId, SecretItem, SecretItemKind, SecretStore,
+    AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
+    CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
+    SecretItem, SecretItemKind, SecretStore,
 };
 #[cfg(feature = "person")]
 pub mod person;
@@ -411,6 +444,29 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn files_modes_preserve_legacy_sync_and_reject_unknown_metadata() {
+        use cloud_types::{FilesMode, files_mode, set_files_mode};
+        let mut account = Account::new("drive", cloud_types::GOOGLE_DRIVE);
+        assert_eq!(files_mode(&account), Some(FilesMode::Sync));
+        account.config = serde_json::json!({"provider": "google-drive", "mail_account_id": "mail"});
+        set_files_mode(&mut account.config, FilesMode::Import);
+        assert_eq!(files_mode(&account), Some(FilesMode::Import));
+        assert_eq!(account.config["files_mode"], "import");
+        assert_eq!(account.config["mail_account_id"], "mail");
+        assert!(account.enabled, "import does not disable the account");
+        set_files_mode(&mut account.config, FilesMode::Sync);
+        assert_eq!(account.config["files_mode"], "sync");
+        for invalid in [
+            serde_json::json!("unknown"),
+            serde_json::json!(null),
+            serde_json::json!(true),
+        ] {
+            account.config["files_mode"] = invalid;
+            assert_eq!(files_mode(&account), None);
+        }
     }
 
     #[test]

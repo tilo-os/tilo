@@ -174,7 +174,7 @@ pub fn base_packages_sha256<S: AsRef<str>>(lines: &[S]) -> String {
 pub fn parse_installed<S: AsRef<str>>(lines: &[S]) -> BTreeMap<String, String> {
     let mut installed = BTreeMap::new();
     for line in lines {
-        let fields = py::split_whitespace(line.as_ref());
+        let fields = py::split(line.as_ref());
         let [name, evra] = fields.as_slice() else {
             continue;
         };

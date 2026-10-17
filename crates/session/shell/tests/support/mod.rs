@@ -1,8 +1,5 @@
 //! Shared support modules for shell integration tests, pulled into
-//! individual test binaries via `mod support;`. `offscreen.rs` lives here
-//! (rather than under `crates/sdk/ui-core/tests/support/`) so the shell's e2e harness can
-//! reach a headless renderer without depending on a helper `quick-ui`
-//! doesn't export.
+//! individual test binaries via `mod support;`.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,8 +9,8 @@
 )]
 
 pub mod desktop;
+pub mod headless_wayland;
 pub mod host;
-pub mod offscreen;
 pub mod peer_stream;
 pub mod snapshot;
 pub mod wayland;

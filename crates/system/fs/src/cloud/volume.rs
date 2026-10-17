@@ -12,7 +12,9 @@
 //!   revision-pinned reads and written into a [`FileArea`]: the file-backed,
 //!   range-resident, budgeted cache the storage daemon's content store keeps
 //!   its content in, keyed here by remote revision. A read never pulls a
-//!   whole large file unless the reader asks for all of it.
+//!   whole large file unless the reader asks for all of it. Native documents
+//!   are bounded, revision-checked Office exports cached as complete bodies;
+//!   attributes hydrate them too, because provider sizes describe no Office file.
 //! - **Writes** go to a staged copy outside the cache. When the last writer
 //!   closes, an upload is queued in the persisted outbox and sent in the
 //!   background with the revision the edit started from as its precondition.
@@ -32,16 +34,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
+use cloud_source::materialize::{materialize, preferred_export};
 use cloud_source::tree::Tree;
 use cloud_source::{
     Change, ChangeFeed, CloudSource, Cursor, Error, Item, ItemId, ItemKind, Notify, Revision,
     UploadTarget,
 };
-use runtime_fs::cloud::{CloudCapabilities, FileReply, FileRequest, FileRevision, MountHealth};
+use runtime_fs::cloud::{
+    CloudCapabilities, FileDescription, FileReply, FileRequest, FileRevision, MountHealth,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::store::area::{AreaKey, Residency, hash_file};
 use crate::store::{FileArea, Retention};
+use tilo_lock::MutexRecover as _;
 
 /// The cache key of one remote revision of one item.
 type RevKey = AreaKey;
@@ -122,6 +128,13 @@ fn health_of(error: &Error) -> MountHealth {
 pub enum Kind {
     File,
     Dir,
+}
+
+/// Directory metadata only; sizes and other authoritative attributes require getattr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub ino: u64,
+    pub kind: Kind,
 }
 
 /// What `stat` shows for an inode.
@@ -309,20 +322,27 @@ fn is_local(id: &ItemId) -> bool {
     id.as_str().starts_with(LOCAL_PREFIX)
 }
 
-fn native_payload(item: &Item) -> Option<Vec<u8>> {
+/// Keep exports separate from raw provider bytes and from other representations.
+fn content_key(item: &Item) -> RevKey {
+    let raw = rev_key(&item.id, item.revision.as_ref());
     let ItemKind::Native(document) = &item.kind else {
-        return None;
+        return raw;
     };
-    let body = serde_json::json!({
-        "id": item.id.as_str(),
-        "mime": document.mime,
-        "url": document.web_url,
-        "exports": document.exports.iter().map(|f| &f.extension).collect::<Vec<_>>(),
-    });
-    let mut bytes = serde_json::to_vec_pretty(&body).unwrap_or_default();
-    bytes.push(b'\n');
-    Some(bytes)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&raw);
+    hasher.update(b"Office export v1");
+    hasher.update(document.mime.as_bytes());
+    for format in &document.exports {
+        hasher.update(&[0]);
+        hasher.update(format.mime.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(format.extension.as_bytes());
+    }
+    *hasher.finalize().as_bytes()
 }
+
+/// Native exports are whole bodies; never let a provider allocate unbounded memory.
+const NATIVE_EXPORT_LIMIT: u64 = 64 << 20;
 
 fn errno_of(error: &Error) -> Errno {
     match error {
@@ -330,6 +350,7 @@ fn errno_of(error: &Error) -> Errno {
         Error::Forbidden => libc::EACCES,
         Error::InsufficientStorage => libc::ENOSPC,
         Error::TooLarge => libc::EFBIG,
+        Error::Unsupported(_) => libc::EOPNOTSUPP,
         _ => libc::EIO,
     }
 }
@@ -357,6 +378,10 @@ pub struct CloudVolume {
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
     /// Serialises outbox execution.
     uploading: Mutex<()>,
+    /// Serialises local mutations with the import transition, including open handles.
+    mutation: Mutex<bool>,
+    /// Sync passes may update metadata, but must never delay ordinary writes.
+    syncing: Mutex<()>,
     health: Mutex<Option<MountHealth>>,
     quota: Mutex<Option<cloud_source::Quota>>,
     on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
@@ -440,6 +465,8 @@ impl CloudVolume {
             saving: Mutex::new(()),
             flights: Mutex::new(HashMap::new()),
             uploading: Mutex::new(()),
+            mutation: Mutex::new(false),
+            syncing: Mutex::new(()),
             health: Mutex::new(None),
             quota: Mutex::new(None),
             on_health,
@@ -454,10 +481,52 @@ impl CloudVolume {
         }))
     }
 
-    fn inner(&self) -> MutexGuard<'_, Inner> {
-        self.inner
+    fn mutation(&self) -> Result<MutexGuard<'_, bool>, Errno> {
+        let frozen = self
+            .mutation
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *frozen {
+            return Err(libc::EROFS);
+        }
+        Ok(frozen)
+    }
+
+    /// Freeze only a quiescent, clean volume. A failed preparation changes nothing.
+    pub fn prepare_import(&self) -> Result<(), String> {
+        let mut frozen = self
+            .mutation
+            .try_lock()
+            .map_err(|_| "a file mutation is running; try again".to_string())?;
+        if *frozen {
+            return Err("the volume is already frozen".into());
+        }
+        let _upload = self
+            .uploading
+            .try_lock()
+            .map_err(|_| "an upload is running; wait for sync to finish".to_string())?;
+        let _sync = self
+            .syncing
+            .try_lock()
+            .map_err(|_| "a sync pass is running; try again".to_string())?;
+        let inner = self.inner();
+        if !inner.outbox.is_empty()
+            || inner
+                .local
+                .values()
+                .any(|local| local.dirty || local.writers > 0)
+            || inner.handles.values().any(|handle| handle.write)
+        {
+            return Err(
+                "local changes or writable handles remain; close files and sync first".into(),
+            );
+        }
+        *frozen = true;
+        Ok(())
+    }
+
+    fn inner(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock_recover()
     }
 
     pub fn source(&self) -> &Arc<dyn CloudSource> {
@@ -466,10 +535,7 @@ impl CloudVolume {
 
     fn report(&self, health: MountHealth) {
         let changed = {
-            let mut current = self
-                .health
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut current = self.health.lock_recover();
             let changed = *current != Some(health);
             *current = Some(health);
             changed
@@ -481,17 +547,11 @@ impl CloudVolume {
 
     /// The account's storage quota as of the last sync.
     pub fn quota(&self) -> Option<cloud_source::Quota> {
-        *self
-            .quota
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.quota.lock_recover()
     }
 
     pub fn health(&self) -> Option<MountHealth> {
-        *self
-            .health
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.health.lock_recover()
     }
 
     fn staged_path(&self, name: &str) -> PathBuf {
@@ -504,10 +564,7 @@ impl CloudVolume {
     /// write. Items and cursor go out together in one atomic write, so a
     /// crash never leaves a cursor newer than the items it covers.
     fn save_tree(&self) -> io::Result<()> {
-        let _saving = self
-            .saving
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _saving = self.saving.lock_recover();
         // Snapshot under the volume lock; serialise and write without it.
         let file = {
             let mut inner = self.inner();
@@ -541,10 +598,7 @@ impl CloudVolume {
 
     /// The content cache, until the volume shuts down.
     fn content(&self) -> Option<Arc<FileArea>> {
-        self.content
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.content.lock_recover().clone()
     }
 
     fn save_local(&self) -> io::Result<()> {
@@ -601,7 +655,10 @@ impl CloudVolume {
             ItemKind::Native(_) => Attr {
                 ino,
                 kind: Kind::File,
-                size: native_payload(item).map_or(0, |p| p.len() as u64),
+                size: self
+                    .content()
+                    .and_then(|files| files.entry(&content_key(item)))
+                    .map_or(0, |entry| entry.size),
                 mtime,
                 perm: 0o444,
             },
@@ -643,28 +700,59 @@ impl CloudVolume {
         }
     }
 
+    /// Native size is not provider metadata: export before reporting attributes,
+    /// without holding the tree lock during network I/O.
+    fn attr(&self, id: &ItemId) -> Result<Attr, Errno> {
+        let native = self
+            .inner()
+            .tree
+            .get(id)
+            .filter(|item| matches!(item.kind, ItemKind::Native(_)))
+            .cloned();
+        if let Some(item) = native {
+            // Unsupported native items stay visible without fabricated link
+            // bytes. Their reads fail, not the whole folder's listing.
+            if let ItemKind::Native(document) = &item.kind
+                && preferred_export(document).is_err()
+            {
+                return self.attr_of(&mut self.inner(), id);
+            }
+            let path = self.hydrate_native(&item)?;
+            let size = fs::metadata(path).map_err(|error| io_errno(&error))?.len();
+            let mut inner = self.inner();
+            let current = inner.tree.get(id).ok_or(libc::ENOENT)?;
+            if current.revision != item.revision || current.kind != item.kind {
+                return Err(libc::EIO);
+            }
+            let mut attr = self.attr_of(&mut inner, id)?;
+            attr.size = size;
+            return Ok(attr);
+        }
+        self.attr_of(&mut self.inner(), id)
+    }
+
     pub fn getattr(&self, ino: u64) -> Result<Attr, Errno> {
-        let mut inner = self.inner();
-        let id = inner.id(ino)?;
-        self.attr_of(&mut inner, &id)
+        let id = self.inner().id(ino)?;
+        self.attr(&id)
     }
 
     pub fn lookup(&self, parent: u64, name: &str) -> Result<Attr, Errno> {
-        let mut inner = self.inner();
+        let inner = self.inner();
         let folder = Self::folder_id(&inner, parent)?;
         let id = inner
             .tree
             .child(&folder, name)
             .map(|item| item.id.clone())
             .ok_or(libc::ENOENT)?;
-        self.attr_of(&mut inner, &id)
+        drop(inner);
+        self.attr(&id)
     }
 
     #[allow(
         clippy::needless_collect,
-        reason = "the listing borrows the tree; attributes need it mutably"
+        reason = "copy child IDs before allocating inodes through the same mutable tree state"
     )]
-    pub fn readdir(&self, ino: u64) -> Result<Vec<(String, Attr)>, Errno> {
+    pub fn readdir(&self, ino: u64) -> Result<Vec<(String, DirectoryEntry)>, Errno> {
         self.touched();
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, ino)?;
@@ -676,7 +764,20 @@ impl CloudVolume {
             .collect();
         children
             .into_iter()
-            .map(|(name, id)| Ok((name, self.attr_of(&mut inner, &id)?)))
+            .map(|(name, id)| {
+                let kind = if inner.tree.get(&id).is_some_and(Item::is_folder) {
+                    Kind::Dir
+                } else {
+                    Kind::File
+                };
+                Ok((
+                    name,
+                    DirectoryEntry {
+                        ino: inner.ino(&id),
+                        kind,
+                    },
+                ))
+            })
             .collect()
     }
 
@@ -703,6 +804,37 @@ impl CloudVolume {
         Ok(id)
     }
 
+    /// Describe the cached projection without obtaining authoritative sizes:
+    /// inode lookup would hydrate native exports merely to report their size.
+    pub fn describe_at(&self, path: &str) -> Result<FileDescription, Error> {
+        let inner = self.inner();
+        let mut id = inner.tree.root().clone();
+        for part in path.split('/').filter(|part| !part.is_empty()) {
+            if id != *inner.tree.root() && !inner.tree.get(&id).is_some_and(Item::is_folder) {
+                return Err(Error::NotFound);
+            }
+            id = inner
+                .tree
+                .child(&id, part)
+                .ok_or(Error::NotFound)?
+                .id
+                .clone();
+        }
+        let item = inner.tree.get(&id).ok_or(Error::NotFound)?;
+        let (source_mime, converted) = match &item.kind {
+            ItemKind::Native(document) => (
+                Some(document.mime.clone()),
+                preferred_export(document).is_ok(),
+            ),
+            _ => (item.mime.clone(), false),
+        };
+        Ok(FileDescription {
+            source_mime,
+            converted,
+            content_writable: matches!(item.kind, ItemKind::File),
+        })
+    }
+
     /// The provider's revisions of the file at `path`.
     pub fn revisions_at(&self, path: &str) -> Result<Vec<cloud_source::RevisionInfo>, Error> {
         if !self.source.capabilities().revisions {
@@ -716,6 +848,7 @@ impl CloudVolume {
     /// while a local edit of the file waits to upload, which the restore
     /// would otherwise race.
     pub fn restore_revision_at(&self, path: &str, revision: &str) -> Result<(), Error> {
+        let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().revisions {
             return Err(Error::Unsupported("revisions"));
         }
@@ -734,6 +867,7 @@ impl CloudVolume {
 
     /// A share link for the file at `path`.
     pub fn share_link_at(&self, path: &str) -> Result<String, Error> {
+        let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().share_links {
             return Err(Error::Unsupported("share links"));
         }
@@ -750,7 +884,8 @@ impl CloudVolume {
         }
     }
 
-    /// Answer a file request. Blocking (a provider round trip): call it
+    /// Answer a file request. Except for cached descriptions, this may
+    /// block on a provider round trip: call it
     /// off the FUSE threads and the control pipe. The error is the
     /// provider's, which carries no credential.
     pub fn answer(&self, request: &FileRequest) -> Result<FileReply, String> {
@@ -762,6 +897,7 @@ impl CloudVolume {
                 .restore_revision_at(path, revision)
                 .map(|()| FileReply::Restored),
             FileRequest::ShareLink { path } => self.share_link_at(path).map(FileReply::Link),
+            FileRequest::Describe { path } => self.describe_at(path).map(FileReply::Description),
         };
         result.map_err(|error| error.to_string())
     }
@@ -787,11 +923,48 @@ impl CloudVolume {
     // ---- reads ---------------------------------------------------------
 
     fn flight(&self, key: &RevKey) -> Arc<Mutex<()>> {
-        let mut flights = self
-            .flights
+        let mut flights = self.flights.lock_recover();
+        Arc::clone(flights.entry(*key).or_default())
+    }
+
+    fn hydrate_native(&self, item: &Item) -> Result<PathBuf, Errno> {
+        let ItemKind::Native(document) = &item.kind else {
+            return Err(libc::EINVAL);
+        };
+        preferred_export(document).map_err(|error| errno_of(&error))?;
+        let key = content_key(item);
+        let files = self.content().ok_or(libc::EIO)?;
+        let flight = self.flight(&key);
+        let _guard = flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(flights.entry(*key).or_default())
+        if files.entry(&key).is_some_and(|entry| entry.complete()) {
+            files.touch(&key);
+            return Ok(files.path_of(&key));
+        }
+        let bytes = materialize(
+            self.source.as_ref(),
+            &item.id,
+            item.revision.as_ref(),
+            NATIVE_EXPORT_LIMIT,
+        )
+        .map_err(|error| {
+            self.report(health_of(&error));
+            errno_of(&error)
+        })?;
+        // The helper verifies transfer stability, but a representation can have
+        // changed since the tree snapshot even if the provider reused a revision.
+        let current = self
+            .source
+            .stat(&item.id)
+            .map_err(|error| errno_of(&error))?;
+        if current.revision != item.revision || current.kind != item.kind {
+            return Err(libc::EIO);
+        }
+        files
+            .adopt_bytes(&key, &bytes, Retention::Cached, &[])
+            .map_err(|error| io_errno(&error))?;
+        Ok(files.path_of(&key))
     }
 
     /// Make `range` (plus `ahead` bytes after it) of the current revision of
@@ -816,9 +989,7 @@ impl CloudVolume {
                 return Ok(path);
             }
             let flight = self.flight(&key);
-            let _guard = flight
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = flight.lock_recover();
             let missing = match files.residency(&key, size, &want) {
                 Residency::Complete(path) => return Ok(path),
                 Residency::Missing(missing) => missing,
@@ -912,7 +1083,7 @@ impl CloudVolume {
     }
 
     fn read_id(&self, id: &ItemId, offset: u64, len: u32, ahead: u64) -> Result<Vec<u8>, Errno> {
-        let (payload, staged, size) = {
+        let (native, staged, size) = {
             let inner = self.inner();
             let item = inner.tree.get(id).ok_or(libc::ENOENT)?;
             if item.is_folder() {
@@ -923,15 +1094,16 @@ impl CloudVolume {
                 .get(id)
                 .and_then(|l| l.staged.clone())
                 .map(|name| self.staged_path(&name));
-            (native_payload(item), staged, item.size.unwrap_or(0))
+            (
+                matches!(item.kind, ItemKind::Native(_)).then(|| item.clone()),
+                staged,
+                item.size.unwrap_or(0),
+            )
         };
         let len = usize::try_from(len).unwrap_or(usize::MAX);
-        if let Some(payload) = payload {
-            let start = usize::try_from(offset)
-                .unwrap_or(usize::MAX)
-                .min(payload.len());
-            let end = start.saturating_add(len).min(payload.len());
-            return Ok(payload.get(start..end).unwrap_or_default().to_vec());
+        if let Some(item) = native {
+            let path = self.hydrate_native(&item)?;
+            return read_file_at(&path, offset, len).map_err(|error| io_errno(&error));
         }
         if let Some(path) = staged {
             return read_file_at(&path, offset, len).map_err(|e| io_errno(&e));
@@ -1003,6 +1175,11 @@ impl CloudVolume {
     }
 
     pub fn open_file(&self, ino: u64, write: bool, truncate: bool) -> Result<u64, Errno> {
+        let _mutation = if write || truncate {
+            Some(self.mutation()?)
+        } else {
+            None
+        };
         self.touched();
         let id = {
             let inner = self.inner();
@@ -1010,6 +1187,9 @@ impl CloudVolume {
             let item = inner.tree.get(&id).ok_or(libc::ENOENT)?;
             if item.is_folder() {
                 return Err(libc::EISDIR);
+            }
+            if (write || truncate) && matches!(item.kind, ItemKind::Native(_)) {
+                return Err(libc::EACCES);
             }
             id
         };
@@ -1040,6 +1220,7 @@ impl CloudVolume {
     }
 
     pub fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<usize, Errno> {
+        let _mutation = self.mutation()?;
         let path = {
             let mut inner = self.inner();
             let handle = inner.handles.get(&fh).ok_or(libc::EBADF)?;
@@ -1047,6 +1228,13 @@ impl CloudVolume {
                 return Err(libc::EBADF);
             }
             let id = handle.id.clone();
+            if inner
+                .tree
+                .get(&id)
+                .is_some_and(|item| matches!(item.kind, ItemKind::Native(_)))
+            {
+                return Err(libc::EACCES);
+            }
             let local = inner.local.get_mut(&id).ok_or(libc::EIO)?;
             local.dirty = true;
             local.generation = local.generation.saturating_add(1);
@@ -1062,6 +1250,7 @@ impl CloudVolume {
     }
 
     pub fn release(&self, fh: u64) -> Result<(), Errno> {
+        let _mutation = self.mutation()?;
         let queued = {
             let mut inner = self.inner();
             let Some(handle) = inner.handles.remove(&fh) else {
@@ -1088,6 +1277,7 @@ impl CloudVolume {
     }
 
     pub fn truncate(&self, ino: u64, size: u64) -> Result<Attr, Errno> {
+        let _mutation = self.mutation()?;
         let id = self.inner().id(ino)?;
         self.ensure_staged(&id, size == 0)?;
         let mut inner = self.inner();
@@ -1135,6 +1325,7 @@ impl CloudVolume {
     }
 
     pub fn create(&self, parent: u64, name: &str) -> Result<(Attr, u64), Errno> {
+        let _mutation = self.mutation()?;
         let staged = uuid::Uuid::new_v4().simple().to_string();
         File::create(self.staged_path(&staged)).map_err(|e| io_errno(&e))?;
         let mut inner = self.inner();
@@ -1171,6 +1362,7 @@ impl CloudVolume {
     }
 
     pub fn mkdir(&self, parent: u64, name: &str) -> Result<Attr, Errno> {
+        let _mutation = self.mutation()?;
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, parent)?;
         Self::check_new_name(&inner, &folder, name)?;
@@ -1222,6 +1414,7 @@ impl CloudVolume {
     }
 
     fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
+        let _mutation = self.mutation()?;
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, parent)?;
         let item = inner
@@ -1259,6 +1452,7 @@ impl CloudVolume {
         new_parent: u64,
         new_name: &str,
     ) -> Result<(), Errno> {
+        let _mutation = self.mutation()?;
         let (source, target, from, to) = {
             let inner = self.inner();
             let from = Self::folder_id(&inner, parent)?;
@@ -1294,7 +1488,23 @@ impl CloudVolume {
                 p.clone_from(&to);
             }
         }
-        new_name.clone_into(&mut moved.name);
+        moved.name = if let ItemKind::Native(document) = &source.kind {
+            let suffix = format!(
+                ".{}",
+                preferred_export(document)
+                    .map_err(|error| errno_of(&error))?
+                    .extension
+            );
+            new_name
+                .strip_suffix(&suffix)
+                .unwrap_or(new_name)
+                .to_owned()
+        } else {
+            new_name.to_owned()
+        };
+        if moved.name.is_empty() {
+            return Err(libc::EINVAL);
+        }
         inner.tree_mut().upsert(moved);
         if !is_local(&source.id) {
             inner.queue(Op::Move(source.id));
@@ -1309,6 +1519,9 @@ impl CloudVolume {
     /// its identity and history and takes the source's content, the way an
     /// editor's atomic save means it.
     fn replace(&self, source: &Item, target: &Item) -> Result<(), Errno> {
+        if matches!(target.kind, ItemKind::Native(_)) {
+            return Err(libc::EACCES);
+        }
         self.ensure_staged(&source.id, false)?;
         let mut inner = self.inner();
         let staged = inner
@@ -1352,10 +1565,8 @@ impl CloudVolume {
     /// Send queued changes until the queue is empty or the server is
     /// unreachable. Returns how many were completed.
     pub fn upload_pending(&self) -> Result<usize, Error> {
-        let _serial = self
-            .uploading
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serial = self.uploading.lock_recover();
+        drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let mut done = 0_usize;
         loop {
             let Some(op) = self.inner().outbox.front().cloned() else {
@@ -1701,10 +1912,10 @@ impl CloudVolume {
             if *old == item {
                 return false;
             }
-            if old.revision != item.revision
+            if (old.revision != item.revision || old.kind != item.kind)
                 && let Some(content) = self.content()
             {
-                let _ = content.remove(&rev_key(&old.id, old.revision.as_ref()));
+                let _ = content.remove(&content_key(old));
             }
         }
         inner.tree_mut().upsert(item);
@@ -1724,7 +1935,7 @@ impl CloudVolume {
         inner.tree_dirty = true;
         for item in removed {
             if let Some(content) = self.content() {
-                let _ = content.remove(&rev_key(&item.id, item.revision.as_ref()));
+                let _ = content.remove(&content_key(&item));
             }
         }
         true
@@ -1738,6 +1949,11 @@ impl CloudVolume {
     /// One sync pass; whether it changed the tree or the cursor.
     /// `tree.json` is written only when it did (or a local change is due).
     fn sync_pass(&self) -> Result<bool, Error> {
+        let _sync = self
+            .syncing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let result = match self.source.capabilities().change_feed {
             ChangeFeed::Cursor => self.sync_feed(),
             ChangeFeed::Poll => {
@@ -1747,10 +1963,7 @@ impl CloudVolume {
         };
         if result.is_ok() && self.source.capabilities().quota {
             let quota = self.source.quota().ok();
-            *self
-                .quota
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = quota;
+            *self.quota.lock_recover() = quota;
         }
         match &result {
             Ok(_) => self.report(MountHealth::Healthy),
@@ -1860,10 +2073,7 @@ impl CloudVolume {
     /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.queued.lock_recover();
         *queued = queued.wrapping_add(1);
         drop(queued);
         self.wake.notify_all();
@@ -1876,10 +2086,7 @@ impl CloudVolume {
         if self.idling.load(Ordering::SeqCst) {
             // Taken so the notification cannot fall between the sync loop's
             // check of `activity` and its wait.
-            let queued = self
-                .queued
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let queued = self.queued.lock_recover();
             drop(queued);
             self.wake.notify_all();
         }
@@ -1891,10 +2098,7 @@ impl CloudVolume {
     /// activity.
     fn wait_idle(&self, wait: Duration, seen: u64) -> bool {
         let start = Instant::now();
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.queued.lock_recover();
         self.idling.store(true, Ordering::SeqCst);
         let active = loop {
             let active = self.activity.load(Ordering::SeqCst) != seen;
@@ -1926,10 +2130,7 @@ impl CloudVolume {
     /// Wait up to `timeout` for a change queued after `seen` (or a stop);
     /// updates `seen`.
     fn wait_queued(&self, seen: &mut u64, timeout: Duration) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let (queued, _) = self
             .wake
             .wait_timeout_while(queued, timeout, |current| {
@@ -1941,10 +2142,7 @@ impl CloudVolume {
 
     /// Wait up to `timeout`, until stopped or until a sync is asked for.
     fn wait_stop(&self, timeout: Duration) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let _ = self
             .wake
             .wait_timeout_while(queued, timeout, |_| {
@@ -1955,10 +2153,7 @@ impl CloudVolume {
 
     /// Wait while paused (or until stopped).
     fn wait_resumed(&self) {
-        let queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = self.queued.lock_recover();
         let _ = self
             .wake
             .wait_timeout_while(queued, Duration::from_secs(3600), |_| {
@@ -2067,10 +2262,7 @@ impl CloudVolume {
 
     fn upload_loop(&self) {
         let mut backoff = Duration::from_secs(2);
-        let mut seen = *self
-            .queued
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = *self.queued.lock_recover();
         while !self.stop.load(Ordering::SeqCst) {
             if self.is_paused() {
                 self.wait_resumed();
@@ -2098,10 +2290,7 @@ impl CloudVolume {
         let _ = self.save_tree();
         let _ = self.flush_content();
         // Dropping the last handle flushes and closes the cache.
-        self.content
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.content.lock_recover().take();
     }
 }
 

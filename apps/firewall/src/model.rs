@@ -349,17 +349,6 @@ impl Zone {
         self.services.iter().any(|s| s == id)
     }
 
-    /// Toggle a named service on/off. Returns the new state.
-    pub fn toggle_service(&mut self, id: &str) -> bool {
-        if let Some(idx) = self.services.iter().position(|s| s == id) {
-            self.services.remove(idx);
-            false
-        } else {
-            self.services.push(id.to_string());
-            true
-        }
-    }
-
     /// Count of rules that allow vs deny — used by the posture summary.
     pub fn rule_counts(&self) -> (usize, usize) {
         let allow = self
@@ -848,19 +837,9 @@ impl ServiceCatalog {
 mod tests {
     use super::*;
 
-    /// The config toggles services idempotently, splits rule counts and lists every zone in order.
+    /// The config splits rule counts and lists every zone in order.
     #[test]
-    fn config_model_toggles_and_counts() {
-        // --- phase: toggle_service_is_idempotent_pair ---
-        {
-            let mut z = Zone::new(ZoneKind::Public, Target::Default);
-            assert!(!z.has_service("ssh"));
-            assert!(z.toggle_service("ssh"));
-            assert!(z.has_service("ssh"));
-            assert!(!z.toggle_service("ssh"));
-            assert!(!z.has_service("ssh"));
-        }
-
+    fn config_model_counts_rules_and_lists_zones() {
         // --- phase: rule_counts_split_allow_deny ---
         {
             let mut z = Zone::new(ZoneKind::Public, Target::Default);

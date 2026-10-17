@@ -467,6 +467,48 @@ impl AttachmentUpdate {
 
 /// Who an action is by; refused without one, since a post, a reaction or a
 /// read mark is always someone's.
+/// Describe the file a `post-file` names where it is posted: read it from
+/// this device's content store, so every replica posts the same picture or
+/// file, of its true size, and content that is not here is refused before
+/// anyone is shown a message pointing at nothing.
+fn prepare_file_post(params: &mut chat::PostFile) -> Result<(), String> {
+    let address = params.content.trim();
+    let hash = tilo_actions::content_hash(address)
+        .unwrap_or(address)
+        .to_owned();
+    if !tilo_content::valid_hash(&hash) {
+        return Err(format!(
+            "{address:?} is not a content address: post what another step handed over"
+        ));
+    }
+    let name = params.name.trim().to_owned();
+    if name.is_empty() || name.chars().count() > 255 || name.contains(['/', '\\']) {
+        return Err("a posted file has a short name without a slash".into());
+    }
+    let store = ui::tilo_resource::content::current()
+        .ok_or("this window has no content store to post from")?;
+    let bytes = store
+        .read(&hash)
+        .ok_or("the handed-over file is not on this device; hand it over again here")?;
+    let meta = tilo_content::sniff(&bytes);
+    let kind = if meta.mime.starts_with("image/") && meta.w > 0 && meta.h > 0 {
+        "image"
+    } else {
+        "file"
+    };
+    params.content.clone_from(&hash);
+    params.name.clone_from(&name);
+    params.attachment = Some(AttachmentUpdate {
+        kind: kind.into(),
+        name,
+        blob: hash,
+        width: meta.w,
+        height: meta.h,
+        size: meta.len,
+    });
+    Ok(())
+}
+
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .filter(|author| !author.is_empty() && author.len() <= 4096)
@@ -1136,6 +1178,46 @@ impl Chat {
                 body: body.unwrap_or_default(),
                 parent,
                 attachment,
+                appearance: cx.appearance(),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Post a file.
+    ///
+    /// Posts a file another step handed over (a file from Files, a picture)
+    /// under the name given, with words about it: a picture shows as one,
+    /// anything else as a file to download.
+    #[action(item = channels, incoming_message, prepare = prepare_file_post)]
+    pub fn post_file(
+        &mut self,
+        cx: &mut ActionCx,
+        channel: &Id,
+        #[param("The file another step handed over, by its content address", content)]
+        content: String,
+        #[param("The file's name, with its extension", example = "report.pdf")] name: String,
+        #[param("Words accompanying it")] text: Option<String>,
+        #[param("Filled in from the content where it is posted; leave it out")] attachment: Option<
+            AttachmentUpdate,
+        >,
+    ) -> Result<(), Refusal> {
+        let attachment = attachment
+            .filter(|attachment| attachment.blob == content && attachment.name == name)
+            .and_then(|attachment| attachment.attachment())
+            .ok_or("the file is described where it is posted")?;
+        let id = cx.id();
+        let by = author(cx)?;
+        let ts = seconds(cx);
+        self.append(
+            id,
+            channel,
+            by,
+            ts,
+            Posting {
+                text: text.unwrap_or_default(),
+                attachment: Some(attachment),
                 appearance: cx.appearance(),
                 ..Posting::default()
             },

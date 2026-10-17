@@ -36,7 +36,7 @@
 
 use std::io::{self, Read};
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use cloud_source::{
@@ -58,6 +58,7 @@ pub use api::Endpoints;
 
 use api::{Api, Failure};
 use metadata::{Entry, Kind, Paths, is_within, parent_path};
+use tilo_lock::MutexRecover as _;
 
 /// Default bytes per upload-session chunk: a multiple of the 4 MiB hash
 /// block, so a resumed session can keep verifying the whole file.
@@ -116,10 +117,6 @@ pub struct DropboxSource {
     api: Api,
     paths: Arc<Mutex<Paths>>,
     backoff_until: Arc<Mutex<Option<Instant>>>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A Dropbox id (`id:…`); anything else cannot name an item.
@@ -188,7 +185,7 @@ impl DropboxSource {
     }
 
     fn paths(&self) -> MutexGuard<'_, Paths> {
-        lock(&self.paths)
+        self.paths.lock_recover()
     }
 
     /// The API `path` argument for an item.
@@ -616,7 +613,7 @@ impl CloudSource for DropboxSource {
     }
 
     fn wait(&self, cursor: Option<&Cursor>, timeout: Duration) -> Result<Wait> {
-        let backing_off = *lock(&self.backoff_until);
+        let backing_off = *self.backoff_until.lock_recover();
         if let Some(until) = backing_off {
             let now = Instant::now();
             if now < until {
@@ -648,7 +645,7 @@ impl CloudSource for DropboxSource {
             .get("backoff")
             .and_then(Value::as_u64)
             .map(Duration::from_secs);
-        *lock(&self.backoff_until) = backoff.and_then(|b| Instant::now().checked_add(b));
+        *self.backoff_until.lock_recover() = backoff.and_then(|b| Instant::now().checked_add(b));
         let changed = value
             .get("changes")
             .and_then(Value::as_bool)

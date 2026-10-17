@@ -83,12 +83,11 @@ const HOST_PEER: PeerId = 0xAAAA;
 const VIEWER_PEER: PeerId = 0xBBBB;
 const SURFACE: SurfaceId = 42;
 
-/// Start the session, consume its `SurfaceStreamStart` handshake (asserting
-/// its fields match `app_id`/`w`/`h`), and learn the sender/receiver clock
-/// offset. Split out of
+/// Start the session and consume its `SurfaceStreamStart` handshake
+/// (asserting its fields match `app_id`/`w`/`h`). Split out of
 /// [`session_delivers_30_frames_in_order`] to keep
 /// that test short.
-fn start_session_and_learn_offset(
+fn start_session(
     app_id: &str,
     w: u32,
     h: u32,
@@ -98,15 +97,13 @@ fn start_session_and_learn_offset(
     session.add_viewer(VIEWER_PEER, false);
 
     // Both sides are in-process and share `origin` (the reference the wire ts
-    // is measured from). Bracket the handshake with receiver readings: the
-    // learned offset is then bounded by the handshake call alone, not by how
-    // long the viewer's decoder takes to start on a loaded host.
+    // is measured from), so the stamp must fall inside readings taken around
+    // the handshake call.
     let origin = session.origin();
     let origin_ns = || u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let before_send = origin_ns();
     let handshake = session.stream_start_msg();
     let receiver_ns_at_recv = origin_ns();
-    // The sender-side monotonic-ns feeds the receiver's clock-offset handshake.
     let sender_ns_at_send: u64 = match handshake {
         NeighbourMsg::SurfaceStreamStart {
             surface,
@@ -139,17 +136,6 @@ fn start_session_and_learn_offset(
         (before_send..=receiver_ns_at_recv).contains(&sender_ns_at_send),
         "the sender stamps the handshake on the shared clock while it is built"
     );
-    metrics.set_clock_offset(sender_ns_at_send, receiver_ns_at_recv);
-    assert!(
-        metrics.clock_offset_ns().is_some(),
-        "handshake must have populated clock offset"
-    );
-    let learned_offset = metrics.clock_offset_ns().unwrap();
-    let handshake_ns = i128::from(receiver_ns_at_recv.saturating_sub(before_send));
-    assert!(
-        (0..=handshake_ns).contains(&learned_offset),
-        "loopback clock offset {learned_offset} ns exceeds the {handshake_ns} ns handshake"
-    );
     (session, metrics, view, origin)
 }
 
@@ -174,13 +160,16 @@ fn pump_frames_until(
             let msg = frame.clone().into_neighbour_msg();
             match msg {
                 NeighbourMsg::SurfaceFrame {
-                    encoded_h264, ts, ..
+                    encoded_h264,
+                    ts,
+                    seq,
+                    ..
                 } => {
                     // Sender+receiver share `origin`, so subtraction against the wire ts is a
                     // direct motion-to-photon delta.
                     let now_ns = u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
                     let latency_ns = now_ns.saturating_sub(ts);
-                    let outcome = push_and_settle(view, &encoded_h264, Some(latency_ns));
+                    let outcome = push_and_settle(view, seq, &encoded_h264, Some(latency_ns));
                     assert!(
                         matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                         "decode failed on frame {sent}",
@@ -204,8 +193,7 @@ fn session_delivers_30_frames_in_order() {
     const W: u32 = 320;
     const H: u32 = 240;
 
-    let (session, metrics, mut view, origin) =
-        start_session_and_learn_offset("org.libreoffice.LibreOffice", W, H);
+    let (session, metrics, mut view, origin) = start_session("org.libreoffice.LibreOffice", W, H);
     let frame_bytes = gradient_frame(W, H);
 
     // `mark_drawn` per accepted frame keeps this on the happy path; the
@@ -293,7 +281,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
             "input event {i} was rejected — share registry regression"
         );
         input_dispatched += 1;
-        push_and_settle(&mut view, &frame.nalus, None);
+        push_and_settle(&mut view, frame.seq, &frame.nalus, None);
     }
     assert!(session.route_input(
         VIEWER_PEER,

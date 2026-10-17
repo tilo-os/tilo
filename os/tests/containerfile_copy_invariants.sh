@@ -73,6 +73,9 @@ containerfile="$repo/os/Containerfile"
 # PID 1 from unprivileged processes and breaks libsystemd unit lookups.
 # user-tmpfiles.d/tilo-fs.conf is a deliberate addition: it creates the
 # filesystem services' roots, which their PrivateIPC sandbox cannot.
+# user-tmpfiles.d/tilo-secret-service.conf is a deliberate addition: it
+# creates the vault directory the secret service's read-only home names in
+# ReadWritePaths=, which must exist before the unit can start.
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
@@ -221,10 +224,17 @@ containerfile="$repo/os/Containerfile"
 # (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
+# The desktop's wallpapers and their credits arrive from the os-wallpapers
+# stage, which fetches the files the tilo-wallpapers catalog pins: two
+# intentional payload rows, /usr/share/backgrounds/tilo and
+# /usr/share/licenses/tilo-wallpapers, each with a COPY of its own.
+# Miracast moved into tilo-projector (the miracast crate), so the Python
+# sender's rows are gone: its source tree, its wrapper and the wpa_supplicant
+# D-Bus policy only it used.
 # Prepared setup and migration runtime artifacts remain alongside the native
 # helper components above. This digest is derived from the merged source's
 # expanded rootfs COPY mappings, including every manifest output.
-expected_contract=7f2ab24d6cf87483b5da67adad0ec77f1dc4a6ab97585acd0e845ce23cc7fa5b
+expected_contract=473492a7678824d6c569710df9f7160056e615d2be9e34f42157d5b67f01783d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -54,6 +54,8 @@ mod shell_proof_tests;
 pub mod tail_cache;
 use selected::SelectedGc;
 pub use selected::SelectedRead;
+#[cfg(any(test, feature = "test-support"))]
+use tilo_lock::MutexRecover as _;
 #[cfg(test)]
 mod tests;
 
@@ -368,8 +370,7 @@ impl Selection {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(count) = SELECTION_CONSTRUCTIONS
             .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(store.root())
         {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

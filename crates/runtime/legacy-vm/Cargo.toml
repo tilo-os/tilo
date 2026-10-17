@@ -22,6 +22,7 @@ default = ["relay-stream"]
 relay-stream = ["dep:image", "dep:tilo-callstream", "dep:tilo-relay-protocol"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 collab-types = { path = "../../collab/collab-types" }
 fnv.workspace = true
 # `relay-stream`: a window screenshot's pixels, encoded as H.264 for a

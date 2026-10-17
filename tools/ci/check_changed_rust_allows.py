@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
+import os
 import re
 import subprocess
 import sys
@@ -11,7 +13,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from policy.rust_source import lex, matching
+
+
 ZERO_SHA = "0" * 40
+ATTRIBUTE_START = re.compile(r"#!?\[")
 ALLOW = re.compile(r"\ballow\s*\(")
 REASON = re.compile(r"\breason\s*=")
 
@@ -22,52 +29,54 @@ class Attribute(NamedTuple):
     text: str
 
 
-def rust_attributes(source: str) -> list[Attribute]:
-    """Return balanced outer attributes, including multiline attributes."""
-    attributes: list[Attribute] = []
+def _attributes(source: str, code: str):
+    """Yield attributes and offsets using one lexical and newline index per file."""
+    newlines = [match.start() for match in re.finditer("\n", source)]
     offset = 0
-    while (start := source.find("#[", offset)) >= 0:
-        depth = 1
-        cursor = start + 2
-        quote: str | None = None
-        escaped = False
-        while cursor < len(source) and depth:
-            char = source[cursor]
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == quote:
-                    quote = None
-            elif char in {'"', "'"}:
-                quote = char
-            elif char == "[":
-                depth += 1
-            elif char == "]":
-                depth -= 1
-            cursor += 1
-        if depth:
+    while match := ATTRIBUTE_START.search(code, offset):
+        start = match.start()
+        end = matching(code, match.end() - 1)
+        if code[end - 1 : end] != "]":
             break
-        text = source[start:cursor]
-        attributes.append(
-            Attribute(
-                start_line=source.count("\n", 0, start) + 1,
-                end_line=source.count("\n", 0, cursor) + 1,
-                text=text,
-            )
+        yield start, end, Attribute(
+            start_line=bisect_right(newlines, start) + 1,
+            end_line=bisect_right(newlines, end - 1) + 1,
+            text=source[start:end],
         )
-        offset = cursor
-    return attributes
+        offset = end
+
+
+def rust_attributes(source: str) -> list[Attribute]:
+    """Return real inner and outer attributes, excluding comments and literals."""
+    code, _ = lex(source)
+    return [attribute for _, _, attribute in _attributes(source, code)]
 
 
 def unexplained_allows(source: str) -> list[Attribute]:
-    return [
-        attribute
-        for attribute in rust_attributes(source)
-        if ALLOW.search(attribute.text)
-        and not REASON.search(attribute.text)
-    ]
+    # Do not lex the file or count its prefix for each attribute. Generated
+    # bindings contain thousands of attributes in a single multi-megabyte file.
+    code, literals = lex(source)
+    literal_starts = [literal.start for literal in literals]
+    violations: list[Attribute] = []
+    for start, end, attribute in _attributes(source, code):
+        for allow in ALLOW.finditer(code, start, end):
+            close = matching(code, allow.end() - 1)
+            valid_reason = False
+            for reason in REASON.finditer(code, allow.end(), close):
+                index = bisect_right(literal_starts, reason.end() - 1)
+                if index == len(literals):
+                    continue
+                literal = literals[index]
+                if (literal.end <= close and not literal.byte
+                        and literal.value.strip()
+                        and not code[reason.end():literal.start].strip()
+                        and re.fullmatch(r"\s*,?\s*", code[literal.end:close - 1])):
+                    valid_reason = True
+                    break
+            if not valid_reason:
+                violations.append(attribute)
+                break
+    return violations
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -167,6 +176,35 @@ def staged_source(root: Path, relative: Path) -> str:
     ).decode("utf-8")
 
 
+def staged_sources(root: Path, paths: list[Path]):
+    """Read selected index blobs together, with NUL-delimited input paths.
+
+    Git's length-delimited output preserves arbitrary blob contents. Checking
+    every response fails closed on unresolved entries or missing/non-blob data.
+    """
+    if not paths:
+        return
+    output = subprocess.run(
+        ["git", "cat-file", "--batch", "-z"], cwd=root,
+        input=b"".join(b":" + os.fsencode(path.as_posix()) + b"\0" for path in paths),
+        stdout=subprocess.PIPE, check=True,
+    ).stdout
+    offset = 0
+    for path in paths:
+        end = output.index(b"\n", offset)
+        header = output[offset:end].split()
+        if len(header) != 3 or header[1] != b"blob":
+            raise ValueError(f"{path}: expected an indexed blob")
+        length = int(header[2])
+        start = end + 1
+        offset = start + length + 1
+        if length < 0 or output[offset - 1:offset] != b"\n":
+            raise ValueError(f"{path}: incomplete indexed blob")
+        yield path, output[start:offset - 1].decode("utf-8")
+    if offset != len(output):
+        raise ValueError("unexpected trailing indexed blob data")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base", nargs="?", default="")
@@ -198,17 +236,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.staged
             else changed_rust_files(root, revision_range)
         )
-        for relative in paths:
-            source = (
-                staged_source(root, relative)
-                if args.staged
-                else (root / relative).read_text(encoding="utf-8")
-            )
+        sources = (
+            staged_sources(root, paths)
+            if args.staged
+            else ((relative, (root / relative).read_text(encoding="utf-8"))
+                  for relative in paths)
+        )
+        for relative, source in sources:
             violations.extend(
                 (relative, attribute)
                 for attribute in unexplained_allows(source)
             )
-    except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
+    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Rust allow-reason check failed: {error}", file=sys.stderr)
         return 1
     if violations:

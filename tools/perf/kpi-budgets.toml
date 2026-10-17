@@ -1942,7 +1942,7 @@ min_delta = 20.0
 source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
-# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry
 # publishes) in headless Chrome for Testing on the shared `runner` class, one
 # fresh-context round at 960x540. The runner has no GPU, and Chrome offers
 # WebGPU no CPU driver but its own SwiftShader (it renders its page on
@@ -2059,3 +2059,56 @@ max = 1.0
 min_delta = 0.5
 baseline_min_runs = 1
 source = "frames sent after the first picture that the page never drew"
+
+# The same window streamed in software VP9 (--codec vp9, vp9enc): what a
+# session with no H.264 encoder sends, a stock device being the normal case,
+# and what every browser decodes. Everything else is the H.264 records' (same
+# build, same Chrome, same job, after the H.264 run), and the series is its
+# own so neither codec's baseline judges the other's. The ceilings come from
+# the first run on this runner (October 2026: startup 8974 ms,
+# latency p95 27.8 ms, interval p50 33.4 ms, encode p95 13.8 ms, input p95
+# 40.3 ms, nothing missed) with headroom for the shared runner, not from
+# H.264's goals: they are SwiftShader and software-codec figures, never a
+# product or hardware figure. Startup is far over the 1 s goal on this runner
+# for both codecs (H.264's first picture took 4248 ms in the same run), so its
+# ceiling is the run's with headroom, not the goal; encode stays under the 33.3 ms a
+# 30 fps frame allows, as H.264's does; a frame is still one 30 fps interval
+# apart; frames missed is a delivery ceiling, as H.264's is.
+
+[kpi."stream.vp9.startup.first_picture"]
+unit = "ms"
+max = 13500.0
+baseline_min_runs = 3
+source = "the session starting its VP9 stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.vp9.frame.latency"]
+unit = "ms"
+p95 = 45.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software VP9 encode and decode)"
+
+[kpi."stream.vp9.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software VP9 encode and decode)"
+
+[kpi."stream.vp9.encode.frame"]
+unit = "ms"
+p95 = 25.0
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 VP9 frame (vp9enc, software), the shell's legacy-share configuration"
+
+[kpi."stream.vp9.input.latency"]
+unit = "ms"
+p95 = 60.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at a VP9-streaming session, through the host's input route"
+
+[kpi."stream.vp9.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames of the VP9 stream sent after the first picture that the page never drew"

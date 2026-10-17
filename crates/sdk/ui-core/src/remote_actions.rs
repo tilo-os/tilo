@@ -21,7 +21,7 @@
 
 use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
@@ -35,6 +35,7 @@ use crate::collaboration::{CollabEvent, CollabRequest};
 use crate::local_state::{LocalState, LocalStateWriter};
 use crate::wake::WakeHandle;
 use crate::widget::Collaborative;
+use tilo_lock::MutexRecover as _;
 
 type Served = (Arc<dyn ActionHost + Send + Sync>, Caller);
 
@@ -229,7 +230,7 @@ impl RemoteActions {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        lock(&self.inner)
+        self.inner.lock_recover()
     }
 
     /// Read every page of `query` from the catalogue the app is offered.
@@ -388,7 +389,7 @@ impl RemoteActions {
         let inner = Arc::clone(&self.inner);
         answer.then(move |answer| {
             if let Some(answer) = answer {
-                let follow_up = apply(&mut lock(&inner), answer);
+                let follow_up = apply(&mut inner.lock_recover(), answer);
                 if let Some(next) = follow_up {
                     Self { inner }.send(next);
                 }
@@ -425,10 +426,6 @@ impl RemoteActions {
             self.send(next);
         }
     }
-}
-
-fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
-    inner.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Record `answer`, returning the request that continues it (the next

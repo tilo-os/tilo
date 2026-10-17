@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 use super::*;
+use tilo_lock::MutexRecover as _;
 
 /// A helper that accepts one password per user and records every start.
 #[derive(Clone, Default)]
@@ -18,8 +19,7 @@ struct FakeHelper {
 impl HelperSpawner for FakeHelper {
     async fn spawn(&self, user: &str, cookie: &str) -> std::io::Result<HelperIo> {
         self.started
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .push((user.to_string(), cookie.to_string()));
         let (agent_side, helper_side) = tokio::io::duplex(1024);
         let (agent_read, agent_write) = tokio::io::split(agent_side);
@@ -71,24 +71,14 @@ impl ScriptedUser {
     }
 
     fn shown(&self) -> Vec<PromptView> {
-        self.shown
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.shown.lock_recover().clone()
     }
 }
 
 impl Prompter for ScriptedUser {
     async fn ask(&self, view: PromptView) -> Option<PromptAnswer> {
-        self.shown
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(view);
-        self.answers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_front()
-            .flatten()
+        self.shown.lock_recover().push(view);
+        self.answers.lock_recover().pop_front().flatten()
     }
 }
 
@@ -159,11 +149,7 @@ async fn a_right_password_authorizes_and_the_prompt_says_what_for() {
     );
     assert!(shown[0].message.contains("mount the filesystem"));
     assert_eq!(
-        helper
-            .started
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_slice(),
+        helper.started.lock_recover().as_slice(),
         &[("quinn".to_string(), "cookie-1".to_string())],
         "the helper was started for the identity with polkit's cookie"
     );
@@ -218,8 +204,7 @@ async fn picking_another_identity_restarts_the_helper_for_it() {
     assert_eq!(shown[0].identities, vec!["quinn", "root"]);
     let started: Vec<String> = helper
         .started
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .map(|(user, _)| user.clone())
         .collect();
@@ -234,11 +219,5 @@ async fn nobody_to_ask_fails_without_starting_a_helper() {
         authenticate(&helper, &user, &request(&[]), 0).await,
         Outcome::Failed(_)
     ));
-    assert!(
-        helper
-            .started
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
-    );
+    assert!(helper.started.lock_recover().is_empty());
 }

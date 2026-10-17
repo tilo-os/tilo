@@ -270,23 +270,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -o /out/doubletake-test-receiver ./cmd/doubletake-test-receiver
 
 
-# ---- Architecture-neutral Miracast/Wi-Fi Display sender -------------------
-# Build/test FluxCast from its pinned Python source on the target architecture
-# instead of shipping the project's x86-64-only AppImage.
-FROM ${BASE_REF} AS fluxcast-builder
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    dnf install -y --setopt=reposdir=/repo python3 \
-    && dnf clean all
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    mkdir -p /src \
-    && tar -xzf /tilo-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
-COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
-RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.py' \
-    && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
-
-
 # ---- Joy-Con pairing daemon -------------------------------------------------
 # joycond (GPL-3.0-only) folds a left and a right Joy-Con into one uinput
 # controller, or releases a single half to be held sideways. Fedora carries it
@@ -730,7 +713,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -764,13 +747,15 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && thin_pid=$!; \
        fi \
     && build_phase rust-release \
+    # The relay serves browsers (`run --web`): a machine set up as a node runs
+    # the person's rooms for their web pages.
     # Without LTO nothing merges the units again, so a dev build splits the
     # large crates (shell's library alone ran 180 s at eight) further.
     && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay --features tilo-relay/web ${RELEASE_BINS} \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
@@ -1182,6 +1167,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && test -s /out/tilo/tilo-logo.png \
     && dnf clean all
 
+# ---- The wallpapers ------------------------------------------------------------
+# The pictures the desktop ships and their credits. They are binaries, so they
+# are not in Git: tools/wallpapers.py fetches the files
+# crates/platform/tilo-wallpapers/catalog.toml pins, verifying each by size
+# and SHA-256, and writes the credits beside them; rootfs-base copies /out.
+FROM ${BASE_REF} AS os-wallpapers
+RUN --mount=type=cache,id=tilo-wallpaper-artifacts,target=/var/cache/tilo-wallpaper-artifacts \
+    --mount=type=bind,source=tools/wallpapers.py,target=/tilo-src/tools/wallpapers.py,ro \
+    --mount=type=bind,source=crates/platform/tilo-wallpapers/catalog.toml,target=/tilo-src/crates/platform/tilo-wallpapers/catalog.toml,ro \
+    python3 /tilo-src/tools/wallpapers.py prepare /out \
+        --cache /var/cache/tilo-wallpaper-artifacts
+
 # The runtimes travel with their publishers' keys from the one builder result:
 # a non-publishing build signs them with keys it generates, so a key taken from
 # another stage (native-builder-payload, which buildkit may serve from an
@@ -1286,7 +1283,6 @@ FROM scratch AS desktop-binaries
 COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
-COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
 COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
 COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
@@ -1583,6 +1579,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # shadows the stub at the same path. os/scripts/verify-no-cisco-openh264.sh
     # fails the build if either ships.
     #
+    # pipewire-gstreamer is pipewiresrc: screen capture reads the PipeWire node
+    # the ScreenCast portal grants through it (Miracast, screen sharing).
+    #
     # -bad-free's gtkwaylandsink plugin makes GTK 3 a hard dependency (see
     # os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
     # desktop-portal backend supplement GTK 3; Tilo plays event sounds with pw-play
@@ -1597,6 +1596,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     gstreamer1-plugins-bad-free \
     gstreamer1-plugin-libav \
     gstreamer1-plugin-dav1d \
+    pipewire-gstreamer \
     ffmpeg-free \
     python3 \
     && dnf clean all \
@@ -1894,6 +1894,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
     && gst-inspect-1.0 aacparse >/dev/null \
+    # Miracast (tilo-projector): the ScreenCast portal's PipeWire node, muxed
+    # to MPEG-TS and sent as RTP.
+    && gst-inspect-1.0 pipewiresrc >/dev/null \
+    && gst-inspect-1.0 mpegtsmux >/dev/null \
+    && gst-inspect-1.0 rtpmp2tpay >/dev/null \
     # -------------------------------------------------------------------------
     # Bootloader — swap GRUB for systemd-boot
     # -------------------------------------------------------------------------
@@ -2098,6 +2103,9 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
+# The desktop's wallpapers (os-wallpapers) and their credits.
+COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
+COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/
 RUN plymouth-set-default-theme tilo \
     && test "$(plymouth-set-default-theme)" = tilo
 COPY \
@@ -2182,7 +2190,13 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
+    os/usr/lib/systemd/system/tilo-node-relay@.service \
+    os/usr/lib/systemd/system/tilo-node-session-key@.service \
+    os/usr/lib/systemd/system/tilo-node-session@.service \
+    os/usr/lib/systemd/system/tilo-node-session@.path \
     /usr/lib/systemd/system/
+# A node's relay (docs/node-machine.md).
+COPY os/usr/lib/tilo/node-relay.toml /usr/lib/tilo/node-relay.toml
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
@@ -2224,14 +2238,9 @@ COPY \
 # lookup order is $TILO_USH_BIN, then /usr/libexec/tilo-ush, then $PATH.
 # AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
 # system audio) is delegated to the source-pinned, tested build above.
-# Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
-# H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
-COPY os/usr/libexec/tilo-fluxcast /usr/libexec/tilo-fluxcast
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     install -D -m 0644 /tilo-assets/doubletake-ae06722-LICENSE \
       /usr/share/licenses/tilo-doubletake/LICENSE \
-    && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
-      /usr/share/licenses/tilo-fluxcast/LICENSE \
     && install -D -m 0644 /tilo-assets/joycond-0df025a-LICENSE \
       /usr/share/licenses/joycond/LICENSE \
     && printf '%s\n' \
@@ -2248,8 +2257,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=tools/ci/install-pdfium.sh,target=/tmp/install-pdfium.sh,ro \
     --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
     bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
-COPY os/usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf \
-     /usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf
 COPY \
     os/usr/lib/systemd/user/tilo-ush.socket \
     os/usr/lib/systemd/user/tilo-fs-recipient.service \
@@ -2405,17 +2412,21 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
-COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
+COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf os/usr/share/user-tmpfiles.d/tilo-secret-service.conf /usr/share/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
+# The relay's static account: a desktop set up as a node runs the relay
+# (tilo-node-relay@) under it, as the host image runs tilo-relay.service.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
+    os/usr/lib/sysusers.d/tilo-relay.conf \
     /usr/lib/sysusers.d/
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
- && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf
 
 # xdg-desktop-portal backend registration.
 #
@@ -3198,7 +3209,6 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
               /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
               /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
               /usr/libexec/tilo-doubletake-test-receiver \
-              /usr/libexec/tilo-fluxcast \
               /usr/libexec/tilo-account-credential /usr/libexec/tilo-prepared-setup \
     && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
@@ -3222,8 +3232,6 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
             fi; }; } \
     && { /usr/libexec/tilo-doubletake -h >/dev/null \
          || { echo 'doubletake help smoke test failed' >&2; exit 1; }; } \
-    && { /usr/libexec/tilo-fluxcast --help >/dev/null \
-         || { echo 'fluxcast help smoke test failed' >&2; exit 1; }; } \
     && mkdir -p /etc/tilo \
     && cat /usr/share/tilo/runtime-bundle-publisher.hex \
         > /etc/tilo/runtime-bundle-trusted-publishers.txt \
@@ -3425,7 +3433,6 @@ COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/
 FROM scratch AS image-tool-stages
 COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
 COPY --from=doubletake-builder /out/ /doubletake/
-COPY --from=fluxcast-builder /src/src/ /fluxcast/
 COPY --from=joycond-builder /out/ /joycond/
 COPY --from=bootc-builder /out/ /bootc/
 

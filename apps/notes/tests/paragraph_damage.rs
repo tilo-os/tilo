@@ -2,6 +2,7 @@
 use crate::component_support::*;
 use notes::read;
 use std::{cell::RefCell, rc::Rc};
+use ui::lock::MutexRecover as _;
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
@@ -50,9 +51,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // moves it a minute on: another case still typing would see its
     // edited-at caption change under it, which is not what typing damages.
     static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _clock = CLOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _clock = CLOCK.lock_recover();
     pin_edit_clock(1_790_000_000);
     let f = NotebookFixture::rich();
     let body = (0..18)

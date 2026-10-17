@@ -26,6 +26,7 @@ use super::{
     IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
 use crate::host_authority::HostOperation;
+use tilo_lock::MutexRecover as _;
 
 /// How long a declined request still answers its device's status.
 const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -237,7 +238,35 @@ impl Rooms {
                 self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
                 RoomsReply::Notices(room.admissions.notices())
             }
+            RoomsRequest::Permits { room, node } => {
+                RoomsReply::Permits(self.page_permits(&room, device, &node).await?)
+            }
         })
+    }
+
+    /// Whether `device`'s person may make an undoable change at `node` of
+    /// `room`, decided as their writes there are.
+    async fn page_permits(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        node: &str,
+    ) -> Result<bool, CollaborationError> {
+        let node: tilo_action_policy::TreePath = node
+            .parse()
+            .map_err(|_| CollaborationError::new("not a node of the room's tree"))?;
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        if node.room_id() != Some(governed.room()) {
+            return Err(CollaborationError::new("the node is not in this room"));
+        }
+        let now = system_time(tilo_clock::unix_now_ns());
+        let member = governed
+            .peer()
+            .permissions(device.device_public_key, now)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
 
     /// A page's change to who is in a room and with which role.
@@ -485,10 +514,7 @@ impl Rooms {
     }
 
     fn page_joins(&self) -> std::sync::MutexGuard<'_, PageJoins> {
-        self.inner
-            .page_joins
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.page_joins.lock_recover()
     }
 
     /// The join requests waiting in `room`, for `device`: someone the room
@@ -834,11 +860,7 @@ impl Rooms {
     /// Queue `join` for `room`'s next admission pass. True when it is the
     /// first since the room last took them, so its sender starts the pass.
     fn queue_admission(&self, room: &str, join: QueuedAdmission) -> bool {
-        let mut queued = self
-            .inner
-            .queued_admissions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queued = self.inner.queued_admissions.lock_recover();
         let waiting = queued.entry(room.to_owned()).or_default();
         waiting.push(join);
         let first = waiting.len() == 1;
@@ -860,8 +882,7 @@ impl Rooms {
         let queued = self
             .inner
             .queued_admissions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .remove(room_id)
             .unwrap_or_default();
         let answers = match (&room, locked.as_mut()) {

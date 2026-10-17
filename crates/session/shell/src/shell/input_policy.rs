@@ -1,9 +1,7 @@
 //! Shared shell navigation, chord ownership, geometry and peer wire input encoding.
 use crate::shell::frame::FrameBuilder;
 use crate::shell::overlay_host::ShellOverlayHost;
-use crate::shell::state::{
-    GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
-};
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
 use vello::kurbo::{Point as KurboPoint, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -718,7 +716,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
-    let maximized_chrome_captures = fb.host().maximized_chrome_captures_pointer();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
@@ -733,18 +730,31 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
         || peer_sync_visible
         || inner_surface_captures
-        || maximized_chrome_captures
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
 
+/// Whether the shell takes the pointer: whenever it takes all input, and
+/// also while the pointer is on the bar a maximized window shows over its
+/// client. That bar takes only the pointer — the client keeps the keyboard,
+/// so typing never stops because the pointer rests near the window's top.
+pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
+    chrome_captures_input(fb)
+        || fb.host().maximized_chrome_captures_pointer()
+        || fb.host().top_bar_captures_pointer()
+}
+
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
 
-pub fn insert_foreign_group(
+/// Splice a foreign window's group into the active strip and focus it, for
+/// tests that need a client tile without driving the Wayland protocol.
+#[cfg(test)]
+pub(crate) fn insert_foreign_group(
     tree: &mut WorkspaceTree,
     surface_id: u64,
     app_id: Option<&str>,
 ) -> Option<(StripId, GroupId)> {
+    use crate::shell::state::{Tab, WindowGroup, WindowWidth, next_id};
     let active_ws = tree.desktop.active;
     let preferred_strip = tree.desktop.active_strip.get(&active_ws).copied();
     let ws = tree
@@ -785,75 +795,8 @@ pub fn insert_foreign_group(
     Some((strip_id, group_id))
 }
 
-pub fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
-    let mut vacated: Option<(StripId, GroupId)> = None;
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            let mut hit_group: Option<GroupId> = None;
-            for group in &mut strip.window_groups {
-                let Some(pos) = group.tabs.iter().position(|t| {
-                    matches!(&t.tile, TileContent::Foreign { surface_id: s, .. } if *s == surface_id)
-                }) else {
-                    continue;
-                };
-                let removed = group.tabs.remove(pos);
-                if group.active_tab == removed.id {
-                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                }
-                hit_group = Some(group.id);
-                break;
-            }
-            let Some(gid) = hit_group else { continue };
-            let strip_id = strip.id;
-            strip
-                .window_groups
-                .retain(|g| g.id != gid || !g.tabs.is_empty());
-            let group_gone = !strip.window_groups.iter().any(|g| g.id == gid);
-            if group_gone {
-                vacated = Some((strip_id, gid));
-            }
-            if let Some((sid, gone)) = vacated {
-                let fallback = strip.window_groups.last().map(|g| g.id);
-                if tree.desktop.active_group.get(&sid) == Some(&gone) {
-                    match fallback {
-                        Some(next) => {
-                            tree.desktop.active_group.insert(sid, next);
-                        }
-                        None => {
-                            tree.desktop.active_group.remove(&sid);
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-    }
-    false
-}
-
-pub fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &str) -> bool {
-    for ws in &mut tree.desktop.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                for tab in &mut group.tabs {
-                    if let TileContent::Foreign {
-                        surface_id: s,
-                        app_id,
-                    } = &mut tab.tile
-                        && *s == surface_id
-                    {
-                        *app_id = new_app_id.to_string();
-                        tab.title = foreign_tab_title(new_app_id);
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-pub fn foreign_tab_title(app_id: &str) -> String {
+#[cfg(test)]
+fn foreign_tab_title(app_id: &str) -> String {
     let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
     if trimmed.len() <= 32 {
         return trimmed.to_string();
@@ -898,20 +841,54 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
     }
 }
 
-/// Super pressed and released with nothing in between: the tap that opens
-/// global search on every mainstream desktop.
+/// How long Super must be held, alone, before the Super surface opens as a
+/// peek. A tap (press and release) is well under this; a person reaching
+/// for a chord usually presses its second key sooner, and one who holds
+/// Super this long without one is holding it to look.
+pub const SUPER_HOLD: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// What Super alone asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuperGesture {
+    /// Pressed and released with nothing in between, before
+    /// [`SUPER_HOLD`]: open the Super surface and keep it.
+    Tap,
+    /// Held alone for [`SUPER_HOLD`]: open the Super surface as a peek.
+    Peek,
+    /// The held Super came up: close the peek unless it was taken up.
+    PeekReleased,
+    /// A pointer press while peeking: the person is using the surface, so
+    /// it stays when Super comes up.
+    PeekTaken,
+    /// Another key while peeking: the hold was a chord after all; close the
+    /// peek and let the chord run.
+    PeekCancelled,
+}
+
+/// Super alone, tapped or held: the one surface with search, widgets, the
+/// time, status and people's lines.
 ///
 /// Fed every input event ahead of chord routing, so a Super chord the
 /// shell handles (Super+L, Super+Left) disarms it exactly like one a
-/// client receives, and a Super-click or Super-scroll does too.
+/// client receives, and a Super-click or Super-scroll does too. Time comes
+/// from the caller: [`Self::observe`] and [`Self::poll`] take the instant
+/// they reason about, and [`Self::deadline`] tells the loop when a held
+/// key turns into a peek, so nothing polls.
 #[derive(Debug, Default)]
 pub struct SuperTap {
-    armed: bool,
+    /// When the lone Super went down, while nothing else has happened.
+    armed: Option<std::time::Instant>,
+    /// The hold became a peek.
+    peeking: bool,
 }
 
 impl SuperTap {
-    /// `true` on the release that completes a lone tap.
-    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+    /// What `event` at `now` completes, if anything.
+    pub fn observe(
+        &mut self,
+        event: &WindowEvent,
+        now: std::time::Instant,
+    ) -> Option<SuperGesture> {
         match event {
             WindowEvent::KeyboardInput { event: key, .. } => {
                 let is_super = matches!(
@@ -923,35 +900,69 @@ impl SuperTap {
                         // Autorepeat of the held key keeps the tap alive;
                         // a fresh press starts one.
                         if !key.repeat {
-                            self.armed = true;
+                            self.armed = Some(now);
+                            self.peeking = false;
                         }
-                        false
+                        None
                     }
-                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (true, ElementState::Released) => {
+                        let armed = self.armed.take();
+                        if std::mem::take(&mut self.peeking) {
+                            return Some(SuperGesture::PeekReleased);
+                        }
+                        armed
+                            .is_some_and(|at| now.saturating_duration_since(at) < SUPER_HOLD)
+                            .then_some(SuperGesture::Tap)
+                    }
                     (false, ElementState::Pressed) => {
-                        self.armed = false;
-                        false
+                        self.armed = None;
+                        std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekCancelled)
                     }
-                    (false, ElementState::Released) => false,
+                    (false, ElementState::Released) => None,
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 ..
             }
-            | WindowEvent::MouseWheel { .. }
             | WindowEvent::Touch(_) => {
-                self.armed = false;
-                false
+                self.armed = None;
+                std::mem::take(&mut self.peeking).then_some(SuperGesture::PeekTaken)
             }
-            _ => false,
+            WindowEvent::MouseWheel { .. } => {
+                self.armed = None;
+                None
+            }
+            _ => None,
         }
+    }
+
+    /// The peek, once Super has been held alone for [`SUPER_HOLD`] at `now`.
+    pub fn poll(&mut self, now: std::time::Instant) -> Option<SuperGesture> {
+        let at = self.armed?;
+        if self.peeking || now.saturating_duration_since(at) < SUPER_HOLD {
+            return None;
+        }
+        self.peeking = true;
+        Some(SuperGesture::Peek)
+    }
+
+    /// When a held Super turns into a peek.
+    pub fn deadline(&self) -> Option<std::time::Instant> {
+        self.armed
+            .filter(|_| !self.peeking)
+            .and_then(|at| at.checked_add(SUPER_HOLD))
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "test timelines add milliseconds to one monotonic instant"
+)]
 mod super_tap_tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use winit::keyboard::KeyLocation;
 
     fn key(logical: Key, state: ElementState) -> WindowEvent {
@@ -964,48 +975,144 @@ mod super_tap_tests {
         key(Key::Named(NamedKey::Super), state)
     }
 
+    fn ms(t0: Instant, n: u64) -> Instant {
+        t0 + Duration::from_millis(n)
+    }
+
     #[test]
     fn a_lone_super_tap_fires_on_release() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        assert!(!tap.observe(&super_key(ElementState::Pressed)));
-        assert!(tap.observe(&super_key(ElementState::Released)));
-        assert!(
-            !tap.observe(&super_key(ElementState::Released)),
-            "one tap, one search"
+        assert_eq!(tap.observe(&super_key(ElementState::Pressed), t0), None);
+        assert_eq!(tap.poll(ms(t0, 90)), None);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 110)),
+            Some(SuperGesture::Tap)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 120)),
+            None,
+            "one tap, one surface"
+        );
+    }
+
+    #[test]
+    fn holding_super_alone_peeks_and_release_ends_the_peek() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(
+            tap.deadline(),
+            Some(t0 + SUPER_HOLD),
+            "the loop wakes for the hold"
+        );
+        assert_eq!(
+            tap.poll(
+                (t0 + SUPER_HOLD)
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap()
+            ),
+            None
+        );
+        assert_eq!(tap.poll(t0 + SUPER_HOLD), Some(SuperGesture::Peek));
+        assert_eq!(tap.poll(ms(t0, 900)), None, "one peek per hold");
+        assert_eq!(tap.deadline(), None);
+        // Autorepeat while held changes nothing.
+        let mut repeat = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Super),
+            None,
+            ElementState::Pressed,
+        );
+        repeat.repeat = true;
+        assert_eq!(
+            tap.observe(&ui::synthetic_input::keyboard_input(repeat), ms(t0, 950)),
+            None
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1200)),
+            Some(SuperGesture::PeekReleased)
+        );
+    }
+
+    #[test]
+    fn a_long_press_never_counts_as_a_tap_even_unpolled() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 2000)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_click_while_peeking_takes_the_surface_and_a_chord_cancels_it() {
+        let t0 = Instant::now();
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.poll(t0 + SUPER_HOLD);
+        assert_eq!(
+            tap.observe(&ui::synthetic_input::mouse_press(), ms(t0, 500)),
+            Some(SuperGesture::PeekTaken)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 700)),
+            None
+        );
+
+        tap.observe(&super_key(ElementState::Pressed), ms(t0, 1000));
+        tap.poll(ms(t0, 1000) + SUPER_HOLD);
+        assert_eq!(
+            tap.observe(
+                &key(Key::Character("l".into()), ElementState::Pressed),
+                ms(t0, 1500)
+            ),
+            Some(SuperGesture::PeekCancelled)
+        );
+        assert_eq!(
+            tap.observe(&super_key(ElementState::Released), ms(t0, 1600)),
+            None
         );
     }
 
     #[test]
     fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
-        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed), t0);
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
+        assert_eq!(tap.poll(ms(t0, 1000)), None, "a chord never peeks");
 
-        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed), t0);
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
     }
 
     #[test]
     fn a_super_click_or_scroll_is_not_a_tap() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&ui::synthetic_input::mouse_press());
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&ui::synthetic_input::mouse_press(), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
 
-        tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0));
-        assert!(!tap.observe(&super_key(ElementState::Released)));
+        tap.observe(&super_key(ElementState::Pressed), t0);
+        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0), t0);
+        assert_eq!(tap.observe(&super_key(ElementState::Released), t0), None);
     }
 
     #[test]
     fn a_modifier_released_alone_is_not_super() {
+        let t0 = Instant::now();
         let mut tap = SuperTap::default();
-        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
-        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed), t0);
+        assert_eq!(
+            tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released), t0),
+            None
+        );
     }
 }
 
@@ -1016,7 +1123,9 @@ mod super_tap_tests {
 )]
 mod tests {
     use super::*;
-    use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
+    use crate::shell::state::{
+        AppKind, Strip, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId, next_id,
+    };
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
@@ -1158,10 +1267,11 @@ mod tests {
             .expect("group")
             .get_rect();
         let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
-        assert!(
-            fb.host_mut()
-                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
-        );
+        assert!(fb.host_mut().update_active_strip_pan(
+            initial.x0 - viewport.x0 + 80.0,
+            true,
+            std::time::Instant::now()
+        ));
         let _ = fb.paint_settled();
         let rect = fb
             .host_mut()
@@ -1872,104 +1982,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn foreign_groups_insert_remove_rename_and_hit_test_in_the_tree() {
-        fn insert_foreign_group_lands_in_the_active_strip_and_takes_focus() {
-            let (mut tree, strip, _) = tree_with_foreign(1);
-            let before = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap()
-                .window_groups
-                .len();
-            let placed = insert_foreign_group(&mut tree, 99, Some("org.example.late"))
-                .expect("adoption must land in the active strip");
-            assert_eq!(placed.0, strip);
-            let live = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap();
-            assert_eq!(live.window_groups.len(), before + 1);
-            assert_eq!(
-                tree.desktop.active_group_for(strip),
-                Some(placed.1),
-                "a newly-mapped window takes the active-group slot"
-            );
-            assert_eq!(
-                active_foreign_surface(&tree),
-                Some(99),
-                "and therefore the keyboard focus"
-            );
-        }
-
-        fn remove_foreign_tab_drops_the_group_and_moves_focus_off_it() {
-            let (mut tree, strip, foreign_group) = tree_with_foreign(1);
-            let placed = insert_foreign_group(&mut tree, 99, None).unwrap();
-            assert_eq!(active_foreign_surface(&tree), Some(99));
-            assert!(remove_foreign_tab(&mut tree, 99));
-            let live = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .find(|s| s.id == strip)
-                .unwrap();
-            assert!(
-                !live.window_groups.iter().any(|g| g.id == placed.1),
-                "an emptied group must not linger in the strip"
-            );
-            assert_eq!(
-                tree.desktop.active_group_for(strip),
-                Some(foreign_group),
-                "focus must move off the destroyed group onto a surviving sibling"
-            );
-            assert_eq!(
-                active_foreign_surface(&tree),
-                Some(1),
-                "the keyboard lands on the surviving window, never on the dead one"
-            );
-            // A second removal is a no-op.
-            assert!(!remove_foreign_tab(&mut tree, 99));
-
-            // Draining the last foreign group leaves the shell-owned group active, so no client holds the keyboard.
-            assert!(remove_foreign_tab(&mut tree, 1));
-            assert_eq!(
-                active_foreign_surface(&tree),
-                None,
-                "no client holds the keyboard once every client window is gone"
-            );
-        }
-
-        fn rename_rewrites_the_app_id_and_title() {
-            let (mut tree, _, _) = tree_with_foreign(1);
-            insert_foreign_group(&mut tree, 99, None).unwrap();
-            assert!(rename_foreign_tab(&mut tree, 99, "org.example.Renamed"));
-            let tab = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .strips
-                .iter()
-                .flat_map(|s| s.window_groups.iter())
-                .flat_map(|g| g.tabs.iter())
-                .find(|t| matches!(&t.tile, TileContent::Foreign { surface_id: 99, .. }))
-                .expect("mirrored tab still present");
-            assert_eq!(tab.title, "Renamed");
-            match &tab.tile {
-                TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Renamed"),
-                other => panic!("expected Foreign tile, got {other:?}"),
-            }
-            assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
-        }
-
+    fn a_foreign_group_is_laid_out_and_hit_testable() {
         fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
@@ -2026,9 +2039,6 @@ mod tests {
             );
         }
 
-        insert_foreign_group_lands_in_the_active_strip_and_takes_focus();
-        remove_foreign_tab_drops_the_group_and_moves_focus_off_it();
-        rename_rewrites_the_app_id_and_title();
         a_mirrored_foreign_group_is_laid_out_and_hit_testable();
     }
     #[test]
@@ -2112,18 +2122,38 @@ mod tests {
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
 
+            // At rest the bar hides: the top of the window is the client's.
             fb.host_mut()
                 .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
+            assert!(!chrome_captures_pointer(&fb));
+
+            // Reached for, its controls take the pointer, never the keyboard.
+            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("maximized group")
+                .set_maximized_chrome_shown_for_tests(true);
+            let _ = fb.paint_settled();
+            let restore = fb
+                .host()
+                .active_window_bounds()
+                .and_then(|bounds| bounds.restore)
+                .expect("Restore shows");
+            fb.host_mut().note_pointer(restore.center());
             assert!(
-                chrome_captures_input(&fb),
+                chrome_captures_pointer(&fb),
                 "the visible Restore/Close pills must receive their own click"
+            );
+            assert!(
+                !chrome_captures_input(&fb),
+                "the bar never takes the client's keyboard"
             );
 
             fb.host_mut()
-                .note_pointer(vello::kurbo::Point::new(640.0, 200.0));
+                .note_pointer(vello::kurbo::Point::new(640.0, 400.0));
             assert!(
-                !chrome_captures_input(&fb),
-                "below the reveal band the maximized client must remain interactive"
+                !chrome_captures_pointer(&fb),
+                "down in the app the maximized client must remain interactive"
             );
         }
 
@@ -2155,6 +2185,7 @@ mod tests {
                 title: "Insert image".into(),
                 save: false,
                 directory: false,
+                writable_directory: false,
                 multiple: false,
                 accept_label: None,
                 current_name: None,

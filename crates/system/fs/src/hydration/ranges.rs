@@ -40,6 +40,7 @@ use tokio::sync::Notify;
 use super::{Duration, EndpointAddr, Hash, Hydrator, Result, anyhow};
 use crate::content::{self, Manifest, RangeSet};
 use crate::store::Retention;
+use tilo_lock::MutexRecover as _;
 
 /// Requested bytes per `GET` for background work and read-ahead.
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -146,9 +147,7 @@ pub(crate) struct Flights {
 
 impl Flights {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Hash, (RangeSet, Arc<Notify>)>> {
-        self.ranges
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.ranges.lock_recover()
     }
 
     /// Claims the parts of `wanted` nobody is fetching. Returns them, and a

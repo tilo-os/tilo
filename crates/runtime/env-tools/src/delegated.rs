@@ -30,6 +30,7 @@ use tilo_environment::{ToolBuildError, ToolBuilder};
 use crate::builder::ToolStore;
 use crate::image;
 use crate::key::CacheKey;
+use tilo_lock::MutexRecover as _;
 
 /// The socket a member's supervisor asks for builds on.
 pub const BUILDS_SOCKET_ENV: &str = "TILO_USH_TOOL_BUILDS";
@@ -158,10 +159,7 @@ impl UnsignedStore {
 
     /// The unsigned image written, if one was.
     pub fn written(&self) -> Option<PackageId> {
-        *self
-            .written
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.written.lock_recover()
     }
 }
 
@@ -187,10 +185,7 @@ impl ToolStore for UnsignedStore {
             self.publisher,
         )?;
         image::write_tapp(&self.out, &packed)?;
-        *self
-            .written
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(packed.id());
+        *self.written.lock_recover() = Some(packed.id());
         Ok(packed.id())
     }
 }

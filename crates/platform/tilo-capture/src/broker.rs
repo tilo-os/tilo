@@ -19,7 +19,7 @@ use std::io::{self, IoSlice, IoSliceMut, Read as _, Write as _};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixDatagram, UnixStream};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use rustix::io::Errno;
@@ -32,6 +32,7 @@ use crate::{
     AudioCapture, AudioSource, CameraRequest, CaptureError, CaptureState, DeviceKind, Frame,
     MAX_BUFFERED_SAMPLES, MicrophoneRequest, VideoCapture, VideoSource, valid_rgba_frame,
 };
+use tilo_lock::MutexRecover as _;
 
 /// The inherited control socket, as a descriptor number.
 pub const CAPTURE_FD_ENV: &str = "TILO_SVC_CAPTURE_FD";
@@ -498,14 +499,14 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
                 true,
             ),
             Ok(Some(Record::Video(frame))) => {
-                shared.lock().unwrap_or_else(PoisonError::into_inner).latest = Some(frame);
+                shared.lock_recover().latest = Some(frame);
                 (None, false)
             }
             Ok(Some(Record::Audio {
                 sample_rate,
                 samples,
             })) => {
-                let mut received = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut received = shared.lock_recover();
                 received.sample_rate = sample_rate;
                 received.samples.extend(samples);
                 let excess = received.samples.len().saturating_sub(MAX_BUFFERED_SAMPLES);
@@ -526,7 +527,7 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
             ),
         };
         if let Some(state) = state {
-            shared.lock().unwrap_or_else(PoisonError::into_inner).state = state;
+            shared.lock_recover().state = state;
         }
         if done {
             return;
@@ -536,7 +537,7 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
 
 impl Brokered {
     fn received(&self) -> std::sync::MutexGuard<'_, Received> {
-        self.received.lock().unwrap_or_else(PoisonError::into_inner)
+        self.received.lock_recover()
     }
 }
 

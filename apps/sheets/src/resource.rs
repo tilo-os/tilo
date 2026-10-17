@@ -274,6 +274,7 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     label = "Workbook",
     children = Workbook::annotations,
     search = Workbook::search,
+    read_content = Workbook::read_cells,
     answer = crate::cell_actions::answer,
     params = verbs,
 )]
@@ -837,6 +838,130 @@ impl Workbook {
         }
         entries
     }
+}
+
+/// The most cells one read answers with; a larger range is read in parts.
+pub const MAX_READ_CELLS: usize = 10_000;
+
+impl Workbook {
+    /// What the workbook holds, for a caller with no screen. With no item,
+    /// its sheets; with a sheet (its id, item id or name), optionally
+    /// narrowed to a range (`Budget!A1:C10`), what each cell shows, row by
+    /// row from the range's top left, and the formula behind each computed
+    /// cell.
+    fn read_cells(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        let Some(item) = item else {
+            return Ok(serde_json::json!({
+                "sheets": self.sheets.iter().map(|(id, sheet)| {
+                    let layout = sheet.layout();
+                    serde_json::json!({
+                        "item": id.as_str(),
+                        "name": sheet.name.0,
+                        "rows": layout.rows().len(),
+                        "columns": layout.columns().len(),
+                    })
+                }).collect::<Vec<_>>(),
+                "how": "read an item: a sheet's id or name, with a range after `!` to read part of it",
+            }));
+        };
+        let (sheet_part, range) = item
+            .as_str()
+            .rsplit_once('!')
+            .map_or((item.as_str(), None), |(sheet, range)| (sheet, Some(range)));
+        let sheet_key = tilo_resource::items::item_of_resource::<Self>(sheet_part)
+            .map_or_else(|| Id::from_raw(sheet_part), |(_, id)| id);
+        let (id, sheet) = self
+            .sheets
+            .iter()
+            .find(|(id, sheet)| {
+                **id == sheet_key || sheet.name.0.eq_ignore_ascii_case(sheet_part.trim())
+            })
+            .ok_or_else(|| format!("no sheet `{sheet_part}`; read with no item for the sheets"))?;
+        let cells = crate::cell_actions::shown_cells(&sheet.snapshot());
+        let (top_left, bottom_right) = match range {
+            Some(range) => read_range(range)?,
+            None => cells
+                .iter()
+                .fold(((u32::MAX, u32::MAX), (0, 0)), |(lo, hi), cell| {
+                    (
+                        (lo.0.min(cell.col), lo.1.min(cell.row)),
+                        (hi.0.max(cell.col), hi.1.max(cell.row)),
+                    )
+                }),
+        };
+        if cells.is_empty() && range.is_none() {
+            return Ok(
+                serde_json::json!({ "sheet": sheet.name.0, "item": id.as_str(), "rows": [] }),
+            );
+        }
+        let width = usize::try_from(bottom_right.0 - top_left.0 + 1).unwrap_or(usize::MAX);
+        let most_rows = u32::try_from((MAX_READ_CELLS / width.max(1)).max(1)).unwrap_or(1);
+        let last_row = bottom_right.1.min(top_left.1.saturating_add(most_rows - 1));
+        let mut rows = vec![
+            vec![String::new(); width];
+            usize::try_from(last_row - top_left.1 + 1).unwrap_or(0)
+        ];
+        let mut formulas = serde_json::Map::new();
+        for cell in &cells {
+            if cell.col < top_left.0
+                || cell.col > bottom_right.0
+                || cell.row < top_left.1
+                || cell.row > last_row
+            {
+                continue;
+            }
+            let (Ok(row), Ok(col)) = (
+                usize::try_from(cell.row - top_left.1),
+                usize::try_from(cell.col - top_left.0),
+            ) else {
+                continue;
+            };
+            if let Some(slot) = rows.get_mut(row).and_then(|row| row.get_mut(col)) {
+                slot.clone_from(&cell.display);
+            }
+            if cell.raw.starts_with('=') {
+                formulas.insert(addr_to_a1(cell.col, cell.row), cell.raw.clone().into());
+            }
+        }
+        let mut answer = serde_json::json!({
+            "sheet": sheet.name.0,
+            "item": id.as_str(),
+            "range": format!(
+                "{}:{}",
+                addr_to_a1(top_left.0, top_left.1),
+                addr_to_a1(bottom_right.0, last_row)
+            ),
+            "rows": rows,
+            "formulas": formulas,
+        });
+        if last_row < bottom_right.1
+            && let Some(map) = answer.as_object_mut()
+        {
+            map.insert(
+                "next".into(),
+                format!(
+                    "{}!{}:{}",
+                    sheet.name.0,
+                    addr_to_a1(top_left.0, last_row + 1),
+                    addr_to_a1(bottom_right.0, bottom_right.1)
+                )
+                .into(),
+            );
+        }
+        Ok(answer)
+    }
+}
+
+/// The corners of an A1 range (`B2:D9`, or one cell `C3`), in order.
+fn read_range(range: &str) -> Result<(Addr, Addr), String> {
+    let refused = || format!("`{range}` is not a range like A1:C10");
+    let (start, end) = range.split_once(':').unwrap_or((range, range));
+    let start = a1_to_addr(start).ok_or_else(refused)?;
+    let end = a1_to_addr(end).ok_or_else(refused)?;
+    Ok((
+        (start.0.min(end.0), start.1.min(end.1)),
+        (start.0.max(end.0), start.1.max(end.1)),
+    ))
 }
 
 /// The search anchor of the cell at `addr` of the sheet `sheet`.

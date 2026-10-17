@@ -1,0 +1,149 @@
+/*O_o*/
+_({
+  "cursor": {
+    "currentPageIndex": 0,
+    "estimatedResultCount": "22200000",
+    "moreResultsUrl": "http://www.google.com/cse?oe=utf8&ie=utf8&source=uds&q=Wetter+Berlin+morgen&safe=off&cx=partner-pub-8993703457585266:4862972284&start=0",
+    "resultCount": "22,200,000",
+    "searchResultTime": "0.18"
+  },
+  "results": [
+    {
+      "clicktrackUrl": "https://www.google.com/url?client=internal-element-cse&cx=partner-pub-8993703457585266:4862972284&opi=88066884&q=https://www.wetter.com/wetter_aktuell/wettervorhersage/morgen/deutschland/berlin/DE0001020.html&sa=U&ved=2ahUKEwjFwfbhuruXAxXvEEQIHf0sG7IQFnoECAMQAQ&usg=AOvVaw3XVH2f7pgfxjZpNcAZP6Zc",
+      "content": "<b>Wetter</b> für den 16.10.2026. In <b>Berlin</b> überwiegt am <b>Morgen</b> die Bewölkung deutlich bei Temperaturen von 7 bis 15°C. Gegen später ist es eher sonnig als bewölkt und&nbsp;...",
+      "contentNoFormatting": "Wetter für den 16.10.2026. In Berlin überwiegt am Morgen die Bewölkung deutlich bei Temperaturen von 7 bis 15°C. Gegen später ist es eher sonnig als bewölkt und ...",
+      "title": "<b>Wetter Berlin morgen</b>",
+      "titleNoFormatting": "Wetter Berlin morgen",
+      "formattedUrl": "https://www.<b>wetter</b>.com/<b>wetter</b>.../<b>wetter</b>vorhersage/<b>morgen</b>/.../<b>berlin</b>/DE000...",
+      "unescapedUrl": "https://www.wetter.com/wetter_aktuell/wettervorhersage/morgen/deutschland/berlin/DE0001020.html",
+      "url": "https://www.wetter.com/wetter_aktuell/wettervorhersage/morgen/deutschland/berlin/DE0001020.html",
+      "visibleUrl": "www.wetter.com",
+      "richSnippet": {
+        "cseImage": {
+          "src": "https://cs3.wettercomassets.com/wcomv5/images/social-vorhersage.png"
+        },
+        "metatags": {
+          "pDomainVerify": "fb75e4a67aada65f93748fee389b6e5e",
+          "twitterSite": "@wettercom",
+          "twitterTitle": "Wetter Berlin morgen | wetter.com",
+          "fbPages": "46856808501",
+          "fbPageId": "46856808501",
+          "twitterImage": "https://cs3.wettercomassets.com/wcomv5/images/social-vorhersage.png",
+          "placeLocationLongitude": "13.4105",
+          "ogTitle": "Wetter Berlin morgen | wetter.com",
+          "alAndroidPackage": "com.wetter.androidclient",
+          "twitterDnt": "on",
+          "ogDescription": "Regen oder Sonne? So wird das Wetter morgen in 10178 Berlin. Temperatur-, Wind- und Regenvorhersage auf wetter.com.",
+          "ogLocale": "de_DE",
+          "ogImage": "https://cs3.wettercomassets.com/wcomv5/images/social-vorhersage.png",
+          "ogType": "place",
+          "twitterCard": "summary_large_image",
+          "viewport": "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no",
+          "placeLocationLatitude": "52.5244",
+          "twitterDescription": "Regen oder Sonne? So wird das Wetter morgen in 10178 Berlin. Temperatur-, Wind- und Regenvorhersage auf wetter.com.",
+          "alAndroidAppName": "wetter.com",
+          "msapplicationConfig": "none",
+          "ogSiteName": "wetter.com",
+          "canRecommend": "false",
+          "fbAppId": "410278665655355",
+          "alAndroidUrl": "wettercom://forecast/DE0001020"
+        },
+        "cseThumbnail": {
+          "src": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRji-EEJb0jxlFbloQnpixRt0xcgJoVBfksE_QNewEwTOGBPsL2Wxbi8IA&s",
+          "width": "310",
+          "height": "163"
+        }
+      },
+      "breadcrumbUrl": {
+        "host": "www.wetter.com",
+        "crumbs": [
+          "...",
+          "Land Berlin",
+          "Berlin"
+        ]
+      }
+    },
+    {
+      "clicktrackUrl": "https://www.google.com/url?client=internal-element-cse&cx=partner-pub-8993703457585266:4862972284&opi=88066884&q=https://www.wetteronline.de/wetter/berlin&sa=U&ved=2ahUKEwjFwfbhuruXAxXvEEQIHf0sG7IQFnoECAgQAQ&usg=AOvVaw3uCCOalyKgCu9Ir1zLSZMM",
+      "content": "In den nächsten Tagen gibt es in <b>Berlin</b> einen Mix aus Sonne und Wolken, aber es bleibt trocken. Die Höchstwerte liegen zwischen 19 Grad <b>morgen</b> und 14 Grad am&nbsp;...",
+      "contentNoFormatting": "In den nächsten Tagen gibt es in Berlin einen Mix aus Sonne und Wolken, aber es bleibt trocken. Die Höchstwerte liegen zwischen 19 Grad morgen und 14 Grad am ...",
+      "title": "<b>Wetter Berlin</b> - 4 Tage Vorhersage - <b>WetterOnline</b>",
+      "titleNoFormatting": "Wetter Berlin - 4 Tage Vorhersage - WetterOnline",
+      "formattedUrl": "https://www.<b>wetter</b>online.de/<b>wetter</b>/<b>berlin</b>",
+      "unescapedUrl": "https://www.wetteronline.de/wetter/berlin",
+      "url": "https://www.wetteronline.de/wetter/berlin",
+      "visibleUrl": "www.wetteronline.de",
+      "richSnippet": {
+        "cseImage": {
+          "src": "https://st.wetteronline.de/dr/1.1.634/images/logo/ogimage_wetteronline_1200x1200.jpg"
+        },
+        "metatags": {
+          "skypeToolbar": "skype_toolbar_parser_compatible",
+          "googlePlayApp": "app-id=de.wetteronline.wetterapp",
+          "twitterWidgetsCsp": "on",
+          "ogTitle": "Wetter Berlin - 4 Tage Vorhersage - WetterOnline",
+          "ogDescription": "Wetter in Berlin für die kommenden 4 Tage mit der Vorhersage von Temperaturen, Niederschlag, Wind, Sonnenschein und Wetterbericht von WetterOnline",
+          "ogImage": "https://st.wetteronline.de/dr/1.1.634/images/logo/ogimage_wetteronline_1200x1200.jpg",
+          "ogLocale": "de_DE",
+          "ogType": "website",
+          "msapplicationTileimage": "https://st.wetteronline.de/dr/1.1.634/images/logo/woicon_180x180.png",
+          "viewport": "width=device-width, initial-scale=1, user-scalable=no",
+          "themeColor": "#10658e",
+          "msapplicationTilecolor": "#ffffff",
+          "fbAdmins": "100001020190994",
+          "ogUrl": "http://www.wetteronline.de",
+          "ogSiteName": "WetterOnline",
+          "applicationName": "WetterOnline"
+        },
+        "cseThumbnail": {
+          "src": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS1dneVwizZD1J2Ogkcpte1KxiBGZg6UMtzKjxOC4lg3Zn9mes7jPNX5Kg2&s",
+          "width": "225",
+          "height": "225"
+        }
+      },
+      "breadcrumbUrl": {
+        "host": "www.wetteronline.de",
+        "crumbs": [
+          "wetter",
+          "berlin"
+        ]
+      }
+    },
+    {
+      "clicktrackUrl": "https://www.google.com/url?client=internal-element-cse&cx=partner-pub-8993703457585266:4862972284&opi=88066884&q=https://www.dwd.de/DE/wetter/vorhersage_aktuell/berlin_brandenburg/vhs_bbb_node.html&sa=U&ved=2ahUKEwjFwfbhuruXAxXvEEQIHf0sG7IQFnoECAwQAQ&usg=AOvVaw27zllRy3f6PXF94aXXElqR",
+      "content": "Heute früh örtlich leichter Frost, <b>morgen</b> Nacht teils neblig. Am Donnerstag nach Auflösung regionaler Dunst- und Nebelfelder Wechsel von Sonne und Wolken,&nbsp;...",
+      "contentNoFormatting": "Heute früh örtlich leichter Frost, morgen Nacht teils neblig. Am Donnerstag nach Auflösung regionaler Dunst- und Nebelfelder Wechsel von Sonne und Wolken, ...",
+      "title": "Vorhersage für <b>Berlin</b> und Brandenburg - Deutscher Wetterdienst",
+      "titleNoFormatting": "Vorhersage für Berlin und Brandenburg - Deutscher Wetterdienst",
+      "formattedUrl": "https://www.dwd.de/DE/<b>wetter</b>/vorhersage.../<b>berlin</b>.../vhs_bbb_node.html",
+      "unescapedUrl": "https://www.dwd.de/DE/wetter/vorhersage_aktuell/berlin_brandenburg/vhs_bbb_node.html",
+      "url": "https://www.dwd.de/DE/wetter/vorhersage_aktuell/berlin_brandenburg/vhs_bbb_node.html",
+      "visibleUrl": "www.dwd.de",
+      "richSnippet": {
+        "cseImage": {
+          "src": "https://www.dwd.de/DWD/wetter/wv_allg/deutschland_trend/bilder/ecmwf_meg_10379.png"
+        },
+        "metatags": {
+          "viewport": "minimum-scale=0.25, maximum-scale=5.0, initial-scale=1.0",
+          "ogImage": "/SiteGlobals/StyleBundles/Bilder/Allgemein/OpenGraphImage-DWD-Logo.jpg?__blob=normal&v=3"
+        },
+        "cseThumbnail": {
+          "src": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ-Q1rTjWw5TwL1WSrq8HshMGs87oGF9uuTt8uftVggD-dnWo9Rmr4aVdT-&s",
+          "width": "265",
+          "height": "190"
+        }
+      },
+      "breadcrumbUrl": {
+        "host": "www.dwd.de",
+        "crumbs": [
+          "vorhersage_aktuell",
+          "vhs_bbb_node"
+        ]
+      }
+    }
+  ],
+  "findMoreOnGoogle": {
+    "url": "https://www.google.com/search?client=ms-google-coop&q=Wetter+Berlin+morgen&cx=partner-pub-8993703457585266:4862972284"
+  }
+}
+);

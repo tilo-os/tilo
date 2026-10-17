@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from uuid import UUID
 
 SCHEMA = "tilo.windows-dual-boot-preflight.v1"
 EFI_SYSTEM_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
@@ -66,8 +67,9 @@ def normalized_disk(row):
         "unique_id": str(row.get("UniqueId") or "").strip(),
         "size_bytes": int(row.get("Size", -1)),
         "bus_type": str(row.get("BusType") or "").upper(),
-        "is_boot": bool(row.get("IsBoot")), "is_system": bool(row.get("IsSystem")),
-        "is_offline": bool(row.get("IsOffline")), "is_read_only": bool(row.get("IsReadOnly")),
+        # Unknown or malformed facts must not become an affirmative safety check.
+        "is_boot": row.get("IsBoot"), "is_system": row.get("IsSystem"),
+        "is_offline": row.get("IsOffline"), "is_read_only": row.get("IsReadOnly"),
         "largest_free_extent_bytes": int(row.get("LargestFreeExtent", -1)),
         "partition_style": str(row.get("PartitionStyle") or "").upper(),
     }
@@ -165,7 +167,27 @@ def bitlocker_ready_for_planned_boot_change(bitlocker):
     return False
 
 
+def has_windows_esp_identity(receipt):
+    disk, esp = receipt["windows_disk"], receipt["windows_esp"]
+    if (type(disk.get("number")) is not int or disk["number"] < 0
+            or not isinstance(disk.get("unique_id"), str) or not disk["unique_id"].strip()
+            or type(disk.get("size_bytes")) is not int or disk["size_bytes"] <= 0
+            or disk.get("partition_style") != "GPT"
+            or type(esp.get("number")) is not int or esp["number"] <= 0
+            or type(esp.get("offset_bytes")) is not int or esp["offset_bytes"] < 0
+            or type(esp.get("size_bytes")) is not int or esp["size_bytes"] <= 0
+            or esp.get("gpt_type") != EFI_SYSTEM_GUID):
+        return False
+    try:
+        return isinstance(esp.get("guid"), str) and UUID(esp["guid"]).int != 0
+    except ValueError:
+        return False
+
+
 def same_windows_esp(before, current):
+    # Equality of absent/default identities is not evidence of an unchanged ESP.
+    if not has_windows_esp_identity(before) or not has_windows_esp_identity(current):
+        return False
     disk_keys = ("number", "unique_id", "size_bytes", "partition_style")
     esp_keys = ("number", "guid", "gpt_type", "offset_bytes", "size_bytes")
     return all(before["windows_disk"].get(key) == current["windows_disk"].get(key) for key in disk_keys) and all(before["windows_esp"].get(key) == current["windows_esp"].get(key) for key in esp_keys)
@@ -175,8 +197,9 @@ def valid_external_media(media):
     return (
         media.get("bus_type") in REMOVABLE_BUSES and isinstance(media.get("number"), int)
         and bool(media.get("unique_id")) and bool(media.get("friendly_name"))
-        and int(media.get("size_bytes", -1)) > 0 and not media.get("is_boot")
-        and not media.get("is_system") and not media.get("is_read_only")
+        and int(media.get("size_bytes", -1)) > 0 and media.get("is_boot") is False
+        and media.get("is_system") is False and media.get("is_read_only") is False
+        and media.get("is_offline") is False
     )
 
 
@@ -192,7 +215,7 @@ def verify_receipt(current, baseline, required_unallocated_bytes):
     if current["external_media"].get("number") == current["windows_disk"].get("number"):
         failures.append("external medium must not be the Windows disk")
     if not same_windows_esp(baseline, current):
-        failures.append("Windows disk or EFI System Partition identity changed from the baseline")
+        failures.append("Windows disk or EFI System Partition identity is missing, invalid, or changed from the baseline")
     return failures
 
 

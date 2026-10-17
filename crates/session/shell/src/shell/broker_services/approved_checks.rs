@@ -224,9 +224,7 @@ impl NativeChecks {
             return Err("approved project host device changed".into());
         }
         self.owner
-            .owner
-            .as_ref()
-            .ok_or("committed project host unavailable")?
+            .opened_owner("committed project host unavailable")?
             .with_current(room, |view| {
                 let host = view.host().unwrap_or_else(|| view.governor());
                 if host.device_public_key != binding.host {

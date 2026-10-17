@@ -20,6 +20,7 @@ use ui::tilo_resource::SearchEntry;
 use crate::favorites::Favorite;
 use crate::model::WorkspaceRecord;
 use crate::remote_accounts::RemoteAccount;
+use ui::lock::RwLockRecover as _;
 
 pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
@@ -95,10 +96,7 @@ impl PlacesSearch {
     /// a steady-state `sync` into a full traversal.
     pub fn refresh(&self, revision: u64, favorites: &[Favorite]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
@@ -107,10 +105,7 @@ impl PlacesSearch {
             .iter()
             .map(|favorite| (place_resource_id(&favorite.path), favorite.clone()))
             .collect();
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.favorites = current;
         snapshot.revision = Some(revision);
         true
@@ -178,18 +173,12 @@ impl CollaborativeRecordSearch {
 
     pub(crate) fn refresh(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
         }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.records.clear();
         snapshot.revision = Some(revision);
         drop(snapshot);
@@ -201,10 +190,7 @@ impl CollaborativeRecordSearch {
     /// A source reset uses [`Self::refresh`] first; a mismatched revision is
     /// refused rather than merging two authority generations.
     pub(crate) fn append_page(&self, revision: u64, entries: &[WorkspaceRecord]) -> bool {
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         if snapshot.revision != Some(revision) {
             return false;
         }
@@ -295,10 +281,7 @@ impl RemoteAccountSearch {
 
     pub fn refresh(&self, revision: u64, accounts: &[RemoteAccount]) -> bool {
         {
-            let snapshot = self
-                .snapshot
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let snapshot = self.snapshot.read_recover();
             if snapshot.revision == Some(revision) {
                 return false;
             }
@@ -312,10 +295,7 @@ impl RemoteAccountSearch {
                 )
             })
             .collect();
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.snapshot.write_recover();
         snapshot.accounts = current;
         snapshot.revision = Some(revision);
         true
@@ -413,6 +393,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn import_account_without_a_mount_has_a_searchable_open_action() {
+        let account = RemoteAccount {
+            id: accounts::AccountId::from("import-cloud"),
+            kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+            label: "Import cloud".into(),
+            host: "cloud.example".into(),
+            health: crate::remote_accounts::RemoteAccountHealth::NeverChecked,
+            files_mode: accounts::cloud_types::FilesMode::Import,
+            mount: None,
+        };
+        let search = RemoteAccountSearch::new(std::slice::from_ref(&account));
+        let hit = source(search.entries()).search("import").pop().unwrap();
+        let resource = search.resource(&hit.anchor()).unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            crate::remote_accounts::resource_id(&account.id)
+        );
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == REMOTE_ACCOUNT_OPEN_ACTION)
+        );
+    }
+
     /// Places and remote accounts are found by label, path, host and kind with wire-safe, round-tripping action ids that navigate.
     #[allow(
         clippy::too_many_lines,
@@ -465,6 +471,7 @@ mod tests {
                 label: "Personal cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                files_mode: accounts::cloud_types::FilesMode::Sync,
                 mount: None,
             };
             let accounts = vec![account.clone()];
@@ -592,6 +599,7 @@ mod tests {
                     label: format!("Shared record {index}"),
                     host: format!("host-{index}.example"),
                     health: crate::remote_accounts::RemoteAccountHealth::Healthy,
+                    files_mode: accounts::cloud_types::FilesMode::Sync,
                     mount: None,
                 })
                 .collect();

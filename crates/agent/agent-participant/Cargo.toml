@@ -11,6 +11,7 @@ name = "tilo_agent_participant"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Each record is a framework participant of its app's resource kind; the
 # published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
@@ -82,7 +83,7 @@ getrandom.workspace = true
 # An OpenAI-compatible model endpoint, called from the agent's own thread,
 # shaped for its target (a plain provider or Tilo Cloud's metered endpoint).
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
-tilo-model-gateway = { path = "../model-gateway" }
+tilo-model-gateway = { path = "../model-gateway", default-features = false }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true

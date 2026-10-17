@@ -1367,7 +1367,7 @@ impl ClipboardPayload {
             return Err(FabricError::ClipboardItemTooLarge);
         }
         if let Self::Binary { mime, .. } = self
-            && (!valid_mime(mime) || mime == "application/x-tilo-secret")
+            && (!valid_mime(mime) || mime == ui::clipboard::SECRET_MIME)
         {
             return Err(FabricError::InvalidClipboardMime);
         }

@@ -25,6 +25,7 @@ use wire_frame::{FrameError, Framing};
 use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::namespace::{ContentAuthority, Namespace};
 use crate::sync::SyncHandle;
+use tilo_lock::MutexRecover as _;
 
 /// The ACL this service enforces and the identity it answers for — an [`AclHandle`], not a value, so it doesn't freeze mount-time policy.
 pub type Enforcement = Option<(AclHandle, IdentityKey)>;
@@ -120,9 +121,7 @@ fn apply(
     namespace: &Arc<Mutex<Namespace>>,
     enforcement: &Enforcement,
 ) -> (Resp, Vec<u8>) {
-    let mut ns = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ns = namespace.lock_recover();
     if ns.content_authority() == ContentAuthority::SignedRecords {
         return (
             Resp::Err("signed document operation protocol required".into()),
@@ -237,16 +236,10 @@ async fn handle_conn(
     let push_tx = tx.clone();
     let poll_ns = namespace.clone();
     let notifier = tokio::spawn(async move {
-        let mut last = poll_ns
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
+        let mut last = poll_ns.lock_recover().heads();
         loop {
             tokio::time::sleep(Duration::from_millis(150)).await;
-            let now = poll_ns
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .heads();
+            let now = poll_ns.lock_recover().heads();
             if now != last {
                 last = now;
                 // Coalesce: drop the signal if the client is backed up (it re-reads latest next time); stop if it's gone.

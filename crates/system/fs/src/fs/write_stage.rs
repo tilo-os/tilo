@@ -29,6 +29,7 @@ use iroh_blobs::Hash;
 use super::VersionSource;
 use crate::content::RangeSet;
 use crate::hydration::Hydrator;
+use tilo_lock::MutexRecover as _;
 
 /// File names of stage files, so a restart can remove what a crash left.
 pub(super) const STAGE_FILE_PREFIX: &str = "stage-";
@@ -48,9 +49,7 @@ impl Stage {
     /// Lock the stage. A poisoned stage still holds the bytes writers were
     /// acknowledged for, so it is used rather than dropped.
     pub(super) fn lock(&self) -> MutexGuard<'_, WriteStage> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     pub(super) fn len(&self) -> u64 {

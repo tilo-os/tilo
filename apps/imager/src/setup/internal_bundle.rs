@@ -1,4 +1,4 @@
-//! Bounded internal-installer data and read-only byte verification.
+//! Bounded internal-installer manifest validation.
 //! Consistency is not authenticated provenance, filesystem qualification, or boot proof.
 //!
 //! Schema 2 is the contract of `os/dev/internal-bundle.py`, which exports it;

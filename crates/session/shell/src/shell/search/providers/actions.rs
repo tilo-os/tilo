@@ -101,6 +101,21 @@ const AGENT_INVITE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+/// What `agent.remove` is told: which agent, and the confirmation the
+/// shell door requires of a destructive action.
+const AGENT_REMOVE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "name",
+        ParamType::Text,
+        "The agent's name, as the Agents tab lists it.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Confirm this workspace administration request.",
+    ),
+];
+
 /// The agent this OS ships. Kept in step with `tilo-agent`'s own default by
 /// being the same string, not by being imported — the shell does not
 /// depend on the agent binary.
@@ -269,6 +284,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
+        // Ends the agent's access at once; undone only by admitting it again.
+        "agent.remove" => {
+            contract.kind = ActionKind::Outside;
+            contract.risk = RiskLevel::Destructive;
+            contract.confirmation = ConfirmationPolicy::Confirm;
+            contract.retry = RetryPolicy::AtMostOnce;
+        }
         "peer.invite" | "peer.connect" => {
             contract = ActionContract::view();
             contract.kind = ActionKind::Outside;
@@ -334,9 +356,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::View
         }
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
-        "record.bring" | "peer.invite.named" | "agent.invite" | "workspace.create" => {
-            tilo_actions::OperationKind::Document
-        }
+        "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
+        | "workspace.create" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -1953,6 +1974,25 @@ impl Action {
                 // next visible action is Review access, not a chat prompt.
                 st.open_workspace_settings(crate::shell::chrome_state::WsTab::Agents);
                 Ok(())
+            },
+        },
+        // The Agents tab's Remove, for every caller: the same function, so
+        // a person clicking and a script or screen reader end an agent's
+        // access the same way.
+        Action {
+            id: crate::shell::membership::AGENT_REMOVE_ACTION,
+            label: "search-action-agent-remove",
+            subtitle: "search-action-agent-remove-subtitle",
+            params: AGENT_REMOVE_PARAMS,
+            apply: |st, args| {
+                // Case-folded like `agent.invite`, which admitted it.
+                let agent = args.text("name").unwrap_or_default().trim().to_lowercase();
+                if agent.is_empty() {
+                    return Err(ActionError::Refused(
+                        "name the agent to remove; nothing was changed".into(),
+                    ));
+                }
+                crate::shell::membership::remove_agent(st, &agent).map_err(Into::into)
             },
         },
         chrome(
@@ -4958,7 +4998,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-        settings_store::install_source(Some(session.host_view().unwrap()));
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
         let mut transaction =
             DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
         transaction.state = DisplayTransactionState::AwaitingConfirmation;
@@ -4997,7 +5037,7 @@ mod tests {
         }
         let _ = sent.send(());
         let responsive = release.join().unwrap();
-        settings_store::install_source(None);
+        drop(settings);
         assert!(
             responsive,
             "published Keep dispatch blocked on the real storage lock"
@@ -5045,7 +5085,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5078,7 +5119,7 @@ mod tests {
                 reopened.load()["display_transaction"],
                 copy["display_transaction"]
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -5092,7 +5133,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5114,7 +5156,7 @@ mod tests {
                 reopened.load()["display_transaction"],
                 serde_json::to_value(&transaction).unwrap()
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -5134,7 +5176,7 @@ mod tests {
             .unwrap()
             .clone();
         let source = Arc::new(settings_store::HostDocument::new(document, |_| Ok(())));
-        settings_store::install_source(Some(source.clone()));
+        let settings = crate::shell::test_support::install_settings(source.clone());
         let (entered, started) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         crate::shell::durable_writer::global()
@@ -5166,7 +5208,7 @@ mod tests {
             source.load()["display_transaction"]["state"],
             "confirm_requested"
         );
-        settings_store::install_source(None);
+        drop(settings);
     }
 
     #[test]
@@ -5179,7 +5221,8 @@ mod tests {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
             let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            settings_store::install_source(Some(session.host_view().unwrap()));
+            let settings =
+                crate::shell::test_support::install_settings(session.host_view().unwrap());
             let mut transaction =
                 DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
                     .unwrap();
@@ -5214,7 +5257,7 @@ mod tests {
                 repaired["display_transaction"],
                 record["display_transaction"]
             );
-            settings_store::install_source(None);
+            drop(settings);
         }
     }
 
@@ -6770,17 +6813,10 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
-        struct Uninstall;
-        impl Drop for Uninstall {
-            fn drop(&mut self) {
-                settings_store::install_source(None);
-            }
-        }
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
-        settings_store::install_source(Some(std::sync::Arc::new(records)));
-        let _uninstall = Uninstall;
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -8442,6 +8478,110 @@ mod tests {
             );
             assert_eq!(capabilities(&chrome), before);
         }
+    }
+
+    /// The Agents tab's Remove is an action too: it revokes every grant
+    /// naming the agent, membership included, and refuses anyone who does
+    /// not administer the room, through the action and the tab alike.
+    #[test]
+    fn agent_remove_action_revokes_everything_the_agent_holds() {
+        let apply = |chrome: &Chrome, id: &str, params: &[ActionParam], name: &str| {
+            let action = Action::ALL
+                .iter()
+                .find(|action| action.id == id)
+                .expect("registered");
+            let mut values = vec![(
+                "name".to_string(),
+                crate::shell::search::action_api::ArgValue::Text(name.to_string()),
+            )];
+            if params.iter().any(|param| param.name == "confirm") {
+                values.push((
+                    "confirm".to_string(),
+                    crate::shell::search::action_api::ArgValue::Boolean(true),
+                ));
+            }
+            let args = ActionArgs::bind(params, values).expect("declared parameters");
+            (action.apply)(&mut chrome.borrow_mut(), &args)
+        };
+        let grants_of = |chrome: &Chrome, agent: &str| {
+            let subject = tilo_action_policy::Subject::agent(agent);
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("fixture has a room")
+                .policy
+                .grants
+                .iter()
+                .filter(|grant| grant.subject == subject)
+                .count()
+        };
+
+        // Phase `the_owner_removes_an_admitted_agent`.
+        {
+            let chrome = chrome_with_room();
+            apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "Scribe").expect("owner admits");
+            assert!(grants_of(&chrome, "scribe") > 0, "admitted");
+            apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "  SCRIBE ")
+                .expect("the owner may remove the agent, named in any case");
+            assert_eq!(
+                grants_of(&chrome, "scribe"),
+                0,
+                "no grant names it any more"
+            );
+            assert!(
+                chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .unwrap()
+                    .agent_members_at(tilo_clock::unix_now())
+                    .is_empty(),
+                "the Agents tab no longer lists it"
+            );
+            assert!(
+                matches!(
+                    apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "scribe"),
+                    Err(ActionError::Refused(_))
+                ),
+                "removing an agent that holds nothing says so"
+            );
+        }
+
+        // Phase `a_non_administrator_is_refused_by_the_action_and_by_the_tab`.
+        {
+            let chrome = chrome_with_room();
+            apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "scribe").expect("owner admits");
+            chrome
+                .borrow_mut()
+                .tree_mut()
+                .desktop
+                .active_workspace_mut()
+                .unwrap()
+                .set_owner("foreign-owner");
+            let before = capabilities(&chrome);
+            assert!(matches!(
+                apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "scribe"),
+                Err(ActionError::Refused(_))
+            ));
+            assert_eq!(
+                crate::shell::membership::remove_agent(&mut chrome.borrow_mut(), "scribe"),
+                Err(crate::shell::membership::MembershipError::Unauthorized(
+                    crate::shell::membership::AGENT_REMOVE_ACTION
+                )),
+                "the Agents tab's own entry point refuses a non-administrator too"
+            );
+            assert_eq!(capabilities(&chrome), before);
+        }
+
+        let contract = shell_action_contract("agent.remove");
+        assert_eq!(contract.risk, tilo_actions::RiskLevel::Destructive);
+        assert_eq!(
+            contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
     }
 
     #[test]

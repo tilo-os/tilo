@@ -3,7 +3,7 @@ use crate::operator_graph::{OperatorKind, OperatorNode, OperatorState};
 use crate::resource::{Project as ChipProject, project};
 use crate::view::ChipEffect;
 use ui::framework::{EffectCx, Effected, ViewCx};
-use ui::graph_editor::{Edge, GraphEditor};
+use ui::graph_editor::{Edge, connection_targets};
 use ui::i18n::I18nManager;
 use ui::tilo_resource::{Id, Invoke};
 use ui::tokens::TextRole;
@@ -98,7 +98,7 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
         .output
         .as_ref()
         .map_or_else(Vec::new, |(node, port)| {
-            GraphEditor::connection_targets(&graph, node, port)
+            connection_targets(&graph, node, port)
         });
     let nodes = state
         .nodes

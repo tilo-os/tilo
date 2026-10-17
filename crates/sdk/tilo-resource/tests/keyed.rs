@@ -292,3 +292,185 @@ fn ordered_items_keep_the_arranged_order_and_merge_by_identity() {
     assert_eq!(stack_ids(&Timeline::read(&doc).unwrap()), ["c", "d", "b"]);
     assert!(paths.path().edits(&after, &after).is_empty());
 }
+
+// --- Values stored as JSON, compared in memory first -------------------------
+
+thread_local! {
+    static KEYS_SERIALISED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn keys_serialised() -> usize {
+    KEYS_SERIALISED.with(std::cell::Cell::get)
+}
+
+/// Keyframes that count how often they are serialised.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(transparent)]
+pub struct Keys(pub Vec<(f64, f64)>);
+
+impl Serialize for Keys {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        KEYS_SERIALISED.with(|serialised| serialised.set(serialised.get().saturating_add(1)));
+        self.0.serialize(serializer)
+    }
+}
+
+tilo_resource::json_model!(Keys);
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Reel {
+    pub id: String,
+    pub opacity: f64,
+    pub keys: Keys,
+}
+
+impl Identified for Reel {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Film {
+    pub reels: Keyed<Reel>,
+}
+
+/// The same reel with its keyframes in [`Json`](tilo_resource::Json), which
+/// compares values only by their JSON forms.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct FormReel {
+    pub id: String,
+    pub opacity: f64,
+    pub keys: tilo_resource::Json<Vec<(f64, f64)>>,
+}
+
+impl Identified for FormReel {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct FormFilm {
+    pub reels: Keyed<FormReel>,
+}
+
+fn film(reels: usize) -> Film {
+    Film {
+        reels: (0..reels)
+            .map(|n| Reel {
+                id: format!("r{n:04}"),
+                opacity: 1.0,
+                keys: Keys(vec![
+                    (0.0, 1.0),
+                    (f64::from(u32::try_from(n).unwrap()), 0.5),
+                ]),
+            })
+            .collect(),
+    }
+}
+
+fn form_film(film: &Film) -> FormFilm {
+    FormFilm {
+        reels: film
+            .reels
+            .iter()
+            .map(|reel| FormReel {
+                id: reel.id.clone(),
+                opacity: reel.opacity,
+                keys: tilo_resource::Json(reel.keys.0.clone()),
+            })
+            .collect(),
+    }
+}
+
+type EditParts = Vec<(Vec<tilo_resource::Segment>, tilo_resource::EditOp)>;
+
+fn edit_parts<R>(edits: &[tilo_resource::Edit<R>]) -> EditParts {
+    edits
+        .iter()
+        .map(|edit| (edit.path().to_vec(), edit.op().clone()))
+        .collect()
+}
+
+#[test]
+fn items_changed_in_place_compare_their_json_values_in_memory() {
+    let before = film(300);
+    let id = Id::from_raw("r0150");
+
+    let mut after = before.clone();
+    for reel in &mut after.reels {
+        if reel.id == "r0150" {
+            reel.opacity = 0.5;
+        }
+    }
+    let serialised = keys_serialised();
+    let edits = Path::<Film, Film>::root().edits(&before, &after);
+    assert_eq!(
+        keys_serialised().saturating_sub(serialised),
+        0,
+        "300 unchanged keyframe tracks compared without serialising one"
+    );
+    assert_eq!(edits, [Film::paths().reels.item(&id).opacity.set(0.5)]);
+
+    let mut after = before.clone();
+    let mut changed = Keys::default();
+    for reel in &mut after.reels {
+        if reel.id == "r0150" {
+            reel.keys.0.push((9.0, 1.0));
+            changed = reel.keys.clone();
+        }
+    }
+    let serialised = keys_serialised();
+    let edits = Path::<Film, Film>::root().edits(&before, &after);
+    assert!(
+        keys_serialised().saturating_sub(serialised) <= 4,
+        "only the changed track is serialised"
+    );
+    assert_eq!(edits, [Film::paths().reels.item(&id).keys.set(changed)]);
+}
+
+#[test]
+fn json_values_compared_in_memory_edit_as_their_forms_do() {
+    let mut rng = 17_u64;
+    let mut next = |bound: u64| {
+        rng = rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from((rng >> 33) % bound).unwrap()
+    };
+    for seed in 0..40 {
+        let before = film(30);
+        let mut after = before.clone();
+        for step in 0..next(6) {
+            let target = format!("r{:04}", next(30));
+            let at = f64::from(u32::try_from(step).unwrap());
+            let change = next(5);
+            for reel in &mut after.reels {
+                if reel.id != target {
+                    continue;
+                }
+                match change {
+                    0 => reel.opacity = at,
+                    1 => reel.keys.0.push((at, 0.25)),
+                    2 => reel.keys.0.clear(),
+                    // Equal in memory, another text: no edit, as by form.
+                    3 => {
+                        if let Some(first) = reel.keys.0.first_mut() {
+                            first.0 = -first.0;
+                        }
+                    }
+                    // Replaced whole.
+                    _ => reel.keys = Keys(vec![(0.0, 1.0)]),
+                }
+            }
+        }
+        let by_form =
+            Path::<FormFilm, FormFilm>::root().edits(&form_film(&before), &form_film(&after));
+        assert_eq!(
+            edit_parts(&Path::<Film, Film>::root().edits(&before, &after)),
+            edit_parts(&by_form),
+            "seed {seed}"
+        );
+    }
+}

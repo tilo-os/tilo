@@ -3487,6 +3487,13 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
             .unwrap(),
         0
     );
+    let metrics = fixture.metrics.snapshot();
+    assert_eq!(metrics.subscribes, 2, "both subscribes are counted");
+    assert_eq!(
+        (metrics.replayed_pending, metrics.replayed_retained),
+        (25, 0),
+        "only the completed replay counts its frames, all from the pending queue"
+    );
 }
 
 #[tokio::test]
@@ -3634,5 +3641,80 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             .await;
         assert_eq!(ran, change == "current", "{change}");
         assert_eq!(result.is_ok(), change == "current", "{change}");
+    }
+}
+
+/// A member device's access request for a channel, as it publishes one.
+fn access_request_frame(fixture: &Fixture, authored_at_ns: u64) -> Envelope {
+    let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        room: "room".into(),
+        request: Box::new(
+            collab_types::MlsAccessRequestV1::signed(
+                collab_types::ChannelId::new(),
+                vec![1],
+                1,
+                &fixture.source_key,
+            )
+            .unwrap(),
+        ),
+        delivery: 0,
+    };
+    let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+    fixture.checkpoint_frame(
+        authored_at_ns,
+        channel,
+        postcard::to_stdvec(&message).unwrap(),
+    )
+}
+
+/// When each original envelope `fixture`'s recipient was handed live so far
+/// was authored.
+fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
+    let mut times = Vec::new();
+    while let Ok(delivery) = fixture.recipient_rx.try_recv() {
+        if let LiveEnvelope::Original(envelope) = &delivery.envelope
+            && let Envelope::Delta { authored_at_ns, .. } = &**envelope
+        {
+            times.push(*authored_at_ns);
+        }
+    }
+    times
+}
+
+/// In a room this relay governs, the relay's own device stewards every
+/// channel: a member's access request goes to it and to no other member,
+/// while the member's other changes reach them as before. In a room it does
+/// not govern, the request reaches every member, whichever one stewards.
+#[tokio::test]
+async fn a_governed_rooms_access_requests_reach_no_other_member() {
+    for governed in [false, true] {
+        let mut fixture = Fixture::new();
+        if governed {
+            fixture.workspace.lock().await.room_authority =
+                Some(crate::rooms::RoomAuthority::governed_by("room", [9; 32]));
+        }
+        enqueue_state(
+            &fixture.workspace,
+            access_request_frame(&fixture, 1),
+            Some(fixture.source.clone()),
+            PeerRole::Device,
+            fixture.metrics.clone(),
+        )
+        .await
+        .unwrap();
+        // A retained delta, authored at 2.
+        fixture.enqueue(2).await;
+        fixture.drained_wait().await;
+        let delivered = delivered_times(&mut fixture);
+        if governed {
+            assert_eq!(delivered, [2], "only the edit reached the member");
+        } else {
+            assert_eq!(delivered, [1, 2]);
+        }
+        assert_eq!(
+            fixture.store.load_retained().unwrap().len(),
+            2,
+            "the request is retained either way"
+        );
     }
 }

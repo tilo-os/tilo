@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each integration test compiles this shared support module but uses only some helpers"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -10,7 +13,6 @@
 )]
 
 pub mod evidence;
-pub mod offscreen;
 pub mod ratchet;
 #[cfg(unix)]
 pub mod typed_collab;

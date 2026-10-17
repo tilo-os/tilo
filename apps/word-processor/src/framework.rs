@@ -226,7 +226,19 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
                 .ok_or("there is no one picture to share: place the caret on one")?;
             return Effected::content(&hash);
         }
-        self.answer_effect(effect, cx)
+        // Files on disk, not the document open here.
+        match effect {
+            WordProcessorEffect::ReadFile { file, from } => Ok(Effected::value(
+                crate::file_convert::read_file(&file, from)?,
+            )),
+            WordProcessorEffect::ConvertFile { file, to } => {
+                let written = crate::file_convert::convert_file(&file, &to)?;
+                Ok(Effected::value(
+                    serde_json::json!({ "file": written.display().to_string() }),
+                ))
+            }
+            effect => self.answer_effect(effect, cx),
+        }
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
@@ -261,6 +273,8 @@ mod tests {
             "open-document",
             "save",
             "save-as",
+            "read-file",
+            "convert-file",
             "zoom-in",
             "move-caret",
             "type-text",
@@ -270,6 +284,42 @@ mod tests {
         ] {
             assert!(ids.contains(&id), "{id}: {ids:?}");
         }
+    }
+
+    /// A caller with no screen converts a file on disk and reads one, and
+    /// the document open here is untouched.
+    #[test]
+    fn files_on_disk_convert_and_read_without_opening_them() {
+        use super::WordProcessorEffect;
+        let root = tempfile::tempdir().unwrap();
+        let notes = root.path().join("notes.md");
+        std::fs::write(&notes, "# Notes\n\nBuy milk.").unwrap();
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        let before = app.peer_document().get_heads();
+        let converted = app
+            .effect(&WordProcessorEffect::ConvertFile {
+                file: notes.display().to_string(),
+                to: "odt".into(),
+            })
+            .unwrap()
+            .value
+            .unwrap();
+        let odt = root.path().join("notes.odt");
+        assert_eq!(converted["file"], odt.display().to_string());
+        let read = app
+            .effect(&WordProcessorEffect::ReadFile {
+                file: odt.display().to_string(),
+                from: None,
+            })
+            .unwrap()
+            .value
+            .unwrap();
+        assert!(
+            read["text"].as_str().unwrap().contains("Buy milk."),
+            "{read}"
+        );
+        app.settle();
+        assert_eq!(app.peer_document().get_heads(), before);
     }
 
     #[test]

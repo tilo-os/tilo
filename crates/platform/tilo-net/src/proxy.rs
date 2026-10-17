@@ -49,6 +49,7 @@ use ::http::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::NetError;
+use tilo_lock::RwLockRecover as _;
 
 /// Marks a request as meant for the proxy; value `1`.
 pub const MARKER_HEADER: &str = "x-tilo-proxy";
@@ -184,9 +185,7 @@ pub fn configure(endpoint: Option<Url>) -> Result<(), NetError> {
     if let Some(endpoint) = &endpoint {
         check_endpoint(endpoint)?;
     }
-    *ENDPOINT
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Decision::Host(endpoint);
+    *ENDPOINT.write_recover() = Decision::Host(endpoint);
     Ok(())
 }
 
@@ -194,10 +193,7 @@ pub fn configure(endpoint: Option<Url>) -> Result<(), NetError> {
 /// `globalThis.__tiloFetchProxy`, else none.
 #[must_use]
 pub fn endpoint() -> Option<Url> {
-    let decision = ENDPOINT
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let decision = ENDPOINT.read_recover().clone();
     match decision {
         Decision::Page => page_default(),
         Decision::Host(endpoint) => endpoint,

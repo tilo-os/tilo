@@ -10,6 +10,7 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use hyper::client::conn::http1::SendRequest;
 use tilo_browser_peer::{HttpClient, HttpFuture};
+use tilo_lock::MutexRecover as _;
 
 type Sender = SendRequest<Full<Bytes>>;
 
@@ -32,11 +33,7 @@ impl Plain {
 
     async fn sender(&self) -> Result<Sender, String> {
         loop {
-            let reused = self
-                .idle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .pop();
+            let reused = self.idle.lock_recover().pop();
             match reused {
                 Some(mut sender) => {
                     if sender.ready().await.is_ok() {
@@ -60,10 +57,7 @@ impl Plain {
 
     fn keep(&self, sender: Sender) {
         if !sender.is_closed() {
-            self.idle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(sender);
+            self.idle.lock_recover().push(sender);
         }
     }
 

@@ -308,6 +308,7 @@ pub async fn track(
     connection: zbus::Connection,
     destination: Option<String>,
     path: String,
+    owner_app: Option<String>,
 ) -> zbus::Result<String> {
     let key = key_for(destination.as_deref(), &path);
     let address = ItemAddress {
@@ -315,6 +316,7 @@ pub async fn track(
         destination: destination.clone(),
         path,
         menu_path: None,
+        owner_app,
     };
     let item = read(address.clone(), key.clone(), tray.rasteriser()).await?;
     tray.upsert(item);

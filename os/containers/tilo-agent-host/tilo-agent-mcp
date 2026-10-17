@@ -10,17 +10,6 @@ TOKEN_FILE="${TILO_RUNTIME_MCP_HTTP_TOKEN_FILE:-/run/tilo/mcp-token}"
 MCP_HTTP="${TILO_RUNTIME_MCP_HTTP:-127.0.0.1:7391}"
 LABEL="${TILO_DEVICE_NAME:-Agent host}"
 
-case "$MCP_HTTP" in
-  127.0.0.1:*|localhost:*|[::1]:*)
-    ;;
-  *)
-    if [ ! -s "$TOKEN_FILE" ] && [ ! -s "${TILO_RUNTIME_MCP_HTTP_TOKEN_FILE:-}" ]; then
-      echo "tilo-agent-mcp: non-loopback MCP requires a token file at $TOKEN_FILE" >&2
-      exit 1
-    fi
-    ;;
-esac
-
 /usr/bin/busybox mkdir -p "$PROFILE" "$IDENTITY_DIR" "$(/usr/bin/busybox dirname "$TOKEN_FILE")"
 /usr/bin/busybox chmod 700 "$PROFILE" 2>/dev/null || true
 

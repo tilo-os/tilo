@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use serde::{Deserialize, Serialize};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
@@ -72,15 +72,33 @@ pub enum DefaultAppsEffect {
         #[param("The installed app's id")]
         app: String,
     },
+    /// Open the workspace's own app defaults in Workspace Settings.
+    #[effect(job)]
+    OpenWorkspaceDefaults,
 }
 
-/// Answer `effect`: only an installed app that claims the kind is accepted.
+/// Answer `effect`: only an installed app that claims the kind is accepted;
+/// the shell is asked to open Workspace Settings off the UI thread.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DefaultAppsEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let DefaultAppsEffect::SetDefaultApp { kind, app: package } = effect;
+    let (kind, package) = match effect {
+        DefaultAppsEffect::SetDefaultApp { kind, app } => (kind, app),
+        DefaultAppsEffect::OpenWorkspaceDefaults => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            return Ok(crate::device_read::job(
+                cx,
+                open_workspace_defaults,
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ));
+        }
+    };
     let resource =
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
     let area = app.default_apps();
@@ -236,6 +254,7 @@ fn sample_candidates() -> Vec<AppCandidate> {
         package_id: package.into(),
         display_name: name.into(),
         resources: kinds.into_iter().collect(),
+        secondary: false,
     };
     let ext = |ext: &str| ResourceKind::extension(ext).ok();
     let scheme = |scheme: &str| ResourceKind::scheme(scheme).ok();
@@ -399,17 +418,13 @@ impl PersonalAppsPane {
                     &t("settings-personal-apps-applies-value"),
                 ),
                 note(&t("settings-personal-apps-scope-caption")),
-                row(Box::new(
+                row(Box::new(self.cx.bind_invocation(
                     Button::new(
                         "open-workspace-app-defaults",
                         &t("settings-personal-apps-open-workspace"),
-                    )
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-                        });
-                    }),
-                )),
+                    ),
+                    DefaultAppsEffect::OpenWorkspaceDefaults,
+                ))),
             ]),
         );
         crate::widgets::cards(vec![
@@ -417,6 +432,15 @@ impl PersonalAppsPane {
             card(&t("settings-personal-apps-files-title"), body),
         ])
     }
+}
+
+/// Ask the shell to open Workspace Settings at its app defaults: a round
+/// trip to the shell, so it runs off the UI thread.
+fn open_workspace_defaults() -> Result<(), String> {
+    crate::device_read::off_ui_thread();
+    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+    })
 }
 
 /// Read real installed manifests. A type only appears if an installed GUI app
@@ -458,6 +482,7 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
             package_id,
             resources,
+            secondary: manifest.opens_secondary,
         });
     }
     out.sort_by(|a, b| {
@@ -494,6 +519,7 @@ mod tests {
             package_id: id.into(),
             display_name: id.into(),
             resources: [ResourceKind::extension(ext).unwrap()].into(),
+            secondary: false,
         }
     }
 

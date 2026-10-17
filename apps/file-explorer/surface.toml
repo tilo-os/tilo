@@ -75,6 +75,47 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "import-mounted"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "paths", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "folder", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "cloud-import"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "job_id", required = true, schema = { type = "string" } },
+  { name = "account", required = true, schema = { type = "string" } },
+  { name = "entries", required = true, schema = { type = "array", items = {} } },
+  { name = "destination", required = true, schema = { type = "object", properties = { path = { type = "string" }, identity = { type = "object", properties = { device = { type = "integer", minimum = 0 }, inode = { type = "integer", minimum = 0 }, modified = { type = ["array", "null"], maxItems = 3, minItems = 3 } }, required = ["device", "inode"] } }, required = ["path", "identity"] } },
+]
+
+[[resources.verbs]]
+id = "write-file"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "folder", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "replace", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "compress"
+kind = "outside"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "entries", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "record-clipboard-transfer"
 kind = "outside"
 params = [

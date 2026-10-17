@@ -22,6 +22,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::{Duration, Instant};
+
+/// How long a copied code stays on the clipboard: one code period, after
+/// which it is useless anyway.
+const CODE_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(30);
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -342,7 +346,10 @@ impl AuthenticatorApp {
                 return;
             }
             let code = totp::current_code(&acc);
-            ui::text_selection::clipboard_copy(&code);
+            if !ui::try_clipboard_copy_secret(&code, CODE_ON_CLIPBOARD_FOR) {
+                self.toast("Could not copy to the clipboard", ToastKind::Error);
+                return;
+            }
             self.last_copied = Some(code);
             self.toast(format!("Copied {} code", acc.title()), ToastKind::Success);
         }
@@ -1360,6 +1367,8 @@ mod tests {
     /// Accessibility, event and Enter copies share the row's clipboard semantics; toasts distinguish failures.
     #[test]
     fn copy_paths_share_row_semantics_and_toast_severity() {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
         // Case `accessibility_copy_uses_the_existing_list_event_path`.
         {
             let mut framed = framed(app_with_state(), 640, 700);
@@ -1397,6 +1406,11 @@ mod tests {
             assert!(
                 copied == before || copied == after,
                 "copied {copied:?} must equal the account's live code ({before:?}/{after:?})"
+            );
+            assert_eq!(
+                recorder.secret_copies().last().map(String::as_str),
+                Some(copied),
+                "a code is copied as a secret, out of history and device sync"
             );
         }
 

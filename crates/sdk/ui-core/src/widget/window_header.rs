@@ -67,6 +67,75 @@ pub trait WindowHeader {
         let _ = status;
         false
     }
+
+    /// Merge the window's bar into this header row while the window is
+    /// maximized, or stop (`None`). The row reserves `bar.controls_width` at
+    /// its trailing end for the window's controls, which the host paints
+    /// there when the person reaches for them, so the app's header and the
+    /// window's controls read as one bar instead of two stacked ones. A row
+    /// whose app put its header in the window's bar
+    /// ([`WindowBarSlot::hides_with_bar`]) shows only while `bar.revealed`,
+    /// over the app's content. Returns whether the row took the bar; a row
+    /// that does not leaves the host to float its controls over the window.
+    fn set_window_bar(&mut self, bar: Option<WindowBar>) -> bool {
+        let _ = bar;
+        false
+    }
+
+    /// Where the row stands and where the window's controls go, after
+    /// layout, while it holds the window's bar.
+    fn window_bar_slot(&self) -> Option<WindowBarSlot> {
+        None
+    }
+}
+
+/// The window's bar, as the host offers it to a header row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowBar {
+    /// Room the window's controls take at the row's trailing end.
+    pub controls_width: f64,
+    /// Whether the person reached for the bar
+    /// ([`crate::widget::TopEdgeReveal`]).
+    pub revealed: bool,
+    /// How far below the window's top edge the bar stands: the height of
+    /// what overlays that edge now (the desktop's top bar, while it shows
+    /// over a window under an auto-hiding top bar), so the two stack instead
+    /// of one covering the other. A row whose header lives in the bar moves
+    /// down by it; a permanent row stays put.
+    pub top_inset: f64,
+}
+
+/// A header row holding the window's bar, after layout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowBarSlot {
+    /// The bar: the header row across the window's top edge, where it stands
+    /// when shown (also while hidden, so the host knows where it will be).
+    pub row: Rect,
+    /// Where the window's controls go: the trailing end of the row,
+    /// `controls_width` wide and the row's height.
+    pub controls: Rect,
+    /// The app put its header in the window's bar: it shows only with the
+    /// bar, over the content, instead of standing above it.
+    pub hides_with_bar: bool,
+}
+
+/// Offer the window's bar to the first header row in `root`'s tree. Returns
+/// whether a row took it.
+pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
+    if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
+        return header.set_window_bar(bar);
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| offer_window_bar(child, bar))
+}
+
+/// The slot of the first header row in `root`'s tree that holds the bar.
+pub(crate) fn window_bar_slot(root: &dyn Widget) -> Option<WindowBarSlot> {
+    if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
+        return header.window_bar_slot();
+    }
+    root.children().into_iter().find_map(window_bar_slot)
 }
 
 /// Hand the window's sync status to the first header row in `root`'s tree.

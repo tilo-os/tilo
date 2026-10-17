@@ -3722,7 +3722,7 @@ impl InstallerApp {
             Text::new(if self.recovery_key_copied {
                 "Copied. Paste it into a password manager or an encrypted note on another drive before rebooting."
             } else {
-                "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy when you reboot or power off."
+                "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy after 5 minutes, or when you reboot or power off."
             })
             .with_role(TextRole::Caption)
             .with_color(if self.recovery_key_copied {
@@ -6302,6 +6302,8 @@ mod tests {
         }
         // Phase `visible_recovery_key_can_be_copied_without_entering_shared_state`.
         {
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
             app.install_state = InstallState::Running;
@@ -6331,6 +6333,11 @@ mod tests {
             activate(&mut app, &mut doc, "recovery_key_copy");
             assert!(app.recovery_key_copied);
             assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
+            assert_eq!(
+                recorder.secret_copies(),
+                [key],
+                "the key is copied as a secret, out of history and device sync"
+            );
             assert!(
                 !String::from_utf8_lossy(&doc.save()).contains(key),
                 "the recovery secret must never be replicated through the CRDT"

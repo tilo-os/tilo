@@ -524,29 +524,6 @@ struct ImportState {
     pre_depth: usize,
 }
 
-/// Import `html` as the rich text under `root`, a rich-text field of another document (a
-/// message body): its containers are started when missing and the imported paragraphs appended.
-/// An import holding no paragraph leaves one empty paragraph to type in. Images arrive in
-/// `inputs`.
-pub fn import_html_under(
-    doc: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    html: &str,
-    inputs: &mut ContentInputs,
-) {
-    let c = tilo_doc::model::init(doc, root);
-    let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
-    let mut dm = DocMut {
-        doc,
-        c: &c,
-        ids: &mut ids,
-    };
-    dm.bulk(|dm| import_html(html, dm, inputs));
-    if tilo_doc::model::blocks_in_order(dm.doc, &c).is_empty() {
-        dm.insert_block(None, "paragraph");
-    }
-}
-
 fn import_html(src: &str, doc: &mut DocMut, inputs: &mut ContentInputs) {
     let tokens = tokenize(src);
     let mut st = ImportState::default();
@@ -1044,6 +1021,29 @@ mod tests {
             .import(src.as_bytes(), &mut d.as_mut(), &mut inputs)
             .unwrap();
         (d.materialize(), inputs)
+    }
+
+    /// Import `html` as the rich text under `root`, a rich-text field of another document (a
+    /// message body): its containers are started when missing and the imported paragraphs appended.
+    /// An import holding no paragraph leaves one empty paragraph to type in. Images arrive in
+    /// `inputs`.
+    fn import_html_under(
+        doc: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+        html: &str,
+        inputs: &mut ContentInputs,
+    ) {
+        let c = tilo_doc::model::init(doc, root);
+        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = DocMut {
+            doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.bulk(|dm| import_html(html, dm, inputs));
+        if tilo_doc::model::blocks_in_order(dm.doc, &c).is_empty() {
+            dm.insert_block(None, "paragraph");
+        }
     }
 
     #[test]

@@ -22,13 +22,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use tilo_files::{Change, ChangeKind, FsError, VPath, Watch};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::store::{GOVERNED_ACCESS_FILE, MEMBERSHIP_FILE};
+use tilo_lock::MutexRecover as _;
 
 /// Changes queued from the native watches to the watch task.
 const QUEUED_CHANGES: usize = 256;
@@ -47,8 +48,7 @@ pub(crate) struct MembershipWatch {
 impl MembershipWatch {
     fn room(&self, workspace_id: u64) -> Arc<AtomicU64> {
         self.rooms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .entry(workspace_id)
             .or_default()
             .clone()
@@ -57,12 +57,7 @@ impl MembershipWatch {
     /// A room nobody has attached to yet needs no bump: its first read loads
     /// the disk anyway.
     fn bump(&self, workspace_id: u64) {
-        let room = self
-            .rooms
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&workspace_id)
-            .cloned();
+        let room = self.rooms.lock_recover().get(&workspace_id).cloned();
         if let Some(room) = room {
             room.fetch_add(1, Ordering::Release);
             // Sessions in the room re-audit, and so read the change.
@@ -90,7 +85,7 @@ impl MembershipWatch {
     }
 
     fn bump_all(&self) {
-        let rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+        let rooms = self.rooms.lock_recover();
         for room in rooms.values() {
             room.fetch_add(1, Ordering::Release);
         }
@@ -148,8 +143,7 @@ pub(crate) fn attach(room_root: &Path) -> Option<DiskGeneration> {
     let workspace_id = room_root.file_name()?.to_str()?.parse().ok()?;
     let workspaces = room_root.parent()?;
     let watch = registry()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .filter_map(Weak::upgrade)
         .find(|watch| watch.workspaces == workspaces)?;
@@ -165,8 +159,7 @@ impl Drop for Registration {
     fn drop(&mut self) {
         self.0.set_live(false);
         registry()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .retain(|watch| watch.strong_count() > 0 && watch.as_ptr() != Arc::as_ptr(&self.0));
     }
 }
@@ -182,7 +175,7 @@ pub(crate) fn spawn_membership_watch(state_root: &Path) -> JoinHandle<()> {
         delivered: AtomicU64::new(0),
     });
     {
-        let mut watches = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        let mut watches = registry().lock_recover();
         watches.retain(|watch| watch.strong_count() > 0);
         watches.push(Arc::downgrade(&watch));
     }
@@ -420,8 +413,7 @@ fn own_writes() -> &'static Mutex<HashMap<PathBuf, [u8; 32]>> {
 /// anything else (an earlier write, another process's) is announced.
 pub(crate) fn wrote_own(path: &Path, bytes: &[u8]) {
     own_writes()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .insert(path.to_path_buf(), *blake3::hash(bytes).as_bytes());
 }
 
@@ -429,8 +421,7 @@ pub(crate) fn wrote_own(path: &Path, bytes: &[u8]) {
 /// there ([`wrote_own`]).
 fn is_own(path: &Path, bytes: &[u8]) -> bool {
     own_writes()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .get(path)
         .is_some_and(|own| own == blake3::hash(bytes).as_bytes())
 }

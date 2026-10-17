@@ -23,7 +23,7 @@ class SharedWebAssets(unittest.TestCase):
         calls = root / 'calls.jsonl'
         common = 'import json,os,pathlib,sys\nroot=pathlib.Path(os.environ["FIXTURE_ROOT"])\n'
         programs = {
-            'cargo': common + 'assert sys.argv[1:]==["build","--locked","--quiet","-p","tilo-app-cli","--bin","tilo-app"]\n',
+            'cargo': common + 'assert sys.argv[1:]==["build","--locked","-p","tilo-app-cli","--bin","tilo-app"]\n',
             'wasm-bindgen': 'print("wasm-bindgen 0.fixture")\n',
             'npm': common + 'assert sys.argv[1:]==["ci","--no-audit","--no-fund","--silent"]\nif os.environ.get("FAIL_NPM")=="1":sys.exit(23)\nwith (root/"calls.jsonl").open("a") as f:f.write(json.dumps({"npm":1})+"\\n")\n',
 
@@ -40,8 +40,10 @@ fs.writeFileSync(path.join(root,'crates/browser/tilo-browser-runtime/web/media-m
 """)
         cli = common + '''if sys.argv[1:]==["examples","--json"]:
  print(os.environ["FIXTURE_EXAMPLES"])
+ sys.exit(int(os.environ.get("DISCOVERY_EXIT", "0")))
 else:
  assert sys.argv[1:5]==["build","--json","--platform","web"]
+ if sys.argv[5].endswith("/"+os.environ.get("FAIL_APP","-")):sys.exit(7)
  assert (root/"crates/browser/tilo-browser-runtime/web/media-moq-library.mjs").read_text()=="export const pinned = true;"
  assert (root/"crates/browser/tilo-browser-runtime/web/media-moq-library.LICENSE.txt").read_text()=="pinned notices"
  with (root/"calls.jsonl").open("a") as f:f.write(json.dumps({"app":sys.argv[5]})+"\\n")
@@ -56,7 +58,10 @@ else:
         p = root / 'target/debug/tilo-app'
         p.write_text('#!' + os.sys.executable + '\n' + cli)
         p.chmod(0o755)
-        return {**os.environ, 'PATH': str(root / 'bin') + ':' + os.environ['PATH'],
+        # The script finds tilo-app under CARGO_TARGET_DIR when it is set, which in CI
+        # is the node's build directory: the fixture's own target/ is the one to use.
+        env = {key: value for key, value in os.environ.items() if key != 'CARGO_TARGET_DIR'}
+        return {**env, 'PATH': str(root / 'bin') + ':' + os.environ['PATH'],
                 'FIXTURE_ROOT': str(root), 'FIXTURE_EXAMPLES': json.dumps({'result': {'examples': examples}})}, calls
 
     def test_builds_pinned_shared_assets_once_before_every_selected_example(self):
@@ -73,6 +78,21 @@ else:
             for app in ['counter', 'qr-code']:
                 self.assertEqual((root/'bundles'/app/'media-moq-library.LICENSE.txt').read_text(), 'pinned notices')
 
+    def test_later_examples_build_together_and_any_failure_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            names = ['counter', 'qr-code', 'localized', 'data-table']
+            env, calls = self.fixture(root, [{'name': name, 'web': True} for name in names])
+            env['FAIL_APP'] = 'localized'
+            result = subprocess.run(['bash', str(root/'tools/ci/build-web-examples.sh'), *(f'example-{name}' for name in names)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('web build failed: localized', result.stderr)
+            built = [json.loads(x) for x in calls.read_text().splitlines()]
+            self.assertEqual(built[:2], [{'npm': 1}, {'app': 'examples/apps/counter'}])
+            self.assertEqual(sorted(call['app'] for call in built[2:]), ['examples/apps/data-table', 'examples/apps/qr-code'])
+            for app in ['counter', 'qr-code', 'data-table']:
+                self.assertIn(f'phase=web-example-{app}', result.stdout)
+
     def test_failed_pinned_setup_fails_before_any_example_is_built(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -82,6 +102,23 @@ else:
             self.assertEqual(result.returncode, 23, result.stderr)
             self.assertFalse(calls.exists())
             self.assertFalse((root/'bundles').exists())
+
+    def test_failed_or_malformed_discovery_cannot_pass_as_empty_selection(self):
+        cases = [
+            ('{"result":{"examples":[]}}', '19'),
+            ('{"result":{"examples":[{"name":"counter","web":true}]}}', '19'),
+            ('not JSON', '0'),
+        ]
+        for payload, status in cases:
+            with self.subTest(payload=payload, status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env, calls = self.fixture(root, [])
+                env.update(FIXTURE_EXAMPLES=payload, DISCOVERY_EXIT=status)
+                result = subprocess.run(['bash', str(root/'tools/ci/build-web-examples.sh'), 'example-counter'],
+                                        env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('no web-capable example selected', result.stdout)
+                self.assertFalse(calls.exists())
 
     def test_empty_selection_does_not_install_or_build_shared_assets(self):
         with tempfile.TemporaryDirectory() as directory:

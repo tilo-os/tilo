@@ -11,12 +11,14 @@
 //! | [`LIST_OPERATIONS`] | what can be done — to one resource, to a kind of resource in any application, in one application, or anywhere |
 //! | [`DESCRIBE_OPERATION`] | what one operation does, what it takes, the application's own example of it, and what the resource says about itself |
 //! | [`INVOKE`] | perform one published operation now, and see what it changed |
+//! | [`READ_RESULT`](crate::pages::READ_RESULT) | read on in a result too long for one observation |
 //! | [`PLAN`] | the answer: the steps to perform in order (plan mode), or the reply that finishes the task (loop mode) |
 //!
 //! Two tool sets are built from these. The *plan* set ([`definitions`]) is
 //! discovery plus a `plan` naming every step; the caller dispatches the steps
 //! afterwards. The *loop* set ([`loop_definitions`]) is discovery plus
-//! [`INVOKE`] plus a `plan` that only carries the reply: the agent
+//! [`INVOKE`], paging through long results, and a `plan` that only carries
+//! the reply: the agent
 //! discovers, invokes and observes step by step, the same way a person uses
 //! the palette, and a step that changes its view (a selection, a find) can
 //! make later operations available.
@@ -244,10 +246,69 @@ fn open_note(catalogue: &Catalogue, app: &str) -> String {
 /// The resource prefix of the launcher's published open.
 pub const LAUNCHER_OPEN_PREFIX: &str = "desktop:app:";
 
+/// Read the object and array arguments of `offer` that a model wrote as
+/// JSON text back into objects and arrays. The invoke tool takes its
+/// parameters as an open object, so a model cannot see that a parameter
+/// (a selection's place, say) is an object, and some (Gemini) then pass it
+/// as its JSON encoding. Text that is not the declared kind of JSON stays
+/// as it is, to be refused with what the parameter takes. A place
+/// parameter whose fields were written beside it instead of inside it
+/// (`"item"`, `"start"`, `"end"` next to the other arguments) is gathered
+/// back into the place.
+pub fn decode_structured_arguments(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    gather_flat_place(offer, arguments);
+    for param in &offer.descriptor.params {
+        let Some(Value::String(text)) = arguments.get(param.name.as_ref()) else {
+            continue;
+        };
+        let ((tilo_actions::ParamType::Object, Ok(decoded @ Value::Object(_)))
+        | (tilo_actions::ParamType::Array, Ok(decoded @ Value::Array(_)))) =
+            (param.ty, serde_json::from_str::<Value>(text.trim()))
+        else {
+            continue;
+        };
+        arguments.insert(param.name.to_string(), decoded);
+    }
+}
+
+/// The place parameter of `offer` rebuilt from its fields written at the
+/// top level: `item` with `start` and `end`, or `item` with the place's own
+/// name holding an insertion offset. Only names the operation does not
+/// declare are taken, and only while the place itself is not an object.
+fn gather_flat_place(offer: &Offer, arguments: &mut serde_json::Map<String, Value>) {
+    let params = &offer.descriptor.params;
+    let declared = |name: &str| params.iter().any(|param| param.name.as_ref() == name);
+    let Some(place) = params.iter().find(|param| param.is_place()) else {
+        return;
+    };
+    let name = place.name.as_ref();
+    if arguments.get(name).is_some_and(Value::is_object)
+        || declared("item")
+        || !arguments.get("item").is_some_and(Value::is_string)
+    {
+        return;
+    }
+    let mut gathered = serde_json::Map::new();
+    for field in ["item", "start", "end"] {
+        if !declared(field)
+            && let Some(value) = arguments.remove(field)
+        {
+            gathered.insert(field.to_owned(), value);
+        }
+    }
+    let offset = arguments.remove(name).filter(Value::is_u64);
+    if !gathered.contains_key("start")
+        && let Some(offset) = offset
+    {
+        gathered.insert("at".to_owned(), offset);
+    }
+    arguments.insert(name.to_owned(), Value::Object(gathered));
+}
+
 /// One operation's parameters as a compact signature and how to pass them,
 /// for an invoke that was refused for its arguments.
 pub fn parameter_hint(offer: &Offer) -> String {
-    if offer.wants_content() {
+    if takes_only_content(offer) {
         return "It takes what an earlier step produced, not words.".into();
     }
     if offer.descriptor.params.is_empty() {
@@ -282,14 +343,29 @@ pub fn parameter_hint(offer: &Offer) -> String {
         .descriptor
         .params
         .iter()
-        .filter(|p| p.required)
+        .filter(|p| p.required && !p.is_content())
         .map(|p| format!("\"{}\": …", p.name))
         .collect::<Vec<_>>()
         .join(", ");
+    let carried = offer.content_param().map_or_else(String::new, |param| {
+        format!(" `{param}` is filled in from what the step before it produced.")
+    });
     format!(
-        "{} takes: {params}. Pass them inside `parameters`, e.g. \"parameters\": {{{example}}}.",
+        "{} takes: {params}. Pass them inside `parameters`, e.g. \"parameters\": {{{example}}}.{carried}",
         offer.descriptor.action_label
     )
+}
+
+/// Whether `offer`'s one input is content an earlier step produced, so it
+/// takes no words at all.
+fn takes_only_content(offer: &Offer) -> bool {
+    offer.descriptor.input.wants_content()
+        || (offer.wants_content()
+            && offer
+                .descriptor
+                .params
+                .iter()
+                .all(tilo_actions::ActionParam::is_content))
 }
 
 /// What a model answers [`PLAN`] with, before it has been checked against a
@@ -309,11 +385,32 @@ pub struct Answer {
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
-pub const PLAN_REPLY_DESCRIPTION: &str =
-    "One or two sentences to the person who asked, written as you would answer them in chat.";
+pub const PLAN_REPLY_DESCRIPTION: &str = "Your answer to the person who asked, written as you \
+     would answer them in chat: one or two sentences after doing something, the whole answer \
+     when they asked a question (an explanation, a translation, a summary for them).";
 
-/// The most characters of a plan's `reply` that are kept.
-pub const MAX_PLAN_REPLY_CHARS: usize = 1000;
+/// The most characters of a plan's `reply` that are kept: room for a
+/// paragraph-length answer to a question about a selection.
+pub const MAX_PLAN_REPLY_CHARS: usize = 4000;
+
+/// The most bytes of a reply, under the task outcome's retained-text bound
+/// (`tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES`) with room to
+/// spare, so a reply in a script that takes several bytes a character is
+/// never refused for its length.
+pub const MAX_REPLY_BYTES: usize = 6 * 1024;
+
+/// `reply` as it is kept: trimmed, at most [`MAX_PLAN_REPLY_CHARS`]
+/// characters and [`MAX_REPLY_BYTES`] bytes, cut at a character boundary.
+pub fn bound_reply(reply: &str) -> String {
+    let mut kept = String::new();
+    for character in reply.trim().chars().take(MAX_PLAN_REPLY_CHARS) {
+        if kept.len() + character.len_utf8() > MAX_REPLY_BYTES {
+            break;
+        }
+        kept.push(character);
+    }
+    kept
+}
 
 // ---------------------------------------------------------------------------
 // The definitions
@@ -440,7 +537,9 @@ fn plan_definition(most_steps: usize) -> Value {
                             },
                             "arguments": {
                                 "type": "object",
-                                "description": ARGUMENTS_DESCRIPTION
+                                "description": ARGUMENTS_DESCRIPTION,
+                                // Open by design; see `invoke_definition`.
+                                "additionalProperties": true
                             }
                         },
                         "required": ["operation", "arguments"],
@@ -448,14 +547,17 @@ fn plan_definition(most_steps: usize) -> Value {
                     }
                 },
                 "why": { "type": "string", "description": "One short clause." },
+                // A plain string, not a nullable union: every provider's
+                // schema dialect accepts it (Gemini's refuses `anyOf` with
+                // `null` in places), and an empty string reads as none.
                 "then": {
-                    "anyOf": [{ "type": "string" }, { "type": "null" }],
+                    "type": "string",
                     "description":
                         "What the request still asks for that nothing you were shown can \
                          express yet, in the request's own words — the rest of the \
                          sentence, after the steps you named. Use it when opening an \
                          application is what would put the needed operation on the list, \
-                         since that operation cannot be named until it is open. Null when \
+                         since that operation cannot be named until it is open. Empty when \
                          the steps you named already do all of it."
                 }
             },
@@ -476,13 +578,21 @@ pub fn definitions(most_steps: usize) -> Value {
     ])
 }
 
+/// The mark of an operation the person is asked about before it runs: its
+/// contract confirms (it sends, publishes, deletes for good), or the
+/// person's answers for this agent ask first. `None` for one that runs at
+/// once.
+pub(crate) fn confirmation_note(offer: &Offer) -> Option<&'static str> {
+    (offer.descriptor.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None)
+        .then_some("needs confirmation")
+}
+
 /// The description shared by `plan` steps and `invoke` of an argument object.
 const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described by \
     `describe_operation`, keyed by the application's parameter names. Use {} for a nullary \
     operation. Values retain their declared JSON types; never stringify numbers, booleans, \
-    arrays, objects or null. When the descriptor's confirmation policy is Confirm, also \
-    include `confirm: true`; for Phrase include `confirmation_phrase` with the exact phrase. \
-    Those two names are invocation metadata, not app parameters.";
+    arrays, objects or null. Never add `confirm` or `confirmation_phrase`: an operation marked \
+    needs confirmation asks the person when you invoke it, and only they answer.";
 
 /// The [`INVOKE`] tool definition.
 fn invoke_definition() -> Value {
@@ -509,7 +619,12 @@ fn invoke_definition() -> Value {
                 },
                 INVOKE_PARAMETERS: {
                     "type": "object",
-                    "description": ARGUMENTS_DESCRIPTION
+                    "description": ARGUMENTS_DESCRIPTION,
+                    // Each operation names its own arguments, so this object
+                    // is open; saying so explicitly matters because Gemini
+                    // reads an object schema without properties as an empty
+                    // object and would then never pass a required argument.
+                    "additionalProperties": true
                 },
                 PARTS: parts_schema(),
                 INVOKE_REPLY: {
@@ -657,6 +772,7 @@ pub fn loop_definitions() -> Value {
         list_operations_definition(),
         describe_operation_definition(),
         invoke_definition(),
+        crate::pages::read_result_definition(),
         finish_definition(),
     ])
 }
@@ -677,7 +793,7 @@ pub fn read_finish(input: &Value) -> Finish {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
         done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
     }
 }
@@ -722,7 +838,7 @@ pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, Str
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
     })
 }
 
@@ -732,7 +848,7 @@ pub const MOST_SUMMARISED: usize = 60;
 /// An operation's parameters as a compact signature (`{text: text, n?:
 /// integer [a|b]}`), or what it takes instead; empty for none.
 pub fn parameter_signature(offer: &Offer) -> String {
-    if offer.wants_content() {
+    if takes_only_content(offer) {
         return "{takes what the previous step produced}".into();
     }
     if offer.descriptor.params.is_empty() {
@@ -743,6 +859,9 @@ pub fn parameter_signature(offer: &Offer) -> String {
         .params
         .iter()
         .map(|param| {
+            if param.is_content() {
+                return format!("{}: what the previous step produced", param.name);
+            }
             let mut p = format!(
                 "{}: {}{}",
                 param.name,
@@ -765,13 +884,43 @@ pub fn parameter_signature(offer: &Offer) -> String {
     format!("{{{params}}}")
 }
 
+/// The prefix of a host (non-Tilo) application's id in the catalogue.
+const HOST_APP_PREFIX: &str = "host:";
+
+/// The Tilo applications `request` (lowercased) names by the title their
+/// open publishes ("Writer"), with that title: each needs a successful
+/// operation in it before the task is done. A host application is never
+/// one of them: opening it is all an agent can do there, and its title is
+/// often an everyday word ("Web", "Files") the request uses for something
+/// else.
+pub fn named_applications<'a>(catalogue: &'a Catalogue, request: &str) -> Vec<(&'a str, &'a str)> {
+    catalogue
+        .offers
+        .iter()
+        .filter_map(|offer| {
+            opened_app(offer).map(|app| (app, offer.descriptor.resource_label.as_str()))
+        })
+        .filter(|(app, _)| !app.starts_with(HOST_APP_PREFIX))
+        .filter(|(_, title)| {
+            !title.is_empty()
+                && if title.contains(' ') {
+                    request.contains(&title.to_lowercase())
+                } else {
+                    request
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word.eq_ignore_ascii_case(title))
+                }
+        })
+        .collect()
+}
+
 /// The published operations, compactly, for the first turn (of the task loop
 /// and of a plan decision): enough to invoke or plan the common ones directly
 /// without a discovery round trip. Every id shown is revealed. Every
-/// application gets its share (document operations first,
-/// then view, then the rest), and every open — how a closed application is
-/// started — is always shown; a cut summary says how to reach what it left
-/// out.
+/// running application gets its share (document operations first, then
+/// view, then the rest) of the first half; the opens — how a closed
+/// application is started — follow, Tilo's applications first; a cut
+/// summary says how to reach what it left out.
 pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
     let rank = |offer: &&Offer| match offer.descriptor.kind {
         _ if opened_app(offer).is_some() => 0,
@@ -789,27 +938,9 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
     for offers in per_app.values_mut() {
         offers.sort_by_key(rank);
     }
-    let mut shown: Vec<&Offer> = catalogue
-        .offers
-        .iter()
-        .filter(|offer| opened_app(offer).is_some())
-        .collect();
-    let mut depth = 0;
-    while shown.len() < most {
-        let mut any = false;
-        for offers in per_app.values() {
-            if let Some(offer) = offers.get(depth) {
-                any = true;
-                if opened_app(offer).is_none() && shown.len() < most {
-                    shown.push(offer);
-                }
-            }
-        }
-        if !any {
-            break;
-        }
-        depth += 1;
-    }
+    // Round-robin over the applications' own operations (opens aside),
+    // `depth` deep so far, until `shown` holds `until`.
+    let shown = summarised(catalogue, &per_app, most);
     if shown.is_empty() {
         return "No application publishes an operation you may perform right now.\n".into();
     }
@@ -848,6 +979,9 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
             {
                 let _ = write!(s, " (currently unavailable: {reason})");
             }
+            if let Some(note) = confirmation_note(offer) {
+                let _ = write!(s, " ({note})");
+            }
             let signature = parameter_signature(offer);
             if !signature.is_empty() {
                 let _ = write!(s, " {signature}");
@@ -860,10 +994,59 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
         let _ = writeln!(
             s,
             "… and {rest} more; ask `{LIST_OPERATIONS}` (by application, kind, resource or \
-             search) to reach them."
+             search) to reach them, or `{LIST_APPLICATIONS}` for the applications there are."
         );
     }
     s
+}
+
+/// The offers [`catalogue_summary`] shows, at most `most`: the running
+/// applications' own operations take the first half, so the opens of
+/// everything installed (a desktop lists every host application too) cannot
+/// crowd them out; the opens follow, Tilo's applications before the host's,
+/// whose windows publish nothing once open; what is left goes to more of
+/// the running applications.
+fn summarised<'a>(
+    catalogue: &'a Catalogue,
+    per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+    most: usize,
+) -> Vec<&'a Offer> {
+    fn fill<'a>(
+        per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
+        shown: &mut Vec<&'a Offer>,
+        depth: &mut usize,
+        until: usize,
+    ) {
+        while shown.len() < until {
+            let mut any = false;
+            for offers in per_app.values() {
+                if let Some(offer) = offers.get(*depth) {
+                    any = true;
+                    if opened_app(offer).is_none() && shown.len() < until {
+                        shown.push(offer);
+                    }
+                }
+            }
+            if !any {
+                break;
+            }
+            *depth += 1;
+        }
+    }
+    let mut shown: Vec<&'a Offer> = Vec::new();
+    let mut depth = 0;
+    fill(per_app, &mut shown, &mut depth, most.div_ceil(2));
+    let mut opens: Vec<&Offer> = catalogue
+        .offers
+        .iter()
+        .filter(|offer| opened_app(offer).is_some())
+        .collect();
+    opens
+        .sort_by_key(|offer| opened_app(offer).is_some_and(|app| app.starts_with(HOST_APP_PREFIX)));
+    let room = most.saturating_sub(shown.len());
+    shown.extend(opens.into_iter().take(room));
+    fill(per_app, &mut shown, &mut depth, most);
+    shown
 }
 
 /// What one [`INVOKE`] did, as the model reads it.
@@ -887,11 +1070,15 @@ pub struct InvokeReport {
     pub note: Option<String>,
 }
 
-/// The most characters of a returned value shown to the model.
+/// The most characters of a changed view shown to the model. A returned
+/// value is never cut: a long one is shown a page at a time
+/// ([`crate::pages`]).
 pub const MOST_RESULT_CHARS: usize = 2_000;
 
-/// A compact JSON observation for one [`INVOKE`].
-pub fn invoke_result(report: &InvokeReport) -> String {
+/// A compact JSON observation for one [`INVOKE`]. A value too long for one
+/// observation is kept in `pages`, its first page shown and `continues`
+/// saying how to read on.
+pub fn invoke_result(report: &InvokeReport, pages: &mut crate::pages::Pages) -> String {
     let bounded = |value: &Value| {
         let text = value.to_string();
         if text.chars().count() <= MOST_RESULT_CHARS {
@@ -924,7 +1111,11 @@ pub fn invoke_result(report: &InvokeReport) -> String {
         out.insert("error".into(), Value::String(error.clone()));
     }
     if let Some(value) = &report.value {
-        out.insert("value".into(), bounded(value));
+        let (page, continues) = pages.first_page(value);
+        out.insert("value".into(), page);
+        if let Some(continues) = continues {
+            out.insert("continues".into(), continues);
+        }
     }
     if !report.resources.is_empty() {
         out.insert("resources".into(), json!(report.resources));
@@ -1148,6 +1339,9 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         {
             let _ = write!(s, "; currently unavailable: {reason}");
         }
+        if let Some(note) = confirmation_note(o) {
+            let _ = write!(s, "; {note}");
+        }
         if o.wants_content() {
             s.push_str("; takes what an earlier step produced, not words");
         } else if !o.descriptor.params.is_empty() {
@@ -1214,6 +1408,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
          reversible={}; execution={:?}; result={:?}",
         c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
     );
+    if let Some(note) = confirmation_note(offer) {
+        let _ = writeln!(s, "  {note}: your step waits until the person answers it");
+    }
     if !d.params.is_empty() {
         s.push_str("  structured arguments:\n");
         for p in &d.params {
@@ -1244,26 +1441,7 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
             s.push('\n');
         }
     }
-    if d.params.is_empty() {
-        s.push_str("  arguments: none. Pass {}.\n");
-    } else if offer.wants_content() {
-        s.push_str(
-            "  arguments: produced content, not words. It must be bound from the prior step.\n",
-        );
-    } else {
-        let example = d
-            .params
-            .iter()
-            .filter(|p| p.required)
-            .map(|p| format!("\"{}\": …", p.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(
-            s,
-            "  Pass one JSON object containing exactly the parameters above: \
-             {{\"operation\": \"{id}\", \"parameters\": {{{example}}}}}"
-        );
-    }
+    describe_arguments(&mut s, offer, &id);
     // What the resource says about itself. An application with a fact and no
     // operation to hang it on publishes a child resource that exports
     // nothing, and a flat survey walks straight past it.
@@ -1273,6 +1451,39 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
         }
     }
     s
+}
+
+/// How to pass `offer`'s arguments, for [`describe`].
+fn describe_arguments(s: &mut String, offer: &Offer, id: &str) {
+    let d = &offer.descriptor;
+    if d.params.is_empty() {
+        s.push_str("  arguments: none. Pass {}.\n");
+    } else if takes_only_content(offer) {
+        s.push_str(
+            "  arguments: produced content, not words. It must be bound from the prior step.\n",
+        );
+    } else {
+        if let Some(param) = offer.content_param() {
+            let _ = writeln!(
+                s,
+                "  `{param}` is content, not words: invoke this right after the step that \
+                 produced it (a file handed over, a picture made), and it is filled in from \
+                 that step."
+            );
+        }
+        let example = d
+            .params
+            .iter()
+            .filter(|p| p.required && !p.is_content())
+            .map(|p| format!("\"{}\": …", p.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            s,
+            "  Pass one JSON object containing exactly the parameters above: \
+             {{\"operation\": \"{id}\", \"parameters\": {{{example}}}}}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,7 +1577,7 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
     })
 }
 
@@ -1563,6 +1774,159 @@ mod tests {
         );
     }
 
+    /// The opens of everything installed, host applications included, do
+    /// not crowd what a running application can do out of the summary:
+    /// a web search started beside the agent stays listed however many
+    /// applications could be opened, and Tilo's opens come before the
+    /// host's.
+    #[test]
+    fn opens_do_not_crowd_out_what_is_running() {
+        let mut catalogue = Catalogue {
+            offers: vec![offer(
+                "so.tilo.web-search",
+                "web.search:default",
+                "web.search",
+                "search",
+                "Search the web",
+                InputSpec::None,
+            )],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let open = |app: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.kind = tilo_actions::OperationKind::Effect;
+            open
+        };
+        for n in 0..40 {
+            catalogue.offers.push(open(&format!("host:app-{n}")));
+        }
+        catalogue.offers.push(open("so.tilo.notes"));
+        let summary = catalogue_summary(&catalogue, &mut Revealed::new(), 10);
+        assert!(summary.contains("web.search:default#search"), "{summary}");
+        assert!(
+            summary.contains("desktop:app:so.tilo.notes#open"),
+            "{summary}"
+        );
+        assert!(summary.contains("list_applications"), "{summary}");
+    }
+
+    /// A request naming a Tilo application by its title names it; a host
+    /// application's everyday title ("Web") does not.
+    #[test]
+    fn a_host_application_is_never_named_by_a_request() {
+        let open = |app: &str, title: &str| {
+            let mut open = offer(
+                "desktop",
+                &format!("desktop:app:{app}"),
+                "desktop.application",
+                "open",
+                "Open",
+                InputSpec::None,
+            );
+            open.descriptor.resource_label = title.to_owned();
+            open
+        };
+        let catalogue = Catalogue {
+            offers: vec![
+                open("host:org.gnome.Epiphany", "Web"),
+                open("so.tilo.word-processor", "Writer"),
+            ],
+            facts: Vec::new(),
+            held: Vec::new(),
+        };
+        let request = "find it by web search and put it in writer";
+        assert_eq!(
+            named_applications(&catalogue, request),
+            vec![("so.tilo.word-processor", "Writer")]
+        );
+    }
+
+    /// An object or array argument a model wrote as its JSON text is read
+    /// back as the object or array; text parameters, and text that is not
+    /// the declared kind of JSON, stay text.
+    #[test]
+    fn json_text_for_an_object_or_array_argument_is_decoded() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
+            tilo_actions::ActionParam::optional("marks", tilo_actions::ParamType::Array, "marks"),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let mut arguments = json!({
+            "at": "{\"item\":\"b1\",\"start\":0,\"end\":39}",
+            "marks": "[\"link\"]",
+            "text": "{\"looks\":\"like json\"}",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        decode_structured_arguments(&replace, &mut arguments);
+        assert_eq!(
+            arguments["at"],
+            json!({"item": "b1", "start": 0, "end": 39})
+        );
+        assert_eq!(arguments["marks"], json!(["link"]));
+        assert_eq!(arguments["text"], json!("{\"looks\":\"like json\"}"));
+        let mut wrong = json!({"at": "[1, 2]"}).as_object().cloned().unwrap();
+        decode_structured_arguments(&replace, &mut wrong);
+        assert_eq!(wrong["at"], json!("[1, 2]"));
+    }
+
+    /// A place whose fields a model wrote beside the other arguments is
+    /// gathered back into the place parameter, a range or an insertion.
+    #[test]
+    fn a_place_written_flat_is_gathered_into_its_parameter() {
+        let mut replace = offer(
+            "notes",
+            "notes.page:1/body",
+            "tilo.rich-text",
+            "replace-range",
+            "Replace text at a place",
+            InputSpec::None,
+        );
+        replace.descriptor.params = vec![
+            tilo_actions::ActionParam::required("at", tilo_actions::ParamType::Object, "where")
+                .as_place(),
+            tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "text"),
+        ];
+        let flat = |value: Value| value.as_object().cloned().unwrap();
+        let mut range = flat(json!({"at": 1, "item": "b1", "start": 0, "end": 39, "text": "x"}));
+        decode_structured_arguments(&replace, &mut range);
+        assert_eq!(
+            Value::Object(range),
+            json!({"at": {"item": "b1", "start": 0, "end": 39}, "text": "x"})
+        );
+        let mut insert = flat(json!({"at": 4, "item": "b1", "text": "x"}));
+        decode_structured_arguments(&replace, &mut insert);
+        assert_eq!(
+            Value::Object(insert),
+            json!({"at": {"item": "b1", "at": 4}, "text": "x"})
+        );
+        let mut whole = flat(json!({"at": {"item": "b1", "at": 4}, "item": "b2", "text": "x"}));
+        decode_structured_arguments(&replace, &mut whole);
+        assert_eq!(
+            whole["at"],
+            json!({"item": "b1", "at": 4}),
+            "a given place stays"
+        );
+    }
+
     /// An open next to an application that already publishes operations
     /// says so: opening again makes a second window.
     #[test]
@@ -1583,6 +1947,43 @@ mod tests {
             summary.contains("word-processor is already open"),
             "{summary}"
         );
+    }
+
+    /// An operation the person is asked about first is listed, marked as
+    /// such everywhere the model meets it, and the model is told it waits.
+    #[test]
+    fn an_operation_needing_confirmation_is_listed_and_marked() {
+        let mut catalogue = room();
+        let mut send = offer(
+            "mail",
+            "mail.inbox",
+            "mail.mailbox",
+            "send_message",
+            "Send message",
+            InputSpec::None,
+        );
+        send.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        catalogue.offers.push(send.clone());
+        let mut revealed = Revealed::new();
+        let summary = catalogue_summary(&catalogue, &mut revealed, MOST_SUMMARISED);
+        let line = summary
+            .lines()
+            .find(|line| line.contains("Send message"))
+            .unwrap_or_default();
+        assert!(line.contains("needs confirmation"), "{summary}");
+        let insert = summary
+            .lines()
+            .find(|line| line.contains("Insert table"))
+            .unwrap_or_default();
+        assert!(!insert.contains("needs confirmation"), "{summary}");
+        let listed = operations(&json!({"application": "mail"}), &catalogue, &mut revealed);
+        assert!(listed.contains("needs confirmation"), "{listed}");
+        let described = describe(&json!({"operation": send.id()}), &catalogue, &mut revealed);
+        assert!(
+            described.contains("needs confirmation: your step waits"),
+            "{described}"
+        );
+        assert!(!ARGUMENTS_DESCRIPTION.contains("include `confirm: true`"));
     }
 
     /// A refused argument says what the operation takes and how to pass it.
@@ -1864,6 +2265,10 @@ mod tests {
         )
         .expect("read");
         assert_eq!(bounded.reply.unwrap().chars().count(), MAX_PLAN_REPLY_CHARS);
+        let wide = "語".repeat(MAX_PLAN_REPLY_CHARS);
+        let kept = bound_reply(&wide);
+        assert!(kept.len() <= MAX_REPLY_BYTES, "{}", kept.len());
+        assert_eq!(kept.chars().count(), MAX_REPLY_BYTES / "語".len());
     }
 
     /// The plan tool set names no ids, so it is the same bytes on every turn
@@ -1989,6 +2394,7 @@ mod tests {
                 LIST_OPERATIONS,
                 DESCRIBE_OPERATION,
                 INVOKE,
+                crate::pages::READ_RESULT,
                 PLAN
             ]
         );
@@ -2035,29 +2441,166 @@ mod tests {
         );
     }
 
-    /// An observation is compact JSON and bounded.
+    /// An observation is compact JSON and bounded; a long value is not cut
+    /// but continues on a later page.
     #[test]
     fn an_invoke_observation_is_compact_and_bounded() {
+        let mut pages = crate::pages::Pages::new();
+        let long = "x".repeat(crate::pages::PAGE_CHARS * 2);
         let report = InvokeReport {
             succeeded: true,
-            value: Some(Value::String("x".repeat(MOST_RESULT_CHARS * 2))),
+            value: Some(Value::String(long.clone())),
             changed_view: Some(json!({"caret": {"block": "b1", "offset": 3}})),
             newly_available: vec!["a#b — B".into()],
             ..InvokeReport::default()
         };
-        let text = invoke_result(&report);
+        let text = invoke_result(&report, &mut pages);
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["result"], "succeeded");
         assert_eq!(value["changed_view"]["caret"]["offset"], 3);
         assert_eq!(value["newly_available"][0], "a#b — B");
-        assert!(text.len() < MOST_RESULT_CHARS + 400, "{}", text.len());
-        let skipped = invoke_result(&InvokeReport {
-            skipped: Some("an earlier invoke failed".into()),
-            ..InvokeReport::default()
-        });
+        assert!(
+            text.len() < crate::pages::PAGE_CHARS + 600,
+            "{}",
+            text.len()
+        );
+        let from = value["continues"]["from"].as_u64().unwrap();
+        let rest: Value = serde_json::from_str(
+            &pages.read(&json!({"result": value["continues"]["result"], "from": from})),
+        )
+        .unwrap();
+        assert_eq!(rest["next"], Value::Null);
+        assert_eq!(
+            format!(
+                "{}{}",
+                value["value"].as_str().unwrap(),
+                rest["text"].as_str().unwrap()
+            ),
+            long
+        );
+        let skipped = invoke_result(
+            &InvokeReport {
+                skipped: Some("an earlier invoke failed".into()),
+                ..InvokeReport::default()
+            },
+            &mut pages,
+        );
         assert_eq!(
             serde_json::from_str::<Value>(&skipped).unwrap()["result"],
             "not run"
+        );
+    }
+
+    /// Every open object in the tool schemas says it is open. Gemini reads an
+    /// object schema without properties as an empty object, so an argument
+    /// map left implicit would reach every operation empty and a required
+    /// argument (a new note's title, say) could never be passed.
+    #[test]
+    fn every_open_argument_object_declares_itself_open() {
+        fn walk(path: &str, node: &Value, open: &mut Vec<String>) {
+            match node {
+                Value::Object(map) => {
+                    if map.get("type").and_then(Value::as_str) == Some("object")
+                        && !map.contains_key("properties")
+                        && map.get("additionalProperties") != Some(&Value::Bool(true))
+                    {
+                        open.push(path.to_owned());
+                    }
+                    for (key, child) in map {
+                        walk(&format!("{path}/{key}"), child, open);
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        walk(&format!("{path}/{index}"), child, open);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut undeclared = Vec::new();
+        walk("", &definitions(4), &mut undeclared);
+        assert!(
+            undeclared.is_empty(),
+            "implicitly open objects: {undeclared:?}"
+        );
+    }
+
+    /// Every tool schema stays inside the JSON Schema subset every provider
+    /// dialect the agent speaks accepts as function parameters, Gemini's
+    /// included: plain types, no unions, no `null` type, no references.
+    #[test]
+    fn tool_schemas_use_only_keywords_every_provider_accepts() {
+        const ACCEPTED: &[&str] = &[
+            "type",
+            "description",
+            "properties",
+            "required",
+            "items",
+            "enum",
+            "minimum",
+            "maximum",
+            "minItems",
+            "maxItems",
+            "additionalProperties",
+        ];
+        fn check(schema: &Value, at: &str) {
+            let Some(object) = schema.as_object() else {
+                panic!("{at}: a schema is an object");
+            };
+            for (key, value) in object {
+                assert!(ACCEPTED.contains(&key.as_str()), "{at}: `{key}`");
+                match key.as_str() {
+                    "type" => assert!(
+                        value.as_str().is_some_and(|ty| ty != "null"),
+                        "{at}: one non-null type"
+                    ),
+                    "properties" => {
+                        for (name, property) in value.as_object().unwrap() {
+                            check(property, &format!("{at}.{name}"));
+                        }
+                    }
+                    "items" => check(value, &format!("{at}[]")),
+                    _ => {}
+                }
+            }
+        }
+        for set in [definitions(8), loop_definitions()] {
+            for tool in set.as_array().unwrap() {
+                check(&tool["input_schema"], tool["name"].as_str().unwrap());
+            }
+        }
+    }
+
+    /// An operation taking content beside words lists its other parameters
+    /// and says the content one is carried in from the step before it.
+    #[test]
+    fn content_beside_words_shows_the_words_and_carries_the_content() {
+        let mut attach = offer(
+            "mail",
+            "mail.mailbox",
+            "mail.mailbox",
+            "attach",
+            "Attach to draft",
+            InputSpec::None,
+        );
+        attach.descriptor.params = vec![
+            tilo_actions::ActionParam::required("content", tilo_actions::ParamType::Text, "file")
+                .as_content(),
+            tilo_actions::ActionParam::required("name", tilo_actions::ParamType::Text, "name"),
+        ];
+        assert_eq!(
+            parameter_signature(&attach),
+            "{content: what the previous step produced, name: text}"
+        );
+        let hint = parameter_hint(&attach);
+        assert!(hint.contains("\"name\": …"), "{hint}");
+        assert!(!hint.contains("\"content\": …"), "{hint}");
+        assert!(hint.contains("`content` is filled in"), "{hint}");
+        let place = &room().offers[1];
+        assert_eq!(
+            parameter_signature(place),
+            "{takes what the previous step produced}"
         );
     }
 }

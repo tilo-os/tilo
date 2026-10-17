@@ -88,6 +88,7 @@ use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::resource::{Ebook, HiPiece, Passage, books};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
+use ui::lock::MutexRecover as _;
 
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
@@ -202,9 +203,7 @@ impl ImportWorker {
             loop {
                 let request = {
                     let (lock, wake) = &*worker_mailbox;
-                    let mut state = lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut state = lock.lock_recover();
                     while state.pending.is_none() && !state.closed {
                         state = wake
                             .wait(state)
@@ -263,9 +262,7 @@ impl ImportWorker {
 
     fn request(&self, request: ImportRequest) -> Result<(), String> {
         let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock_recover();
         if state.closed {
             return Err("the book importer stopped".into());
         }
@@ -282,9 +279,7 @@ impl ImportWorker {
     /// Stop the worker: it takes no more imports and drops a waiting one.
     fn close(&self) {
         let (lock, wake) = &*self.mailbox;
-        let mut state = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock.lock_recover();
         state.closed = true;
         state.pending = None;
         drop(state);
@@ -5248,6 +5243,12 @@ impl BooksApp {
                     (end_block.unwrap_or(start_block), end_char),
                 )?;
             }
+            BooksEffect::ReadChapter { book, chapter } => {
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                return self
+                    .chapter_read(&book, chapter)
+                    .map(ui::framework::Effected::value);
+            }
             BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
                 return Err("opening a book is the surface's".into());
             }
@@ -5272,6 +5273,32 @@ impl BooksApp {
                 .map(|record| record.entries.values().cloned().collect())
                 .unwrap_or_default();
         self.begin_effect(invocation, effect, &entries)
+    }
+
+    /// What chapter `chapter` of `book_id` says, block by block, with the
+    /// book's title, author and chapter titles.
+    fn chapter_read(&self, book_id: &str, chapter: usize) -> Result<serde_json::Value, String> {
+        let book = self
+            .library
+            .iter()
+            .find(|book| book.id == book_id)
+            .ok_or("book is no longer in the library")?;
+        let read = book
+            .chapters
+            .get(chapter)
+            .ok_or("chapter is not in this book")?;
+        Ok(serde_json::json!({
+            "book": book.id,
+            "title": book.title,
+            "author": book.author,
+            "chapter": chapter,
+            "chapter_title": read.title,
+            "chapters": book.chapters.iter().map(|chapter| chapter.title.as_str()).collect::<Vec<_>>(),
+            "blocks": read.blocks.iter().enumerate().map(|(index, block)| serde_json::json!({
+                "block": index,
+                "text": block.plain_text(),
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     /// The chapter this reader has open in `book`, else its first.

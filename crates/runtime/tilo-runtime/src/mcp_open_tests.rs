@@ -40,6 +40,12 @@ struct Writer {
     /// Rows per page of a resource's listing, as when the host's byte
     /// budget cuts it short.
     listing_page: Option<usize>,
+    /// Whether, after a write and until it publishes again, the app answers
+    /// its top-level listing by walking its widgets, whose work budget ends
+    /// the first page after one resource; `Some(true)` when it publishes
+    /// between that page and the next, which leaves the cursor stale.
+    walks_after_write: Option<bool>,
+    walking: Arc<Mutex<bool>>,
     /// Every question and invocation the host was sent, in order.
     log: Arc<Mutex<Vec<Asked>>>,
     /// The instance an `open` starts, which its answer names.
@@ -72,6 +78,8 @@ impl Writer {
             query_failure: Arc::default(),
             document: None,
             listing_page: None,
+            walks_after_write: None,
+            walking: Arc::default(),
             log: Arc::default(),
             started: 1,
             bystander: None,
@@ -111,6 +119,62 @@ impl Writer {
                 )
             })
             .collect()
+    }
+
+    /// `provider`'s rows as its directory lists them.
+    fn listed_rows(&self, provider: &str) -> Vec<CatalogueRow> {
+        let mut rows = self.rows(provider);
+        for row in &mut rows {
+            row.provider = provider.to_owned();
+            if let Some(action) = row
+                .action
+                .as_mut()
+                .filter(|action| action.address.action == "read-text" && self.document.is_some())
+            {
+                action
+                    .contract
+                    .tags
+                    .push(tilo_actions::DOCUMENT_READ_TAG.into());
+            }
+        }
+        rows
+    }
+
+    /// The top-level page an app walking its widgets after a write answers:
+    /// its first stops at its work budget after one resource.
+    fn walked_listing(
+        &self,
+        query: &CatalogueQuery,
+        rows: &[CatalogueRow],
+    ) -> Option<CataloguePage> {
+        let mut walking = self.walking.lock().unwrap();
+        if !*walking {
+            return None;
+        }
+        if query.cursor.is_empty() {
+            return Some(CataloguePage {
+                revision: "v5".into(),
+                rows: rows.iter().take(1).cloned().collect(),
+                next_cursor: b"1".to_vec(),
+                budget_exhausted: true,
+                ..CataloguePage::default()
+            });
+        }
+        if self.walks_after_write == Some(true) {
+            *walking = false;
+            drop(walking);
+            return Some(CataloguePage {
+                revision: "v6".into(),
+                stale_cursor: true,
+                ..CataloguePage::default()
+            });
+        }
+        Some(CataloguePage {
+            revision: "v5".into(),
+            rows: rows.iter().skip(1).cloned().collect(),
+            exhausted: true,
+            ..CataloguePage::default()
+        })
     }
 
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
@@ -397,20 +461,7 @@ impl ActionHost for Writer {
                 ..CataloguePage::default()
             }));
         }
-        let mut rows = self.rows(&provider);
-        for row in &mut rows {
-            row.provider.clone_from(&provider);
-            if let Some(action) = row
-                .action
-                .as_mut()
-                .filter(|action| action.address.action == "read-text" && self.document.is_some())
-            {
-                action
-                    .contract
-                    .tags
-                    .push(tilo_actions::DOCUMENT_READ_TAG.into());
-            }
-        }
+        let mut rows = self.listed_rows(&provider);
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
         } else if query.needle.is_empty() {
@@ -418,6 +469,9 @@ impl ActionHost for Writer {
             rows.retain(|row| row.parent_resource == parent);
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
+        }
+        if listing && let Some(page) = self.walked_listing(&query, &rows) {
+            return Pending::ready(Ok(page));
         }
         if let Some(size) = self
             .listing_page
@@ -475,6 +529,8 @@ impl ActionHost for Writer {
                 }));
             }
             *self.running.lock().unwrap() = true;
+        } else if self.walks_after_write.is_some() {
+            *self.walking.lock().unwrap() = true;
         }
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
@@ -1199,21 +1255,27 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
     use hyper::{HeaderMap, Method, StatusCode, header::HeaderValue};
 
     let host = FailingMutationHost::new(false);
-    let endpoint =
-        crate::mcp_http::Endpoint::new(host.clone(), "room".into(), "owner".into(), None, None);
+    let endpoint = crate::mcp_http::Endpoint::new(
+        host.clone(),
+        "room".into(),
+        "owner".into(),
+        Some("secret".into()),
+        None,
+    );
     run(async {
         let initialize = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params": {
             "protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"handle-test", "version":"1"}}});
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
         let opened = endpoint
             .dispatch(
                 &Method::POST,
                 "/mcp",
-                &HeaderMap::new(),
+                &headers,
                 initialize.to_string().as_bytes(),
             )
             .await;
         assert_eq!(opened.status(), StatusCode::OK);
-        let mut headers = HeaderMap::new();
         headers.insert(
             "mcp-session-id",
             HeaderValue::from_str(opened.headers()["mcp-session-id"].to_str().unwrap()).unwrap(),
@@ -1899,6 +1961,39 @@ fn a_parent_resource_is_named_as_resources_are_named_elsewhere() {
             );
         }
     });
+}
+
+#[test]
+fn a_resource_named_by_kind_right_after_a_write_is_found_past_the_first_page() {
+    for publishes_between_pages in [false, true] {
+        let mut host = Writer::new(Some("open"));
+        host.walks_after_write = Some(publishes_between_pages);
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+        run(async {
+            let page = call(
+                &server,
+                "tilo_query",
+                json!({"app_id": APP, "needle": "select block"}),
+            )
+            .await
+            .unwrap();
+            let doc = resource(&page, "word_processor.document")["resource"].clone();
+            let write = json!({"app_id": APP, "resource": doc, "action": "select-block", "arguments": {"block": "b0"}});
+            call(&server, "tilo_invoke", write).await.unwrap();
+            for action in ["save-as", "select-block"] {
+                let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": action, "arguments": {}});
+                let ran = call(&server, "tilo_invoke", by_kind).await;
+                assert!(
+                    ran.is_ok(),
+                    "{action} by kind after a write (publishing between pages: {publishes_between_pages}): {ran:?}"
+                );
+            }
+        });
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 3, "{invoked:?}");
+        assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
+    }
 }
 
 #[test]

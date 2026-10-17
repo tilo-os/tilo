@@ -122,6 +122,7 @@ pub(super) async fn restart_after_offline_snapshot(
             let message: NeighbourMsg = postcard::from_bytes(&original).unwrap();
             assert!(
                 view.peer()
+                    .outbox()
                     .lookup_retained_local_document(
                         &message,
                         identity.device_cert.device_public_key

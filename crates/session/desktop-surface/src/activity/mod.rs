@@ -22,10 +22,11 @@ pub use task_review::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 #[cfg(test)]
 mod testing;
 pub use index::*;
+pub use pane::ConfirmationNotice;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ACTIVITY_TASKS, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE,
     HISTORY_UNDO, NativeManagedTaskRequest, NativeManualTaskRequest, Period, RoomActivityOutcome,
-    RoomActivityPane, RoomScope,
+    RoomActivityPane, RoomScope, TaskDispatchRequest,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors

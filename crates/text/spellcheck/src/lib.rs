@@ -39,6 +39,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
+mod contractions;
 mod dictionary;
 mod distance;
 mod hunspell;
@@ -47,6 +48,7 @@ mod token;
 
 use hunspell::{results as hunspell_results, suggestions as hunspell_suggestions};
 
+pub use contractions::contraction;
 pub use dictionary::{Dictionary, user_dict_path};
 pub use distance::damerau_levenshtein_within;
 pub use suggest::suggest;
@@ -183,7 +185,8 @@ fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String>
 
 /// Return a correction only when the signal is strong enough for automatic
 /// replacement. This is intentionally much stricter than the suggestion menu:
-/// known high-frequency typos are safe-listed, while the generic path accepts
+/// known high-frequency typos and English contractions typed without their
+/// apostrophe ([`contraction`]) are safe-listed, while the generic path accepts
 /// only an adjacent transposition matching the dictionary's first candidate.
 pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     if word.chars().count() < 3 {
@@ -203,7 +206,7 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     }
     let lower = word.to_lowercase();
     let known = if is_english(language) {
-        match lower.as_str() {
+        contraction(&lower).or(match lower.as_str() {
             "accomodate" => Some("accommodate"),
             "acheive" => Some("achieve"),
             "adn" => Some("and"),
@@ -241,7 +244,7 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
             "untill" => Some("until"),
             "wierd" => Some("weird"),
             _ => None,
-        }
+        })
     } else {
         None
     };
@@ -865,6 +868,22 @@ mod tests {
                 probable_correction("en_US", "Tomorow"),
                 Some("Tomorrow".to_string())
             );
+            // A contraction typed without its apostrophe gets it back;
+            // a bare form that is a word of its own stays.
+            for (typed, corrected) in [
+                ("doesnt", Some("doesn't")),
+                ("Doesnt", Some("Doesn't")),
+                ("ive", Some("I've")),
+                ("cant", None),
+                ("wont", None),
+            ] {
+                assert_eq!(
+                    probable_correction("en_US", typed).as_deref(),
+                    corrected,
+                    "{typed}"
+                );
+            }
+            assert_eq!(probable_correction("fr_FR", "doesnt"), None);
         }
         // Phase `builtin_dictionary_is_substantial`.
         {

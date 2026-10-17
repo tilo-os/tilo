@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::AutoCommit;
@@ -40,6 +40,7 @@ use crate::rooms::{MemberMark, Rooms};
 // The field a connector's records keep their outbox under, which the bot's
 // grant lets it settle.
 use tilo_automation::grant::OUTBOX_FIELD;
+use tilo_lock::MutexRecover as _;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
 /// The input a program declares to be told the room's members and roles.
@@ -490,13 +491,9 @@ impl BotRunner {
                     record,
                 };
                 let held = Arc::clone(&self.held);
-                tokio::task::spawn_blocking(move || {
-                    held.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .hold(&route, saved)
-                })
-                .await
-                .map_err(|error| error.to_string())??;
+                tokio::task::spawn_blocking(move || held.lock_recover().hold(&route, saved))
+                    .await
+                    .map_err(|error| error.to_string())??;
             }
         }
         let mut inputs = self.bot.inputs.clone();
@@ -541,11 +538,7 @@ impl BotRunner {
         })
         .await
         .map_err(|error| error.to_string())?;
-        let changes = self
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take_changes();
+        let changes = self.held.lock_recover().take_changes();
         let mut changes = changes.into_iter();
         while let Some((route, mutation)) = changes.next() {
             if let Err(refusal) = self.publish(&route, mutation).await {
@@ -556,7 +549,7 @@ impl BotRunner {
                 let touched: BTreeSet<DocumentRoute> = std::iter::once(route)
                     .chain(changes.map(|(route, _)| route))
                     .collect();
-                let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut held = self.held.lock_recover();
                 for route in &touched {
                     held.forget(route);
                 }

@@ -37,6 +37,8 @@ impl super::DeviceShared {
         let Some(extension) = self.extension_fns.debug_utils.as_ref() else {
             return;
         };
+        // Tilo: see `LOADER_DEVICE_LISTS`.
+        let _lists = super::LOADER_DEVICE_LISTS.lock();
 
         // Keep variables outside the if-else block to ensure they do not
         // go out of scope while we hold a pointer to them

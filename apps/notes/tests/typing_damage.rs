@@ -14,6 +14,7 @@
 use notes::NotesShell;
 use ui::app::{App, AppSurface, SurfaceDamage};
 use ui::framework::testing::drive_live_window;
+use ui::lock::MutexRecover as _;
 use ui::synthetic_input::{cursor_moved, key_input, mouse_press, mouse_release};
 use ui::theme::Theme;
 use ui::winit::event::ElementState;
@@ -394,9 +395,7 @@ fn measure_within(
 /// one at a time.
 fn start() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let serial = SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let serial = SERIAL.lock_recover();
     ui::i18n::I18nManager::init("en-US");
     serial
 }

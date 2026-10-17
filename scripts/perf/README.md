@@ -124,18 +124,24 @@ python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
   --samples 100 --out target/yoga-notes-after-update
 ```
 
-Open the updated Notes app through its normal application action before capture.
-The device session must be unlocked, with one Notes window. Enable the greeter's
+The device session must be unlocked. Enable the greeter's
 normal `configure-session-diagnostics@greeter` presentation flag before sign-in
 for physical input and presentation evidence. For GPU diagnosis also enable
 `gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
 does not enable GPU timestamp queries. See `docs/agent-action-api.md` for the
 semantic configuration and normal sign-in actions.
 
-The capture creates and opens a fresh scratch note. Before every kernel key it
-checks the actual selected/bound page, adopted canonical and rendered hashes,
-caret, editor focus and compositor keyboard routing. Existing notes receive no
-benchmark input. The scratch note remains available for inspection afterward.
+The capture never touches the person's notebook. Every Notes window in a
+workspace opens that workspace's one notebook, so the capture first creates a
+workspace of its own (`workspace.create`, which mints a new room), opens Notes
+there (`applications so.tilo.notes`) and addresses every Notes action by that
+room and its record (`scratch_notes.py`). A room that existed before the run is
+refused, and so is any Notes row outside the scratch room. In that notebook it
+creates and opens a fresh scratch note. Before every kernel key it checks the
+actual selected/bound page, adopted canonical and rendered hashes, caret,
+editor focus and that the keyboard goes to the scratch workspace's one Notes
+surface. The workspace, named `Notes latency scratch <time>`, and its note
+remain for inspection afterward; delete the workspace when done.
 
 The output contains private raw logs, the exact input/frame/presentation timeline,
 editor observations, scratch identity and `report.json`. Missing, discarded or

@@ -34,6 +34,7 @@ use tilo_browser_peer::{
     DocumentRoute, Host, LiveState, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
     RemoteMember,
 };
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -402,11 +403,7 @@ impl AgentParticipant {
         }
         let id = running.id.clone();
         if let Some(asking) = self.asking.take() {
-            let arrived = asking
-                .answer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
+            let arrived = asking.answer.lock_recover().take();
             let Some(answer) = arrived else {
                 self.asking = Some(asking);
                 return false;
@@ -589,9 +586,7 @@ impl AgentParticipant {
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));
         witness.confirm(&caller, &request).then(move |given| {
-            *arrived
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(given.unwrap_or(Err(
+            *arrived.lock_recover() = Some(given.unwrap_or(Err(
                 tilo_actions::remote::ActionHostError::ConfirmationRequired,
             )));
             control.wake();

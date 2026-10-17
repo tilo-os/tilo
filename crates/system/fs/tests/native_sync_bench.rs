@@ -46,6 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
@@ -307,9 +308,7 @@ impl Daemon {
                         let at = bench_clock().elapsed().as_secs_f64();
                         eprintln!("{at:9.3} {name}: {line}");
                     }
-                    let mut logs = logs
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut logs = logs.lock_recover();
                     if logs.len() < 200_000 {
                         logs.push(line.clone());
                     }
@@ -329,10 +328,7 @@ impl Daemon {
     }
 
     fn dump(&self) -> String {
-        let logs = self
-            .logs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let logs = self.logs.lock_recover();
         let skip = logs.len().saturating_sub(200);
         logs[skip..].join("\n")
     }

@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use channel_crypto::{ChannelSteward, VaultKey};
 use collab_types::{
@@ -28,6 +29,7 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
+use tilo_lock::MutexRecover as _;
 
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;
@@ -38,7 +40,7 @@ const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
 
 /// The devices governance lets read a room's channels: every reader of the
 /// room, less the ones a Read Deny keeps out of a record's channel
-/// (`tilo_peer_state::StatePeer::withheld_record_readers`).
+/// (`tilo_peer_state::PeerGovernance::withheld_record_readers`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Readers {
     room: BTreeSet<Ed25519PublicKey>,
@@ -129,7 +131,9 @@ pub(super) struct Steward {
     /// beside the channels. Apart from the channels too: readers are read
     /// with them before the channels are taken.
     routes: std::sync::Mutex<Routes>,
-    pub(super) channels: tokio::sync::Mutex<Stewardship>,
+    /// Shared so a pass can take it to a blocking worker: its MLS work held
+    /// a runtime worker for seconds when a crowd asked at once.
+    pub(super) channels: Arc<tokio::sync::Mutex<Stewardship>>,
 }
 
 /// The routes a room's steward knows, and where it keeps them.
@@ -145,14 +149,12 @@ impl Steward {
         Self {
             readers: std::sync::Mutex::new(None),
             routes: std::sync::Mutex::new(routes),
-            channels: tokio::sync::Mutex::new(channels),
+            channels: Arc::new(tokio::sync::Mutex::new(channels)),
         }
     }
 
     fn known_routes(&self) -> std::sync::MutexGuard<'_, Routes> {
-        self.routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.routes.lock_recover()
     }
 
     /// Every route this steward knows, for deciding Read on the records
@@ -235,9 +237,7 @@ impl Routes {
 
 impl Steward {
     fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, Readers)>> {
-        self.readers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.readers.lock_recover()
     }
 
     /// Whether governance whose readers are `readers` must move the

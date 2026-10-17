@@ -30,6 +30,7 @@ use tokio::io::AsyncBufReadExt as _;
 
 use crate::http::Plain;
 use crate::{HostArgs, Started, StartedRoom};
+use tilo_lock::MutexRecover as _;
 
 /// How long a pre-admission stays redeemable, as the service issues them.
 const PRE_ADMISSION_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -134,6 +135,57 @@ struct Host {
     max_guests: Option<usize>,
     admitted: AtomicUsize,
     spectator: Spectator,
+    /// The chats the room's governor holds, with `--seeded-chat`.
+    seeded: Option<Seeded>,
+}
+
+/// The rooms whose chat record the governor holds from the start.
+struct Seeded {
+    rooms: tilo_relay::rooms::Rooms,
+    chats: Vec<String>,
+}
+
+impl Seeded {
+    /// Seed the chat of each of `rooms` as their governor (`host`).
+    async fn seed(
+        governed: &tilo_relay::rooms::Rooms,
+        rooms: impl Iterator<Item = &StartedRoom>,
+        host: &DeviceCert,
+    ) -> anyhow::Result<Self> {
+        let mut chats = Vec::new();
+        for room in rooms {
+            seed_chat(governed, room, host).await?;
+            chats.push(room.room.clone());
+        }
+        Ok(Self {
+            rooms: governed.clone(),
+            chats,
+        })
+    }
+
+    /// Every change of the chat records as the governor's copy holds them,
+    /// hex-encoded: what the driver checks each guest's writes against.
+    async fn changes(&self) -> anyhow::Result<Vec<String>> {
+        let mut changes = Vec::new();
+        for room in &self.chats {
+            let Some(bytes) = self
+                .rooms
+                .record_document(room, "so.tilo.chat", crate::guest::CHAT_RECORD)
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?
+            else {
+                continue;
+            };
+            let mut document = automerge::AutoCommit::load(&bytes)?;
+            changes.extend(
+                document
+                    .get_changes(&[])
+                    .into_iter()
+                    .map(|change| hex::encode(change.hash().0)),
+            );
+        }
+        Ok(changes)
+    }
 }
 
 impl Host {
@@ -194,10 +246,7 @@ impl Host {
 
     async fn join(&self) -> anyhow::Result<serde_json::Value> {
         let (desktop, chat) = {
-            let mut seats = self
-                .seats
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut seats = self.seats.lock_recover();
             let index = seats.assign().context("no rooms")?;
             (
                 seats.desktops.get(index).cloned().context("room")?,
@@ -298,6 +347,19 @@ impl Host {
     /// One `/join` or `/spectate` request's status, `retry-after` and body.
     async fn answer(&self, path: &str, body: &[u8]) -> (u16, Option<u64>, String) {
         let error = |message: String| serde_json::json!({ "error": message }).to_string();
+        if path == "/record" {
+            let Some(seeded) = &self.seeded else {
+                return (404, None, error("no chat is seeded".into()));
+            };
+            return match seeded.changes().await {
+                Ok(changes) => (
+                    200,
+                    None,
+                    serde_json::json!({ "changes": changes }).to_string(),
+                ),
+                Err(problem) => (500, None, error(format!("{problem:#}"))),
+            };
+        }
         if path == "/spectate" {
             return match self.spectate(body).await {
                 Ok(Some(reply)) => (200, None, reply.to_string()),
@@ -330,6 +392,27 @@ async fn create_room(owner: &HttpsLink, name: &str) -> anyhow::Result<StartedRoo
         room: created.room,
         workspace_id: created.workspace_id,
     })
+}
+
+/// Have `room`'s governor (`host`) write the chat record guests write, as a
+/// persistent room seeds its chat, so it holds the record from the start.
+async fn seed_chat(
+    rooms: &tilo_relay::rooms::Rooms,
+    room: &StartedRoom,
+    host: &DeviceCert,
+) -> anyhow::Result<()> {
+    rooms
+        .author_room_record(
+            &room.room,
+            host,
+            ("so.tilo.chat", crate::guest::CHAT_RECORD),
+            |doc| {
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "seeded", true)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("seed the chat: {error}"))
 }
 
 async fn serve_join(host: Arc<Host>, listener: tokio::net::TcpListener) {
@@ -457,6 +540,12 @@ pub async fn run(args: HostArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+    let seeded = if args.seeded_chat {
+        let rooms = relay.rooms().context("the relay governs rooms")?;
+        Some(Seeded::seed(rooms, desktops.iter().chain(&chat), &host_cert).await?)
+    } else {
+        None
+    };
     let join = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let started = Started {
         origin: origin.clone(),
@@ -484,6 +573,7 @@ pub async fn run(args: HostArgs) -> anyhow::Result<()> {
         max_guests: args.max_guests,
         admitted: AtomicUsize::new(0),
         spectator,
+        seeded,
     });
     host.admit_spectator_person(plain.as_ref()).await?;
     tokio::spawn(serve_join(host, join));

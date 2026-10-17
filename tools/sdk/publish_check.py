@@ -151,13 +151,16 @@ def taken_names(names: list[str]) -> set[str]:
         )
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
-                owners = json.load(response)
+                document = json.load(response)
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 continue
             raise
-        if owners.get("crate"):
-            taken.add(name)
+        crate = document.get("crate") if isinstance(document, dict) else None
+        if not isinstance(crate, dict) or not isinstance(crate.get("name"), str) or not crate["name"]:
+            raise ValueError(f"crates.io returned invalid crate metadata for {name}; "
+                             "cannot determine name availability")
+        taken.add(name)
     return taken
 
 
@@ -177,12 +180,14 @@ def forks_as_members():
         text = text.replace(entry, "", 1)
     added = "".join(f'    "{fork}",\n' for fork in FORKS)
     text = text.replace("\nmembers = [\n", "\nmembers = [\n" + added, 1)
-    manifest.write_text(text)
     try:
+        manifest.write_text(text)
         yield
     finally:
-        manifest.write_text(original)
-        lock.write_text(original_lock)
+        try:
+            manifest.write_text(original)
+        finally:
+            lock.write_text(original_lock)
 
 
 def main() -> int:

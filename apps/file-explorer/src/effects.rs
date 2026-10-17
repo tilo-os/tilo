@@ -36,6 +36,36 @@ pub enum FilesEffect {
     /// Clear selection.
     #[effect(view, returns)]
     ClearSelection,
+    /// Selected entries.
+    ///
+    /// Answers which entries are selected in the folder shown, with their
+    /// absolute paths, changing nothing: what "these files" means when a
+    /// request is about the selection.
+    #[effect(view, kind = "read", returns, idempotent)]
+    SelectedEntries,
+    /// Hand over a file.
+    ///
+    /// Gives a file's bytes to the next step, by their content address: an
+    /// attachment to a message, a picture to place, a file to post. Reads
+    /// the file and changes nothing.
+    #[effect(content, kind = "read", idempotent)]
+    HandOver {
+        #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
+        file: String,
+    },
+    /// Read a file's text.
+    ///
+    /// Answers with what a file says: each page's text for a PDF, the text
+    /// itself for Markdown and any other text file (a Word, `OpenDocument`
+    /// or RTF document is Writer's `read-file`). A long file answers in
+    /// parts: read on from the `next` an answer gives.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadText {
+        #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
+        file: String,
+        #[param("The character to read from; the start when none")]
+        from: Option<usize>,
+    },
     /// Copy selection.
     #[effect(kind = "read", job)]
     CopySelection,
@@ -190,10 +220,43 @@ pub enum FilesEffect {
         #[param("Access to the original file", choices = ["read-only", "edit-in-parent"])]
         access: Option<String>,
     },
+    /// Browse a provider folder without mounting it.
+    #[effect(view)]
+    BrowseCloud {
+        account: String,
+        folder: Option<String>,
+    },
+    /// Load the next page of cloud entries.
+    #[effect(view)]
+    MoreCloud,
+    /// Toggle a cloud entry in the selection.
+    #[effect(view)]
+    SelectCloud { entry: String },
+    /// Import selected files and folders to an explicit folder, or choose one.
+    #[effect(view)]
+    ImportCloud { folder: Option<String> },
+    /// Observe enumeration, export and copy progress.
+    #[effect(kind = "read", returns)]
+    CloudProgress,
+    /// Cancel the current transfer, retaining completed independent copies.
+    #[effect(view)]
+    CancelCloud,
+    /// Retry only unsuccessful top-level entries.
+    #[effect(view)]
+    RetryCloud,
+    /// Show the destination folder.
+    #[effect(view)]
+    RevealCloud,
+    /// Create an independent editable copy of a converted native document.
+    #[effect(row)]
+    ImportConverted {
+        #[param("The converted entry's published row id")]
+        entry: String,
+    },
     /// Import once from cloud…
     ///
-    /// Copies the mounted entry's bytes into a local folder. Native Drive
-    /// documents retain their link representation, not a fabricated file.
+    /// Copies the mounted entry's bytes into a local folder. Supported native
+    /// documents are converted; the copy has no sync relationship.
     #[effect(row)]
     ImportOnce {
         #[param("The cloud entry's published row id")]

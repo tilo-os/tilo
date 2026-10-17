@@ -99,6 +99,8 @@ fn installed_apps() -> Vec<InstalledApp> {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
+            offers: Vec::new(),
         });
     }
     installed

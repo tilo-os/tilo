@@ -14,8 +14,8 @@ use std::time::{Duration, SystemTime};
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     KernelConfig, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite,
-    Request, TimeOrNow, WriteFlags,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow,
+    WriteFlags,
 };
 
 use super::volume::{Attr, CloudVolume, Kind};
@@ -301,37 +301,8 @@ impl Filesystem for CloudFs {
         reply.ok();
     }
 
-    fn readdirplus(
-        &self,
-        _req: &Request,
-        ino: INodeNo,
-        _fh: FileHandle,
-        offset: u64,
-        mut reply: ReplyDirectoryPlus,
-    ) {
-        let entries = match self.volume.readdir(ino.0) {
-            Ok(entries) => entries,
-            Err(e) => {
-                reply.error(errno(e));
-                return;
-            }
-        };
-        let skip = usize::try_from(offset).unwrap_or(usize::MAX);
-        for (i, (entry_name, attr)) in entries.into_iter().enumerate().skip(skip) {
-            let next = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
-            if reply.add(
-                INodeNo(attr.ino),
-                next,
-                OsStr::new(&entry_name),
-                &TTL,
-                &self.attr(&attr),
-                Generation(0),
-            ) {
-                break;
-            }
-        }
-        reply.ok();
-    }
+    // READDIRPLUS is deliberately not advertised: enumeration must not fetch
+    // exports or publish placeholder sizes as authoritative inode attributes.
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
         match self.volume.quota() {

@@ -280,39 +280,6 @@ impl SelectionHandles {
         self.bounds.contains(self.orientation().inverse() * point)
     }
 
-    /// The uniform scale a drag of `handle` from `from` to `to` asks of an
-    /// upright frame, about the opposite corner, and that corner. Never
-    /// below a tenth. [`Self::stretch_for`] answers a turned frame.
-    pub fn scale_for(&self, handle: Handle, from: Point, to: Point) -> (f64, Point) {
-        let anchor = handle.anchor(self.bounds);
-        let before = from.distance(anchor).max(1e-6);
-        ((to.distance(anchor) / before).max(0.1), anchor)
-    }
-
-    /// The scale on each axis a drag of `handle` from `from` to `to` asks
-    /// of an upright frame, about the opposite corner or edge, and that
-    /// anchor: a corner scales both axes alike, an edge only its own. Never
-    /// below a tenth.
-    pub fn resize_for(&self, handle: Handle, from: Point, to: Point) -> (f64, f64, Point) {
-        let anchor = handle.anchor(self.bounds);
-        let axis = |from: f64, to: f64, anchor: f64| {
-            let before = from - anchor;
-            if before.abs() < 1e-6 {
-                1.0
-            } else {
-                ((to - anchor) / before).max(0.1)
-            }
-        };
-        match handle {
-            Handle::Top | Handle::Bottom => (1.0, axis(from.y, to.y, anchor.y), anchor),
-            Handle::Left | Handle::Right => (axis(from.x, to.x, anchor.x), 1.0, anchor),
-            _ => {
-                let (scale, anchor) = self.scale_for(handle, from, to);
-                (scale, scale, anchor)
-            }
-        }
-    }
-
     /// The resize a drag of `handle` from `from` to `to` asks for, as an
     /// affine in content space. The opposite side stays still, or the centre
     /// with `from_centre`; `keep_aspect` scales both ways alike. A drag past
@@ -502,20 +469,20 @@ mod tests {
         assert!(Handle::Right.is_edge() && !Handle::TopLeft.is_edge());
         assert_eq!(frame.handle_at(Point::new(150.0, 72.0), 1.0), None);
         assert!(!frame.handles(1.0).any(|handle| handle == Handle::Rotate));
-        let (sx, sy, anchor) = frame.resize_for(
+        let stretch = frame.stretch_for(
             Handle::Right,
-            Point::new(200.0, 125.0),
-            Point::new(300.0, 140.0),
+            (Point::new(200.0, 125.0), Point::new(300.0, 140.0)),
+            false,
+            false,
         );
-        assert_eq!(anchor, Point::new(100.0, 125.0));
-        assert!((sx - 2.0).abs() < 1e-9 && (sy - 1.0).abs() < 1e-9);
-        let (scale, anchor) = frame.scale_for(
-            Handle::BottomRight,
-            Point::new(200.0, 150.0),
-            Point::new(300.0, 200.0),
-        );
-        assert_eq!(anchor, Point::new(100.0, 100.0));
-        assert!((scale - 2.0).abs() < 1e-9);
+        assert!(close(
+            stretch * Point::new(100.0, 125.0),
+            Point::new(100.0, 125.0)
+        ));
+        assert!(close(
+            stretch * Point::new(200.0, 150.0),
+            Point::new(300.0, 150.0)
+        ));
     }
 
     #[test]

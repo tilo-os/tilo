@@ -46,6 +46,7 @@ flatpak-media-writer = ["imager-backend/flatpak-media-writer"]
 [dependencies]
 ed25519-dalek.workspace = true
 tilo-image-codec = { version = "0.1.0", path = "../../crates/platform/tilo-image-codec" }
+tilo-lock = { version = "0.1.0", path = "../../crates/platform/tilo-lock" }
 install-profile-model = { path = "../../crates/session/install-profile-model" }
 imager-backend = { path = "../../crates/platform/imager-backend" }
 staging-handoff-model = { path = "../staging-handoff-model" }

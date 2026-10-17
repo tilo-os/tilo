@@ -28,17 +28,27 @@ pub fn needs_animation(theme: &Theme) -> bool {
 
 /// Paint an opaque authentication backdrop inside `bounds`.
 ///
+/// `bounds` is in the coordinate space of `transform`, the same transform the
+/// caller's widgets draw with: a toolkit host hands widgets a scene in
+/// physical pixels with the device scale in `transform`, so a backdrop drawn
+/// without it would cover only the logical-sized corner of a scaled output.
 /// The elapsed time is supplied by the host, making stills and recordings
 /// deterministic. Invalid or negative times use the initial composition; long
 /// uptimes wrap before trigonometry. Empty or non-finite bounds draw nothing.
 /// The base is always opaque, even for a custom theme with translucent tokens.
-pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64) {
+pub fn draw(
+    scene: &mut Scene,
+    theme: &Theme,
+    transform: Affine,
+    bounds: Rect,
+    elapsed_seconds: f64,
+) {
     if !bounds.is_finite() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
     }
 
     let base = theme.tokens.colors.surfaces.base.with_alpha(1.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, base, None, &bounds);
+    scene.fill(Fill::NonZero, transform, base, None, &bounds);
     if theme.colors_are_forced() {
         return;
     }
@@ -48,8 +58,9 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
     } else {
         0.0
     };
-    let transform = Affine::translate((bounds.x0, bounds.y0))
-        .pre_scale_non_uniform(bounds.width(), bounds.height());
+    let unit = transform
+        * Affine::translate((bounds.x0, bounds.y0))
+            .pre_scale_non_uniform(bounds.width(), bounds.height());
     let accent = theme.tokens.colors.intent.inverted;
     let light = if theme.tokens.colors.lifts_bright() {
         theme.text_primary
@@ -83,35 +94,23 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
     // The sculpture extends past the canvas. Clip its geometry so embedded
     // previews cannot paint neighboring content. Four sheets and eight fine
     // contours keep the work fixed, independent of resolution and uptime.
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        1.0,
-        Affine::IDENTITY,
-        &bounds,
-    );
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &bounds);
     let hairline = f64::from(theme.ui_scale) / bounds.height().max(1.0);
     for layer in 0..4 {
         let layer = f64::from(layer);
         let (sheet, edge) = ribbon(phase, layer, 0.0);
-        scene.fill(Fill::NonZero, transform, &silk, None, &sheet);
-        scene.stroke(&Stroke::new(hairline), transform, &rim, None, &edge);
+        scene.fill(Fill::NonZero, unit, &silk, None, &sheet);
+        scene.stroke(&Stroke::new(hairline), unit, &rim, None, &edge);
 
         // Delicate parallel contours suggest tension along the material,
         // instead of introducing grain or a costly blurred glow.
         for offset in [0.008, 0.017] {
             let (_, contour) = ribbon(phase, layer, offset);
-            scene.stroke(
-                &Stroke::new(hairline * 0.45),
-                transform,
-                &rim,
-                None,
-                &contour,
-            );
+            scene.stroke(&Stroke::new(hairline * 0.45), unit, &rim, None, &contour);
         }
     }
 
-    draw_readability_veils(scene, transform, base);
+    draw_readability_veils(scene, unit, base);
     scene.pop_layer();
 }
 
@@ -190,7 +189,7 @@ mod tests {
 
     fn frame(theme: &Theme, time: f64) -> Scene {
         let mut scene = Scene::new();
-        draw(&mut scene, theme, BOUNDS, time);
+        draw(&mut scene, theme, Affine::IDENTITY, BOUNDS, time);
         scene
     }
 
@@ -317,8 +316,37 @@ mod tests {
                 Rect::new(0.0, 0.0, f64::NAN, 900.0),
             ] {
                 let mut scene = Scene::new();
-                draw(&mut scene, &Theme::dark(), bounds, 0.0);
+                draw(&mut scene, &Theme::dark(), Affine::IDENTITY, bounds, 0.0);
                 assert!(scene.encoding().is_empty());
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn backdrop_covers_the_whole_physical_surface_under_the_device_scale() {
+        // A scale-2 host draws widgets with `composite_transform(2.0)` over
+        // a logical rect; the backdrop must land on every physical pixel,
+        // not on the upper-left quadrant the logical rect spans unscaled.
+        let logical = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let transform = crate::scale::composite_transform(2.0);
+        for theme in [Theme::dark(), Theme::high_contrast()] {
+            let mut scene = Scene::new();
+            draw(&mut scene, &theme, transform, logical, 7.0);
+            let bounds = tilo_cpu_raster::DrawBounds::default()
+                .of(scene.encoding())
+                .expect("every backdrop draw is boundable");
+            let cover = bounds.first().expect("the opaque base is drawn first");
+            assert_eq!(
+                (cover.x0, cover.y0, cover.x1, cover.y1),
+                (0.0, 0.0, 2944.0, 1840.0),
+                "the opaque base covers the physical surface"
+            );
+            for draw in &bounds[1..] {
+                assert!(
+                    draw.x1 > 1472.0 || draw.y1 > 920.0,
+                    "a sculpture draw stayed inside the logical quadrant: {draw:?}"
+                );
             }
         }
     }

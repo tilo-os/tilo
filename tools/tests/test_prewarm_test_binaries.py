@@ -2,6 +2,8 @@
 
 import json
 import os
+import signal
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -92,6 +94,51 @@ class PrewarmTests(unittest.TestCase):
             finally:
                 neighbour.terminate()
                 neighbour.wait(timeout=5)
+
+    def test_timeout_kills_descendants_even_when_the_listing_leader_exits_on_term(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            address = str(root / "child.sock")
+            marker = root / "child.pid"
+            child_code = (
+                "import os, signal, socket, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "listener = socket.socket(socket.AF_UNIX)\n"
+                f"listener.bind({address!r})\nlistener.listen()\n"
+                f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n")
+            body = ("import subprocess\n"
+                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+                    "time.sleep(60)")
+            source, _, row = self.fixture(root, body=body)
+            child = None
+            try:
+                result = prewarm([Harness(Path(row["executable"]), source)],
+                                 1, 2, 4, os.environ.copy())
+                self.assertTrue(marker.exists(), "the descendant must actually start")
+                child = int(marker.read_text())
+                self.assertEqual(result["timed_out"], 1)
+                # A zombie may await the host's reaper, but a killed process
+                # cannot retain its listening socket.
+                deadline = time.monotonic() + 2
+                while True:
+                    with socket.socket(socket.AF_UNIX) as connection:
+                        connection.settimeout(1)
+                        try:
+                            connection.connect(address)
+                        except ConnectionRefusedError:
+                            break
+                    if time.monotonic() >= deadline:
+                        self.fail("the listing descendant retained its socket after timeout")
+                    time.sleep(0.02)
+            finally:
+                if child is None and marker.exists():
+                    child = int(marker.read_text())
+                if child is not None:
+                    try:
+                        os.kill(child, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_budget_leaves_pending_work_unstarted(self):
         with tempfile.TemporaryDirectory() as directory:

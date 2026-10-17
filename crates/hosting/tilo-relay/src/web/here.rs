@@ -15,7 +15,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::{ProviderProtocol, transform};
@@ -25,6 +25,7 @@ use super::protocol::{
     HERE_TTL_SECS, HereAction, HerePerson, HereReply, HereRequest, MAX_HERE_RECENT_CHARS,
     MAX_HERE_STATUS_CHARS,
 };
+use tilo_lock::MutexRecover as _;
 
 /// A person stays listed this long after their last post.
 pub(crate) const TTL: Duration = Duration::from_secs(HERE_TTL_SECS);
@@ -378,7 +379,7 @@ impl Summarizer {
             return false;
         }
         {
-            let mut budget = self.budget.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut budget = self.budget.lock_recover();
             while budget
                 .calls
                 .front()
@@ -500,7 +501,7 @@ impl Here {
         now: Instant,
         now_ms: u64,
     ) -> (HereReply, Option<Job>) {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if state
             .swept
             .is_none_or(|at| now.saturating_duration_since(at) >= SWEEP_EVERY)
@@ -630,7 +631,7 @@ impl Here {
             return;
         };
         let now_ms = tilo_clock::unix_now_ms();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         if let Some(entry) = state
             .workspaces
             .get_mut(&job.workspace_id)
@@ -654,11 +655,7 @@ struct Release<'a> {
 impl Drop for Release<'_> {
     fn drop(&mut self) {
         self.summarizer.in_flight.fetch_sub(1, Ordering::SeqCst);
-        let mut state = self
-            .here
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.here.state.lock_recover();
         if let Some(entry) = state
             .workspaces
             .get_mut(&self.workspace_id)

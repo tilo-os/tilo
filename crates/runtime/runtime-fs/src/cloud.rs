@@ -9,8 +9,8 @@
 //! for a share link.
 //!
 //! The sockets differ in what they serve ([`CloudSocket`]). The account
-//! socket, [`default_socket`], answers the listing and sync now, pause and
-//! resume, and nothing else: it is what Settings' sandbox is granted. The
+//! socket, [`default_socket`], answers the listing, sync now, pause, resume
+//! and the prepare/abort import handshake: it is what Settings' sandbox is granted. The
 //! file socket, [`default_files_socket`], also answers file requests, which
 //! can replace a file's remote content or make it reachable by anyone
 //! holding a link; it lives in a directory of its own, so a grant of the
@@ -32,8 +32,16 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wire_frame::{FrameError, Framing};
 
+pub mod import;
+pub use import::{
+    IMPORT_CHUNK_LIMIT, ImportEntry, ImportError, ImportErrorKind, ImportKind, ImportReadState,
+    ImportReply, ImportRequest,
+};
+
 /// Every cloud-socket message is one frame of at most 1 MiB.
-pub const CLOUD_FRAMING: Framing = Framing::little_endian(1024 * 1024);
+// A 256 KiB byte-vector chunk can require four JSON bytes per source byte,
+// plus its response envelope. Leave room for the envelope at the chunk limit.
+pub const CLOUD_FRAMING: Framing = Framing::little_endian(2 * 1024 * 1024);
 
 /// The service's runtime directory below `$XDG_RUNTIME_DIR` (the user
 /// unit's `RuntimeDirectory=`).
@@ -84,7 +92,7 @@ pub fn files_socket_in(runtime_dir: &Path) -> PathBuf {
 /// may ask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloudSocket {
-    /// The account socket: the listing, sync now, pause and resume. No
+    /// The account socket: listing, sync controls and import preparation. No
     /// request on it reads, replaces or shares a file.
     Accounts,
     /// The file socket: everything, [`CloudRequest::File`] included.
@@ -98,7 +106,10 @@ impl CloudSocket {
     pub fn serves(self, request: &CloudRequest) -> bool {
         match self {
             Self::Files => true,
-            Self::Accounts => !matches!(request, CloudRequest::File { .. }),
+            Self::Accounts => !matches!(
+                request,
+                CloudRequest::File { .. } | CloudRequest::Import { .. }
+            ),
         }
     }
 }
@@ -178,6 +189,8 @@ pub enum FileRequest {
     /// A link the provider shares the file through. Creating one may make
     /// the file reachable by anyone holding the link.
     ShareLink { path: String },
+    /// Cached source metadata only; never fetches file content or exports.
+    Describe { path: String },
 }
 
 /// One revision of a file, as the provider describes it.
@@ -191,12 +204,26 @@ pub struct FileRevision {
     pub author: Option<String>,
 }
 
+/// Cached metadata about a mounted item. Carries no credential or content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDescription {
+    /// The provider's original MIME type, not the exported representation's.
+    pub source_mime: Option<String>,
+    /// The mounted file represents a supported native-document export.
+    pub converted: bool,
+    /// The mount permits replacing the item's content (not rename/delete).
+    pub content_writable: bool,
+}
+
 /// The answer to a [`FileRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileReply {
     Revisions(Vec<FileRevision>),
     Restored,
     Link(String),
+    /// Internal mount acknowledgement; no file content is returned.
+    ImportFrozen,
+    Description(FileDescription),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +243,21 @@ pub enum CloudRequest {
         account: String,
         request: FileRequest,
     },
+    /// Browse and read an enabled account without creating a sync mount.
+    Import {
+        account: String,
+        request: ImportRequest,
+    },
+    /// Freeze a clean sync mount before committing import-only configuration.
+    PrepareImport { account: String },
+    /// Roll back an uncommitted preparation. Tokens are account/configuration-bound.
+    AbortImport { account: String, token: String },
+    /// Pin a prepared hold durably before writing account metadata.
+    BeginCommitImport { account: String, token: String },
+    /// Verify the saved Import mode and consume its pinned hold.
+    CompleteImport { account: String, token: String },
+    /// Explicitly recover an interrupted commit, only without an active writer.
+    RecoverImport { account: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +266,29 @@ pub enum CloudResponse {
     Done,
     File(FileReply),
     Error(String),
+    Import(ImportReply),
+    ImportPrepared { token: String },
+}
+
+/// Fence an account metadata writer against explicit interrupted-commit recovery.
+/// Hold this guard from preparation through save and completion. Lock files are
+/// stable and must not be removed, including after a daemon restart.
+///
+/// # Errors
+/// Returns an error if another writer or recovery owns this account.
+pub fn import_writer_lock(
+    config_root: &Path,
+    account: &str,
+) -> std::io::Result<advisory_lock::FileLock> {
+    use std::fmt::Write;
+    let mut name = String::new();
+    for byte in account.as_bytes() {
+        let _ = write!(name, "{byte:02x}");
+    }
+    let directory = config_root.join("cloud-transition-locks");
+    std::fs::create_dir_all(&directory)?;
+    advisory_lock::FileLock::try_open(&directory.join(name), advisory_lock::LockMode::Exclusive)
+        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 /// A connection to the cloud account service.
@@ -251,6 +316,71 @@ impl CloudClient {
             CloudResponse::Mounts(mounts) => Ok(mounts),
             other => Err(unexpected(other)),
         }
+    }
+
+    /// Browse or transfer bytes without exposing provider credentials.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the socket or framing exchange fails.
+    pub fn import(
+        &mut self,
+        account: &str,
+        request: ImportRequest,
+    ) -> std::io::Result<ImportReply> {
+        match self.request(&CloudRequest::Import {
+            account: account.to_owned(),
+            request,
+        })? {
+            CloudResponse::Import(reply) => Ok(reply),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Freeze and stop a clean sync mount before changing its account mode.
+    /// Begin the commit within 120 seconds, or abort with the token.
+    ///
+    /// # Errors
+    /// Returns an error while local edits, uploads or writable handles remain.
+    pub fn prepare_import(&mut self, account: &str) -> std::io::Result<String> {
+        match self.request(&CloudRequest::PrepareImport {
+            account: account.to_owned(),
+        })? {
+            CloudResponse::ImportPrepared { token } => Ok(token),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Restore a prepared mount after an account-store write fails.
+    ///
+    /// # Errors
+    /// Returns an error if the token expired or the account configuration changed.
+    pub fn abort_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
+        self.control(&CloudRequest::AbortImport {
+            account: account.to_owned(),
+            token: token.to_owned(),
+        })
+    }
+
+    /// Pin a hold across metadata persistence, including service restarts.
+    ///
+    /// # Errors
+    /// Returns an error if the preparation expired or configuration changed.
+    pub fn begin_commit_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
+        self.control(&CloudRequest::BeginCommitImport {
+            account: account.to_owned(),
+            token: token.to_owned(),
+        })
+    }
+
+    /// Consume a pinned hold after account metadata was saved.
+    ///
+    /// # Errors
+    /// Returns an error unless the token matches and the account is in Import mode.
+    pub fn complete_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
+        self.control(&CloudRequest::CompleteImport {
+            account: account.to_owned(),
+            token: token.to_owned(),
+        })
     }
 
     /// Send `request`, which answers [`CloudResponse::Done`].
@@ -358,6 +488,92 @@ mod tests {
     }
 
     #[test]
+    fn describe_round_trips_on_the_file_socket() {
+        let (client_end, mut service) = UnixStream::pair().unwrap();
+        let request = CloudRequest::File {
+            account: "a".into(),
+            request: FileRequest::Describe {
+                path: "Work/Essay.docx".into(),
+            },
+        };
+        assert!(!CloudSocket::Accounts.serves(&request));
+        assert!(CloudSocket::Files.serves(&request));
+        let description = FileDescription {
+            source_mime: Some("application/vnd.google-apps.document".into()),
+            converted: true,
+            content_writable: false,
+        };
+        let reply = FileReply::Description(description);
+        let expected = reply.clone();
+        let worker = std::thread::spawn(move || {
+            let received: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+            assert_eq!(received, request);
+            CLOUD_FRAMING
+                .write_value(&mut service, &CloudResponse::File(reply))
+                .unwrap();
+        });
+        let mut client = CloudClient { stream: client_end };
+        assert_eq!(
+            client
+                .file(
+                    "a",
+                    FileRequest::Describe {
+                        path: "Work/Essay.docx".into()
+                    }
+                )
+                .unwrap(),
+            expected
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn maximum_import_chunk_fits_the_wire_frame() {
+        let (client_end, mut service) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            let request: CloudRequest = CLOUD_FRAMING.read_value(&mut service).unwrap().unwrap();
+            assert!(matches!(
+                request,
+                CloudRequest::Import {
+                    request: ImportRequest::ReadChunk {
+                        length: IMPORT_CHUNK_LIMIT,
+                        ..
+                    },
+                    ..
+                }
+            ));
+            CLOUD_FRAMING
+                .write_value(
+                    &mut service,
+                    &CloudResponse::Import(ImportReply::Chunk {
+                        bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
+                        eof: true,
+                    }),
+                )
+                .unwrap();
+        });
+        let mut client = CloudClient { stream: client_end };
+        let reply = client
+            .import(
+                "account",
+                ImportRequest::ReadChunk {
+                    session: "opaque".into(),
+                    offset: 0,
+                    length: IMPORT_CHUNK_LIMIT,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reply,
+            ImportReply::Chunk {
+                bytes: vec![255; IMPORT_CHUNK_LIMIT as usize],
+                eof: true
+            }
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn the_socket_lives_in_the_service_runtime_directory() {
         assert_eq!(
             socket_in(Path::new("/run/user/1000")),
@@ -393,7 +609,25 @@ mod tests {
             CloudRequest::Pause {
                 account: account.clone(),
             },
-            CloudRequest::Resume { account },
+            CloudRequest::Resume {
+                account: account.clone(),
+            },
+            CloudRequest::PrepareImport {
+                account: account.clone(),
+            },
+            CloudRequest::AbortImport {
+                account: account.clone(),
+                token: "opaque".into(),
+            },
+            CloudRequest::BeginCommitImport {
+                account: account.clone(),
+                token: "opaque".into(),
+            },
+            CloudRequest::CompleteImport {
+                account: account.clone(),
+                token: "opaque".into(),
+            },
+            CloudRequest::RecoverImport { account },
         ] {
             assert!(CloudSocket::Accounts.serves(&request));
             assert!(CloudSocket::Files.serves(&request));

@@ -674,8 +674,9 @@ Mesa llvmpipe renders, and the comparison refuses other adapters.
 dimensions without a GPU, so a card that changed size fails every test run.
 
 After visually approving an intentional change, regenerate the references with
-`t outputs visual-baselines`, which renders them on the builder image with
-llvmpipe and downloads the candidates, and review them. Inside that image the
+the "Render visual baseline candidates" workflow
+(`.forgejo/workflows/dev-visual-baselines.yml`), which pins the builder
+image and llvmpipe, and review its candidates. Inside that image the
 equivalent command is:
 
 ```sh

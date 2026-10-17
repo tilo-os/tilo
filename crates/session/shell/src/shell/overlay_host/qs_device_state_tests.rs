@@ -47,6 +47,10 @@ impl crate::shell::quick_settings::actions::QsActions for Recorder {
         self.push(format!("power={}", profile.cli_arg()));
         Ok(())
     }
+    fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+        self.push(format!("airplane={enabled}"));
+        Ok(())
+    }
 }
 
 fn bridge_at(level: f32, muted: bool) -> StatusBridge {

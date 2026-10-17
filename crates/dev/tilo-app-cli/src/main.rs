@@ -2588,6 +2588,20 @@ fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether `app_dir` holds a compute package: a windowless `service` whose
+/// `cli` entrypoint publishes `[cli]` commands for a compute worker to run.
+/// A service with no window: its binary is never launched as a GUI, so it
+/// has no `--native-audit` mode and no UI to audit.
+fn is_windowless_service(app_dir: &Path) -> bool {
+    std::fs::read_to_string(app_dir.join("tilo-app.toml"))
+        .ok()
+        .and_then(|text| tilo_app_package::view::ManifestView::from_toml_str(&text).ok())
+        .is_some_and(|manifest| {
+            manifest.kind == tilo_app_package::view::KIND_SERVICE
+                && manifest.entrypoint.gui_bin().is_none()
+        })
+}
+
 fn certify_one(path: &Path) -> Result<()> {
     tilo_app_cli::plan_app_task(
         path,
@@ -2629,6 +2643,11 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             dir.file_name()
                 .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
         })
+        // A windowless service has no UI to audit: a compute package's
+        // worker runs its `[cli]` command for another app's action, which
+        // that app certifies, and a service such as web search only
+        // publishes actions, which its own tests cover.
+        .filter(|dir| !is_windowless_service(dir))
         .collect::<Vec<_>>();
     app_dirs.sort();
     let mut packages = Vec::with_capacity(app_dirs.len());
@@ -3043,6 +3062,17 @@ fn list_examples(human: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_certification_skips_only_windowless_services() {
+        let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        assert!(is_windowless_service(&apps.join("thumbnails")));
+        assert!(is_windowless_service(&apps.join("web-search")));
+        assert!(is_windowless_service(&apps.join("agent")));
+        // A window is always certified, a service's (the keyboard) too.
+        assert!(!is_windowless_service(&apps.join("osk")));
+        assert!(!is_windowless_service(&apps.join("calculator")));
+    }
 
     #[test]
     fn bundle_macos_requires_explicit_existing_inputs_and_output() {

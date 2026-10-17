@@ -68,6 +68,7 @@
 "tilo-runtime-bundle" = 2   # 1.2 MB
 "tilo-unlock-helper" = 1   # 0.3 MB
 "tilo-ush" = 2   # 1.1 MB
+"tilo-web-search" = 22   # 19.5 MB
 "remote" = 27   # 22.8 MB
 "settings" = 23   # 19.9 MB
 "sheets" = 26   # 22.5 MB

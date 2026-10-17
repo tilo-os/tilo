@@ -307,10 +307,10 @@ impl ActiveFilePicker {
         } else {
             FilePickerMode::Open
         };
-        let mut widget = FilePicker::new(request.title.clone(), &scope.initial_dir, scope.roots)
+        let mut widget = FilePicker::new(request.display_title(), &scope.initial_dir, scope.roots)
             .with_mode(mode)
             .with_multiple(request.multiple)
-            .with_accept_label(request.accept_label.clone())
+            .with_accept_label(Some(request.confirm_label()))
             .with_home(scope.home)
             .with_filters(filters);
         if let Some(name) = request.current_name.as_deref() {
@@ -376,6 +376,7 @@ mod tests {
             title: "Review package".into(),
             save: false,
             directory: false,
+            writable_directory: false,
             multiple: false,
             accept_label: Some("Review".into()),
             current_name: None,
@@ -559,6 +560,7 @@ mod tests {
             title: "Review".into(),
             save,
             directory,
+            writable_directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,
@@ -879,6 +881,7 @@ mod tests {
                 title: "Choose project".into(),
                 save: false,
                 directory: true,
+                writable_directory: false,
                 multiple: false,
                 accept_label: Some("Attach folder".into()),
                 current_name: None,
@@ -903,6 +906,54 @@ mod tests {
         picker_rect_is_centered_and_clamped_to_viewport();
         single_file_request_cannot_receive_multiple_paths();
         directory_request_flows_through_overlay_to_folder_reply();
+    }
+
+    #[test]
+    fn writable_directory_picker_renders_system_owned_consent() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree.desktop.active_workspace().unwrap().id;
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
+            initial_dir: temp.path().to_path_buf(),
+            roots: vec![temp.path().to_path_buf()],
+            home: None,
+        });
+        let queue = crate::portal::FilePickerQueue::new();
+        let (reply, mut received) = oneshot::channel();
+        queue.spawn(FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+            title: "Open folder".into(),
+            save: false,
+            directory: true,
+            writable_directory: true,
+            multiple: false,
+            accept_label: Some("Open".into()),
+            current_name: None,
+            filters: Vec::new(),
+            scope: None,
+            reply,
+        });
+        let mut overlay = FilePickerOverlay::default();
+        overlay.set_queue(queue);
+        assert!(overlay.pump(Some(&chrome)));
+        let picker = overlay.widget_mut().unwrap();
+        assert_eq!(
+            picker.confirm_label(),
+            crate::shell::i18n::t("portal-file-allow-write-folder")
+        );
+        let node = ui::Widget::accessibility(picker).unwrap();
+        assert_eq!(
+            node.name,
+            Some(crate::shell::i18n::t("portal-file-grant-write-folder"))
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "showing the request is not consent"
+        );
+        picker.click_cancel();
+        assert!(overlay.pump(Some(&chrome)));
+        assert_eq!(received.try_recv().unwrap(), None);
     }
 
     /// Every key the overlay sees, as the compositor hands it over.
@@ -955,6 +1006,7 @@ mod tests {
             title: "Export a picture".into(),
             save: true,
             directory: false,
+            writable_directory: false,
             multiple: false,
             accept_label: Some("Export".into()),
             current_name: Some("labrador.jpg".into()),
@@ -1030,6 +1082,7 @@ mod tests {
             title: "Export a picture".into(),
             save: true,
             directory: false,
+            writable_directory: false,
             multiple: false,
             accept_label: Some("Export".into()),
             current_name: Some("labrador.jpg".into()),
@@ -1081,6 +1134,7 @@ mod tests {
             title: "Import".into(),
             save: false,
             directory: false,
+            writable_directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,

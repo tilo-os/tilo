@@ -17,28 +17,39 @@ use crate::widget::TaffyTreeExt;
 /// deliberate hover without firing on a pointer merely passing through.
 pub const HOVER_DWELL: Duration = Duration::from_millis(500);
 
-const CHIP_PAD_X: f64 = 9.0;
-const CHIP_PAD_Y: f64 = 5.0;
-const CHIP_MIN_H: f64 = 24.0;
-const CHIP_GAP: f64 = 6.0;
-const CHIP_MARGIN: f64 = 6.0;
-/// Hard cap so a pathological label can't paint a chip wider than the window.
-const CHIP_MAX_W: f64 = 320.0;
+/// A tooltip chip's spacing, every value a token (HIG 7b): the label
+/// stands `s2` in from the chip's sides and `s1` from its top and bottom,
+/// the chip hangs `s1` off its control (the tight relationship of a label
+/// and the thing it names), stays the floating Panel margin
+/// ([`super::floating_surface::viewport_margin`]) inside the window and is
+/// never wider than a utility Panel, so a long hint wraps instead of
+/// running off the window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChipMetrics {
+    pad_x: f64,
+    pad_y: f64,
+    gap: f64,
+    margin: f64,
+    max_w: f64,
+}
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
+impl ChipMetrics {
+    fn of(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
+        Self {
+            pad_x: f64::from(spacing.s2),
+            pad_y: f64::from(spacing.s1),
+            gap: f64::from(spacing.rhythm.tight),
+            margin: super::floating_surface::viewport_margin(theme),
+            max_w: f64::from(theme.tokens.metrics.panel_width_utility),
+        }
+    }
 }
 
 /// The chip's size for `label`: wrapped `Caption` text plus the chip's pads.
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
-    chip_size_with_width(label, text_renderer, theme, CHIP_MAX_W)
+    let max_w = ChipMetrics::of(theme).max_w;
+    chip_size_with_width(label, text_renderer, theme, max_w)
 }
 
 /// Measure the complete hint at the width its viewport can actually hold.
@@ -48,8 +59,10 @@ pub fn chip_size_in_viewport(
     theme: &Theme,
     viewport: Rect,
 ) -> (f64, f64) {
-    let width = (viewport.width() - 2.0 * CHIP_MARGIN).clamp(0.0, CHIP_MAX_W);
+    let m = ChipMetrics::of(theme);
+    let width = (viewport.width() - 2.0 * m.margin).clamp(0.0, m.max_w);
     fit_size(
+        &m,
         chip_size_with_width(label, text_renderer, theme, width),
         viewport,
     )
@@ -61,18 +74,19 @@ fn chip_size_with_width(
     theme: &Theme,
     width: f64,
 ) -> (f64, f64) {
-    let content_width = f32_of_f64((width - 2.0 * CHIP_PAD_X).max(0.0));
+    let m = ChipMetrics::of(theme);
+    let content_width = f32_of_f64((width - 2.0 * m.pad_x).max(0.0));
     let (tw, th) =
         text_renderer.measure_style(label, Some(content_width), &theme.text(TextRole::Caption));
-    let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(width);
-    let h = (f64::from(th) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
+    let w = (f64::from(tw) + 2.0 * m.pad_x).min(width);
+    let h = f64::from(th) + 2.0 * m.pad_y;
     (w, h)
 }
 
-fn fit_size(size: (f64, f64), viewport: Rect) -> (f64, f64) {
+fn fit_size(m: &ChipMetrics, size: (f64, f64), viewport: Rect) -> (f64, f64) {
     (
-        size.0.min((viewport.width() - 2.0 * CHIP_MARGIN).max(0.0)),
-        size.1.min((viewport.height() - 2.0 * CHIP_MARGIN).max(0.0)),
+        size.0.min((viewport.width() - 2.0 * m.margin).max(0.0)),
+        size.1.min((viewport.height() - 2.0 * m.margin).max(0.0)),
     )
 }
 
@@ -90,29 +104,36 @@ pub enum TooltipSide {
 }
 
 /// [`chip_rect`] on the preferred `side` of the anchor.
-pub fn chip_rect_on(side: TooltipSide, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
+pub fn chip_rect_on(
+    theme: &Theme,
+    side: TooltipSide,
+    anchor: Rect,
+    size: (f64, f64),
+    viewport: Rect,
+) -> Rect {
     match side {
-        TooltipSide::Below => chip_rect(anchor, size, viewport),
-        TooltipSide::Beside => chip_rect_beside(anchor, size, viewport),
+        TooltipSide::Below => chip_rect(theme, anchor, size, viewport),
+        TooltipSide::Beside => chip_rect_beside(&ChipMetrics::of(theme), anchor, size, viewport),
     }
 }
 
 /// Centred on the anchor vertically, just after it; flipped before it
 /// when that would spill past the right edge, clamped when neither fits.
-fn chip_rect_beside(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let (w, h) = fit_size(size, viewport);
-    let min_y = viewport.y0 + CHIP_MARGIN;
-    let max_y = (viewport.y1 - CHIP_MARGIN - h).max(min_y);
+fn chip_rect_beside(m: &ChipMetrics, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
+    let (w, h) = fit_size(m, size, viewport);
+    let ChipMetrics { gap, margin, .. } = *m;
+    let min_y = viewport.y0 + margin;
+    let max_y = (viewport.y1 - margin - h).max(min_y);
     let y0 = (anchor.center().y - h / 2.0).clamp(min_y, max_y);
-    let after = anchor.x1 + CHIP_GAP;
-    let x0 = if after + w <= viewport.x1 - CHIP_MARGIN {
+    let after = anchor.x1 + gap;
+    let x0 = if after + w <= viewport.x1 - margin {
         after
     } else {
-        let before = anchor.x0 - CHIP_GAP - w;
-        if before >= viewport.x0 + CHIP_MARGIN {
+        let before = anchor.x0 - gap - w;
+        if before >= viewport.x0 + margin {
             before
         } else {
-            (viewport.x1 - CHIP_MARGIN - w).max(viewport.x0 + CHIP_MARGIN)
+            (viewport.x1 - margin - w).max(viewport.x0 + margin)
         }
     };
     Rect::new(x0, y0, x0 + w, y0 + h)
@@ -122,23 +143,25 @@ fn chip_rect_beside(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
 /// that would spill past the bottom edge, and clamps to the bottom edge if
 /// neither side has room. Clamped horizontally too, so a control at the
 /// far edge gets a chip that hugs it instead of painting off-screen.
-pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let (w, h) = fit_size(size, viewport);
+pub fn chip_rect(theme: &Theme, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
+    let m = ChipMetrics::of(theme);
+    let (w, h) = fit_size(&m, size, viewport);
+    let ChipMetrics { gap, margin, .. } = m;
     // Horizontal: centre under the anchor, then clamp within the viewport.
-    let min_x = viewport.x0 + CHIP_MARGIN;
-    let max_x = (viewport.x1 - CHIP_MARGIN - w).max(min_x);
+    let min_x = viewport.x0 + margin;
+    let max_x = (viewport.x1 - margin - w).max(min_x);
     let x0 = (anchor.center().x - w / 2.0).clamp(min_x, max_x);
     // Vertical: below the anchor; flip above when it would overflow the
     // bottom, and fall back to a bottom clamp when neither side fits.
-    let below = anchor.y1 + CHIP_GAP;
-    let y0 = if below + h <= viewport.y1 - CHIP_MARGIN {
+    let below = anchor.y1 + gap;
+    let y0 = if below + h <= viewport.y1 - margin {
         below
     } else {
-        let above = anchor.y0 - CHIP_GAP - h;
-        if above >= viewport.y0 + CHIP_MARGIN {
+        let above = anchor.y0 - gap - h;
+        if above >= viewport.y0 + margin {
             above
         } else {
-            (viewport.y1 - CHIP_MARGIN - h).max(viewport.y0 + CHIP_MARGIN)
+            (viewport.y1 - margin - h).max(viewport.y0 + margin)
         }
     };
     Rect::new(x0, y0, x0 + w, y0 + h)
@@ -155,6 +178,25 @@ pub fn draw_chip(
     theme: &Theme,
     rect: Rect,
     label: &str,
+) {
+    draw_chip_marked(scene, transform, text_renderer, theme, rect, (label, None));
+}
+
+/// The room a person's colour dot takes before a chip's label: its
+/// diameter, and the gap after it.
+fn mark_room(theme: &Theme) -> (f64, f64) {
+    let rhythm = theme.tokens.spacing.rhythm;
+    (f64::from(rhythm.related), f64::from(rhythm.tight))
+}
+
+/// [`draw_chip`] with a coloured dot before the label when `mark` is set.
+fn draw_chip_marked(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    (label, mark): (&str, Option<vello::peniko::Color>),
 ) {
     let radius = f64::from(theme.tokens.radii.control);
 
@@ -186,11 +228,24 @@ pub fn draw_chip(
     // Centre on the measured line, not the font size: the chip's box is
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.
+    let m = ChipMetrics::of(theme);
+    let (mark_px, mark_gap) = mark_room(theme);
+    let lead = mark.map_or(0.0, |color| {
+        let centre = vello::kurbo::Point::new(rect.x0 + m.pad_x + mark_px / 2.0, rect.center().y);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &vello::kurbo::Circle::new(centre, mark_px / 2.0),
+        );
+        mark_px + mark_gap
+    });
     let content = Rect::new(
-        rect.x0 + CHIP_PAD_X,
-        rect.y0 + CHIP_PAD_Y,
-        rect.x1 - CHIP_PAD_X,
-        rect.y1 - CHIP_PAD_Y,
+        rect.x0 + m.pad_x + lead,
+        rect.y0 + m.pad_y,
+        rect.x1 - m.pad_x,
+        rect.y1 - m.pad_y,
     );
     if content.width() <= 0.0 || content.height() <= 0.0 {
         return;
@@ -209,7 +264,7 @@ pub fn draw_chip(
         scene,
         label,
         on_panel.tokens.colors.text_primary,
-        translated(transform, rect.x0 + CHIP_PAD_X, text_y),
+        transform.pre_translate((content.x0, text_y).into()),
         Some(content_width),
         &text_style,
     );
@@ -252,6 +307,32 @@ pub fn draw_hover_tooltip_on(
     draw_chip(scene, transform, text_renderer, theme, rect, label);
 }
 
+/// A tooltip naming a person: their presence `color` as a dot before
+/// `label`, the way presence marks them everywhere else, on the side of
+/// `anchor` the control prefers.
+pub fn draw_person_tooltip_on(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    (label, color): (&str, vello::peniko::Color),
+    viewport: Rect,
+) {
+    let (width, height) = chip_size_in_viewport(label, text_renderer, theme, viewport);
+    let (mark_px, mark_gap) = mark_room(theme);
+    let size = (width + mark_px + mark_gap, height);
+    let rect = chip_rect_on(theme, anchor.1, anchor.0, size, viewport);
+    draw_chip_marked(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        rect,
+        (label, Some(color)),
+    );
+}
+
 /// Where [`draw_hover_tooltip_on`] places the chip for `label`.
 pub fn hover_chip_rect_on(
     text_renderer: &mut TextRenderer,
@@ -261,7 +342,7 @@ pub fn hover_chip_rect_on(
     viewport: Rect,
 ) -> Rect {
     let size = chip_size_in_viewport(label, text_renderer, theme, viewport);
-    chip_rect_on(anchor.1, anchor.0, size, viewport)
+    chip_rect_on(theme, anchor.1, anchor.0, size, viewport)
 }
 
 /// Every pixel [`draw_chip`] can paint for a chip at `rect`: the chip, its
@@ -425,7 +506,7 @@ impl Widget for Tooltip {
             .unwrap_or(Rect::new(0.0, 0.0, 100_000.0, 100_000.0));
         let size = chip_size_in_viewport(&self.label, text_renderer, theme, viewport);
         if self.anchor != Rect::ZERO {
-            self.rect = chip_rect(self.anchor, size, viewport);
+            self.rect = chip_rect(theme, self.anchor, size, viewport);
         }
         draw_chip(
             scene,
@@ -731,12 +812,13 @@ mod host_tests {
 
     #[test]
     fn a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour() {
+        let theme = Theme::dark();
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = (120.0, 24.0);
         // Three tools stacked in a rail at the left edge.
         let tool = Rect::new(8.0, 100.0, 48.0, 140.0);
         let next = Rect::new(8.0, 144.0, 48.0, 184.0);
-        let r = chip_rect_on(TooltipSide::Beside, tool, size, vp);
+        let r = chip_rect_on(&theme, TooltipSide::Beside, tool, size, vp);
         assert!(r.x0 >= tool.x1, "after the tool: {r:?}");
         assert!(r.intersect(next).area() <= 0.0, "covers the next tool");
         assert!(
@@ -745,24 +827,25 @@ mod host_tests {
         );
         // A rail at the right edge puts it before the tool instead.
         let right = Rect::new(752.0, 100.0, 792.0, 140.0);
-        let r = chip_rect_on(TooltipSide::Beside, right, size, vp);
+        let r = chip_rect_on(&theme, TooltipSide::Beside, right, size, vp);
         assert!(r.x1 <= right.x0, "before the tool: {r:?}");
         // Below stays the default placement.
         assert_eq!(
-            chip_rect_on(TooltipSide::Below, tool, size, vp),
-            chip_rect(tool, size, vp)
+            chip_rect_on(&theme, TooltipSide::Below, tool, size, vp),
+            chip_rect(&theme, tool, size, vp)
         );
     }
 
     #[test]
     fn chip_rect_flips_above_and_clamps_horizontally() {
         // A 800x600 viewport with a chip anchored near the bottom-right.
+        let theme = Theme::dark();
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = (120.0, 24.0);
 
         // Anchor near the bottom edge → the chip flips above the anchor.
         let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
-        let r = chip_rect(bottom_anchor, size, vp);
+        let r = chip_rect(&theme, bottom_anchor, size, vp);
         assert!(
             r.y1 <= bottom_anchor.y0,
             "flips above when it would overflow the bottom"
@@ -770,24 +853,24 @@ mod host_tests {
 
         // Anchor at the far right → the chip is clamped inside the viewport.
         let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
-        let r = chip_rect(right_anchor, size, vp);
+        let r = chip_rect(&theme, right_anchor, size, vp);
         assert!(
-            r.x1 <= vp.x1 - CHIP_MARGIN + 0.01,
+            r.x1 <= vp.x1 - ChipMetrics::of(&theme).margin + 0.01,
             "clamped to the right edge"
         );
         assert!(r.x0 >= vp.x0, "never off the left edge");
 
         // Anchor at the far left → clamped to the left margin.
         let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
-        let r = chip_rect(left_anchor, size, vp);
+        let r = chip_rect(&theme, left_anchor, size, vp);
         assert!(
-            r.x0 >= vp.x0 + CHIP_MARGIN - 0.01,
+            r.x0 >= vp.x0 + ChipMetrics::of(&theme).margin - 0.01,
             "clamped to the left margin"
         );
 
         // A roomy central anchor keeps the chip below and centred.
         let center = Rect::new(390.0, 100.0, 410.0, 120.0);
-        let r = chip_rect(center, size, vp);
+        let r = chip_rect(&theme, center, size, vp);
         assert!(r.y0 >= center.y1, "placed below when there is room");
         assert!(
             (r.center().x - center.center().x).abs() < 0.5,
@@ -899,11 +982,13 @@ mod tests {
             );
             let (_, height) = text.measure_style(
                 label,
-                Some(f32_of_f64((rect.width() - 2.0 * CHIP_PAD_X).max(0.0))),
+                Some(f32_of_f64(
+                    (rect.width() - 2.0 * ChipMetrics::of(&theme).pad_x).max(0.0),
+                )),
                 &theme.text(TextRole::Caption),
             );
             assert!(
-                rect.height() + 0.01 >= f64::from(height) + 2.0 * CHIP_PAD_Y,
+                rect.height() + 0.01 >= f64::from(height) + 2.0 * ChipMetrics::of(&theme).pad_y,
                 "complete wrapped hint must fit its painted box: {rect:?}, text height {height}"
             );
             assert_eq!(

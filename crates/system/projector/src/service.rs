@@ -11,7 +11,7 @@ use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -24,7 +24,8 @@ use crate::discovery::discover;
 use crate::error::ProjectorError;
 use crate::session::context::{EventSink, SessionContext, SessionControl};
 use crate::session::paths::SessionPaths;
-use crate::session::{self, Helpers, SESSION_READY_TIMEOUT, SESSION_STOP_TIMEOUT};
+use crate::session::{self, Helpers, SESSION_STOP_TIMEOUT};
+use tilo_lock::MutexRecover as _;
 
 /// Discovery a client may ask for at most, so one request cannot hold its
 /// connection for an unbounded time.
@@ -39,7 +40,7 @@ struct Clients {
 
 impl Clients {
     fn lock(&self) -> MutexGuard<'_, Vec<(u64, mpsc::Sender<ProjectorEvent>)>> {
-        self.senders.lock().unwrap_or_else(PoisonError::into_inner)
+        self.senders.lock_recover()
     }
 
     fn join(
@@ -171,7 +172,7 @@ impl Service {
     }
 
     fn lock_session(&self) -> MutexGuard<'_, Option<Session>> {
-        self.session.lock().unwrap_or_else(PoisonError::into_inner)
+        self.session.lock_recover()
     }
 
     /// Starts a session to `device`, stopping the running one first. Its
@@ -205,6 +206,7 @@ impl Service {
             Arc::clone(&events),
         );
         context.stage(ConnectStage::Starting);
+        let ready_timeout = session::ready_timeout(device.protocol);
         let spawned = std::thread::Builder::new()
             .name("tilo-proj-session".to_owned())
             .spawn(move || run_session(&device, &options, credential, &context));
@@ -217,7 +219,7 @@ impl Service {
                     .name("tilo-proj-ready".to_owned())
                     .spawn(move || {
                         watchdog.expire_unless_ready(
-                            SESSION_READY_TIMEOUT,
+                            ready_timeout,
                             "projection session did not become ready in time",
                         );
                     });
@@ -332,7 +334,7 @@ mod tests {
     }
 
     impl Fixture {
-        /// A service whose Miracast sender is a script that reports the
+        /// A service whose `AirPlay` sender is a script that reports the
         /// stream started after `delay` seconds, then runs until terminated.
         fn new(name: &str, delay: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
@@ -341,19 +343,18 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(&root);
             let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-            let sender = root.join("miracast-sender");
+            let sender = root.join("airplay-sender");
             fs::write(
                 &sender,
                 format!(
-                    "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep {delay}\necho 'PLAY accepted; media stream started.'\nwhile :; do sleep 1; done\n"
+                    "#!/bin/sh\ntrap 'exit 0' TERM INT\nsleep {delay}\necho 'mirror session ready'\nwhile :; do sleep 1; done\n"
                 ),
             )
             .expect("write sender");
             fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
                 .expect("make sender executable");
             let helpers = Helpers {
-                fluxcast: sender.display().to_string(),
-                ..Helpers::from_env()
+                doubletake: sender.display().to_string(),
             };
             Self {
                 root,
@@ -381,16 +382,16 @@ mod tests {
         }
     }
 
-    fn miracast(id: &str) -> (ProjectionDevice, ProjectionOptions) {
+    fn airplay(id: &str) -> (ProjectionDevice, ProjectionOptions) {
         (
             ProjectionDevice {
                 id: id.to_owned(),
                 name: id.to_owned(),
-                protocol: ProjectionProtocol::Miracast,
-                detail: "Wi-Fi Direct".to_owned(),
+                protocol: ProjectionProtocol::AirPlay,
+                detail: "Apple TV".to_owned(),
                 modes: vec![ProjectionMode::Mirror],
-                addresses: vec!["02:00:00:00:00:09".to_owned()],
-                port: 0,
+                addresses: vec!["192.0.2.7".to_owned()],
+                port: 7000,
             },
             ProjectionOptions {
                 audio: false,
@@ -453,7 +454,7 @@ mod tests {
     #[test]
     fn service_connect_reports_progress_then_connected() {
         let fixture = Fixture::new("progress", "0.2");
-        let (device, options) = miracast("Miracast:a");
+        let (device, options) = airplay("AirPlay:a");
         let (mut client, served) = fixture.client();
         connect(&mut client, &device, &options);
         let events = events_until(&mut client, |event| {
@@ -482,7 +483,7 @@ mod tests {
     #[test]
     fn stop_is_observed_without_polling_files() {
         let fixture = Fixture::new("stop", "0");
-        let (device, options) = miracast("Miracast:stop");
+        let (device, options) = airplay("AirPlay:stop");
         let (mut client, served) = fixture.client();
         connect(&mut client, &device, &options);
         events_until(&mut client, is_connected);
@@ -525,8 +526,8 @@ mod tests {
     #[test]
     fn second_connect_stops_the_first_session() {
         let fixture = Fixture::new("second", "0");
-        let (first, options) = miracast("Miracast:first");
-        let (second, _) = miracast("Miracast:second");
+        let (first, options) = airplay("AirPlay:first");
+        let (second, _) = airplay("AirPlay:second");
         let (mut client, served) = fixture.client();
         connect(&mut client, &first, &options);
         events_until(&mut client, is_connected);
@@ -554,7 +555,7 @@ mod tests {
     #[test]
     fn subscriber_drop_stops_session() {
         let fixture = Fixture::new("drop", "0");
-        let (device, options) = miracast("Miracast:dropped");
+        let (device, options) = airplay("AirPlay:dropped");
         let (mut owner, owner_served) = fixture.client();
         let (mut observer, observer_served) = fixture.client();
         connect(&mut owner, &device, &options);
@@ -579,11 +580,11 @@ mod tests {
     fn a_failed_sender_ends_the_session_with_its_diagnostics() {
         let fixture = Fixture::new("failing", "0");
         fs::write(
-            fixture.root.join("miracast-sender"),
-            b"#!/bin/sh\necho 'peer refused WFD session' >&2\nexit 3\n",
+            fixture.root.join("airplay-sender"),
+            b"#!/bin/sh\necho 'peer refused AirPlay session' >&2\nexit 3\n",
         )
         .expect("write failing sender");
-        let (device, options) = miracast("Miracast:failing");
+        let (device, options) = airplay("AirPlay:failing");
         let (mut client, served) = fixture.client();
         connect(&mut client, &device, &options);
         let events = events_until(&mut client, |event| {
@@ -593,7 +594,7 @@ mod tests {
             matches!(
                 events.last(),
                 Some(ProjectorEvent::Ended { error: Some(error), .. })
-                    if error.contains("peer refused WFD session")
+                    if error.contains("peer refused AirPlay session")
             ),
             "{events:?}"
         );

@@ -8,8 +8,9 @@
 use crate::shell::automation_host::{
     DocumentShare, FinishedShortcutRun, document_share, ordered_steps, record_run_steps,
 };
+use crate::shell::cold_record_reads::ColdRecordReads;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::room_records::RoomRecords;
+use crate::shell::room_records::{LocalRecordReader, RoomRecords};
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
@@ -168,6 +169,30 @@ pub(crate) struct PendingShortcutRun {
     looked: HashMap<RecordId, (Option<LookedRevision>, Option<DocumentShare>)>,
 }
 
+/// One persisted document a waiting run needs looked at, read off the loop.
+struct PersistedLook {
+    run: tilo_automation::RunId,
+    id: RecordId,
+    /// The revision the last look read it at.
+    seen: Option<LookedRevision>,
+}
+
+/// What a persisted look found.
+struct PersistedFound {
+    run: tilo_automation::RunId,
+    id: RecordId,
+    revision: Option<LookedRevision>,
+    share: PersistedShare,
+}
+
+/// A persisted document's share of a run, as a look found it.
+enum PersistedShare {
+    /// The document did not move since the last look: what it found stands.
+    Unchanged,
+    /// The document as read now.
+    Read(Option<DocumentShare>),
+}
+
 impl PendingShortcutRun {
     pub(crate) fn new(finished: FinishedShortcutRun, since: Instant) -> Self {
         Self {
@@ -177,28 +202,29 @@ impl PendingShortcutRun {
         }
     }
 
-    /// The run's steps among `candidates`: documents open in `records` are
-    /// read in memory, the others from `local`, and only those whose
-    /// revision moved since the last look.
-    fn look(
+    /// Look at the run's candidates open in `records`, in memory, and name
+    /// the persisted ones for a read off the loop: only documents whose
+    /// revision moved since the last look are read again.
+    fn look_open(
         &mut self,
         candidates: &BTreeSet<RecordId>,
         open: &BTreeSet<RecordId>,
         records: &RecordStore,
-        local: &RoomRecords,
-    ) -> Vec<ui::RunStep> {
+    ) -> Vec<PersistedLook> {
         use automerge::transaction::Transactable as _;
         let run = self.finished.report.run;
         self.looked.retain(|id, _| candidates.contains(id));
+        let mut persisted = Vec::new();
         for id in candidates {
-            let is_open = open.contains(id);
-            let revision = if is_open {
-                records.read(id, |doc| LookedRevision::Open(doc.base_heads()))
-            } else {
-                local
-                    .local_record_revision(id)
-                    .map(LookedRevision::Persisted)
-            };
+            if !open.contains(id) {
+                persisted.push(PersistedLook {
+                    run,
+                    id: id.clone(),
+                    seen: self.looked.get(id).and_then(|(seen, _)| seen.clone()),
+                });
+                continue;
+            }
+            let revision = records.read(id, |doc| LookedRevision::Open(doc.base_heads()));
             if revision.is_some()
                 && self
                     .looked
@@ -207,17 +233,30 @@ impl PendingShortcutRun {
             {
                 continue;
             }
-            let share = if is_open {
-                records
-                    .read(id, |doc| document_share(run, id.as_str(), doc))
-                    .flatten()
-            } else {
-                local
-                    .load_local_record(id)
-                    .and_then(|doc| document_share(run, id.as_str(), &doc))
-            };
+            let share = records
+                .read(id, |doc| document_share(run, id.as_str(), doc))
+                .flatten();
             self.looked.insert(id.clone(), (revision, share));
         }
+        persisted
+    }
+
+    /// Take in what a persisted look found for this run.
+    fn take_persisted(&mut self, found: PersistedFound) {
+        match found.share {
+            PersistedShare::Read(share) => {
+                self.looked.insert(found.id, (found.revision, share));
+            }
+            PersistedShare::Unchanged => {
+                if let Some((seen, _)) = self.looked.get_mut(&found.id) {
+                    *seen = found.revision;
+                }
+            }
+        }
+    }
+
+    /// The run's steps among the documents looked at so far.
+    fn steps(&self) -> Vec<ui::RunStep> {
         ordered_steps(
             self.looked
                 .values()
@@ -227,13 +266,77 @@ impl PendingShortcutRun {
     }
 }
 
+/// Read the persisted documents `looks` names: a `stat` each, and the
+/// document itself only when it moved since its last look. Blocks on the
+/// disk (a record may be up to 16 MiB): never on the compositor loop.
+fn read_persisted(reader: &LocalRecordReader, looks: Vec<PersistedLook>) -> Vec<PersistedFound> {
+    #[cfg(test)]
+    held_looks::hold(&looks);
+    looks
+        .into_iter()
+        .map(|look| {
+            let revision = reader.revision(&look.id).map(LookedRevision::Persisted);
+            let share = if revision.is_some() && look.seen == revision {
+                PersistedShare::Unchanged
+            } else {
+                PersistedShare::Read(
+                    reader
+                        .load(&look.id)
+                        .and_then(|doc| document_share(look.run, look.id.as_str(), &doc)),
+                )
+            };
+            PersistedFound {
+                run: look.run,
+                id: look.id,
+                revision,
+                share,
+            }
+        })
+        .collect()
+}
+
+/// Test support: hold the persisted reads of a run until released, as a
+/// disk that does not answer would.
+#[cfg(test)]
+pub(crate) mod held_looks {
+    use std::sync::{Mutex, mpsc};
+
+    static HELD: Mutex<Vec<(tilo_automation::RunId, mpsc::Receiver<()>)>> = Mutex::new(Vec::new());
+
+    /// Hold the next persisted read for `run` until the returned sender is
+    /// used or dropped.
+    pub(crate) fn hold_run(run: tilo_automation::RunId) -> mpsc::Sender<()> {
+        let (release, held) = mpsc::channel();
+        HELD.lock().unwrap().push((run, held));
+        release
+    }
+
+    pub(super) fn hold(looks: &[super::PersistedLook]) {
+        let mut all = HELD.lock().unwrap();
+        let held = all
+            .iter()
+            .position(|(run, _)| looks.iter().any(|look| look.run == *run))
+            .map(|index| all.remove(index).1);
+        drop(all);
+        // Bounded, so a read that regressed onto the test's own thread
+        // fails the test instead of hanging it.
+        if let Some(held) = held {
+            let _ = held.recv_timeout(std::time::Duration::from_secs(30));
+        }
+    }
+}
+
 /// Records each shortcut run the broker finishes as one undoable run in the
 /// workspace document, from the documents it changed: those open here and
 /// those persisted on this device. Driven by the frame pump, never by paint.
+/// Persisted documents are read on a worker, and the workspace tree is
+/// locked only to write a run that was found.
 #[derive(Default)]
 pub(crate) struct ShortcutRunRecorder {
     pending: Vec<PendingShortcutRun>,
     next_look: Option<Instant>,
+    /// What a look is reading off the loop, until its reads are in.
+    reading: Option<mpsc::Receiver<Vec<PersistedFound>>>,
 }
 
 impl ShortcutRunRecorder {
@@ -255,15 +358,34 @@ impl ShortcutRunRecorder {
         self.pending.len()
     }
 
+    /// Whether a look's persisted reads are still running.
+    #[cfg(test)]
+    pub(crate) fn reading(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    /// Wait for the persisted reads in flight, so the next pass sees them.
+    /// Blocks: tests only.
+    #[cfg(test)]
+    pub(crate) fn finish_reading(&mut self) {
+        if let Some(running) = self.reading.take() {
+            let (done, ready) = mpsc::channel();
+            let _ = done.send(running.recv().unwrap_or_default());
+            self.reading = Some(ready);
+        }
+    }
+
     /// Take `broker`'s finished runs and record every waiting run whose
-    /// changes reached a document here in `tree`'s document, committing it.
-    /// A run with no changes found is given up once [`SHORTCUT_RUN_SETTLE`]
-    /// has passed since it finished: it changed nothing this device can undo.
-    /// Returns whether `tree` was written.
-    pub(crate) fn record(
+    /// changes reached a document here in the tree `lock_tree` locks,
+    /// committing it. A look reads the open documents in memory and hands
+    /// the persisted ones to a worker; the runs are judged once those reads
+    /// are in, on a later pass. A run with no changes found is given up once
+    /// [`SHORTCUT_RUN_SETTLE`] has passed since it finished: it changed
+    /// nothing this device can undo. Returns whether the tree was written.
+    pub(crate) fn record<T: std::ops::DerefMut<Target = WorkspaceTree>>(
         &mut self,
         broker: Option<&AppActionBroker>,
-        tree: &mut WorkspaceTree,
+        lock_tree: impl FnOnce() -> T,
         records: &RecordStore,
         local: &RoomRecords,
         now: Instant,
@@ -279,18 +401,54 @@ impl ShortcutRunRecorder {
                     .map(|finished| PendingShortcutRun::new(finished, now)),
             );
         }
-        if self.pending.is_empty() || self.next_look.is_some_and(|at| now < at) {
+        let found = match self.reading.take() {
+            Some(running) => match running.try_recv() {
+                Ok(found) => Some(found),
+                Err(mpsc::TryRecvError::Empty) => {
+                    // The look is not over until its reads are in.
+                    self.reading = Some(running);
+                    return false;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => Some(Vec::new()),
+            },
+            None => None,
+        };
+        if self.pending.is_empty() {
             return false;
         }
-        self.next_look = now.checked_add(SHORTCUT_RUN_LOOK_INTERVAL);
+        if let Some(found) = found {
+            for found in found {
+                if let Some(run) = self
+                    .pending
+                    .iter_mut()
+                    .find(|run| run.finished.report.run == found.run)
+                {
+                    run.take_persisted(found);
+                }
+            }
+        } else {
+            if self.next_look.is_some_and(|at| now < at) {
+                return false;
+            }
+            self.next_look = now.checked_add(SHORTCUT_RUN_LOOK_INTERVAL);
+            if self.look(records, local) {
+                return false;
+            }
+        }
+        self.judge(lock_tree, now)
+    }
+
+    /// Look at every waiting run's documents. Returns whether persisted
+    /// ones are being read off the loop, so the runs wait for them.
+    fn look(&mut self, records: &RecordStore, local: &RoomRecords) -> bool {
         let open: BTreeSet<RecordId> = records
             .open_records()
             .into_iter()
             .map(|checkout| checkout.id)
             .collect();
         let known = local.known();
-        let mut recorded = false;
-        for mut run in std::mem::take(&mut self.pending) {
+        let mut persisted = Vec::new();
+        for run in &mut self.pending {
             let room = crate::shell::state::RoomId::parse(&run.finished.room);
             let candidates: BTreeSet<RecordId> = open
                 .iter()
@@ -302,10 +460,56 @@ impl ShortcutRunRecorder {
                         .map(|record| record.id.clone()),
                 )
                 .collect();
-            let steps = run.look(&candidates, &open, records, local);
-            if record_run_steps(&mut tree.doc, &run.finished, &steps).is_some() {
-                recorded = true;
-                continue;
+            persisted.extend(run.look_open(&candidates, &open, records));
+        }
+        let Some(reader) = local.local_reader().filter(|_| !persisted.is_empty()) else {
+            return false;
+        };
+        let (found, running) = mpsc::channel();
+        // Made on the loop's thread, so the reads wake the loop they are for.
+        let wake = crate::shell::search::invocation_wake::waker();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-shortcut-look".into())
+            .spawn(move || {
+                let _ = found.send(read_persisted(&reader, persisted));
+                wake.wake();
+            });
+        match spawned {
+            Ok(_) => {
+                self.reading = Some(running);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%error, "shortcut run look did not start; persisted documents wait");
+                false
+            }
+        }
+    }
+
+    /// Record each waiting run whose changes were found, locking the tree
+    /// only if one was, and give up the runs that settled with nothing.
+    fn judge<T: std::ops::DerefMut<Target = WorkspaceTree>>(
+        &mut self,
+        lock_tree: impl FnOnce() -> T,
+        now: Instant,
+    ) -> bool {
+        let mut lock_tree = Some(lock_tree);
+        let mut tree: Option<T> = None;
+        let mut recorded = false;
+        for run in std::mem::take(&mut self.pending) {
+            let steps = run.steps();
+            if !steps.is_empty() {
+                if tree.is_none()
+                    && let Some(lock) = lock_tree.take()
+                {
+                    tree = Some(lock());
+                }
+                if let Some(tree) = tree.as_mut()
+                    && record_run_steps(&mut tree.doc, &run.finished, &steps).is_some()
+                {
+                    recorded = true;
+                    continue;
+                }
             }
             let settling = now.saturating_duration_since(run.since) < SHORTCUT_RUN_SETTLE;
             if settling && !run.finished.report.invocations().is_empty() {
@@ -317,7 +521,7 @@ impl ShortcutRunRecorder {
                 );
             }
         }
-        if recorded {
+        if recorded && let Some(tree) = tree.as_mut() {
             tree.commit_room_change();
         }
         recorded
@@ -334,15 +538,29 @@ fn history_path() -> Option<std::path::PathBuf> {
 
 /// `key`'s per-workspace map from the history file at `path`. A missing or
 /// malformed file reads as empty.
+#[cfg(test)]
 fn load_history_map_at<T: serde::de::DeserializeOwned>(
     path: Option<&std::path::Path>,
     key: &str,
 ) -> HashMap<u64, T> {
-    let doc: serde_json::Map<String, serde_json::Value> = path
-        .and_then(|path| std::fs::read(path).ok())
+    let doc = path.map(read_history_doc).unwrap_or_default();
+    history_map_from(doc.get(key))
+}
+
+/// Every map in the history file at `path`. A missing or malformed file
+/// reads as empty.
+fn read_history_doc(path: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read(path)
+        .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    doc.get(key)
+        .unwrap_or_default()
+}
+
+/// The per-workspace map one key of the history file holds.
+fn history_map_from<T: serde::de::DeserializeOwned>(
+    value: Option<&serde_json::Value>,
+) -> HashMap<u64, T> {
+    value
         .and_then(|value| value.as_object())
         .into_iter()
         .flat_map(|values| values.iter())
@@ -353,6 +571,55 @@ fn load_history_map_at<T: serde::de::DeserializeOwned>(
             ))
         })
         .collect()
+}
+
+/// What this process knows each history file holds: the file as read once,
+/// overlaid with every map saved since. This process is the file's only
+/// writer, so the newest map per key is the one saved last here, whether or
+/// not the writer thread has reached the disk with it yet.
+#[derive(Default)]
+struct KnownHistory {
+    /// Whether the file itself was read into `maps`.
+    read: bool,
+    maps: serde_json::Map<String, serde_json::Value>,
+}
+
+static KNOWN_HISTORY: std::sync::Mutex<Option<HashMap<std::path::PathBuf, KnownHistory>>> =
+    std::sync::Mutex::new(None);
+
+fn with_known_history<R>(path: &std::path::Path, body: impl FnOnce(&mut KnownHistory) -> R) -> R {
+    let mut known = KNOWN_HISTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    body(
+        known
+            .get_or_insert_with(HashMap::new)
+            .entry(path.to_path_buf())
+            .or_default(),
+    )
+}
+
+/// `key`'s map as this process last saved it, else as the history file at
+/// `path` holds it. Never waits for the writer thread: a save still on its
+/// way to disk is served from memory, and the file is read at most once.
+fn load_known_history_map<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    key: &str,
+) -> HashMap<u64, T> {
+    if let Some(found) = with_known_history(path, |known| {
+        (known.read || known.maps.contains_key(key)).then(|| history_map_from(known.maps.get(key)))
+    }) {
+        return found;
+    }
+    // Read outside the lock; a map saved meanwhile is newer than the file's.
+    let file = read_history_doc(path);
+    with_known_history(path, |known| {
+        for (name, values) in file {
+            known.maps.entry(name).or_insert(values);
+        }
+        known.read = true;
+        history_map_from(known.maps.get(key))
+    })
 }
 
 /// Replace `key`'s map in the history file at `path`, keeping its other maps:
@@ -402,10 +669,13 @@ fn write_history_maps_at<'a>(
     tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
 }
 
+/// `key`'s map in the device's history file. The palette asks for one on
+/// every query, often right after a workspace switch saved the others, so
+/// this never waits for that save to reach the disk.
 fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T> {
-    // A save still on its way to disk is part of what the file holds.
-    settle_history_writes();
-    load_history_map_at(history_path().as_deref(), key)
+    history_path()
+        .map(|path| load_known_history_map(&path, key))
+        .unwrap_or_default()
 }
 
 /// Hand `key`'s map to the history writer. Leaving a workspace saves both
@@ -423,6 +693,9 @@ fn save_history_map<T: serde::Serialize>(key: &'static str, values: &HashMap<u64
 /// Queue `values` as `key`'s map in the history file at `path`; returns at
 /// once unless the writer thread could not start.
 fn queue_history_save(path: std::path::PathBuf, key: &'static str, values: serde_json::Value) {
+    with_known_history(&path, |known| {
+        known.maps.insert(key.to_owned(), values.clone());
+    });
     let request = HistoryWrite::Save { path, key, values };
     let unsent = match history_writer() {
         Some(writer) => writer.send(request).err().map(|error| error.0),
@@ -478,6 +751,8 @@ fn history_writer() -> Option<&'static mpsc::Sender<HistoryWrite>> {
 /// Wait until every history save made so far is on disk. Free while nothing
 /// was ever saved.
 fn settle_history_writes() {
+    #[cfg(test)]
+    SETTLES_ON_THIS_THREAD.with(|settles| settles.set(settles.get().saturating_add(1)));
     let Some(Some(writer)) = HISTORY_WRITER.get() else {
         return;
     };
@@ -485,6 +760,12 @@ fn settle_history_writes() {
     if writer.send(HistoryWrite::Settle(done)).is_ok() {
         let _ = wait.recv();
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread waited for the history writer.
+    static SETTLES_ON_THIS_THREAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// How long the history writer waits for another save before writing: a
@@ -557,12 +838,17 @@ impl HistoryBatch {
 
 /// Palette actions use only this device's explicit choices for the active room.
 pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, String)> {
+    morning_source_actions_from(workspace, &load_history_map("morning_sources"))
+}
+
+fn morning_source_actions_from(
+    workspace: &Workspace,
+    choices: &HashMap<u64, tilo_desktop::activity::morning::MorningPreferences>,
+) -> Vec<(String, String)> {
     use crate::shell::i18n::t;
     use tilo_desktop::activity::morning::{
         MORNING_DRAFT, MORNING_NEXT, MORNING_OPEN, MORNING_REFRESH, MORNING_REMOVE,
-        MorningPreferences,
     };
-    let choices: HashMap<u64, MorningPreferences> = load_history_map("morning_sources");
     choices
         .get(&workspace.id.raw())
         .map_or_else(Vec::new, |preferences| {
@@ -570,8 +856,10 @@ pub(crate) fn morning_source_actions(workspace: &Workspace) -> Vec<(String, Stri
                 .for_room(&workspace.room.to_string())
                 .iter()
                 .flat_map(|source| {
-                    let app = crate::shell::launcher::display_name_for_app_id(&source.app)
-                        .unwrap_or_else(|| source.app.clone());
+                    let app = crate::shell::launcher::display_name_for_app_id_without_waiting(
+                        &source.app,
+                    )
+                    .unwrap_or_else(|| source.app.clone());
                     [
                         (
                             format!("{MORNING_NEXT}{}.{}", workspace.room, source.key()),
@@ -714,7 +1002,7 @@ impl ActivityHost for NativeActivityHost {
         true
     }
     fn app_display_name(&self, app: &str) -> Option<String> {
-        crate::shell::launcher::display_name_for_app_id(app)
+        crate::shell::launcher::display_name_for_app_id_without_waiting(app)
     }
     fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members()
@@ -796,6 +1084,7 @@ pub struct RoomActivityPane(
     tilo_desktop::activity::RoomActivityPane,
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
+    ColdRecordReads,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -825,24 +1114,56 @@ impl RoomActivityPane {
     /// Derive history and load referenced records after releasing the shared
     /// workspace lock. Admission and output may read the current tree while
     /// expensive history reconstruction uses this coherent observation.
+    #[cfg(test)]
     pub(crate) fn refresh_observed(
         &mut self,
         tree: &WorkspaceTreeHandle,
         records: &RecordStore,
         local: &dyn tilo_desktop::activity::PersistedRecordHistory,
     ) -> u64 {
-        let mut observed = ActivityObservation::capture(tree);
-        let workspace = observed.active.raw();
-        self.observe_workspace(workspace);
-        self.refresh(&mut observed);
-        self.refresh_records_with_local(&mut observed, records, local);
+        refresh_pane(&mut self.0, tree, records, local)
+    }
+
+    /// Derive history from a coherent observation of `tree`, after the
+    /// workspace lock is released, over the records `local` found on this
+    /// device as a worker last read them: the refresh never reads the
+    /// disk. A record not read yet is unavailable for now; what this
+    /// refresh asked for is handed to the worker, and
+    /// [`Self::take_persisted_reads`] says when Activity must refresh
+    /// again because a read came in.
+    pub(crate) fn refresh_observed_local(
+        &mut self,
+        tree: &WorkspaceTreeHandle,
+        records: &RecordStore,
+        local: &RoomRecords,
+        now: Instant,
+    ) -> u64 {
+        let workspace = refresh_pane(&mut self.0, tree, records, &self.3);
+        self.3.request(local.local_reader(), now);
         workspace
+    }
+
+    /// Take in the persisted records the worker read since the last call.
+    /// Returns whether what Activity derives from changed, so it must
+    /// refresh. Never waits.
+    pub(crate) fn take_persisted_reads(&mut self) -> bool {
+        self.3.take_reads()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persisted_reads(&self) -> &ColdRecordReads {
+        &self.3
     }
 
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        Self(
+            pane,
+            None,
+            ShortcutRunRecorder::default(),
+            ColdRecordReads::default(),
+        )
     }
     /// The production pane: the device's private seen frontiers and
     /// departures are read from and written to the user's state directory.
@@ -854,7 +1175,12 @@ impl RoomActivityPane {
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
         pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        Self(
+            pane,
+            None,
+            ShortcutRunRecorder::default(),
+            ColdRecordReads::default(),
+        )
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
@@ -885,14 +1211,16 @@ impl RoomActivityPane {
     }
     /// Record the shortcut runs the broker finished in `tree`'s document,
     /// each as one undoable run; see [`ShortcutRunRecorder::record`].
-    pub(crate) fn record_finished_shortcut_runs(
+    /// `lock_tree` is called only to write a run that was found.
+    pub(crate) fn record_finished_shortcut_runs<T: std::ops::DerefMut<Target = WorkspaceTree>>(
         &mut self,
-        tree: &mut WorkspaceTree,
+        lock_tree: impl FnOnce() -> T,
         records: &RecordStore,
         local: &RoomRecords,
         now: Instant,
     ) -> bool {
-        self.2.record(self.1.as_ref(), tree, records, local, now)
+        self.2
+            .record(self.1.as_ref(), lock_tree, records, local, now)
     }
     #[cfg(test)]
     pub(crate) fn shortcut_run_recorder_mut(&mut self) -> &mut ShortcutRunRecorder {
@@ -936,6 +1264,23 @@ impl RoomActivityPane {
         self.0
             .observe_agent_launch_event(&activity_launch_event(event))
     }
+}
+
+/// Refresh `pane` from a coherent observation of `tree`, deriving history
+/// after the workspace lock is released, with persisted records from
+/// `local`.
+fn refresh_pane(
+    pane: &mut tilo_desktop::activity::RoomActivityPane,
+    tree: &WorkspaceTreeHandle,
+    records: &RecordStore,
+    local: &dyn tilo_desktop::activity::PersistedRecordHistory,
+) -> u64 {
+    let mut observed = ActivityObservation::capture(tree);
+    let workspace = observed.active.raw();
+    pane.observe_workspace(workspace);
+    pane.refresh(&mut observed);
+    pane.refresh_records_with_local(&mut observed, records, local);
+    workspace
 }
 
 fn activity_launch_event(
@@ -1044,6 +1389,123 @@ mod tests {
         );
     }
 
+    /// Activity's history reads a record persisted on this device (not
+    /// open here) off the loop: while the read is held up, as by a disk
+    /// under pressure, every refresh returns with the record unavailable;
+    /// once the read is in, the next refresh shows its history. A peer's
+    /// edit that moves the file on disk is read the same way: the refresh
+    /// keeps the last-read history until the new read is in.
+    #[test]
+    fn activity_never_reads_a_persisted_record_on_the_loop() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("activity-cold-read.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let handle = WorkspaceTreeHandle::new(tree);
+
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::record_document_path_for_test(
+            data.path(),
+            "so.tilo.fixture-drafts",
+            "activity-cold-read",
+        );
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document
+            .put(automerge::ROOT, "draft", "Written before the refresh")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 21);
+        std::fs::write(&path, document.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+
+        let records = RecordStore::in_memory();
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let interval = std::time::Duration::from_secs(1);
+        let mut at = Instant::now();
+        let release = crate::shell::cold_record_reads::held::hold_record(record.clone());
+        for _ in 0..3 {
+            pane.refresh_observed_local(&handle, &records, &local, at);
+            assert!(!pane.take_persisted_reads(), "the read is held up");
+            assert!(pane.persisted_reads().reading(), "the read is off the loop");
+            assert!(
+                pane.feed_coverage()
+                    .unavailable_records
+                    .iter()
+                    .any(|checkout| checkout.id == record),
+                "a record not read yet is unavailable, not read here"
+            );
+            at = at.checked_add(interval).expect("a later frame");
+        }
+        let before = pane.entries().len();
+
+        release.send(()).expect("the read is held");
+        wait_for_reads(&mut pane);
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        assert!(pane.feed_coverage().is_complete(), "the read is in");
+        assert_eq!(pane.feed_coverage().indexed_records, 1);
+        let read = pane.entries().len();
+        assert!(read > before, "the record's history is shown");
+
+        // That refresh handed the record to the worker again; nothing
+        // moved, so the pass changes nothing.
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
+        while pane.persisted_reads().reading() {
+            assert!(
+                !pane.take_persisted_reads(),
+                "an unchanged file is not read"
+            );
+            assert!(Instant::now() < deadline, "the pass never finished");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        // A peer's edit reaches the file. The next refresh still derives
+        // from the last read and hands the record to the worker, which
+        // reads the moved file; the refresh after shows the edit.
+        document
+            .put(automerge::ROOT, "draft", "Edited by a peer")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 42);
+        std::fs::write(&path, document.save()).unwrap();
+        at = at.checked_add(interval).expect("a later frame");
+        let release = crate::shell::cold_record_reads::held::hold_record(record.clone());
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        assert_eq!(pane.entries().len(), read, "the last read stands meanwhile");
+        assert!(pane.feed_coverage().is_complete());
+        assert!(
+            pane.persisted_reads().reading(),
+            "the moved file is read off the loop"
+        );
+        assert!(!pane.take_persisted_reads(), "the read is held up");
+        release.send(()).expect("the read is held");
+        wait_for_reads(&mut pane);
+        at = at.checked_add(interval).expect("a later frame");
+        pane.refresh_observed_local(&handle, &records, &local, at);
+        let edited = pane.entries().len();
+        drop(pane);
+        assert!(edited > read, "the peer's edit is shown");
+    }
+
+    /// Take the persisted reads in once the worker has them. Polls: tests
+    /// only.
+    fn wait_for_reads(pane: &mut RoomActivityPane) {
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .expect("a deadline");
+        while !pane.take_persisted_reads() {
+            assert!(Instant::now() < deadline, "the read never came in");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// Leaving a workspace rewrites the history file and nothing else: a
     /// write to `settings.json` would make every settings reader re-apply
     /// its preferences on each workspace switch.
@@ -1087,6 +1549,83 @@ mod tests {
             std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+
+    /// The palette lists the morning-source actions on every query, often
+    /// right after leaving a workspace handed its frontiers and departures to
+    /// the history writer. The query is served what this process saved and
+    /// what the file held, and never waits for the writer's synced write.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_palette_after_a_workspace_switch_never_waits_for_the_history_writer() {
+        use tilo_desktop::activity::morning::{MorningPreferences, MorningSource};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state/tilo/activity-history.json");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree.desktop.active_workspace().expect("workspace").clone();
+        let preferences = HashMap::from([(
+            workspace.id.raw(),
+            MorningPreferences {
+                room: workspace.room.to_string(),
+                sources: vec![MorningSource {
+                    app: "so.tilo.weather".into(),
+                    resource: "weather.location:fixture".into(),
+                }],
+            },
+        )]);
+        save_history_map_at(&path, "morning_sources", &preferences).expect("saved");
+        // Started here, the writer does not inherit the guard's filter.
+        let _ = history_writer();
+        let (actions, departures, settles) =
+            crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+                // Leaving a workspace hands both maps to the writer.
+                queue_history_save(
+                    path.clone(),
+                    "seen_frontiers",
+                    history_map_value(&HashMap::from([(9_u64, WorkspaceSeenFrontier::default())])),
+                );
+                queue_history_save(
+                    path.clone(),
+                    "departures",
+                    history_map_value(&HashMap::from([(
+                        7_u64,
+                        WorkspaceDeparture {
+                            departed_at_secs: 1_700_000_000,
+                            frontier: WorkspaceSeenFrontier::default(),
+                        },
+                    )])),
+                );
+                // The palette's next query.
+                let choices = load_known_history_map(&path, "morning_sources");
+                let actions = morning_source_actions_from(&workspace, &choices);
+                let departures: HashMap<u64, WorkspaceDeparture> =
+                    load_known_history_map(&path, "departures");
+                (
+                    actions,
+                    departures,
+                    SETTLES_ON_THIS_THREAD.with(std::cell::Cell::get),
+                )
+            });
+        assert_eq!(settles, 0, "a palette query waited for the history writer");
+        assert_eq!(
+            actions.len(),
+            5,
+            "the morning source the file held is offered"
+        );
+        assert_eq!(
+            departures
+                .get(&7)
+                .map(|departure| departure.departed_at_secs),
+            Some(1_700_000_000),
+            "a save still on its way to disk is what a load returns"
+        );
+        settle_history_writes();
+        let on_disk: HashMap<u64, WorkspaceDeparture> =
+            load_history_map_at(Some(&path), "departures");
+        assert!(on_disk.contains_key(&7), "the save still reaches the disk");
+        let kept: HashMap<u64, MorningPreferences> =
+            load_history_map_at(Some(&path), "morning_sources");
+        assert_eq!(kept, preferences, "the writer keeps the file's other maps");
     }
 
     #[test]
@@ -1235,8 +1774,8 @@ mod tests {
         let next = now
             .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
             .expect("the next look");
-        pane.record_finished_shortcut_runs(&mut tree, &records, &local, now);
-        pane.record_finished_shortcut_runs(&mut tree, &records, &local, next);
+        pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now);
+        pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next);
 
         let runs = ui::read_runs(&tree.doc);
         assert_eq!(runs.len(), 1, "recorded exactly once");
@@ -1247,6 +1786,11 @@ mod tests {
         let pending_left = pane.shortcut_run_recorder_mut().pending_len();
         drop(pane);
         assert_eq!(pending_left, 0, "the recorded run is no longer pending");
+    }
+
+    /// `tree` as the recorder locks it.
+    fn locked<'a>(tree: &'a mut WorkspaceTree) -> impl FnOnce() -> &'a mut WorkspaceTree + 'a {
+        move || tree
     }
 
     /// A change the "Publish a draft" fixture app makes as a step of `run`.
@@ -1345,8 +1889,21 @@ mod tests {
             ));
 
         // The run finished before the app's save reached the disk: nothing
-        // to record yet, and the run keeps waiting.
-        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, finished_at));
+        // to record yet, and the run keeps waiting. The look reads the
+        // record off the loop; the run is judged once that read is in.
+        assert!(!pane.record_finished_shortcut_runs(
+            locked(&mut tree),
+            &records,
+            &local,
+            finished_at
+        ));
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(!pane.record_finished_shortcut_runs(
+            locked(&mut tree),
+            &records,
+            &local,
+            finished_at
+        ));
         assert!(ui::read_runs(&tree.doc).is_empty());
         assert!(
             pane.shortcut_runs_pending(),
@@ -1359,7 +1916,9 @@ mod tests {
         let next = finished_at
             .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
             .expect("the next look");
-        assert!(pane.record_finished_shortcut_runs(&mut tree, &records, &local, next));
+        assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next));
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next));
         let still_pending = pane.shortcut_runs_pending();
         drop(pane);
         assert!(!still_pending, "the recorded run no longer waits");
@@ -1384,6 +1943,67 @@ mod tests {
         );
     }
 
+    /// Looking for a finished run's changes in a record on disk reads the
+    /// record off the loop and never under the workspace tree's lock: while
+    /// the read is held up, as by a disk under pressure, every pass returns
+    /// at once without locking the tree, and the run is recorded on the
+    /// first pass after the read is in.
+    #[test]
+    fn a_shortcut_run_look_never_reads_the_disk_on_the_loop_or_under_the_tree_lock() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("receipts.sheet");
+        let kind = ui::RecordKind::new("sheet");
+        let run = tilo_automation::RunId::new();
+        let data = tempfile::tempdir().expect("data home");
+        let path = RoomRecords::record_document_path_for_test(
+            data.path(),
+            "so.tilo.fixture-drafts",
+            "receipts",
+        );
+        std::fs::create_dir_all(path.parent().expect("record directory")).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        ui::record::init(&mut doc, &record, &kind, &room.to_string());
+        doc.commit();
+        commit_draft_step(&mut doc, run);
+        std::fs::write(&path, doc.save()).unwrap();
+        let mut local = RoomRecords::in_memory();
+        local.scan_now_for_test(data.path());
+
+        let mut pane = RoomActivityPane::new();
+        let finished_at = Instant::now();
+        pane.shortcut_run_recorder_mut()
+            .push(PendingShortcutRun::new(
+                finished_invoked_run(room, run),
+                finished_at,
+            ));
+        let release = held_looks::hold_run(run);
+        let untouched = || -> &'static mut WorkspaceTree {
+            panic!("the tree was locked while the record was being read")
+        };
+        let mut at = finished_at;
+        for _ in 0..3 {
+            assert!(!pane.record_finished_shortcut_runs(untouched, &records, &local, at));
+            assert!(
+                pane.shortcut_run_recorder_mut().reading(),
+                "the read is still held up"
+            );
+            at = at
+                .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
+                .expect("a later pass");
+        }
+        assert!(ui::read_runs(&tree.doc).is_empty());
+
+        release.send(()).expect("the read is held");
+        pane.shortcut_run_recorder_mut().finish_reading();
+        assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
+        drop(pane);
+        let runs = ui::read_runs(&tree.doc);
+        assert_eq!(runs.len(), 1, "recorded once the read was in");
+        assert_eq!(runs[0].steps[0].record, record.to_string());
+    }
+
     /// A run whose changes never reach a document here waits on the wall
     /// clock, not on how many frames were painted, and is then given up.
     #[test]
@@ -1406,13 +2026,13 @@ mod tests {
             .expect("the settle time");
         let mut at = finished_at;
         while at < settled {
-            assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+            assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
             assert!(pane.shortcut_runs_pending());
             at = at
                 .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
                 .expect("the next look");
         }
-        assert!(!pane.record_finished_shortcut_runs(&mut tree, &records, &local, at));
+        assert!(!pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
         let still_pending = pane.shortcut_runs_pending();
         drop(pane);
         assert!(!still_pending, "given up once settled");

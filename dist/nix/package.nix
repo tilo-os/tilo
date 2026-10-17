@@ -1,5 +1,7 @@
 { lib
 , rustPlatform
+, fetchurl
+, runCommand
 , pkg-config
 , cmake
 , clang
@@ -30,6 +32,14 @@
 
 let
   repoRoot = toString ../..;
+  # The fonts crate's build script fetches its pinned catalog by URL and SHA-256 into a cache
+  # (tools/font-catalog.py). The Nix sandbox has no network, so the same artifacts arrive as
+  # fixed-output fetches, laid out as that cache: <sha256>/<file>, regular files.
+  fontArtifacts = builtins.fromJSON
+    (builtins.readFile ../../crates/sdk/ui-core/assets/fonts/artifacts.json);
+  fontAssetCache = runCommand "tilo-font-artifacts" { } (lib.concatMapStrings (font: ''
+    install -Dm644 ${fetchurl { inherit (font) url sha256; }} "$out/${font.sha256}/${font.file}"
+  '') fontArtifacts.assets);
 in
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
@@ -77,7 +87,9 @@ rustPlatform.buildRustPackage rec {
   CARGO_PROFILE_RELEASE_LTO = "thin";
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16";
 
-  nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
+  # Build scripts run python3 on the build machine (font catalog, NTFS helper).
+  nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper python3 ];
+  TILO_FONT_ASSET_CACHE = fontAssetCache;
   buildInputs = [
     libxkbcommon wayland seatd libinput systemd libdrm libgbm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3

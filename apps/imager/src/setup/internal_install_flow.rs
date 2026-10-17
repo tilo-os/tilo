@@ -1,6 +1,6 @@
 //! Full Tilo installed alongside the current system, without a USB drive.
 //!
-//! Contract: `docs/superpowers/specs/2026-09-22-usb-free-install-design.md`
+//! Contract: `docs/architecture/usb-free-install.md`
 //! §5 (capability gate) and §8 (Imager UI). This module holds the reviewed
 //! plan, host readiness and elevated helper runs. Nothing here writes to a
 //! disk or firmware: only the elevated staging helper does, after it re-probes
@@ -22,6 +22,7 @@ use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBou
 use super::staging::probe::{self, Blocker, HostFacts};
 use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
+use tilo_lock::MutexRecover as _;
 
 /// Release jobs set this at build time only after the round trip passed.
 pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
@@ -199,9 +200,7 @@ pub(super) struct StagingLink {
 
 impl StagingLink {
     fn lock(&self) -> MutexGuard<'_, RunShared> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.shared.lock_recover()
     }
 
     fn set_state(&self, state: RunState) {

@@ -9,7 +9,7 @@
 //!
 //! ```json
 //! "power": {
-//!   "auto_suspend": true,
+//!   "auto_suspend": false,
 //!   "blank_minutes": 10,
 //!   "lock_minutes": 5,
 //!   "suspend_minutes": 15,
@@ -50,8 +50,8 @@ pub const MAX_BLANK_MINUTES: u32 = 30;
 /// The largest idle-lock timeout exposed by Settings.
 pub const MAX_LOCK_MINUTES: u32 = 30;
 
-/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/settings.json`,
-/// falling back to `~/.config/tilo/settings.json`) — the same file the
+/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/session/settings.json`,
+/// falling back to `~/.config/tilo/session/settings.json`) — the same file the
 /// Settings app and the rest of the compositor read.
 pub fn settings_path() -> Option<PathBuf> {
     settings_store::settings_path()
@@ -78,10 +78,11 @@ pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
         .for_duty(crate::policy::this_machine_duty())
 }
 
-/// The policy a freshly-installed machine runs (Settings defaults). This
-/// differs from [`PowerPolicy::default`] in one place: idle-suspend is
-/// **enabled** (15 min), matching the Settings "suspend when idle" toggle
-/// defaulting on.
+/// The policy a freshly-installed machine runs (Settings defaults): idle
+/// blanks and locks the screen, but idle-suspend follows
+/// [`settings_store::power::DEFAULT_AUTO_SUSPEND`] (off), so nothing but the
+/// lid, the power key or a critical battery puts the machine to sleep until
+/// the person turns "suspend when idle" on.
 pub fn default_policy() -> PowerPolicy {
     default_policy_from_installation(std::path::Path::new("/etc/tilo/install-purpose"))
 }
@@ -94,7 +95,7 @@ fn default_policy_from_installation(path: &std::path::Path) -> PowerPolicy {
 /// settings can override it; lid and critical-battery protection stay intact.
 pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
     PowerPolicy {
-        idle_suspend: (purpose != Some("server"))
+        idle_suspend: (purpose != Some("server") && settings_store::power::DEFAULT_AUTO_SUSPEND)
             .then(|| Duration::from_secs(u64::from(DEFAULT_SUSPEND_MINUTES) * 60)),
         ..PowerPolicy::default()
     }
@@ -221,7 +222,10 @@ mod tests {
         let server = default_policy_from_installation(file.path());
         let computer = default_policy_for_purpose(Some("computer"));
         assert_eq!(server.idle_suspend, None);
-        assert_eq!(computer.idle_suspend, Some(Duration::from_secs(900)));
+        assert_eq!(
+            computer.idle_suspend,
+            settings_store::power::DEFAULT_AUTO_SUSPEND.then(|| Duration::from_secs(900))
+        );
         assert_eq!(
             PowerPolicy {
                 idle_suspend: None,
@@ -244,6 +248,25 @@ mod tests {
             assert_eq!(p, default_policy());
             assert_eq!(p.idle_blank, Some(Duration::from_secs(600)));
             assert_eq!(p.idle_lock, Some(Duration::from_secs(300)));
+            assert_eq!(
+                p.idle_suspend, None,
+                "a fresh install never suspends because nobody touched it"
+            );
+            assert_eq!(
+                p.lid_close_action,
+                PowerAction::Suspend,
+                "closing the lid still does"
+            );
+        }
+        // Phase `a_timeout_without_the_switch_stays_off`.
+        {
+            // A suspend timeout is written by the pane even while the switch
+            // is off; it alone must not turn idle-suspend back on.
+            let p = policy_from_settings_json(r#"{"power":{"suspend_minutes":15}}"#);
+            assert_eq!(p.idle_suspend, None);
+            let p = policy_from_settings_json(
+                r#"{"power":{"auto_suspend":true,"suspend_minutes":15}}"#,
+            );
             assert_eq!(p.idle_suspend, Some(Duration::from_secs(900)));
         }
         // Phase `no_power_section_is_defaults`.
@@ -405,9 +428,10 @@ mod tests {
         }
         // Phase `unknown_profile_uses_legacy_timeout`.
         {
-            let section: serde_json::Value =
-                serde_json::from_str(r#"{"suspend_minutes":23,"balanced_suspend_minutes":99}"#)
-                    .unwrap();
+            let section: serde_json::Value = serde_json::from_str(
+                r#"{"auto_suspend":true,"suspend_minutes":23,"balanced_suspend_minutes":99}"#,
+            )
+            .unwrap();
             assert_eq!(
                 policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
                 Some(Duration::from_secs(1380))

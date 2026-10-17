@@ -7,6 +7,7 @@ license.workspace = true
 description = "Polkit authentication agent: asks in a sheet its host draws"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # `getpwuid_r`/`getgrgid_r` turn polkit's identities into user names.
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }

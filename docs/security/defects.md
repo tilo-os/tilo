@@ -970,7 +970,7 @@ against the member's own modified client.
 
 **Resolved for records, apps and patterns of records.** Stewards admit per channel
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
-`StatePeer::withheld_record_readers`), deciding Read on the channel's record with the same decision
+`PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
 every door applies. A channel id is a hash of its record's route, so the steward names the record
 from a grant naming it or from the route a device sends beside its access request
 (`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
@@ -1034,6 +1034,22 @@ directory and symlink its path resolves through, spelled as the disk spells it, 
 rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `sandbox-exec`
 launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
 (`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
+
+The Settings app's own bind of the store is not a grant, and it used to bind the whole
+`$XDG_CONFIG_HOME/tilo` read-write so Settings could replace `settings.json` by rename. It is now
+narrowed (`appdir::SESSION_SETTINGS_BINDS`, `run::splice_session_settings`): the settings document
+moved into its own directory, `~/.config/tilo/session/` (`settings_store::SESSION_DIR`; a document
+left at the old path is moved there once), and Settings is given that directory, the account
+stores it is the custodian of (`accounts/`, with their vault), and, read-only, `state.json` and
+`continuity-provenance.json`. The identity store (records, fallback root secrets, the active
+selector, device fleets), the trust and revocation lists, the app registries, the session's
+settings records and anything added to the root later stay out. Settings lists, activates,
+removes and protects identities, lists and revokes devices and removes home servers through the
+host's `tilo.identity` actions (`shell::identity_admin`), which sign with the root key on the
+host. Held by
+`room_confinement::settings_reaches_only_its_own_parts_of_the_session_configuration`. A read-only
+file bind holds the inode it found, so the Permissions pane shows the workspace tree as of the
+launch.
 
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 

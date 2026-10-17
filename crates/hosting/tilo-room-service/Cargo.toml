@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true

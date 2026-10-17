@@ -16,7 +16,8 @@
 //! of application secrets are never named.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+use tilo_lock::MutexRecover as _;
 
 /// Bookmarks kept in the file, Tilo's and other applications' together.
 pub const MAX_BOOKMARKS: usize = 500;
@@ -209,7 +210,7 @@ pub fn note_opened(path: &Path) {
         .name("recent-files".into())
         .spawn(move || {
             static WRITER: Mutex<()> = Mutex::new(());
-            let _serial = WRITER.lock().unwrap_or_else(PoisonError::into_inner);
+            let _serial = WRITER.lock_recover();
             if let Err(error) = record(&xbel, &home, &path, &now) {
                 tracing::warn!(%error, "could not update recently-used.xbel");
             }

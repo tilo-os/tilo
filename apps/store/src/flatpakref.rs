@@ -125,29 +125,6 @@ impl FlatpakRef {
     }
 }
 
-/// Find the first positional `.flatpakref` argument. Values consumed by known
-/// common options are skipped, so `--shots output.flatpakref` is not mistaken
-/// for an install request.
-pub fn path_from_args(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if matches!(
-            arg.as_str(),
-            "--shots" | "--viewport" | "--scenario" | "--headless-drive"
-        ) {
-            let _ = iter.next();
-            continue;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        if arg.to_ascii_lowercase().ends_with(".flatpakref") {
-            return Some(PathBuf::from(arg));
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,21 +180,6 @@ Comment=Create images and edit photographs\n";
                 Some("/tmp/gimp.flatpakref")
             );
             assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
-        }
-
-        // Case `argument_scan_does_not_consume_option_values`.
-        {
-            let args = [
-                "store",
-                "--shots",
-                "not-an-install.flatpakref",
-                "/tmp/install.flatpakref",
-            ]
-            .map(str::to_string);
-            assert_eq!(
-                path_from_args(&args),
-                Some(PathBuf::from("/tmp/install.flatpakref"))
-            );
         }
     }
 }

@@ -105,8 +105,22 @@ pub enum EventOutcome {
     ManageOwnership,
     /// Starts a named, explicit agent setup in the command palette.
     AddAgent,
-    /// Opens Privacy & Security with this agent preselected as the subject.
+    /// Opens this agent's Allow / Ask first / Deny answers, app by app.
     ReviewAgent(String),
+    /// Back from one agent's answers to the roster.
+    CloseAgentReview,
+    /// Opens or closes one app's answers in the agent view.
+    ToggleAgentApp(tilo_action_policy::agent_answers::AnswerScope),
+    /// Sets (or, with `None`, returns to the admission's) the agent's
+    /// answers, each for a kind at a scope.
+    SetAgentAnswers {
+        agent: String,
+        answers: Vec<(
+            tilo_action_policy::agent_answers::AnswerScope,
+            tilo_action_policy::ActionKind,
+            Option<tilo_action_policy::Answer>,
+        )>,
+    },
     RemoveAgent(String),
     Revoke(String),
     SetMemberRole(UserId, CapRole),
@@ -179,6 +193,13 @@ pub struct WorkspaceSettingsOverlay {
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
+    /// The agent whose answers the Agents tab shows instead of the roster,
+    /// and which of its apps is open.
+    agent_review: Option<(
+        String,
+        Option<tilo_action_policy::agent_answers::AnswerScope>,
+    )>,
+    agent_access: super::agent_access::AgentAccessLayout,
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
@@ -210,6 +231,8 @@ impl Default for WorkspaceSettingsOverlay {
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
+            agent_review: None,
+            agent_access: super::agent_access::AgentAccessLayout::default(),
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
@@ -232,21 +255,40 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn rect_for(viewport: Rect) -> Rect {
-        // This lens is a floating application surface, not edge chrome.  A
-        // 12 px inset made its outline and footer read as if they were glued
-        // to the monitor bezel, especially at 1x laptop density.  Keep a
-        // conventional 20 px breathing edge on every output while retaining
-        // the responsive width calculation below.
-        let margin = 20.0;
-        let top = viewport.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
-        let bottom = (viewport.y1 - margin).max(top + 320.0);
-        if viewport.width() < 820.0 {
+        let spacing = ui::tokens::Spacing::BASE;
+        let metrics = ui::tokens::Metrics::BASE;
+        // A floating application surface, not edge chrome: the group step
+        // (`s6`) of air from the bezel on every side, under the top bar.
+        let margin = f64::from(spacing.s6);
+        let bar_bottom = viewport.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX);
+        let top = bar_bottom + margin;
+        // Shorter than the header, the tab strip and a first card need, the
+        // lens becomes the whole page under the bar (HIG 7c: a compact
+        // sheet fills the window) rather than running past the screen's
+        // bottom edge.
+        let min_card = Self::IDENTITY_H
+            + Self::NAV_H
+            + 2.0 * Self::HEADER_PAD
+            + Self::BODY_LEAD
+            + f64::from(metrics.panel_row_height)
+            + Self::FOOTER_H;
+        if viewport.y1 - margin - top < min_card {
+            return Rect::new(
+                viewport.x0,
+                bar_bottom.min(viewport.y1),
+                viewport.x1,
+                viewport.y1,
+            );
+        }
+        let bottom = viewport.y1 - margin;
+        // A sheet's width beside the workspace, which keeps the larger part
+        // of the screen; narrower than that and the workspace, the lens is
+        // one inset sheet.
+        let sheet = f64::from(metrics.panel_width_sheet);
+        if viewport.width() < f64::from(metrics.compact_breakpoint) {
             return Rect::new(viewport.x0 + margin, top, viewport.x1 - margin, bottom);
         }
-        // Keep the workspace itself legible beside this contextual lens. A
-        // 620px floor consumed half of a 1280px laptop even when the pane's
-        // responsive tab layout no longer needed a sidebar.
-        let lens_w = (viewport.width() * 0.42).clamp(540.0, 720.0);
+        let lens_w = (viewport.width() * 0.42).clamp(sheet, f64::from(metrics.readable_width));
         // The workspace-name control that summons this lens lives on the
         // left. Keep the contextual surface on that same side instead of
         // making the pointer cross the entire display after clicking Home.
@@ -271,6 +313,8 @@ impl WorkspaceSettingsOverlay {
     /// them by `s1` on every side.
     const PILL_INSET: f64 = ui::tokens::Spacing::BASE.s1 as f64;
     const NAV_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64 + 2.0 * Self::PILL_INSET;
+    /// The footer band the close hint sits in, under every tab's body.
+    const FOOTER_H: f64 = 44.0;
 
     /// The identity card at the head of the lens.
     pub fn identity_rect_for(card: Rect) -> Rect {
@@ -302,7 +346,7 @@ impl WorkspaceSettingsOverlay {
             // Reserve a real footer band for the global close hint.  Letting
             // tab content extend to y1-16 painted empty states, policy copy,
             // and the hint into the same last line on compact laptop panels.
-            card.y1 - 44.0,
+            card.y1 - Self::FOOTER_H,
         )
     }
 
@@ -598,7 +642,80 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.member_sheet_option_rects.clear();
+    }
+
+    /// What a press at `point` on the Agents tab means: the agent view's
+    /// controls, adding an agent, or a roster row's.
+    fn agents_outcome(&self, point: Point, active_tab: WsTab) -> Option<EventOutcome> {
+        if matches!(active_tab, WsTab::Agents) {
+            if let Some(outcome) = self.agent_access_outcome(point) {
+                return Some(outcome);
+            }
+            if self.agent_add_rect.area() > 0.0 && self.agent_add_rect.contains(point) {
+                return Some(EventOutcome::AddAgent);
+            }
+        }
+        self.agent_control_rects
+            .iter()
+            .find_map(|(agent, review, remove)| {
+                if review.area() > 0.0 && review.contains(point) {
+                    Some(EventOutcome::ReviewAgent(agent.clone()))
+                } else if remove.area() > 0.0 && remove.contains(point) {
+                    Some(EventOutcome::RemoveAgent(agent.clone()))
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// What a press at `point` in the agent view means, when it is shown.
+    fn agent_access_outcome(&self, point: Point) -> Option<EventOutcome> {
+        use super::agent_access::AccessTarget;
+        let (agent, _) = self.agent_review.as_ref()?;
+        let set = |answers| EventOutcome::SetAgentAnswers {
+            agent: agent.clone(),
+            answers,
+        };
+        Some(match self.agent_access.hit(point)? {
+            AccessTarget::Back => EventOutcome::CloseAgentReview,
+            AccessTarget::Expand(scope) => EventOutcome::ToggleAgentApp(scope),
+            AccessTarget::Answer(scope, kind, answer) => set(vec![(scope, kind, Some(answer))]),
+            AccessTarget::Reset(scope) => set(super::agent_access::KINDS
+                .into_iter()
+                .map(|kind| (scope.clone(), kind, None))
+                .collect()),
+            AccessTarget::RemoveException(scope, kind) => set(vec![(scope, kind, None)]),
+        })
+    }
+
+    /// Show `agent`'s answers in the Agents tab instead of the roster.
+    pub fn open_agent_review(&mut self, agent: String) {
+        self.agent_review = Some((agent, None));
+    }
+
+    /// Back to the roster.
+    pub fn close_agent_review(&mut self) {
+        self.agent_review = None;
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
+    }
+
+    /// Open `scope`'s answers in the agent view, or close them when open.
+    pub fn toggle_agent_app(&mut self, scope: tilo_action_policy::agent_answers::AnswerScope) {
+        if let Some((_, open)) = &mut self.agent_review {
+            *open = if open.as_ref() == Some(&scope) {
+                None
+            } else {
+                Some(scope)
+            };
+        }
+    }
+
+    /// The agent whose answers are shown, if any.
+    #[must_use]
+    pub fn reviewing_agent(&self) -> Option<&str> {
+        self.agent_review.as_ref().map(|(agent, _)| agent.as_str())
     }
 
     /// Paint the transition-owned marker, shadow and card, returning the
@@ -761,19 +878,8 @@ impl WorkspaceSettingsOverlay {
         if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
             return EventOutcome::ManageOwnership;
         }
-        if matches!(active_tab, WsTab::Agents)
-            && self.agent_add_rect.area() > 0.0
-            && self.agent_add_rect.contains(point)
-        {
-            return EventOutcome::AddAgent;
-        }
-        for (agent, review, remove) in &self.agent_control_rects {
-            if review.area() > 0.0 && review.contains(point) {
-                return EventOutcome::ReviewAgent(agent.clone());
-            }
-            if remove.area() > 0.0 && remove.contains(point) {
-                return EventOutcome::RemoveAgent(agent.clone());
-            }
+        if let Some(outcome) = self.agents_outcome(point, active_tab) {
+            return outcome;
         }
         for (id, rect) in &self.revoke_rects {
             if rect.area() > 0.0 && rect.contains(point) {
@@ -1631,9 +1737,31 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.default_app_rects.clear();
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
         let body_rect = Self::body_rect(rect);
-        self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = model.owner_controls;
+        if let Some(ws) = model.desktop.active_workspace()
+            && let Some((agent, open)) = &self.agent_review
+            && ws
+                .agent_members_at(tilo_clock::unix_now())
+                .iter()
+                .any(|(member, _)| member == agent)
+        {
+            self.agent_add_rect = Rect::ZERO;
+            self.agent_access = super::agent_access::draw_agent_access(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                body_rect,
+                (ws, model.apps),
+                &super::agent_access::AgentAccessView {
+                    agent,
+                    open: open.as_ref(),
+                    editable: is_owner,
+                },
+            );
+            Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+            return;
+        }
+        self.agent_add_rect = agents_add_rect(body_rect);
         if let Some(ws) = model.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((
@@ -2781,9 +2909,12 @@ mod tests {
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-            assert_eq!(lens.x0, viewport.x0 + 20.0);
-            assert!(lens.width() <= 540.0);
-            assert!(lens.x1 <= 560.0, "the workspace keeps a usable majority");
+            assert_eq!(lens.x0, viewport.x0 + 24.0);
+            assert!(lens.width() <= f64::from(ui::tokens::Metrics::BASE.panel_width_sheet));
+            assert!(
+                lens.x1 <= viewport.width() / 2.0,
+                "the workspace keeps a usable majority"
+            );
         }
 
         // Phase `lens_keeps_a_visible_bezel_gap_on_wide_and_compact_outputs`.
@@ -2794,13 +2925,13 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 700.0),
             ] {
                 let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-                if viewport.width() >= 820.0 {
-                    assert_eq!(lens.x0 - viewport.x0, 20.0);
+                if viewport.width() >= 840.0 {
+                    assert_eq!(lens.x0 - viewport.x0, 24.0);
                 } else {
-                    assert_eq!(viewport.x1 - lens.x1, 20.0);
+                    assert_eq!(viewport.x1 - lens.x1, 24.0);
                 }
-                assert_eq!(viewport.y1 - lens.y1, 20.0);
-                assert!(lens.y0 >= viewport.y0 + 20.0);
+                assert_eq!(viewport.y1 - lens.y1, 24.0);
+                assert!(lens.y0 >= viewport.y0 + 24.0);
             }
         }
 

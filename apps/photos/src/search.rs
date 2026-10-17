@@ -28,6 +28,7 @@ use crate::derived::{
 };
 use crate::model::{LibraryPhoto, PhotoLibrary};
 use crate::resource::{album_resource_id, derived_resource_id, photo_resource_id};
+use ui::lock::RwLockRecover as _;
 
 /// Search group label for Photos results.
 pub const PHOTO_SEARCH_KIND: &str = "Photos";
@@ -481,10 +482,7 @@ impl LibraryIndex {
     /// The resource `id` as the library publishes it, from the retained
     /// generation: what the widget resolves for agent and history lookups.
     pub fn resource(&self, id: &str) -> Option<Resource> {
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.read_recover();
         state.rows.get(id)?;
         if id == LIBRARY_ID {
             return Some(ui::tilo_resource::publish::<PhotoLibrary>(
@@ -502,10 +500,7 @@ impl LibraryIndex {
         query: &str,
         cursor: Option<&SearchCursor>,
     ) -> (Vec<String>, Option<SearchCursor>, usize) {
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = self.state.read_recover();
         let page = state.catalog.query_page(
             query,
             cursor,
@@ -525,12 +520,7 @@ impl LibraryIndex {
 
     #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .stats()
-            .generation
+        self.state.read_recover().catalog.stats().generation
     }
 
     fn replace_from_library(&self, library: &PhotoLibrary) -> Result<(), SearchCatalogError> {
@@ -559,10 +549,7 @@ impl LibraryIndex {
             .collect();
         let library = Arc::new(library.clone());
         before_publish();
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         // Callers never observe fresh hits with stale resources: the rows
         // and their library change under one lock. A refused snapshot
         // leaves the catalogue, and so the old snapshot, intact.
@@ -578,19 +565,12 @@ impl LibraryIndex {
 
     #[cfg(test)]
     pub(crate) fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .stats()
+        self.state.read_recover().catalog.stats()
     }
 
     #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self.state.write_recover();
         state.catalog.replace_all([(
             "photos.photo:malformed".to_owned(),
             "malformed".to_owned(),

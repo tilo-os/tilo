@@ -24,7 +24,7 @@
 //! back to the app to navigate.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
-//! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
+//! [`take_operation`](ActionPalette::take_operation) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
@@ -49,9 +49,10 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
-    ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
-    EncodedAction, OperationKind, Resource, flatten,
+    ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, Resource, flatten,
 };
+#[cfg(test)]
+use tilo_actions::{ActionRegistry, ActionTransport, Dispatched};
 
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";
@@ -342,7 +343,7 @@ pub struct ActionPalette {
     /// `Some` while collecting the explicit confirmation required by the
     /// selected action contract.
     confirm: Option<ConfirmState>,
-    /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
+    /// A ready-to-dispatch action, set on activation, drained by `take_operation`.
     pending_dispatch: Option<PendingOperation>,
     history_suspended: bool,
     history_review_required: bool,
@@ -1536,7 +1537,7 @@ impl ActionPalette {
         let Ok(encoded) = flattened.action.build_json(arguments) else {
             return false;
         };
-        let mut context = ActionContext::for_resource(
+        let mut context = flattened.action.history_context(
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1569,7 +1570,9 @@ impl ActionPalette {
     /// Drain a completed action activation and dispatch it against `doc` +
     /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
     /// same path a remote peer uses to replay. `None` when no action is
-    /// pending (e.g. the last activation was a navigation).
+    /// pending (e.g. the last activation was a navigation). Tests use this to
+    /// replay an activation without the application host's executor.
+    #[cfg(test)]
     pub fn take_dispatch(
         &mut self,
         doc: &mut crate::widget::Edits<'_>,
@@ -1732,6 +1735,7 @@ impl ActionPalette {
             .collect()
     }
 
+    #[cfg(test)]
     fn dispatch_encoded(
         doc: &mut crate::widget::Edits<'_>,
         encoded: &EncodedAction,
@@ -1861,7 +1865,7 @@ impl ActionPalette {
         if !fa.action.contract.availability.is_available() {
             return None;
         }
-        let mut context = ActionContext::for_resource(
+        let mut context = fa.action.history_context(
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,

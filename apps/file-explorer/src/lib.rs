@@ -15,9 +15,12 @@
 pub mod actions;
 pub mod archive;
 pub mod breadcrumbs;
+mod cloud_jobs;
+mod cloud_transfer;
 pub mod command;
 pub mod config;
 mod directory_watch;
+pub mod documents;
 pub mod effects;
 pub mod external_drag;
 pub mod favorites;

@@ -5,11 +5,13 @@
 //! the app keeps for the window: the model runs the system's update tools
 //! off the UI thread, and the pane shows where each request stands.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+use crate::device_read::{Landed, Landing};
 use std::time::Duration;
 
 use tracing::warn;
@@ -18,6 +20,8 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ProgressBar, Row, Text, Widget};
 use ui::{LocalState, WakeHandle};
 
+#[cfg(test)]
+use crate::channel;
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
 use crate::effects::effect;
 use crate::host::PaneCx;
@@ -92,6 +96,7 @@ pub struct UpdateDetails {
 
 impl UpdateDetails {
     fn from_system(rollback_target: Option<&str>) -> Self {
+        crate::device_read::off_ui_thread();
         let bootc_json = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)
             .ok()
             .filter(|output| output.status.success())
@@ -185,6 +190,7 @@ impl UpdateStatus {
     /// Query the real system: pretty name from `/etc/os-release`, staged
     /// deployment from `bootc status`.
     pub fn from_system() -> Self {
+        crate::device_read::off_ui_thread();
         let current = fs::read_to_string(Path::new("/etc/os-release"))
             .ok()
             .and_then(|s| parse_pretty_name(&s))
@@ -419,22 +425,29 @@ fn start_update_policy(action: &str) -> Result<(), String> {
 /// silent `false` would be asserting about a machine that does not exist.
 pub struct UnavailableControl;
 
+/// Its reads are not marked as reaching the device: a capture's model
+/// ([`UpdatesModel::sample`]) and the tests' read them when it is built, on
+/// the UI thread, and they answer at once. What it is asked to do runs off
+/// the UI thread, as a real control's does, and is marked.
 impl UpdateControl for UnavailableControl {
     fn timer_enabled(&self) -> Option<bool> {
         None
     }
     fn set_timer(&self, _on: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Err("automatic updates cannot be changed from here on this machine".into())
     }
     fn rollback_target(&self) -> Result<Option<String>, String> {
         Ok(None)
     }
     fn roll_back(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Err("rolling back is not available on this machine".into())
     }
 
     // Hermetic/test control: the injected StatusProvider is the check source.
     fn check_now(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -445,6 +458,7 @@ pub struct RealUpdateControl;
 
 impl UpdateControl for RealUpdateControl {
     fn timer_enabled(&self) -> Option<bool> {
+        crate::device_read::off_ui_thread();
         let out = run_bounded("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
         // `is-enabled` exits non-zero for "disabled", so the exit status is not
         // the answer — the word on stdout is. An unparseable word is `None`,
@@ -459,6 +473,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn set_timer(&self, on: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         // --now so the change takes effect immediately as well as at boot;
         // without it, switching updates off leaves the timer armed until the
         // next reboot, which is most of the problem being fixed.
@@ -476,10 +491,12 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn rollback_target(&self) -> Result<Option<String>, String> {
+        crate::device_read::off_ui_thread();
         read_bootc_status().map(|json| parse_bootc_rollback(&json))
     }
 
     fn roll_back(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let out = run_bounded(
             "systemctl",
             &["start", "--wait", ROLLBACK_UNIT],
@@ -497,6 +514,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn schedule(&self) -> Option<String> {
+        crate::device_read::off_ui_thread();
         Some(
             match read_update_policy().get("schedule").map(String::as_str) {
                 Some("daily") => "Daily",
@@ -508,6 +526,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn set_schedule(&self, schedule: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         start_update_policy(match schedule {
             "System schedule" => "schedule-system",
             "Daily" => "schedule-daily",
@@ -517,6 +536,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn allow_metered(&self) -> Option<bool> {
+        crate::device_read::off_ui_thread();
         Some(
             read_update_policy()
                 .get("metered")
@@ -525,6 +545,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn set_allow_metered(&self, allow: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         start_update_policy(if allow {
             "metered-allow"
         } else {
@@ -533,6 +554,7 @@ impl UpdateControl for RealUpdateControl {
     }
 
     fn check_now(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let output = run_bounded(
             "systemctl",
             &["start", "--wait", "tilo-deployment-update.service"],
@@ -559,6 +581,7 @@ impl UpdateControl for RealUpdateControl {
         ),
         String,
     > {
+        crate::device_read::off_ui_thread();
         os_actions::refresh_firmware_metadata()
             .and_then(|()| os_actions::get_firmware_updates())
             .and_then(|updates| {
@@ -601,6 +624,7 @@ struct NoRestart;
 
 impl Rebooter for NoRestart {
     fn reboot(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Err("a screenshot restarts nothing".into())
     }
 }
@@ -609,6 +633,7 @@ pub struct RealRebooter;
 
 impl Rebooter for RealRebooter {
     fn reboot(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let out = run_bounded("systemctl", &["reboot"], CONTROL_TIMEOUT)?;
         if out.status.success() {
             Ok(())
@@ -655,6 +680,113 @@ type FirmwareRefreshEvent = Result<
     ),
     String,
 >;
+/// What fwupd reports: the applicable upgrades and the past transactions,
+/// each read on its own so one failing does not hide the other.
+type FirmwareReading = (
+    Result<Vec<os_actions::FirmwareUpdate>, String>,
+    Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
+);
+type FirmwareReader = Arc<dyn Fn() -> FirmwareReading + Send + Sync>;
+
+/// Why a worker's outcome never came: it could not start, or it stopped.
+const WORKER_STOPPED: &str = "the update worker stopped before it finished";
+
+/// Where the model reads the device and acts on it. Each reaches the
+/// system, so the model calls them only off the UI thread.
+#[derive(Clone)]
+struct DeviceReaders {
+    status: StatusProvider,
+    details: DetailsProvider,
+    control: Arc<dyn UpdateControl>,
+    rebooter: Arc<dyn Rebooter>,
+    firmware: FirmwareReader,
+    codec_status: CodecStatusProvider,
+}
+
+impl DeviceReaders {
+    /// This device's own tools.
+    fn system() -> Self {
+        Self {
+            status: Arc::new(UpdateStatus::from_system),
+            details: Arc::new(UpdateDetails::from_system),
+            control: Arc::new(RealUpdateControl),
+            rebooter: Arc::new(RealRebooter),
+            firmware: Arc::new(|| -> FirmwareReading {
+                crate::device_read::off_ui_thread();
+                (
+                    os_actions::get_firmware_updates(),
+                    os_actions::get_firmware_history(),
+                )
+            }),
+            codec_status: Arc::new(CodecPackStatus::read),
+        }
+    }
+
+    /// Everything the pane shows of the device, read once: tens of seconds
+    /// when `bootc`, systemd or fwupd are slow, so never on the UI thread.
+    fn read(&self) -> FirstRead {
+        let status = (self.status)();
+        let timer_enabled = self.control.timer_enabled();
+        let rollback_target = self.control.rollback_target();
+        let details = (self.details)(target_of(&rollback_target));
+        let (firmware_updates, firmware_history) = (self.firmware)();
+        FirstRead {
+            status,
+            timer_enabled,
+            rollback_target,
+            details,
+            schedule: self.control.schedule(),
+            allow_metered: self.control.allow_metered(),
+            firmware_updates,
+            firmware_history,
+            codec_status: (self.codec_status)(),
+        }
+    }
+}
+
+/// What the model shows of the device before anything is changed.
+struct FirstRead {
+    status: UpdateStatus,
+    timer_enabled: Option<bool>,
+    rollback_target: Result<Option<String>, String>,
+    details: UpdateDetails,
+    schedule: Option<String>,
+    allow_metered: Option<bool>,
+    firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
+    firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
+    codec_status: CodecPackStatus,
+}
+
+impl FirstRead {
+    /// The device could not be read: every part says why, none guesses.
+    fn unread(error: &str) -> Self {
+        Self {
+            status: UpdateStatus {
+                current_version: String::new(),
+                staged_version: None,
+                staged_error: Some(error.to_string()),
+            },
+            timer_enabled: None,
+            rollback_target: Err(error.to_string()),
+            details: UpdateDetails::default(),
+            schedule: None,
+            allow_metered: None,
+            firmware_updates: Err(error.to_string()),
+            firmware_history: Err(error.to_string()),
+            codec_status: CodecPackStatus::default(),
+        }
+    }
+}
+
+/// What a change made off the UI thread does to the model once it lands,
+/// with what the device reported after it.
+type Apply = Box<dyn FnOnce(&mut UpdatesModel) + Send>;
+
+/// A change running off the UI thread.
+struct Job {
+    operation: &'static str,
+    landing: Landing,
+}
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
@@ -682,6 +814,15 @@ pub struct UpdatesModel {
     clock: Clock,
     rebooter: Arc<dyn Rebooter>,
     control: Arc<dyn UpdateControl>,
+    firmware_reader: FirmwareReader,
+    /// The device's first read, on its way; the pane says it is reading
+    /// until it lands.
+    first_read: Option<Landing>,
+    /// Requests that wait — for the first read, or for the same request
+    /// still running — with the callers waiting for them.
+    waiting: VecDeque<(UpdatesEffect, Option<EffectReply>)>,
+    /// Changes the device is making off the UI thread.
+    jobs: Vec<Job>,
     /// The update timer's actual state, as read from the machine. `None` means
     /// it could not be read, and the switch says so instead of guessing.
     timer_enabled: Option<bool>,
@@ -696,8 +837,8 @@ pub struct UpdatesModel {
     firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
     firmware_state: FirmwareUiState,
     firmware_events: Option<std::sync::mpsc::Receiver<os_actions::FirmwareEvent>>,
-    check_events: Option<Receiver<CheckEvent>>,
-    firmware_refresh_events: Option<Receiver<FirmwareRefreshEvent>>,
+    check_events: Option<Landing>,
+    firmware_refresh_events: Option<Landing>,
     check_pending: bool,
     firmware_refresh_pending: bool,
     codec_status: CodecPackStatus,
@@ -705,7 +846,7 @@ pub struct UpdatesModel {
     codec_runner: CodecRunner,
     /// The codec-pack unit currently running, and its completion.
     codec_pending: Option<CodecAction>,
-    codec_events: Option<Receiver<Result<(), String>>>,
+    codec_events: Option<Landing>,
     /// Raised by the status-file watcher; the next sync re-reads the status,
     /// so progress written by the helper appears while it runs.
     codec_status_changed: Arc<AtomicBool>,
@@ -728,50 +869,59 @@ pub struct UpdatesModel {
 }
 
 impl UpdatesModel {
-    /// The model of this device's updates, read from the system now.
+    /// The model of this device's updates. It opens empty and reads the
+    /// system off the UI thread; the pane says it is reading until then.
     pub fn new(cx: PaneCx) -> Self {
-        let status_provider: StatusProvider = Arc::new(UpdateStatus::from_system);
-        let status = status_provider();
-        let control: Arc<dyn UpdateControl> = Arc::new(RealUpdateControl);
-        let mut prefs = cx.settings::<UpdatePrefs>().get();
-        // The timer is the setting; the stored preference exists only so an
-        // existing file need not be migrated, and is immediately overwritten
-        // by what the machine actually reports.
-        let timer_enabled = control.timer_enabled();
-        if let Some(on) = timer_enabled {
-            prefs.auto = on;
-        }
-        let rollback_target = control.rollback_target();
-        let details = UpdateDetails::from_system(target_of(&rollback_target));
-        let schedule = control.schedule();
-        let allow_metered = control.allow_metered();
-        let firmware_updates = os_actions::get_firmware_updates();
-        let firmware_history = os_actions::get_firmware_history();
-        let pane = Self {
-            status,
-            details,
-            prefs,
-            last_prefs: UpdatePrefs::default(),
-            status_provider,
-            details_provider: Arc::new(UpdateDetails::from_system),
-            clock: Arc::new(now_stamp),
-            rebooter: Arc::new(RealRebooter),
-            control,
-            timer_enabled,
-            schedule,
-            allow_metered,
-            rollback_target,
-            firmware_updates,
-            firmware_history,
+        let mut model = Self::reading(cx, DeviceReaders::system());
+        model.codec_runner = Arc::new(crate::codec_pack::run);
+        model.watch_codec_status();
+        model
+    }
+
+    /// A model that reads `readers` off the UI thread before it shows
+    /// anything; requests that arrive meanwhile wait for the read.
+    fn reading(cx: PaneCx, readers: DeviceReaders) -> Self {
+        let prefs = cx.settings::<UpdatePrefs>().get();
+        let mut model = Self::assemble(cx, readers.clone(), Arc::new(now_stamp), prefs);
+        model.first_read = Some(Landing::start(move || readers.read()));
+        model
+    }
+
+    /// The model's parts, showing nothing read yet.
+    fn assemble(cx: PaneCx, readers: DeviceReaders, clock: Clock, prefs: UpdatePrefs) -> Self {
+        Self {
+            status: UpdateStatus {
+                current_version: String::new(),
+                staged_version: None,
+                staged_error: None,
+            },
+            details: UpdateDetails::default(),
+            prefs: prefs.clone(),
+            last_prefs: prefs,
+            status_provider: readers.status,
+            details_provider: readers.details,
+            clock,
+            rebooter: readers.rebooter,
+            control: readers.control,
+            firmware_reader: readers.firmware,
+            first_read: None,
+            waiting: VecDeque::new(),
+            jobs: Vec::new(),
+            timer_enabled: None,
+            schedule: None,
+            allow_metered: None,
+            rollback_target: Ok(None),
+            firmware_updates: Ok(Vec::new()),
+            firmware_history: Ok(Vec::new()),
             firmware_state: FirmwareUiState::Idle,
             firmware_events: None,
             check_events: None,
             firmware_refresh_events: None,
             check_pending: false,
             firmware_refresh_pending: false,
-            codec_status: CodecPackStatus::read(),
-            codec_status_provider: Arc::new(CodecPackStatus::read),
-            codec_runner: Arc::new(crate::codec_pack::run),
+            codec_status: CodecPackStatus::default(),
+            codec_status_provider: readers.codec_status,
+            codec_runner: Arc::new(|_| Err("the codec pack is unavailable in this test".into())),
             codec_pending: None,
             codec_events: None,
             codec_status_changed: Arc::new(AtomicBool::new(false)),
@@ -782,9 +932,27 @@ impl UpdatesModel {
             cx,
             replies: crate::panes::model::Replies::default(),
             changed: false,
-        };
-        pane.watch_codec_status();
-        pane
+        }
+    }
+
+    /// Take in the device's first read. The timer is the setting: the
+    /// stored preference exists only so an existing file need not be
+    /// migrated, and is overwritten by what the machine reports.
+    fn adopt(&mut self, read: FirstRead) {
+        self.status = read.status;
+        self.timer_enabled = read.timer_enabled;
+        if let Some(on) = read.timer_enabled {
+            self.prefs.auto = on;
+        }
+        self.last_prefs = self.prefs.clone();
+        self.rollback_target = read.rollback_target;
+        self.details = read.details;
+        self.schedule = read.schedule;
+        self.allow_metered = read.allow_metered;
+        self.firmware_updates = read.firmware_updates;
+        self.firmware_history = read.firmware_history;
+        self.codec_status = read.codec_status;
+        self.changed = true;
     }
 
     /// Test constructor: inject the status provider, the clock, the rebooter,
@@ -814,6 +982,10 @@ impl UpdatesModel {
 
     /// [`UpdatesPane::with_parts`], plus the system control — the timer, the
     /// rollback target and the rollback itself.
+    ///
+    /// Reads the control as it is built, on the calling thread: it is a
+    /// stand-in that answers at once ([`UnavailableControl`], a test's), so
+    /// a capture and a test show it from their first frame.
     pub fn with_parts_and_control(
         cx: PaneCx,
         status: UpdateStatus,
@@ -823,50 +995,33 @@ impl UpdatesModel {
         rebooter: Arc<dyn Rebooter>,
         control: Arc<dyn UpdateControl>,
     ) -> Self {
-        let timer_enabled = control.timer_enabled();
-        let rollback_target = control.rollback_target();
-        let schedule = control.schedule();
-        let allow_metered = control.allow_metered();
-        let mut prefs = prefs;
-        if let Some(on) = timer_enabled {
-            prefs.auto = on;
-        }
-        Self {
+        let read = FirstRead {
             status,
+            timer_enabled: control.timer_enabled(),
+            rollback_target: control.rollback_target(),
             details: UpdateDetails::default(),
-            prefs: prefs.clone(),
-            last_prefs: prefs,
-            status_provider,
-            details_provider: Arc::new(|_| UpdateDetails::default()),
-            clock,
-            rebooter,
-            control,
-            timer_enabled,
-            schedule,
-            allow_metered,
-            rollback_target,
+            schedule: control.schedule(),
+            allow_metered: control.allow_metered(),
             firmware_updates: Err("fwupd is unavailable in this test".into()),
             firmware_history: Err("fwupd is unavailable in this test".into()),
-            firmware_state: FirmwareUiState::Idle,
-            firmware_events: None,
-            check_events: None,
-            firmware_refresh_events: None,
-            check_pending: false,
-            firmware_refresh_pending: false,
             codec_status: CodecPackStatus::default(),
-            codec_status_provider: Arc::new(CodecPackStatus::default),
-            codec_runner: Arc::new(|_| Err("the codec pack is unavailable in this test".into())),
-            codec_pending: None,
-            codec_events: None,
-            codec_status_changed: Arc::new(AtomicBool::new(false)),
-            wake: WakeHandle::new(),
-            rollback_armed: false,
-            notice: None,
-            dispatched_restart: false,
-            cx,
-            replies: crate::panes::model::Replies::default(),
-            changed: false,
-        }
+        };
+        let readers = DeviceReaders {
+            status: status_provider,
+            details: Arc::new(|_| UpdateDetails::default()),
+            control,
+            rebooter,
+            firmware: Arc::new(|| -> FirmwareReading {
+                crate::device_read::off_ui_thread();
+                let unavailable = String::from("fwupd is unavailable in this test");
+                (Err(unavailable.clone()), Err(unavailable))
+            }),
+            codec_status: Arc::new(CodecPackStatus::default),
+        };
+        let mut model = Self::assemble(cx, readers, clock, prefs);
+        model.adopt(read);
+        model.changed = false;
+        model
     }
 
     /// What a capture shows: a staged image waiting for a restart, and
@@ -918,6 +1073,7 @@ impl UpdatesModel {
 
     /// The status-file watcher saw a change (tests call this in place of the
     /// inotify thread).
+    #[cfg(test)]
     pub fn codec_status_file_changed(&self) {
         self.codec_status_changed.store(true, Ordering::Release);
     }
@@ -937,6 +1093,7 @@ impl UpdatesModel {
     }
 
     /// The codec card's title and lines, in order, as the person reads them.
+    #[cfg(test)]
     pub fn codecs_card_lines(&self) -> Vec<String> {
         let mut out = vec![
             codecs_card_title(),
@@ -1147,23 +1304,9 @@ impl UpdatesModel {
             return;
         }
         let runner = Arc::clone(&self.codec_runner);
-        let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
-        if std::thread::Builder::new()
-            .name("tilo-codec-pack".into())
-            .spawn(move || {
-                let _ = tx.send(runner(action));
-                wake.wake();
-            })
-            .is_err()
-        {
-            self.notice = Some(t("upd-notice-codecs-worker"));
-            self.operation_failed(operation, "codec pack worker could not start");
-        } else {
-            self.notice = None;
-            self.codec_events = Some(rx);
-            self.codec_pending = Some(action);
-        }
+        self.notice = None;
+        self.codec_events = Some(Landing::start(move || runner(action)));
+        self.codec_pending = Some(action);
         self.changed = true;
     }
 
@@ -1179,10 +1322,10 @@ impl UpdatesModel {
         let (Some(events), Some(action)) = (self.codec_events.as_ref(), self.codec_pending) else {
             return;
         };
-        let result = match events.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("codec pack worker stopped".into()),
+        let result = match events.poll::<Result<(), String>>() {
+            Landed::Done(result) => result,
+            Landed::Pending => return,
+            Landed::Lost => Err("codec pack worker stopped".into()),
         };
         self.finish_codec_operation(action, result);
     }
@@ -1215,13 +1358,10 @@ impl UpdatesModel {
     /// (tests; the pane itself drains without blocking on every sync).
     #[cfg(test)]
     fn wait_for_codec_operation(&mut self) {
-        let (Some(events), Some(action)) = (self.codec_events.take(), self.codec_pending) else {
-            return;
-        };
-        let result = events
-            .recv()
-            .unwrap_or_else(|_| Err("codec pack worker stopped".into()));
-        self.finish_codec_operation(action, result);
+        while self.codec_events.is_some() {
+            self.drain_codec_events();
+            std::thread::yield_now();
+        }
     }
 
     /// Is the machine's update timer on, as this pane last read it?
@@ -1292,6 +1432,14 @@ impl UpdatesModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        if self.first_read.is_some() {
+            // Nothing read yet: say so rather than show placeholders a
+            // person could take for the device's state.
+            return crate::widgets::cards(vec![card(
+                &t("upd-software"),
+                rows(vec![note(&t("upd-reading"))]),
+            )]);
+        }
         let mut all: Vec<SettingsSection> = vec![
             self.overview_card(),
             self.status_card(),
@@ -1719,8 +1867,7 @@ impl UpdatesModel {
                         } else {
                             t("upd-notice-fw-ok")
                         });
-                        self.firmware_updates = os_actions::get_firmware_updates();
-                        self.firmware_history = os_actions::get_firmware_history();
+                        self.reread_firmware();
                         self.operation_succeeded(
                             UpdatesEffect::INSTALL_FIRMWARE.id,
                             "firmware installation finished",
@@ -1752,10 +1899,10 @@ impl UpdatesModel {
         let Some(events) = self.check_events.as_ref() else {
             return;
         };
-        let event = match events.try_recv() {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
+        let event = match events.poll::<CheckEvent>() {
+            Landed::Done(event) => event,
+            Landed::Pending => return,
+            Landed::Lost => {
                 self.check_events = None;
                 self.check_pending = false;
                 self.notice = Some(t("upd-notice-check-stopped"));
@@ -1801,10 +1948,10 @@ impl UpdatesModel {
         let Some(events) = self.firmware_refresh_events.as_ref() else {
             return;
         };
-        let event = match events.try_recv() {
-            Ok(event) => event,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
+        let event = match events.poll::<FirmwareRefreshEvent>() {
+            Landed::Done(event) => event,
+            Landed::Pending => return,
+            Landed::Lost => {
                 self.firmware_refresh_events = None;
                 self.firmware_refresh_pending = false;
                 let error = "firmware refresh worker stopped".to_string();
@@ -1863,31 +2010,15 @@ impl UpdatesModel {
         let status_provider = Arc::clone(&self.status_provider);
         let details_provider = Arc::clone(&self.details_provider);
         let control = Arc::clone(&self.control);
-        let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
-        if std::thread::Builder::new()
-            .name("tilo-update-check".into())
-            .spawn(move || {
-                let result = control.check_now().map(|()| {
-                    let status = status_provider();
-                    let rollback_target = control.rollback_target();
-                    let details = details_provider(target_of(&rollback_target));
-                    (status, rollback_target, details)
-                });
-                let _ = tx.send(result);
-                wake.wake();
+        self.check_events = Some(Landing::start(move || -> CheckEvent {
+            control.check_now().map(|()| {
+                let status = status_provider();
+                let rollback_target = control.rollback_target();
+                let details = details_provider(target_of(&rollback_target));
+                (status, rollback_target, details)
             })
-            .is_err()
-        {
-            self.notice = Some(t("upd-notice-check-worker"));
-            self.operation_failed(
-                UpdatesEffect::CHECK_FOR_UPDATES.id,
-                "update check worker could not start",
-            );
-        } else {
-            self.check_events = Some(rx);
-            self.check_pending = true;
-        }
+        }));
+        self.check_pending = true;
         self.changed = true;
     }
 
@@ -1901,27 +2032,10 @@ impl UpdatesModel {
             return;
         }
         let control = Arc::clone(&self.control);
-        let wake = self.wake.clone();
-        let (tx, rx) = mpsc::channel();
-        if std::thread::Builder::new()
-            .name("tilo-firmware-refresh".into())
-            .spawn(move || {
-                let result = control.refresh_firmware();
-                let _ = tx.send(result);
-                wake.wake();
-            })
-            .is_err()
-        {
-            self.notice =
-                Some("Firmware metadata could not be refreshed: worker could not start".into());
-            self.operation_failed(
-                UpdatesEffect::REFRESH_FIRMWARE.id,
-                "firmware refresh worker could not start",
-            );
-        } else {
-            self.firmware_refresh_events = Some(rx);
-            self.firmware_refresh_pending = true;
-        }
+        self.firmware_refresh_events = Some(Landing::start(move || -> FirmwareRefreshEvent {
+            control.refresh_firmware()
+        }));
+        self.firmware_refresh_pending = true;
         self.changed = true;
     }
 
@@ -1963,6 +2077,49 @@ impl UpdatesModel {
         self.changed = true;
     }
 
+    /// Run `work` off the UI thread for `operation`; what it returns is
+    /// applied to the model when it lands ([`Self::drain`]).
+    fn start(&mut self, operation: &'static str, work: impl FnOnce() -> Apply + Send + 'static) {
+        self.jobs.push(Job {
+            operation,
+            landing: Landing::start(work),
+        });
+    }
+
+    /// Take in the changes that ended.
+    fn drain_jobs(&mut self) {
+        let mut index = 0;
+        while let Some(job) = self.jobs.get(index) {
+            match job.landing.poll::<Apply>() {
+                Landed::Pending => index += 1,
+                Landed::Done(apply) => {
+                    self.jobs.remove(index);
+                    apply(self);
+                }
+                Landed::Lost => {
+                    let job = self.jobs.remove(index);
+                    warn!(target: "tilo::settings", op = job.operation, "update worker stopped");
+                    self.notice = Some(WORKER_STOPPED.into());
+                    self.operation_failed(job.operation, WORKER_STOPPED);
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    /// Read fwupd again after an installation, off the UI thread.
+    fn reread_firmware(&mut self) {
+        let reader = Arc::clone(&self.firmware_reader);
+        self.start(UpdatesEffect::INSTALL_FIRMWARE.id, move || {
+            let (updates, history) = reader();
+            Box::new(move |model: &mut Self| {
+                model.firmware_updates = updates;
+                model.firmware_history = history;
+                model.changed = true;
+            })
+        });
+    }
+
     /// Restart & update → reboot into the staged image (dedup).
     fn restart(&mut self) {
         if self.dispatched_restart {
@@ -1972,23 +2129,31 @@ impl UpdatesModel {
             );
         } else {
             self.dispatched_restart = true;
-            if let Err(e) = self.rebooter.reboot() {
-                warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
-                self.notice = Some(t_args(
-                    "upd-notice-restart",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
-                    UpdatesEffect::RESTART_TO_UPDATE.id,
-                    format!("Restarting into the staged update failed: {e}"),
-                );
-                self.changed = true;
-            } else {
-                self.operation_succeeded(
-                    UpdatesEffect::RESTART_TO_UPDATE.id,
-                    "restart command accepted by the system",
-                );
-            }
+            let rebooter = Arc::clone(&self.rebooter);
+            self.start(UpdatesEffect::RESTART_TO_UPDATE.id, move || {
+                let result = rebooter.reboot();
+                Box::new(move |model: &mut Self| model.restarted(result))
+            });
+        }
+    }
+
+    fn restarted(&mut self, result: Result<(), String>) {
+        if let Err(e) = result {
+            warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
+            self.notice = Some(t_args(
+                "upd-notice-restart",
+                &[("error", e.as_str().into())],
+            ));
+            self.operation_failed(
+                UpdatesEffect::RESTART_TO_UPDATE.id,
+                format!("Restarting into the staged update failed: {e}"),
+            );
+            self.changed = true;
+        } else {
+            self.operation_succeeded(
+                UpdatesEffect::RESTART_TO_UPDATE.id,
+                "restart command accepted by the system",
+            );
         }
     }
 
@@ -2003,12 +2168,23 @@ impl UpdatesModel {
             return;
         }
         self.last_prefs.auto = b;
-        match self.control.set_timer(b) {
+        let control = Arc::clone(&self.control);
+        self.start(operation, move || {
+            let set = control.set_timer(b);
+            // Read it back rather than assuming. `systemctl enable`
+            // can succeed on a unit that is masked or static, and
+            // the switch has to show what the machine will do; after
+            // a refusal it goes back where the machine actually is.
+            let timer = control.timer_enabled();
+            Box::new(move |model: &mut Self| model.automatic_set(b, set, timer))
+        });
+    }
+
+    fn automatic_set(&mut self, b: bool, set: Result<(), String>, timer: Option<bool>) {
+        let operation = UpdatesEffect::SET_AUTOMATIC_UPDATES.id;
+        self.timer_enabled = timer;
+        match set {
             Ok(()) => {
-                // Read it back rather than assuming. `systemctl enable`
-                // can succeed on a unit that is masked or static, and
-                // the switch has to show what the machine will do.
-                self.timer_enabled = self.control.timer_enabled();
                 let effective = self.timer_enabled.unwrap_or(b);
                 self.prefs.auto = effective;
                 self.notice = (effective != b).then(|| {
@@ -2032,7 +2208,6 @@ impl UpdatesModel {
                 warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
                 self.notice = Some(t_args("upd-notice-auto", &[("error", e.as_str().into())]));
                 // Put the switch back where the machine actually is.
-                self.timer_enabled = self.control.timer_enabled();
                 let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
@@ -2063,12 +2238,24 @@ impl UpdatesModel {
             }
             return;
         }
-        match self.control.set_schedule(&requested) {
+        let control = Arc::clone(&self.control);
+        self.start(operation, move || {
+            let set = control.set_schedule(&requested);
+            let schedule = set.is_ok().then(|| control.schedule()).flatten();
+            Box::new(move |model: &mut Self| model.schedule_set(requested, set, schedule))
+        });
+    }
+
+    fn schedule_set(
+        &mut self,
+        requested: String,
+        set: Result<(), String>,
+        schedule: Option<String>,
+    ) {
+        let operation = UpdatesEffect::SET_UPDATE_SCHEDULE.id;
+        match set {
             Ok(()) => {
-                self.schedule = match self.control.schedule() {
-                    Some(schedule) => Some(schedule),
-                    None => Some(requested),
-                };
+                self.schedule = Some(schedule.unwrap_or(requested));
                 self.notice = None;
                 self.operation_succeeded(operation, "update schedule changed");
             }
@@ -2101,9 +2288,18 @@ impl UpdatesModel {
             );
             return;
         }
-        match self.control.set_allow_metered(requested) {
+        let control = Arc::clone(&self.control);
+        self.start(UpdatesEffect::SET_METERED_UPDATES.id, move || {
+            let set = control.set_allow_metered(requested);
+            let allowed = set.is_ok().then(|| control.allow_metered()).flatten();
+            Box::new(move |model: &mut Self| model.metered_set(requested, set, allowed))
+        });
+    }
+
+    fn metered_set(&mut self, requested: bool, set: Result<(), String>, allowed: Option<bool>) {
+        match set {
             Ok(()) => {
-                self.allow_metered = self.control.allow_metered().or(Some(requested));
+                self.allow_metered = allowed.or(Some(requested));
                 self.notice = None;
                 self.operation_succeeded(
                     UpdatesEffect::SET_METERED_UPDATES.id,
@@ -2135,33 +2331,46 @@ impl UpdatesModel {
     }
 
     fn roll_back(&mut self) {
-        {
-            match self.control.roll_back() {
-                Ok(()) => {
-                    self.rollback_armed = false;
-                    self.notice = Some(t("upd-notice-rollback-ok"));
-                    // The target moves once the order changes, so re-read it
-                    // rather than showing the value from before the action.
-                    self.rollback_target = self.control.rollback_target();
-                    self.operation_succeeded(
-                        UpdatesEffect::ROLL_BACK.id,
-                        "previous system image selected for next boot",
-                    );
+        let control = Arc::clone(&self.control);
+        self.start(UpdatesEffect::ROLL_BACK.id, move || {
+            let result = control.roll_back();
+            // The target moves once the order changes, so re-read it
+            // rather than showing the value from before the action.
+            let target = result.is_ok().then(|| control.rollback_target());
+            Box::new(move |model: &mut Self| model.rolled_back(result, target))
+        });
+    }
+
+    fn rolled_back(
+        &mut self,
+        result: Result<(), String>,
+        target: Option<Result<Option<String>, String>>,
+    ) {
+        match result {
+            Ok(()) => {
+                self.rollback_armed = false;
+                self.notice = Some(t("upd-notice-rollback-ok"));
+                if let Some(target) = target {
+                    self.rollback_target = target;
                 }
-                Err(e) => {
-                    warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
-                    self.notice = Some(t_args(
-                        "upd-notice-rollback",
-                        &[("error", e.as_str().into())],
-                    ));
-                    self.operation_failed(
-                        UpdatesEffect::ROLL_BACK.id,
-                        format!("Rolling back failed: {e}"),
-                    );
-                }
+                self.operation_succeeded(
+                    UpdatesEffect::ROLL_BACK.id,
+                    "previous system image selected for next boot",
+                );
             }
-            self.changed = true;
+            Err(e) => {
+                warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
+                self.notice = Some(t_args(
+                    "upd-notice-rollback",
+                    &[("error", e.as_str().into())],
+                ));
+                self.operation_failed(
+                    UpdatesEffect::ROLL_BACK.id,
+                    format!("Rolling back failed: {e}"),
+                );
+            }
         }
+        self.changed = true;
     }
 }
 
@@ -2212,9 +2421,18 @@ pub enum UpdatesEffect {
 
 impl UpdatesModel {
     /// Start `effect`; `reply` is told how it ends.
+    ///
+    /// Until the device's first read lands, and while the same request
+    /// still runs, it waits and runs after: it acts on what the device
+    /// reports, not on what the pane has yet to read.
     pub(crate) fn run(&mut self, effect: UpdatesEffect, reply: Option<EffectReply>) {
+        let operation = effect.id();
+        if self.first_read.is_some() || self.jobs.iter().any(|job| job.operation == operation) {
+            self.waiting.push_back((effect, reply));
+            return;
+        }
         if let Some(reply) = reply {
-            self.replies.wait(effect.id(), reply);
+            self.replies.wait(operation, reply);
         }
         match effect {
             UpdatesEffect::CheckForUpdates => self.check(),
@@ -2230,6 +2448,49 @@ impl UpdatesModel {
             UpdatesEffect::SetUpdateSchedule { schedule } => self.set_schedule(&schedule),
             UpdatesEffect::SetMeteredUpdates { allowed } => self.set_metered(allowed),
         }
+    }
+
+    /// Take in the device's first read, if it landed.
+    fn drain_first_read(&mut self) {
+        let Some(read) = self.first_read.as_ref() else {
+            return;
+        };
+        let read = match read.poll::<FirstRead>() {
+            Landed::Done(read) => read,
+            Landed::Pending => return,
+            Landed::Lost => FirstRead::unread(WORKER_STOPPED),
+        };
+        self.first_read = None;
+        self.adopt(read);
+    }
+
+    /// Run the requests that were waiting and may run now.
+    fn run_waiting(&mut self) {
+        if self.first_read.is_some() {
+            return;
+        }
+        for (effect, reply) in std::mem::take(&mut self.waiting) {
+            self.run(effect, reply);
+        }
+    }
+
+    /// Take in what background work finished, and run what waited for it.
+    /// What the pane shows changed is kept for the pane's next look.
+    fn drain(&mut self) {
+        self.drain_first_read();
+        self.drain_jobs();
+        self.drain_check_events();
+        self.drain_firmware_refresh_events();
+        self.drain_firmware_events();
+        self.drain_codec_events();
+        self.refresh_codec_status_if_changed();
+        self.run_waiting();
+    }
+
+    /// Whether the first read, a change or a waiting request is unfinished.
+    #[cfg(test)]
+    fn working(&self) -> bool {
+        self.first_read.is_some() || !self.jobs.is_empty() || !self.waiting.is_empty()
     }
 
     /// Tell the caller of `operation` it succeeded.
@@ -2265,6 +2526,7 @@ impl UpdatesArea {
     }
 
     /// The model, created on first use: a capture's reaches no system tool.
+    /// A live model reads the system off the UI thread.
     pub fn model(&self) -> &crate::panes::model::Shared<UpdatesModel> {
         self.model.get_or_init(|| {
             let model = if self.cx.reaches_devices() {
@@ -2286,11 +2548,11 @@ impl UpdatesArea {
         })
     }
 
-    /// Take in finished background work, if the model exists.
+    /// Take in finished background work, if the model exists. Whether the
+    /// pane must show it is left for the pane's own look, which follows.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {
-            use crate::panes::model::PaneModel;
-            let _ = model.borrow_mut().poll();
+            model.borrow_mut().drain();
         }
     }
 }
@@ -2316,11 +2578,7 @@ impl crate::panes::model::PaneModel for UpdatesModel {
     }
 
     fn poll(&mut self) -> bool {
-        self.drain_check_events();
-        self.drain_firmware_refresh_events();
-        self.drain_firmware_events();
-        self.drain_codec_events();
-        self.refresh_codec_status_if_changed();
+        self.drain();
         std::mem::take(&mut self.changed)
     }
 
@@ -2351,6 +2609,7 @@ mod tests {
     }
     impl Rebooter for RecordingRebooter {
         fn reboot(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             *self.calls.lock().unwrap() += 1;
             Ok(())
         }
@@ -2541,7 +2800,7 @@ mod tests {
 
     #[test]
     fn a_request_the_helper_has_not_picked_up_reads_as_starting() {
-        let (release, gate) = mpsc::channel::<()>();
+        let (release, gate) = channel::channel::<()>();
         let gate = Mutex::new(gate);
         let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
             Arc::new(CodecPackStatus::default),
@@ -2817,6 +3076,7 @@ mod tests {
             // A second stray press must not reboot again.
             pane.run(UpdatesEffect::RestartToUpdate, None);
             pane.poll();
+            settle(&mut pane, UpdatesModel::working);
             assert_eq!(*reb.calls.lock().unwrap(), 1);
         }
 
@@ -2854,6 +3114,7 @@ mod tests {
             // Second click: it acts.
             pane.run(UpdatesEffect::RollBack, None);
             pane.poll();
+            settle(&mut pane, UpdatesModel::working);
             assert_eq!(*control.rollbacks.lock().unwrap(), 1);
             let notice = pane.notice().expect("the result has to be shown");
             assert!(
@@ -2872,6 +3133,7 @@ mod tests {
             pane.poll();
             pane.run(UpdatesEffect::RollBack, None);
             pane.poll();
+            settle(&mut pane, UpdatesModel::working);
             let notice = pane.notice().expect("a failed rollback must be visible");
             assert!(
                 notice.contains("the boot loader would not take it"),
@@ -2930,9 +3192,9 @@ mod tests {
         target: Mutex<Option<String>>,
         set_fails: bool,
         rollback_fails: bool,
-        check_gate: Mutex<Option<mpsc::Receiver<()>>>,
+        check_gate: Mutex<Option<channel::Receiver<()>>>,
         check_fails: bool,
-        refresh_gate: Mutex<Option<mpsc::Receiver<()>>>,
+        refresh_gate: Mutex<Option<channel::Receiver<()>>>,
         refresh_fails: Mutex<bool>,
         check_calls: Mutex<u32>,
         gate_timed_out: std::sync::atomic::AtomicBool,
@@ -2972,18 +3234,18 @@ mod tests {
             self
         }
         /// Hold every update check until the returned sender releases it.
-        fn gate_checks(&self) -> mpsc::Sender<()> {
-            let (release, gate) = mpsc::channel();
+        fn gate_checks(&self) -> channel::Sender<()> {
+            let (release, gate) = channel::channel();
             *self.check_gate.lock().unwrap() = Some(gate);
             release
         }
         /// Hold every firmware refresh until the returned sender releases it.
-        fn gate_refreshes(&self) -> mpsc::Sender<()> {
-            let (release, gate) = mpsc::channel();
+        fn gate_refreshes(&self) -> channel::Sender<()> {
+            let (release, gate) = channel::channel();
             *self.refresh_gate.lock().unwrap() = Some(gate);
             release
         }
-        fn wait_at(&self, gate: &Mutex<Option<mpsc::Receiver<()>>>) {
+        fn wait_at(&self, gate: &Mutex<Option<channel::Receiver<()>>>) {
             if let Some(gate) = gate.lock().unwrap().as_ref()
                 && gate.recv_timeout(GATE_TIMEOUT).is_err()
             {
@@ -3002,9 +3264,11 @@ mod tests {
 
     impl UpdateControl for FakeControl {
         fn timer_enabled(&self) -> Option<bool> {
+            crate::device_read::off_ui_thread();
             *self.timer.lock().unwrap()
         }
         fn set_timer(&self, on: bool) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             self.set_calls.lock().unwrap().push(on);
             if self.set_fails {
                 return Err("polkit said no".into());
@@ -3013,9 +3277,11 @@ mod tests {
             Ok(())
         }
         fn rollback_target(&self) -> Result<Option<String>, String> {
+            crate::device_read::off_ui_thread();
             Ok(self.target.lock().unwrap().clone())
         }
         fn roll_back(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             *self.rollbacks.lock().unwrap() += 1;
             if self.rollback_fails {
                 return Err("the boot loader would not take it".into());
@@ -3025,6 +3291,7 @@ mod tests {
         }
 
         fn check_now(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             *self.check_calls.lock().unwrap() += 1;
             self.wait_at(&self.check_gate);
             if self.check_fails {
@@ -3043,6 +3310,7 @@ mod tests {
             ),
             String,
         > {
+            crate::device_read::off_ui_thread();
             self.wait_at(&self.refresh_gate);
             if *self.refresh_fails.lock().unwrap() {
                 Err("firmware refresh failed".into())
@@ -3150,6 +3418,7 @@ mod tests {
 
             pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
             pane.poll();
+            settle(&mut pane, UpdatesModel::working);
 
             assert_eq!(
                 *control.set_calls.lock().unwrap(),
@@ -3180,6 +3449,7 @@ mod tests {
 
             pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
             pane.poll();
+            settle(&mut pane, UpdatesModel::working);
 
             assert_eq!(
                 control.timer_enabled(),
@@ -3241,5 +3511,176 @@ mod tests {
         .unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("Tilo 2026.07"), "{frame}");
+    }
+
+    /// A control whose every call waits for its gate to open: a device that
+    /// takes as long as it likes. The gate gives up after ten seconds so a
+    /// broken test ends.
+    struct GatedControl {
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        timer: Mutex<Option<bool>>,
+        target: Mutex<Option<String>>,
+        set_calls: Mutex<Vec<bool>>,
+        rollbacks: Mutex<u32>,
+    }
+
+    impl GatedControl {
+        fn pass(&self) {
+            crate::device_read::off_ui_thread();
+            let (open, opened) = &*self.gate;
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut is_open = open.lock().unwrap();
+            while !*is_open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                is_open = opened.wait_timeout(is_open, left).unwrap().0;
+            }
+            drop(is_open);
+        }
+    }
+
+    fn set_gate(gate: &(Mutex<bool>, std::sync::Condvar), open: bool) {
+        *gate.0.lock().unwrap() = open;
+        gate.1.notify_all();
+    }
+
+    impl UpdateControl for GatedControl {
+        fn timer_enabled(&self) -> Option<bool> {
+            self.pass();
+            *self.timer.lock().unwrap()
+        }
+        fn set_timer(&self, on: bool) -> Result<(), String> {
+            self.pass();
+            self.set_calls.lock().unwrap().push(on);
+            *self.timer.lock().unwrap() = Some(on);
+            Ok(())
+        }
+        fn rollback_target(&self) -> Result<Option<String>, String> {
+            self.pass();
+            Ok(self.target.lock().unwrap().clone())
+        }
+        fn roll_back(&self) -> Result<(), String> {
+            self.pass();
+            *self.rollbacks.lock().unwrap() += 1;
+            *self.target.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    /// The pane opens at once over a device that has not answered, says it
+    /// is reading, and a request made meanwhile runs once the read lands. A
+    /// change the device takes long to make never holds the window either.
+    #[test]
+    fn a_stalled_update_control_never_holds_the_window() {
+        use crate::resource::SettingsShell;
+        use crate::settings_app::SettingsApp;
+        use ui::prelude::TestApp;
+
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let control = Arc::new(GatedControl {
+            gate: Arc::clone(&gate),
+            timer: Mutex::new(Some(true)),
+            target: Mutex::new(Some("tilo:gen41".into())),
+            set_calls: Mutex::new(Vec::new()),
+            rollbacks: Mutex::new(0),
+        });
+        let readers = DeviceReaders {
+            status: Arc::new(|| {
+                crate::device_read::off_ui_thread();
+                UpdateStatus {
+                    current_version: "Tilo 2026.06".into(),
+                    staged_version: None,
+                    staged_error: None,
+                }
+            }),
+            details: Arc::new(|_| UpdateDetails::default()),
+            control: Arc::clone(&control) as Arc<dyn UpdateControl>,
+            rebooter: Arc::new(RecordingRebooter::default()),
+            firmware: Arc::new(|| -> FirmwareReading {
+                crate::device_read::off_ui_thread();
+                (Ok(Vec::new()), Ok(Vec::new()))
+            }),
+            codec_status: Arc::new(CodecPackStatus::default),
+        };
+        let model = app
+            .with_widget::<SettingsApp, _>(move |settings| {
+                let shared = std::rc::Rc::clone(settings.updates().model());
+                *shared.borrow_mut() = UpdatesModel::reading(settings.host().clone(), readers);
+                shared
+            })
+            .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < Duration::from_secs(1),
+            "opening the pane waited {answered:?} on the update tools"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("upd-reading")), "{frame}");
+        assert!(!frame.contains(&t("upd-up-to-date")), "{frame}");
+
+        // A request while the device is still being read waits for the read.
+        let clicked = std::time::Instant::now();
+        model
+            .borrow_mut()
+            .run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < Duration::from_secs(1),
+            "the switch waited {answered:?} on the update timer"
+        );
+        assert!(control.set_calls.lock().unwrap().is_empty());
+
+        set_gate(&gate, true);
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| {
+                    model.borrow().timer_enabled() == Some(false)
+                        && harness
+                            .inspection_json()
+                            .is_ok_and(|frame| frame.contains(&t("upd-up-to-date")))
+                }),
+            "the read lands, then the waiting request turns the timer off"
+        );
+        assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
+
+        // A rollback the device takes long to make.
+        set_gate(&gate, false);
+        let clicked = std::time::Instant::now();
+        model.borrow_mut().run(UpdatesEffect::RollBack, None);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < Duration::from_secs(1),
+            "the rollback button waited {answered:?} on the rollback"
+        );
+        assert_eq!(model.borrow().notice(), None);
+        assert_eq!(model.borrow().rollback_target(), Some("tilo:gen41"));
+
+        set_gate(&gate, true);
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |_| model
+                    .borrow()
+                    .notice()
+                    .is_some_and(|notice| notice.contains("Restart"))),
+            "the rollback's outcome is shown"
+        );
+        assert_eq!(*control.rollbacks.lock().unwrap(), 1);
+        assert_eq!(model.borrow().rollback_target(), None);
     }
 }

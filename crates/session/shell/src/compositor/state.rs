@@ -500,6 +500,7 @@ use crate::wayland::color_management::ColorManagerState;
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
@@ -923,6 +924,10 @@ pub struct State {
     /// tells keys only a client took, which change no shell pixels, from keys
     /// the shell kept by how far this moves while it dispatches them.
     pub client_keys_delivered: u64,
+    /// When the person last typed into the focused window: a non-modifier
+    /// key press the seat delivered to it. Desk widgets go away while this
+    /// is recent, and only banners addressed to the person surface.
+    pub last_client_typing_at: Option<std::time::Instant>,
     pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
 
     /// `xdg_wm_base` global state — toplevels and popups.
@@ -1286,6 +1291,12 @@ pub struct State {
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
     closing_toplevels: HashMap<u64, std::time::Instant>,
+    /// Toplevels adopted as a tab but not yet shown, each with the focus
+    /// the adoption took. Withdrawing such a tab (the toplevel became a
+    /// sheet, a floating or presentation surface, or went away unseen)
+    /// gives that focus back, so an app opening a dialog never moves the
+    /// person's focus or pans the strip. Dropped at the first mapped frame.
+    provisional_focus: HashMap<SurfaceId, tab_binding::FocusBefore>,
     /// One-time capabilities issued through the authenticated shell-ui
     /// service. A public Wayland client is promoted only when its app-id
     /// carries an exact token from this set.
@@ -2029,6 +2040,7 @@ impl State {
             presentation_state,
             physical_key_input_time_ns: None,
             client_keys_delivered: 0,
+            last_client_typing_at: None,
             presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,
@@ -2139,6 +2151,7 @@ impl State {
             shell_field_keys: Vec::new(),
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
+            provisional_focus: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
@@ -3580,13 +3593,7 @@ impl State {
             let association = states
                 .data_map
                 .get::<ForeignCommitCaptures>()
-                .and_then(|commits| {
-                    commits
-                        .0
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .pop_front()
-                })
+                .and_then(|commits| commits.0.lock_recover().pop_front())
                 .unwrap_or(ForeignCommitCapture::NoBuffer);
             if matches!(
                 association,
@@ -4322,7 +4329,7 @@ impl State {
 // `ShareRegistry::route_to`.
 //
 // Pointer drives the smithay `Seat<Self>` via `PointerHandle::motion`/
-// `button`, matching `network::wayland::WaylandServer::handle_input`.
+// `button`.
 //
 // Keyboard: `InputEvent::Key { keysym, pressed, modifiers }` fires
 // `KeyboardHandle::input`; the wire `keysym` is a raw keycode. Modifier
@@ -4957,11 +4964,7 @@ impl State {
                 .data_map
                 .insert_if_missing_threadsafe(ForeignCommitCaptures::default);
             if let Some(commits) = states.data_map.get::<ForeignCommitCaptures>() {
-                commits
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(association);
+                commits.0.lock_recover().push_back(association);
             }
             if matches!(association, ForeignCommitCapture::Shm(_)) {
                 mark_shm_capture_base(states);
@@ -5516,6 +5519,12 @@ impl CompositorHandler for State {
         };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         self.capture_committed_foreign_pixels(surface, surface_id);
+        if self.provisional_focus.contains_key(&surface_id)
+            && crate::compositor::foreign::store().is_mapped(surface_id)
+        {
+            // Shown: from here on it is a window like any other.
+            self.provisional_focus.remove(&surface_id);
+        }
         if !is_shared {
             Self::hold_drawn_buffer(surface, surface_id);
             return;
@@ -6485,11 +6494,8 @@ impl State {
         }
         // Adopted as a tab when it was created (the parent arrives after
         // `get_toplevel`); a dialog is part of its parent's window, so that
-        // provisional tab goes.
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
-        };
+        // provisional tab goes, and the focus it took goes back.
+        self.withdraw_provisional_tab(id);
         self.client_input.promote_to_overlay(id);
         let root = store.sheet_root(id);
         // Unlike a tab, the parent's tile does not size a sheet: the dialog
@@ -6601,15 +6607,20 @@ impl State {
         self.system_modals.contains(&id)
     }
 
+    /// Withdraw `id`'s provisional tab, if it has one, handing back the
+    /// focus its adoption took (see [`tab_binding::FocusBefore`]).
+    fn withdraw_provisional_tab(&mut self, id: SurfaceId) {
+        let before = self.provisional_focus.remove(&id).unwrap_or_default();
+        let mut tree = self.workspace_tree.write();
+        let _ = tab_binding::withdraw_provisional_tab(&mut tree, id, &before);
+    }
+
     /// Show a dialog that has no window to sit on as a system-modal
     /// overlay: centred on the output over a scrim, owning the keyboard,
     /// not a tab, and nothing in the strip moves.
     fn show_as_system_modal(&mut self, surface: &ToplevelSurface) {
         let id = surface_id(surface.wl_surface());
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
-        };
+        self.withdraw_provisional_tab(id);
         self.client_input.promote_to_overlay(id);
         let (out_w, out_h) = self.output_size;
         surface.with_pending_state(|pending| {
@@ -6863,6 +6874,8 @@ impl XdgShellHandler for State {
             if let Some(room) = attributed_room {
                 let adopted = {
                     let mut tree = self.workspace_tree.write();
+                    self.provisional_focus
+                        .insert(surface_id, tab_binding::FocusBefore::of(&tree));
                     let tab =
                         tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
                     if let (Some(tab), Some(package)) = (tab, package) {
@@ -6871,6 +6884,7 @@ impl XdgShellHandler for State {
                     tab
                 };
                 if adopted.is_none() {
+                    self.provisional_focus.remove(&surface_id);
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
                     self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
@@ -6879,6 +6893,8 @@ impl XdgShellHandler for State {
                 }
             } else {
                 let mut tree = self.workspace_tree.write();
+                self.provisional_focus
+                    .insert(surface_id, tab_binding::FocusBefore::of(&tree));
                 let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
                 if let Some(package) = package {
                     tree.remember_package_launch(tab, package);
@@ -6982,10 +6998,16 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_target = None;
         }
-        let _ = {
+        if let Some(before) = self.provisional_focus.remove(&surface_id) {
+            // Gone before it ever showed a frame: nobody saw it to focus.
             let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+            if tab_binding::withdraw_provisional_tab(&mut tree, surface_id, &before) {
+                tree.queue_save();
+            }
+        } else {
+            let mut tree = self.workspace_tree.write();
+            let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id);
+        }
         self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
@@ -7031,10 +7053,7 @@ impl XdgShellHandler for State {
                 // `set_app_id` normally arrives after `new_toplevel`; undo the
                 // temporary anonymous adoption before either tree can expose a
                 // keyboard as an ordinary app window.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
                 self.reannounce_text_input_focus();
@@ -7044,10 +7063,7 @@ impl XdgShellHandler for State {
                 // `new_toplevel` may have inserted an anonymous placeholder
                 // before the app-id arrived. Remove it before the next tree
                 // mirror can expose a one-frame phantom tab.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 return;
             }
             if is_output_presentation_app_id(&app_id)
@@ -7059,10 +7075,7 @@ impl XdgShellHandler for State {
                 };
                 // The provisional anonymous tab must never share the
                 // presenter's workspace with the clean audience surface.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 // `set_fullscreen` is permitted to arrive before
                 // `set_app_id`; undo that provisional group promotion now
                 // that the toplevel has become output-scoped.

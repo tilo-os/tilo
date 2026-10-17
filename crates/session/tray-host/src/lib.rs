@@ -14,9 +14,10 @@
 //! as actions the host builds from [`Tray::snapshot`]. An icon that only
 //! answers a pointer would be invisible to all of them.
 //!
-//! The one thing the host supplies is an [`IconRasteriser`] for icons an
-//! item names rather than sends, so this crate needs no icon theme or
-//! image decoder.
+//! The host supplies an [`IconRasteriser`] for icons an item names rather
+//! than sends, so this crate needs no icon theme or image decoder, and an
+//! [`OwnerResolver`] that proves which application a registering process
+//! belongs to, so this crate needs no knowledge of sandboxes or launches.
 //!
 //! Bus conversations run on the session runtime; nothing here blocks the
 //! compositor loop, which only reads [`Tray::snapshot`].
@@ -28,7 +29,8 @@ pub mod watcher;
 #[cfg(test)]
 mod copy_lint_tests;
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 
 pub use icon::{IconRasteriser, TrayIcon};
 
@@ -36,6 +38,11 @@ pub use icon::{IconRasteriser, TrayIcon};
 pub const WATCHER_BUS_NAME: &str = "org.kde.StatusNotifierWatcher";
 /// Object path the watcher is served at.
 pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
+
+/// Which application the process `pid` demonstrably belongs to, as the host
+/// can prove it (for the shell: the Flatpak whose sandbox it runs in, or a
+/// launch the shell started). `None` when nothing proves it.
+pub type OwnerResolver = Arc<dyn Fn(u32) -> Option<String> + Send + Sync>;
 
 /// What an item says about itself (`Status`): `Passive` items are kept
 /// out of the bar, `NeedsAttention` ones are marked.
@@ -88,6 +95,11 @@ pub struct ItemAddress {
     pub path: String,
     /// The item's `com.canonical.dbusmenu` object, when it exports one.
     pub menu_path: Option<String>,
+    /// The application whose connection registered the item, proven from
+    /// that connection's process by the tray's [`OwnerResolver`]. `None`
+    /// when it can't be proven; an item's own `Id` or `Title` is never
+    /// trusted for this.
+    pub owner_app: Option<String>,
 }
 
 impl std::fmt::Debug for ItemAddress {
@@ -96,6 +108,7 @@ impl std::fmt::Debug for ItemAddress {
             .field("destination", &self.destination)
             .field("path", &self.path)
             .field("menu_path", &self.menu_path)
+            .field("owner_app", &self.owner_app)
             .finish_non_exhaustive()
     }
 }
@@ -143,15 +156,27 @@ pub struct Tray {
     state: Mutex<TrayState>,
     runtime: Mutex<Option<tokio::runtime::Handle>>,
     rasteriser: IconRasteriser,
+    owner_resolver: OwnerResolver,
 }
 
 impl Tray {
-    /// An empty tray that turns named icons into pixels with `rasteriser`.
+    /// An empty tray that turns named icons into pixels with `rasteriser`
+    /// and names no item's owner.
     pub fn new(rasteriser: IconRasteriser) -> Arc<Self> {
+        Self::with_owner_resolver(rasteriser, Arc::new(|_| None))
+    }
+
+    /// An empty tray that also records which application registered each
+    /// item, as `owner_resolver` proves it from the registering process.
+    pub fn with_owner_resolver(
+        rasteriser: IconRasteriser,
+        owner_resolver: OwnerResolver,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::default(),
             runtime: Mutex::default(),
             rasteriser,
+            owner_resolver,
         })
     }
 
@@ -160,13 +185,18 @@ impl Tray {
         &self.rasteriser
     }
 
+    /// The application the process `pid` belongs to, if the host proves it.
+    pub fn owner_of_process(&self, pid: u32) -> Option<String> {
+        (self.owner_resolver)(pid)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, TrayState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 
     /// Where requests are sent from; set by whoever serves the watcher.
     pub fn attach_runtime(&self, runtime: tokio::runtime::Handle) {
-        *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = Some(runtime);
+        *self.runtime.lock_recover() = Some(runtime);
     }
 
     /// Bumped on every change, so a painter can skip an unchanged tray.
@@ -193,6 +223,25 @@ impl Tray {
             .iter()
             .map(|item| item.key.clone())
             .collect()
+    }
+
+    /// The item an application whose windows announce one of `identities`
+    /// keeps in the tray, if it has one with a primary action. An app that
+    /// lives on in the tray after its window closed is reopened through
+    /// this item, not by starting a second copy.
+    pub fn item_owned_by(&self, identities: &[String]) -> Option<TrayItem> {
+        self.lock()
+            .items
+            .iter()
+            .find(|item| {
+                !item.item_is_menu
+                    && item.address.owner_app.as_deref().is_some_and(|owner| {
+                        identities
+                            .iter()
+                            .any(|identity| identity.eq_ignore_ascii_case(owner))
+                    })
+            })
+            .cloned()
     }
 
     /// Insert or replace the item with `item.key`.
@@ -225,6 +274,21 @@ impl Tray {
     /// When the item is unknown, a menu id is not in its menu, or no
     /// runtime is serving the tray.
     pub fn request(&self, key: &str, request: TrayRequest) -> Result<(), String> {
+        self.request_or_else(key, request, |_| {})
+    }
+
+    /// [`Self::request`], running `on_failure` with the error on the tray's
+    /// runtime when the item does not accept the request.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::request`]; `on_failure` is not run then.
+    pub fn request_or_else(
+        &self,
+        key: &str,
+        request: TrayRequest,
+        on_failure: impl FnOnce(String) + Send + 'static,
+    ) -> Result<(), String> {
         let item = self
             .item(key)
             .ok_or_else(|| format!("no tray item {key}"))?;
@@ -238,14 +302,14 @@ impl Tray {
         }
         let runtime = self
             .runtime
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .clone()
             .ok_or_else(|| "the tray is not being served".to_string())?;
         let address = item.address;
         drop(runtime.spawn(async move {
             if let Err(error) = item::send(&address, request).await {
                 tracing::debug!(target: "shell::tray", ?address, ?request, %error, "tray request failed");
+                on_failure(error.to_string());
             }
         }));
         Ok(())
@@ -264,6 +328,7 @@ impl Tray {
                         "status": item.status.label(),
                         "icon": item.icon.kind(),
                         "item_is_menu": item.item_is_menu,
+                        "owner_app": item.address.owner_app,
                         "menu": item.menu.iter().map(|entry| serde_json::json!({
                             "id": entry.id,
                             "label": entry.label,

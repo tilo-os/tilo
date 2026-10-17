@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 use zbus::message::Header;
@@ -15,6 +15,7 @@ use super::{
     AgentError, ConnectionDict, SecretPrompter, SecretRequest, SheetAnswer, agent_owned_secrets,
     connection_uuid, request_secrets,
 };
+use tilo_lock::MutexRecover as _;
 
 /// What a sheet answers: what the person typed, or `None` when they
 /// dismissed it or it could not be shown.
@@ -159,8 +160,7 @@ impl SecretAgent {
         let token = CancellationToken::new();
         let stale = self
             .live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .insert(key.clone(), (number, token.clone()));
         if let Some((_, stale)) = stale {
             stale.cancel();
@@ -177,7 +177,7 @@ impl SecretAgent {
         };
         self.sheets.cancel(prompter.handle());
         {
-            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut live = self.live.lock_recover();
             if live
                 .get(&key)
                 .is_some_and(|(current, _)| *current == number)
@@ -212,8 +212,7 @@ impl SecretAgent {
         }
         let token = self
             .live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .remove(&(connection_path.to_string(), setting_name));
         if let Some((_, token)) = token {
             token.cancel();

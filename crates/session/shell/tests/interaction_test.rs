@@ -5,8 +5,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::headless_wayland::{ClientState, WaylandEvent, WaylandInput, WaylandServer};
 use shell::compositor::remote_seat::RemoteSeats;
-use shell::network::wayland::{ClientState, WaylandEvent, WaylandInput, WaylandServer};
 use shell::security::container::Container;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, Mode as CalloopMode};
@@ -356,8 +356,6 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
                     button: 0x110,
                     state,
                     surface_id: Some(surface),
-                    surface_width: width,
-                    surface_height: height,
                 })
                 .unwrap();
         }
@@ -514,8 +512,6 @@ fn test_click_interaction_in_sandbox() {
             button: 0x110,
             state: smithay::backend::input::ButtonState::Pressed,
             surface_id: Some(surface_id),
-            surface_width: 256.0,
-            surface_height: 256.0,
         })
         .unwrap();
     input_tx
@@ -523,8 +519,6 @@ fn test_click_interaction_in_sandbox() {
             button: 0x110,
             state: smithay::backend::input::ButtonState::Released,
             surface_id: Some(surface_id),
-            surface_width: 256.0,
-            surface_height: 256.0,
         })
         .unwrap();
 

@@ -51,6 +51,7 @@
 
 use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use tilo_lock::MutexRecover as _;
 use web_time::Instant;
 
 /// One launch's process/surface timing. Placement remains the compositor's
@@ -77,25 +78,39 @@ static LAUNCHES: Mutex<Vec<PendingLaunch>> = Mutex::new(Vec::new());
 /// The `tracing` target of the compositor's per-launch timing lines.
 pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
 
+/// The `tracing` target of the compositor's Xwayland bridge lines: a
+/// workspace's X display bound, the bridge started for its first client, the
+/// scale it announced, its exit or idle stop, each with how long it had been
+/// up. A handful of lines per X11 app session.
+pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
+
+/// Targets the session log keeps at `info` whatever the base filter: rare
+/// lines that time an app's open, and the only record of the compositor's and
+/// launcher's share of it before the app's own clock starts.
+const ALWAYS_LOGGED: [&str; 2] = [LAUNCH_LATENCY_TARGET, XWAYLAND_TARGET];
+
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
 /// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
-/// with the launch-latency lines always on. They are a few lines per app open,
-/// and the only record of how long the compositor and the launcher took before
-/// the app's own clock starts; a filter that names the target keeps its choice.
+/// with the launch-latency and Xwayland bridge lines always on. A filter that
+/// names one of those targets keeps its choice for it.
 #[must_use]
 pub fn log_directives(rust_log: Option<&str>) -> String {
     let base = rust_log.map(str::trim).filter(|value| !value.is_empty());
-    match base {
-        Some(value) if value.contains(LAUNCH_LATENCY_TARGET) => value.to_owned(),
-        Some(value) => format!("{value},{LAUNCH_LATENCY_TARGET}=info"),
-        None => format!("error,{LAUNCH_LATENCY_TARGET}=info"),
+    let mut directives = base.unwrap_or("error").to_owned();
+    for target in ALWAYS_LOGGED {
+        if !base.is_some_and(|value| value.contains(target)) {
+            directives.push(',');
+            directives.push_str(target);
+            directives.push_str("=info");
+        }
     }
+    directives
 }
 
 /// The pending-launch table. A panic while holding it leaves plain data, so a
 /// poisoned lock is recovered rather than disabling timing for the session.
 fn launch_table() -> std::sync::MutexGuard<'static, Vec<PendingLaunch>> {
-    LAUNCHES.lock().unwrap_or_else(PoisonError::into_inner)
+    LAUNCHES.lock_recover()
 }
 static NEXT_LAUNCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -402,17 +417,9 @@ impl Metrics {
     /// Replace the file with every event so far, unless it already holds
     /// them. Atomic: a reader sees the previous file or this one, whole.
     fn write_snapshot(&self) {
-        let mut on_disk = self.file.lock().unwrap_or_else(PoisonError::into_inner);
-        let events = self
-            .events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let admission = self
-            .native_admission
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let mut on_disk = self.file.lock_recover();
+        let events = self.events.lock_recover().clone();
+        let admission = self.native_admission.lock_recover().clone();
         let revision = (events.len(), admission.clone());
         if on_disk.as_ref() == Some(&revision) {
             return;
@@ -433,10 +440,7 @@ impl Metrics {
 
     fn checkpoint_admission(&self, snapshot: NativeAdmissionSnapshot) {
         {
-            let mut admission = self
-                .native_admission
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut admission = self.native_admission.lock_recover();
             if admission.as_ref() == Some(&snapshot) {
                 return;
             }
@@ -453,10 +457,7 @@ impl Metrics {
         let Some(Some(writer)) = self.writer.get() else {
             return false;
         };
-        *writer
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = true;
+        *writer.pending.lock_recover() = true;
         writer.wake.notify_one();
         true
     }
@@ -475,10 +476,7 @@ impl Metrics {
 /// next ones for [`WRITE_SPACING`].
 fn write_marks(metrics: &'static Metrics, writer: &'static Writer) -> ! {
     loop {
-        let mut pending = writer
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut pending = writer.pending.lock_recover();
         while !*pending {
             pending = writer
                 .wake
@@ -563,7 +561,7 @@ pub fn handoff_mark(name: &'static str) {
         return;
     }
     let epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
-    let mut marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut marks = marks.lock_recover();
     if marks.len() < HANDOFF_MAX_MARKS {
         marks.push(HandoffEvent {
             name: name.to_owned(),
@@ -577,7 +575,7 @@ pub fn handoff_mark(name: &'static str) {
 #[must_use]
 pub fn handoff_env_value() -> Option<String> {
     let marks = HANDOFF.get()?.as_ref()?;
-    let marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
+    let marks = marks.lock_recover();
     (!marks.is_empty()).then(|| encode_handoff(&marks))
 }
 
@@ -652,13 +650,10 @@ pub fn start_writer() {
 impl Metrics {
     fn record(&self, name: &str) {
         let ns = self.origin.elapsed().as_nanos();
-        self.events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Event {
-                name: name.to_owned(),
-                ns,
-            });
+        self.events.lock_recover().push(Event {
+            name: name.to_owned(),
+            ns,
+        });
         if !self.wake_writer() {
             self.write_snapshot();
         }
@@ -698,8 +693,7 @@ pub fn summary_line(app: &str) -> Option<String> {
     };
     let events = m
         .events
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .lock_recover()
         .iter()
         .map(|event| (event.name.clone(), event.ns))
         .collect::<Vec<_>>();
@@ -1043,18 +1037,25 @@ mod tests {
 
     #[test]
     fn launch_latency_lines_survive_the_default_session_filter() {
-        assert_eq!(log_directives(None), "error,tilo::launch_latency=info");
+        assert_eq!(
+            log_directives(None),
+            "error,tilo::launch_latency=info,tilo::xwayland=info"
+        );
         assert_eq!(
             log_directives(Some("  ")),
-            "error,tilo::launch_latency=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info"
         );
         assert_eq!(
             log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info"
+            "warn,tilo::launch_latency=info,tilo::xwayland=info"
         );
         assert_eq!(
             log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off"
+            "info,tilo::launch_latency=off,tilo::xwayland=info"
+        );
+        assert_eq!(
+            log_directives(Some("tilo::xwayland=debug")),
+            "tilo::xwayland=debug,tilo::launch_latency=info"
         );
     }
 

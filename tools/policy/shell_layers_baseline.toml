@@ -30,12 +30,6 @@
     "crate::shell::overlay_host",
 ]
 
-# Peer transport. wayland.rs is a Wayland server built on smithay; it belongs beside the
-# compositor, and this goes when it moves there.
-"src/network/wayland.rs" = [
-    "smithay",
-]
-
 # Peer presence measures tiles with vello's re-exported geometry types. This goes when
 # it takes kurbo or its own rectangle type.
 "src/shell/peer_presence.rs" = [
@@ -234,3 +228,5 @@ grandfathered = [
 "tilo-owner-commit" = "The owner commit vocabulary carved out of tilo-peer-state, which the shell already depends on; the shell's native workspace owner implements its service and reaches the same code it did before, now in a smaller crate"
 "tilo-network-secret-agent" = "The NetworkManager secret agent carved out of the shell; the shell supplies only the sheet it asks in, the catalogue its keys resolve in and the roaming Wi-Fi store"
 "tilo-tray-host" = "The status-notifier tray host carved out of the shell; the shell serves its watcher, paints its items and supplies the named-icon rasteriser."
+"tilo-wallpapers" = "The shipped wallpapers' catalog, their lookup in the XDG data directories and the appearance.wallpaper setting, which Settings shares; the shell only paints the picture it decodes, and the crate brings only tilo-image-codec and tilo-paths with it"
+"tilo-lock" = "A dependency-free std helper that recovers a poisoned lock's guard; it replaces the shell's inline `.unwrap_or_else(PoisonError::into_inner)` at every lock and adds no code of its own"

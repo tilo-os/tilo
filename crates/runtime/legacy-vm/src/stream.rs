@@ -19,10 +19,11 @@ use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::environment::{LegacyFrame, Refusal, WindowInput};
 use tilo_relay_protocol::legacy_window::{self, Frame, InputEvent, Stream};
 use wire_frame::Framing;
@@ -275,7 +276,7 @@ struct WindowEncoder {
 type FrameSink = Arc<Mutex<Box<dyn Write + Send>>>;
 
 fn emit(sink: &FrameSink, frame: &LegacyFrame) -> bool {
-    let mut out = sink.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut out = sink.lock_recover();
     FRAMING.write_value(&mut *out, frame).is_ok() && out.flush().is_ok()
 }
 
@@ -499,10 +500,7 @@ pub fn relay_stream(
         let target = Arc::clone(&target);
         std::thread::spawn(move || {
             while let Ok(Some(event)) = FRAMING.read_value::<_, WindowInput>(&mut input) {
-                let window = target
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
+                let window = target.lock_recover().clone();
                 for command in event.events.iter().filter_map(input_command) {
                     let _ = control.send(command, window.as_deref());
                 }
@@ -523,7 +521,7 @@ pub fn relay_stream(
             break app.wait().ok().and_then(|status| status.code());
         }
         if let Some((surface, app_id, seq)) = legacy_window(&control) {
-            *target.lock().unwrap_or_else(PoisonError::into_inner) = Some(app_id.clone());
+            *target.lock_recover() = Some(app_id.clone());
             if seq != last_seq
                 && let Some(pixels) = window_rgba(&control, &app_id, &scratch)
             {

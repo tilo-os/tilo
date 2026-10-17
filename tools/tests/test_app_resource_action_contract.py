@@ -152,6 +152,27 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertEqual(violations, [])
+        with self.subTest(phase='headless service publishing to the broker passes'):
+            source = "fn publish() -> CollabRequest { CollabRequest::PublishActions { app_id, actions } }\n"
+            service = (
+                '[package]\nkind = "service"\n[entrypoint]\nbin = "bin/svc"\ntype = "cli"\n'
+            )
+            root = self.fixture(source)
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(service, encoding="utf-8")
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+        with self.subTest(phase='a windowed app publishing to the broker still needs resources'):
+            root = self.fixture(source)
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                service.replace('type = "cli"', 'type = "gui"'), encoding="utf-8"
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        with self.subTest(phase='a headless service publishing nothing still needs resources'):
+            root = self.fixture("struct Service;\n")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(service, encoding="utf-8")
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
         with self.subTest(phase='toolkit host without resource descriptor fails'):
             root = self.fixture(
                 "pub fn app_root() {\n"
@@ -160,6 +181,43 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
+
+    def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
+        compute_manifest = (
+            '[package]\nid="so.tilo.sample"\nkind="service"\n'
+            '[entrypoint]\nbin="bin/sample-batch"\ntype="cli"\n'
+            '[cli]\ncommands=["sample-batch"]\n'
+        )
+        with self.subTest(phase='a cli service with commands needs no facade or resources'):
+            root = self.fixture("fn main() {}\n", dependencies="")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, apps = contract.audit(root)
+            self.assertEqual(violations, [])
+            self.assertEqual(apps, 1)
+        with self.subTest(phase='a compute package still may not bypass the facade'):
+            root = self.fixture(
+                "fn main() {}\n",
+                dependencies='ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
+            )
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute_manifest, encoding="utf-8"
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+        for phase, manifest in (
+            ("a cli service without commands", compute_manifest.replace('"sample-batch"', "")),
+            ("a gui app with commands", compute_manifest.replace('type="cli"', 'type="gui"')),
+            ("a cli app that is not a service", compute_manifest.replace('"service"', '"app"')),
+        ):
+            with self.subTest(phase=f"{phase} must publish its own surface"):
+                root = self.fixture("fn main() {}\n", dependencies="")
+                (root / "apps" / "sample" / "tilo-app.toml").write_text(manifest, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                reasons = "\n".join(item.reason for item in violations)
+                self.assertIn("tilo-app", reasons)
+                self.assertIn("Widget::resources", reasons)
 
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):

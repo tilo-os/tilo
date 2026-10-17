@@ -128,6 +128,7 @@ pub mod content;
 pub mod context;
 pub mod contract;
 pub mod door;
+pub mod draft;
 pub mod entry;
 pub mod envelope;
 pub mod executor;
@@ -144,6 +145,7 @@ pub mod registry;
 pub mod remote;
 pub mod resource;
 pub mod schema;
+pub mod selection;
 pub mod surface;
 
 pub use action::{
@@ -166,6 +168,7 @@ pub use contract::{
     PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
+pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{
     ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,
     Scalar, VerbCall,
@@ -204,13 +207,17 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec, ResourceViewRangeSpec,
-    ResourceViewSpec, flatten, sole_text_argument,
+    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
+    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
+};
+pub use selection::{
+    BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
+    SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;

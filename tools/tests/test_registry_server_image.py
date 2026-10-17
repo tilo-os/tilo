@@ -25,7 +25,7 @@ class RegistryServerImageTests(unittest.TestCase):
         self.assertGreater(test, build["run"].index("oci-build.sh"))
         publish = self.checks["publish-registry-server"]
         self.assertEqual(publish["needs"], ["image-registry-server"])
-        self.assertEqual(publish["on"], ["main"])
+        self.assertEqual(publish["on"], ["main", "dispatch"])
         self.assertEqual(publish["id_token"], ["registry.tilo.so"])
         self.assertIn("registry.tilo.so/tilo/tilo-registry-server", publish["run"])
         self.assertIn("'sha-{commit}'", publish["run"])

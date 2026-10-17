@@ -242,6 +242,16 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut NoopTransferObserver)
 }
 
+/// Copy a mounted source into an independent, owner-writable local file.
+/// Permissions are applied to newly created files in private staging, never
+/// to the source or a published destination. Directories retain their modes.
+///
+/// # Errors
+/// Returns an error if staging, copying or publication fails.
+pub fn import_mounted_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    transfer_into_with(src, dest_dir, false, &mut MountedImportObserver)
+}
+
 /// Move `src` into `dest_dir` without replacing a concurrent destination.
 /// Linux, macOS and Windows use an atomic no-replace rename on the same
 /// filesystem. The cross-filesystem fallback stages a complete private copy,
@@ -366,6 +376,12 @@ pub trait TransferObserver {
         Ok(None)
     }
 
+    /// Choose permissions for a freshly created destination file in private
+    /// staging. Ordinary transfers preserve the source permissions.
+    fn destination_permissions(&mut self, source: std::fs::Permissions) -> std::fs::Permissions {
+        source
+    }
+
     /// Copy bytes while observing cancellation and live admission.
     ///
     /// # Errors
@@ -381,6 +397,13 @@ pub trait TransferObserver {
 
 struct NoopTransferObserver;
 impl TransferObserver for NoopTransferObserver {}
+
+struct MountedImportObserver;
+impl TransferObserver for MountedImportObserver {
+    fn destination_permissions(&mut self, source: std::fs::Permissions) -> std::fs::Permissions {
+        tilo_cloud_files::owner_writable(source)
+    }
+}
 
 /// The same copy/cut staging and recovery with a host's live admission hooks.
 /// This grants no filesystem access by itself.
@@ -974,7 +997,7 @@ fn copy_capability_entry(
         .follow(FollowSymlinks::No);
     let mut destination = receiving.open_with(destination_name, &options)?.into_std();
     observer.copy_bytes(&mut source, &mut destination)?;
-    destination.set_permissions(metadata.permissions())
+    destination.set_permissions(observer.destination_permissions(metadata.permissions()))
 }
 
 #[cfg(test)]

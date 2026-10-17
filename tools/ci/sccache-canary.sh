@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Record sccache counters and require a remote hit in the warm canary job.
+# Record sccache counters and require a remote hit in the warm canary job: of the runners'
+# GHA cache (build-ci-builder.yml), or of t's compiler cache (tools/ci/publish/ci-builder-canary.sh).
 set -euo pipefail
 
 mode="${1:?usage: tools/ci/sccache-canary.sh <cold|warm>}"
@@ -15,8 +16,9 @@ payload = json.load(sys.stdin)
 stats = payload.get("stats", {})
 location = payload.get("cache_location", "")
 expected = os.environ["TILO_SCCACHE_KEY_PREFIX"]
-# The GHA backend names its namespace "sccache-v<version>-<prefix>".
-if f"-{expected}," not in location + ",":
+# The GHA backend names its namespace "sccache-v<version>-<prefix>"; the WebDAV backend
+# (the compiler cache t serves) says "webdav, name: , prefix: /<prefix>/".
+if f"-{expected}," not in location + "," and f"prefix: /{expected}/" not in location:
     raise SystemExit(
         f"sccache used {location!r}, not requested namespace {expected!r}"
     )

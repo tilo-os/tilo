@@ -257,6 +257,10 @@ aarch64 = 1310720
 x86_64 = 1048576
 aarch64 = 1048576
 
+[apps."so.tilo.thumbnails"]
+x86_64 = 65536
+aarch64 = 65536
+
 [apps."so.tilo.totp"]
 x86_64 = 1638400
 aarch64 = 1572864
@@ -284,6 +288,10 @@ aarch64 = 1048576
 [apps."so.tilo.weather"]
 x86_64 = 1179648
 aarch64 = 1114112
+
+[apps."so.tilo.web-search"]
+x86_64 = 2097152
+aarch64 = 1966080
 
 [apps."so.tilo.windows"]
 x86_64 = 1376256

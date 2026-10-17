@@ -37,6 +37,7 @@ zeroize.workspace = true
 # Signed retained proofs use the current canonical personal/device identity.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek = { workspace = true, optional = true }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 uuid.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The typed action vocabulary the exported surface and directory rows hold;

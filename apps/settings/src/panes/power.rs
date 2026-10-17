@@ -14,8 +14,7 @@
 //!   critical-battery actions are the device's `power` settings, which the
 //!   compositor's idle layer reads.
 
-use std::cell::OnceCell;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
 use ui::LocalState;
@@ -24,6 +23,7 @@ use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, ModelPath, ProgressBar, Sparkline, Widget};
 
+use crate::device_read::Reading;
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
@@ -35,6 +35,7 @@ use crate::widgets::{
     Item, SettingsSection, block, card, error_caption, note, row, rows, untitled, value_row,
 };
 use ui::i18n::ArgValue;
+use ui::lock::MutexRecover as _;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
@@ -242,14 +243,17 @@ pub struct SystemPower;
 
 impl PowerControl for SystemPower {
     fn battery(&self) -> BatteryInfo {
+        crate::device_read::off_ui_thread();
         BatteryInfo::from_system()
     }
 
     fn devices(&self) -> Vec<os_actions::PowerDevice> {
+        crate::device_read::off_ui_thread();
         os_actions::power_devices()
     }
 
     fn history(&self) -> os_actions::BatteryHistory {
+        crate::device_read::off_ui_thread();
         // The shell-owned UPower monitor is the single history writer.
         os_actions::load_battery_history()
     }
@@ -260,6 +264,7 @@ impl PowerControl for SystemPower {
         Result<PowerProfile, String>,
         Result<Vec<PowerProfile>, String>,
     ) {
+        crate::device_read::off_ui_thread();
         (
             os_actions::get_power_profile(),
             os_actions::available_power_profiles(),
@@ -267,14 +272,17 @@ impl PowerControl for SystemPower {
     }
 
     fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_power_profile(profile)
     }
 
     fn charge_cap(&self) -> Option<ChargeCapCapability> {
+        crate::device_read::off_ui_thread();
         os_actions::charge_capability()
     }
 
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_charge_limit_checked(percent)
     }
 }
@@ -302,6 +310,7 @@ impl Default for SamplePower {
 
 impl PowerControl for SamplePower {
     fn battery(&self) -> BatteryInfo {
+        crate::device_read::off_ui_thread();
         BatteryInfo {
             present: true,
             capacity: 72,
@@ -310,20 +319,17 @@ impl PowerControl for SamplePower {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
-            charge_limit: Some(
-                self.cap
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .current,
-            ),
+            charge_limit: Some(self.cap.lock_recover().current),
         }
     }
 
     fn devices(&self) -> Vec<os_actions::PowerDevice> {
+        crate::device_read::off_ui_thread();
         Vec::new()
     }
 
     fn history(&self) -> os_actions::BatteryHistory {
+        crate::device_read::off_ui_thread();
         os_actions::BatteryHistory::default()
     }
 
@@ -333,34 +339,35 @@ impl PowerControl for SamplePower {
         Result<PowerProfile, String>,
         Result<Vec<PowerProfile>, String>,
     ) {
+        crate::device_read::off_ui_thread();
         (
-            Ok(*self.profile.lock().unwrap_or_else(PoisonError::into_inner)),
+            Ok(*self.profile.lock_recover()),
             Ok(PROFILES.iter().map(|(_, profile)| *profile).collect()),
         )
     }
 
     fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
-        *self.profile.lock().unwrap_or_else(PoisonError::into_inner) = profile;
+        crate::device_read::off_ui_thread();
+        *self.profile.lock_recover() = profile;
         Ok(())
     }
 
     fn charge_cap(&self) -> Option<ChargeCapCapability> {
-        Some(
-            self.cap
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone(),
-        )
+        crate::device_read::off_ui_thread();
+        Some(self.cap.lock_recover().clone())
     }
 
     fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
-        let mut cap = self.cap.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::device_read::off_ui_thread();
+        let mut cap = self.cap.lock_recover();
         cap.current = percent;
         Ok(cap.clone())
     }
 }
 
-/// What the device's power hardware reports, read once when first needed.
+/// What the device's power hardware reports. `powerprofilesctl` asks
+/// power-profiles-daemon over the system bus, so this is read off the UI
+/// thread ([`Reading`]) when the pane first opens.
 #[derive(Clone)]
 struct PowerState {
     battery: BatteryInfo,
@@ -430,9 +437,9 @@ struct Notices {
 /// reported, and what the last changes said.
 pub struct PowerArea {
     control: Arc<dyn PowerControl>,
-    state: OnceCell<LocalState<PowerState>>,
-    /// Bumped by every change the hardware took, so the pane reads it again.
-    applied: LocalState<u64>,
+    /// What the hardware last reported, and what the changes it took made
+    /// of that.
+    state: Reading<PowerState>,
     notices: LocalState<Notices>,
 }
 
@@ -445,17 +452,27 @@ impl PowerArea {
         } else {
             Arc::new(SamplePower::default())
         };
+        Self::over(control)
+    }
+
+    fn over(control: Arc<dyn PowerControl>) -> Self {
+        let read = Arc::clone(&control);
         Self {
             control,
-            state: OnceCell::new(),
-            applied: LocalState::new(0),
+            state: Reading::new(move || PowerState::read(read.as_ref())),
             notices: LocalState::new(Notices::default()),
         }
     }
 
-    fn state(&self) -> &LocalState<PowerState> {
-        self.state
-            .get_or_init(|| LocalState::new(PowerState::read(self.control.as_ref())))
+    /// Take in what a change the hardware took made of it. Before the
+    /// first reading lands, the hardware is read again instead, so a read
+    /// that started before the change cannot show what it replaced.
+    fn changed(&self, change: impl FnOnce(&mut PowerState)) {
+        if self.state.get().is_some() {
+            self.state.update(change);
+        } else {
+            self.state.refresh();
+        }
     }
 }
 
@@ -490,29 +507,40 @@ pub(crate) fn answer(
         PowerEffect::SetPowerProfile { profile } => {
             let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
             let area = app.power();
-            if !area
-                .state()
-                .with(|state| state.available_profiles.contains(&profile))
-            {
-                return Err(format!(
-                    "{} is not supported by this device",
-                    profile_label(profile)
-                ));
+            let unsupported =
+                move || format!("{} is not supported by this device", profile_label(profile));
+            // What the hardware offers, as last read; the job asks it when
+            // the pane has not read it yet.
+            let offered = area
+                .state
+                .get()
+                .map(|state| state.available_profiles.contains(&profile));
+            if offered == Some(false) {
+                return Err(unsupported());
             }
             let control = Arc::clone(&area.control);
-            Ok(cx.thread(
-                move |_| control.set_profile(profile).map(|()| profile),
+            Ok(crate::device_read::job(
+                cx,
+                move || {
+                    if offered.is_none()
+                        && !control
+                            .profiles()
+                            .1
+                            .is_ok_and(|offered| offered.contains(&profile))
+                    {
+                        return Err(unsupported());
+                    }
+                    control.set_profile(profile).map(|()| profile)
+                },
                 |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
                     let area = app.power();
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok(profile) => {
-                            area.state().update(|state| {
+                            area.changed(|state| {
                                 state.profile = profile;
                                 state.profile_unread = false;
                             });
-                            area.applied
-                                .update(|applied| *applied = applied.wrapping_add(1));
                             notices.profile =
                                 Some(format!("{} is now active.", profile_label(profile)));
                             Ok(Effected::done())
@@ -530,29 +558,37 @@ pub(crate) fn answer(
         }
         PowerEffect::SetChargeLimit { percent } => {
             let area = app.power();
-            let offered = area.state().with(|state| {
-                state
-                    .charge_cap
-                    .as_ref()
-                    .is_some_and(|cap| cap.choices.contains(&percent))
-            });
-            if !offered {
-                return Err(format!("this battery offers no {percent}% charge cap"));
+            let offers = move |cap: Option<&ChargeCapCapability>| {
+                cap.is_some_and(|cap| cap.choices.contains(&percent))
+            };
+            let not_offered = move || format!("this battery offers no {percent}% charge cap");
+            // What the battery offers, as last read; the job asks it when
+            // the pane has not read it yet.
+            let offered = area
+                .state
+                .get()
+                .map(|state| offers(state.charge_cap.as_ref()));
+            if offered == Some(false) {
+                return Err(not_offered());
             }
             let control = Arc::clone(&area.control);
-            Ok(cx.thread(
-                move |_| control.set_charge_limit(percent).map(|cap| (percent, cap)),
+            Ok(crate::device_read::job(
+                cx,
+                move || {
+                    if offered.is_none() && !offers(control.charge_cap().as_ref()) {
+                        return Err(not_offered());
+                    }
+                    control.set_charge_limit(percent).map(|cap| (percent, cap))
+                },
                 |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
                     let area = app.power();
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok((percent, cap)) => {
-                            area.state().update(|state| {
+                            area.changed(|state| {
                                 state.battery.charge_limit = Some(percent);
                                 state.charge_cap = Some(cap);
                             });
-                            area.applied
-                                .update(|applied| *applied = applied.wrapping_add(1));
                             notices.charge =
                                 Some(format!("Hardware confirmed a {percent}% charge cap."));
                             Ok(Effected::done())
@@ -576,34 +612,40 @@ pub struct PowerPane {
     cx: PaneCx,
     prefs: Followed<PowerPrefs>,
     /// What the hardware reports, kept current by the area.
-    hardware: LocalState<PowerState>,
-    state: PowerState,
-    applied: LocalState<u64>,
-    applied_seen: u64,
+    hardware: Reading<PowerState>,
+    /// The revision of `hardware` shown.
+    hardware_seen: u64,
+    /// What the hardware reported; `None` while it is first read.
+    state: Option<PowerState>,
     notices_state: LocalState<Notices>,
     notices: Notices,
     composed: ui::widget::Composed,
 }
 
 impl PowerPane {
-    /// The pane over `area`'s hardware and `cx`'s power settings.
+    /// The pane over `area`'s hardware and `cx`'s power settings. The
+    /// hardware is read off the UI thread the first time; until then its
+    /// cards say it is being read.
     pub fn new(cx: PaneCx, area: &PowerArea) -> Self {
-        let hardware = area.state().clone();
+        let hardware = area.state.clone();
+        if hardware.get().is_none() {
+            hardware.refresh();
+        }
         Self {
             prefs: cx.follow::<PowerPrefs>(),
             cx,
+            hardware_seen: hardware.revision(),
             state: hardware.get(),
             hardware,
-            applied_seen: area.applied.get(),
-            applied: area.applied.clone(),
             notices: area.notices.get(),
             notices_state: area.notices.clone(),
             composed: ui::widget::Composed::default(),
         }
     }
 
-    pub fn battery(&self) -> &BatteryInfo {
-        &self.state.battery
+    /// The battery as last read; `None` while the hardware is first read.
+    pub fn battery(&self) -> Option<&BatteryInfo> {
+        self.state.as_ref().map(|state| &state.battery)
     }
 
     pub fn prefs(&self) -> &PowerPrefs {
@@ -611,16 +653,25 @@ impl PowerPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards = self.battery_card();
-        cards.extend(self.devices_card());
-        cards.push(self.profile_card());
+        let mut cards = match &self.state {
+            Some(state) => {
+                let mut cards = self.battery_card(state);
+                cards.extend(Self::devices_card(state));
+                cards.push(self.profile_card(state));
+                cards
+            }
+            None => vec![card(
+                &t("power-battery-title"),
+                rows(vec![note(&t("power-reading"))]),
+            )],
+        };
         cards.extend(self.idle_card());
         cards.push(self.actions_card());
         crate::widgets::cards(cards)
     }
 
-    fn battery_card(&self) -> Vec<SettingsSection> {
-        if !self.state.battery.present {
+    fn battery_card(&self, state: &PowerState) -> Vec<SettingsSection> {
+        if !state.battery.present {
             return vec![card(
                 &t("power-source-title"),
                 rows(vec![
@@ -629,32 +680,31 @@ impl PowerPane {
                 ]),
             )];
         }
-        let charge = format!("{}%", self.state.battery.capacity);
-        let status = battery_status_shown(&self.state.battery);
+        let charge = format!("{}%", state.battery.capacity);
+        let status = battery_status_shown(&state.battery);
         let mut battery_rows: Vec<Item> = vec![
             block(Box::new(ProgressBar::new(
-                self.state.battery.capacity as f32 / 100.0,
+                state.battery.capacity as f32 / 100.0,
             ))),
             value_row(&t("power-charge"), &charge),
             value_row(&t("power-status"), &status),
         ];
-        if let Some(cycles) = self.state.battery.cycle_count {
+        if let Some(cycles) = state.battery.cycle_count {
             battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
         }
-        if let Some(health) = self.state.battery.health_percent() {
+        if let Some(health) = state.battery.health_percent() {
             battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
-            battery_rows.push(note(&health_explanation_shown(&self.state.battery)));
+            battery_rows.push(note(&health_explanation_shown(&state.battery)));
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
-        let trend: Vec<f32> = self
-            .state
+        let trend: Vec<f32> = state
             .history
             .points
             .iter()
             .map(|p| p.capacity as f32)
             .collect();
-        if let Some(capability) = &self.state.charge_cap {
+        if let Some(capability) = &state.charge_cap {
             let choices: Vec<String> = capability
                 .choices
                 .iter()
@@ -709,17 +759,16 @@ impl PowerPane {
         sections
     }
 
-    fn profile_card(&self) -> SettingsSection {
-        let profile_opts: Vec<String> = self
-            .state
+    fn profile_card(&self, state: &PowerState) -> SettingsSection {
+        let profile_opts: Vec<String> = state
             .available_profiles
             .iter()
             .map(|profile| profile_label(*profile))
             .collect();
-        let current = if self.state.profile_unread {
+        let current = if state.profile_unread {
             t("power-profile-unread")
         } else {
-            profile_label(self.state.profile)
+            profile_label(state.profile)
         };
         let mut profile_rows = if profile_opts.is_empty() {
             vec![value_row(
@@ -747,8 +796,8 @@ impl PowerPane {
         profile_rows.push(note(&t("power-profile-caption")));
         if let Some(notice) = &self.notices.profile {
             profile_rows.push(note(notice));
-        } else if let Some(unavailable) = &self.state.profiles_unavailable {
-            profile_rows.push(if self.state.profile_unread {
+        } else if let Some(unavailable) = &state.profiles_unavailable {
+            profile_rows.push(if state.profile_unread {
                 row(error_caption(unavailable))
             } else {
                 note(unavailable)
@@ -897,12 +946,12 @@ impl PowerPane {
         )
     }
 
-    fn devices_card(&self) -> Option<SettingsSection> {
-        if self.state.devices.len() <= 1 {
+    fn devices_card(state: &PowerState) -> Option<SettingsSection> {
+        if state.devices.len() <= 1 {
             return None;
         }
         let mut entries = Vec::new();
-        for d in &self.state.devices {
+        for d in &state.devices {
             let kind = t(match d.kind {
                 os_actions::PowerSupplyKind::Battery => "power-device-battery",
                 os_actions::PowerSupplyKind::Ups => "power-device-ups",
@@ -927,9 +976,9 @@ impl Widget for PowerPane {
         if self.prefs.refresh() {
             self.composed.invalidate();
         }
-        let applied = self.applied.get();
-        if applied != self.applied_seen {
-            self.applied_seen = applied;
+        let revision = self.hardware.revision();
+        if revision != self.hardware_seen {
+            self.hardware_seen = revision;
             self.state = self.hardware.get();
             self.composed.invalidate();
         }
@@ -1063,8 +1112,23 @@ mod tests {
         {
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
-            let mut pane = PowerPane::new(cx.clone(), &PowerArea::new(&cx));
-            assert_eq!(pane.battery(), &sample_battery());
+            let area = PowerArea::new(&cx);
+            let mut pane = PowerPane::new(cx.clone(), &area);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while area.state.get().is_none() {
+                assert!(std::time::Instant::now() < deadline, "the hardware is read");
+                std::thread::yield_now();
+            }
+            pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
+            assert_eq!(pane.battery(), Some(&sample_battery()));
+            // A fresh profile shows "Suspend when idle" off: the same value
+            // the compositor's policy and the `power.auto-suspend` action
+            // read from the untouched document.
+            assert!(!pane.prefs().auto_suspend);
+            assert_eq!(
+                pane.prefs().auto_suspend,
+                settings_store::power::AUTO_SUSPEND.get_at(&profile.path().join("settings.json"))
+            );
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1106,11 +1170,114 @@ mod tests {
             },
         ))
         .unwrap();
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Performance is now active."), "{frame}");
+        // The hardware is read off the UI thread: its cards, with what the
+        // changes said, are shown once the reading lands.
         assert!(
-            frame.contains("Hardware confirmed a 60% charge cap."),
-            "{frame}"
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Performance is now active.")
+                        && frame.contains("Hardware confirmed a 60% charge cap."))),
+            "{}",
+            app.harness().inspection_json().unwrap()
+        );
+    }
+
+    /// Power hardware that does not answer until it is let go (or ten
+    /// seconds pass), as `powerprofilesctl` does when power-profiles-daemon
+    /// is slow to start on the system bus.
+    struct StalledPower(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledPower {
+        fn wait(&self) {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open && std::time::Instant::now() < deadline {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+        }
+    }
+
+    impl PowerControl for StalledPower {
+        fn battery(&self) -> BatteryInfo {
+            self.wait();
+            SamplePower::default().battery()
+        }
+        fn devices(&self) -> Vec<os_actions::PowerDevice> {
+            SamplePower::default().devices()
+        }
+        fn history(&self) -> os_actions::BatteryHistory {
+            SamplePower::default().history()
+        }
+        fn profiles(
+            &self,
+        ) -> (
+            Result<PowerProfile, String>,
+            Result<Vec<PowerProfile>, String>,
+        ) {
+            self.wait();
+            SamplePower::default().profiles()
+        }
+        fn set_profile(&self, _: PowerProfile) -> Result<(), String> {
+            self.wait();
+            Ok(())
+        }
+        fn charge_cap(&self) -> Option<ChargeCapCapability> {
+            SamplePower::default().charge_cap()
+        }
+        fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+            self.wait();
+            SamplePower::default().set_charge_limit(percent)
+        }
+    }
+
+    /// Opening Power while power-profiles-daemon takes its time is
+    /// answered and drawn at once, its preferences already changeable: the
+    /// hardware cards say they are being read, and fill in once it answers.
+    #[test]
+    fn a_stalled_power_daemon_never_holds_the_window() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.set_power(PowerArea::over(Arc::new(StalledPower(stalled))));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Power);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "opening the pane waited {answered:?} on the power hardware"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("power-reading")), "{frame}");
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            false,
+        )
+        .expect("a preference changes while the hardware is read");
+        assert!(!app.settings::<PowerPrefs>().get().auto_suspend);
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| !frame.contains(&t("power-reading"))
+                        && frame.contains(&profile_label(PowerProfile::Balanced)))),
+            "the hardware's cards are shown once it answers"
         );
     }
 
@@ -1123,7 +1290,7 @@ mod tests {
             &mut app,
             crate::host::testing::POWER,
             "auto_suspend",
-            false,
+            true,
         )
         .unwrap();
         let edit = |app: &mut TestApp<SettingsShell>, field: &str, value: serde_json::Value| {
@@ -1134,7 +1301,7 @@ mod tests {
         edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
         edit(&mut app, "lid_close_action", "lock".into()).unwrap();
         let power = app.settings::<PowerPrefs>().get();
-        assert!(!power.auto_suspend);
+        assert!(power.auto_suspend);
         assert_eq!(power.blank_minutes, 30);
         assert_eq!(power.lock_minutes, 0);
         assert_eq!(power.saver_suspend_minutes, 5);

@@ -3,7 +3,8 @@
 
 A workflow's `paths` lists decide when it runs; a t check's `inputs` decide when its cached
 result is stale. Either must cover every directory of the package's dependency closure. Name a
-t check as `t.toml#<check>`.
+t check as `t.toml#<check>`. A t check that names the package in `cargo_packages` covers it by
+construction: t derives those inputs from the manifests and the lockfile.
 """
 
 from __future__ import annotations
@@ -110,7 +111,8 @@ def _cargo_tree_directories(
     optional and test-only crates into packages that a release binary does not
     link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
     Containerfiles, so path filters rebuild when the image's inputs change and
-    stay quiet for pure test-harness edges.
+    stay quiet for pure test-harness edges. Both Linux architectures are
+    named, so the graph doesn't depend on the machine resolving it.
     """
     output = subprocess.check_output(
         [
@@ -123,6 +125,10 @@ def _cargo_tree_directories(
             "--prefix",
             "none",
             "--locked",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
         ],
         cwd=root,
         text=True,
@@ -170,11 +176,16 @@ def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
     )
 
 
-def t_check_blocks(text: str, name: str) -> list[set[str]]:
-    """A t check's `inputs` as one paths block."""
+def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
+    """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
+    names `package`, whose dependency closure t then derives itself."""
     for check in tomllib.loads(text).get("check", []):
         if check.get("name") == name:
-            return [set(check.get("inputs", []))]
+            packages = check.get("cargo_packages", [])
+            if any(fnmatchcase(package, pattern) for pattern in packages):
+                return []
+            # As t reads it: without `inputs`, everything, unless it names packages instead.
+            return [set(check.get("inputs", [] if packages else ["**"]))]
     raise ValueError(f"t.toml declares no check {name}")
 
 
@@ -234,7 +245,7 @@ def main() -> int:
         for package, workflow in checks:
             path, _, check = str(workflow).partition("#")
             text = (ROOT / path).read_text(encoding="utf-8")
-            blocks = t_check_blocks(text, check) if check else None
+            blocks = t_check_blocks(text, check, package) if check else None
             results.append((package, workflow, audit(metadata, ROOT, package, text, blocks)))
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(error, file=sys.stderr)

@@ -54,6 +54,31 @@ Presets are conveniences, not a second policy store. The UI derives the preset
 name when the live capability set exactly matches a bundle and shows `Custom`
 otherwise. Pause must be an enforced restriction, never a display-only state.
 
+### Allow, Ask first, Deny
+
+Within its admission a person tells each agent, per application, kind of
+resource or single action, whether an action of each kind (reading, undoable
+changes, outside effects) is allowed, asks first or is not allowed
+(`tilo_action_policy::agent_answers`). These are ordinary grants on the room;
+the most specific one decides. Before anyone chooses, reading and undoable
+changes are allowed and outside effects ask first. An action whose contract
+confirms (it sends, publishes, deletes for good) asks first whatever a broader
+answer says; only "Always allow this", an answer for that one action, lifts
+it.
+
+Ask first pauses the agent's task run instead of refusing. The broker renders
+the invocation as a draft (`tilo_actions::draft`: one field per parameter,
+resource references and attachments by label, secrets withheld, a message
+previewed as a message) and records it in the task's control sidecar, so the
+pause outlives restarts. The person sees it in Task Center and in a
+notification, and confirms (optionally editing the draft's fields), declines
+with a reason, or always allows it; the published `answer-confirmation` task
+action does the same without the card. The agent's step waits and asks again
+with the same arguments; the broker runs exactly those arguments with the
+person's edits, carried to dispatch by a one-use token bound to them. Other
+arguments are a new question. The draft keeps no raw arguments, so secrets
+never enter the room.
+
 ## Provider and model architecture
 
 Tilo owns identity, credentials, grants, confirmation, audit and runtime
@@ -77,7 +102,9 @@ Agent runtime -> Tilo action/resource gateway -> collaboration broker -> app
 does not decide Tilo permissions or own downloads. Provider profiles store a
 stable id, label, endpoint kind, base URL, model alias, enabled state and a
 reference to a secret in the accounts vault. Agents connect only to the Tilo
-gateway; provider credentials never enter their sandbox.
+gateway; provider credentials never enter their sandbox. Existing host-side
+OpenAI-compatible planners can opt in to [request presets](agent-model-presets.md);
+these provider hints do not change credentials, context selection or authority.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
@@ -109,6 +136,48 @@ Resources need the same treatment. The broker should publish inert typed
 resource descriptors—including resources with no actions—and project them to
 stable `tilo://workspace/...` MCP resource addresses. Hard-coded facts in the
 agent app can then disappear as apps adopt the shared contract.
+
+### Web search and page reading
+
+The agent has no network of its own (`net mode = "off"`). It searches the web
+and reads pages the same way it does anything else: by invoking actions. The
+headless service app `apps/web-search` (`so.tilo.web-search`) publishes
+`search` and `fetch` on the resource `web.search:default`. The agent finds them
+through the usual discovery sequence. The agent has no tool code for them.
+
+The service runs on the device. It needs no account, no API key and no hosted
+service. `crates/platform/tilo-web-search` asks keyless search engines
+directly. By default it asks Google, Brave and Bing:
+
+- Its scrapers and merge logic are ported from metasearch2 (CC0).
+- Google is asked through the search element that sites embed, a technique
+  taken from SearXNG (AGPL-3.0-or-later). Google ends that for whole-web
+  search on 2027-01-01.
+- The crate's `PROVENANCE.md` records both sources.
+- If one engine fails, the others still answer, and the result reports each
+  engine's status.
+- An engine that says it is getting too many requests is left alone for a
+  while: 5 minutes at first, doubling up to an hour.
+
+`fetch` only reads public `https` pages:
+
+- It refuses local and private addresses, both before connecting and after
+  DNS resolution.
+- It sends no cookies.
+- It caps time and size.
+- It turns HTML into readable text, a window of characters at a time, so a long
+  page fits the agent's result limit.
+
+Services cannot be launched on demand, so the shell starts the packages in
+`AGENT_COMPANION_PACKAGE_IDS` together with a workspace agent
+(`crates/session/shell/src/shell/launcher.rs`).
+
+Both actions are `Read` with `RiskLevel::Low` and no confirmation, because they
+read public pages without signing in. Their results carry the untrusted-content
+tag, because the text comes from the open web. Note that a query or an address
+can carry data out. An agent that reads private data and then searches can
+leak that data in its query, just as it could by opening a page in the
+browser.
 
 ## Delivery order
 

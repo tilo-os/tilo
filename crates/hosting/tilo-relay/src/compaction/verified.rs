@@ -116,7 +116,19 @@ impl Signatures {
     /// Decode `entry` and check it: its signature verifies (unless these
     /// exact body bytes verified before), the signer is the lineage's author,
     /// and the envelope names the route it is framed for.
+    #[cfg(test)]
     pub(super) fn check<'a>(&mut self, entry: &'a ChannelEntry) -> Checked<'a> {
+        self.check_opening(entry, None)
+    }
+
+    /// [`Self::check`], opening a sealed frame with `open` when the host
+    /// holds its channel's keys (it stewards the channel): the frame then
+    /// reads like a cleartext one.
+    pub(super) fn check_opening<'a>(
+        &mut self,
+        entry: &'a ChannelEntry,
+        open: Option<&super::Opener<'_>>,
+    ) -> Checked<'a> {
         let opaque = |route| Checked {
             entry,
             route,
@@ -138,14 +150,18 @@ impl Signatures {
             }
         }
         self.current.insert(body);
+        let frame = |payload: &[u8]| match DocumentFrame::decode(payload) {
+            Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
+            Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
+            Err(_) => Piece::Opaque,
+        };
         let piece = if envelope.encryption.is_some() {
-            Piece::Sealed
-        } else {
-            match DocumentFrame::decode(&envelope.payload) {
-                Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
-                Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
-                Err(_) => Piece::Opaque,
+            match open.and_then(|open| open(&envelope)) {
+                Some(plaintext) => frame(&plaintext),
+                None => Piece::Sealed,
             }
+        } else {
+            frame(&envelope.payload)
         };
         Checked {
             entry,

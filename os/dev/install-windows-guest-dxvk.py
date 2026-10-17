@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tarfile
 import sys
+import shutil
 
 ARCHIVE = "dxvk-2.7.1.tar.gz"
 LICENSE = "dxvk-c3dd74b-LICENSE"
@@ -65,24 +66,36 @@ def install(root, assets, manifest):
             parent = parent / part
             if parent.is_symlink():
                 raise ValueError(f"DXVK destination parent is a symlink: {parent}")
-            parent.mkdir(exist_ok=True)
-        directory.mkdir()  # Reject an existing provider rather than overwriting it.
-    inventory = []
-    for name in sorted(members):
-        arch, interface, bits = EXPECTED[name]
-        target = destination / arch / f"{interface}.dll"
-        target.parent.mkdir(exist_ok=True)
-        target.write_bytes(members[name])
-        target.chmod(0o644)
-        header = validator.pe_info(target, bits)
-        inventory.append({"path": target.relative_to(root).as_posix(), **header,
-                          "sha256": hashlib.sha256(members[name]).hexdigest()})
-    (licenses / "LICENSE").write_bytes(license_path.read_bytes())
-    record = {"version": "2.7.1", "archive": archive_record, "license": license_record,
-              "files": inventory,
-              "activation": "Prefix installation and native DLL overrides required; Wine builtins are unchanged."}
-    (destination / "provenance.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-    return record
+        if directory.exists() or directory.is_symlink():
+            raise FileExistsError(f"DXVK destination already exists: {directory}")
+    created = []
+    try:
+        for directory in (destination, licenses):
+            directory.parent.mkdir(parents=True, exist_ok=True)
+            directory.mkdir()  # Never replace a provider that appeared after preflight.
+            created.append(directory)
+        inventory = []
+        for name in sorted(members):
+            arch, interface, bits = EXPECTED[name]
+            target = destination / arch / f"{interface}.dll"
+            target.parent.mkdir(exist_ok=True)
+            target.write_bytes(members[name])
+            target.chmod(0o644)
+            header = validator.pe_info(target, bits)
+            inventory.append({"path": target.relative_to(root).as_posix(), **header,
+                              "sha256": hashlib.sha256(members[name]).hexdigest()})
+        (licenses / "LICENSE").write_bytes(license_path.read_bytes())
+        record = {"version": "2.7.1", "archive": archive_record, "license": license_record,
+                  "files": inventory,
+                  "activation": "Prefix installation and native DLL overrides required; Wine builtins are unchanged."}
+        (destination / "provenance.json").write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        return record
+    except BaseException:
+        # Only remove directories this attempt created. Failed validation or
+        # writes must not leave a partial provider that blocks a corrected retry.
+        for directory in reversed(created):
+            shutil.rmtree(directory)
+        raise
 
 
 def main():

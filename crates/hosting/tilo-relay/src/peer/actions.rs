@@ -6,8 +6,9 @@ use super::{
     ActionCapability, ActionMessage, AsyncWriteExt, AuthenticatedPeer, DirectedAction, Envelope,
     EnvelopeV2, PeerError, RoomOperation, SessionCtx, SharedWorkspace, SignedDirectedAction,
     UnavailableReason, action_peer_admitted, current_action_peer, current_session, mpsc,
-    unavailable_target, unix_now_ns,
+    test_point, unavailable_target, unix_now_ns,
 };
+use tilo_lock::RwLockRecover as _;
 
 /// Where an inbound [`Envelope::RemoteAction`] asked to go.
 pub(super) struct RemoteActionRoute {
@@ -141,8 +142,7 @@ fn serve_locally(
     })?;
     let agent = session
         .agents
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read_recover()
         .get(&peer.device_public_key)
         .cloned();
     let caller = match agent {
@@ -474,11 +474,7 @@ async fn route_private_signed(
     let Some((_, ws)) = private_workspace_binding(action.room, peer, session).await? else {
         return Ok(Some(U::NotAuthorised));
     };
-    #[cfg(test)]
-    {
-        let root = ws.lock().await.store.root().to_owned();
-        crate::store::test_barrier::pause(&root, "private-authorization");
-    }
+    test_point!(pause(room ws, "private-authorization"));
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
     if action_peer_admitted(&wr, peer, session).is_err()

@@ -702,17 +702,6 @@ mod managed_service_tests {
         }
     }
 
-    struct RefusedOwner;
-
-    impl ServiceProcessOwner for RefusedOwner {
-        fn before_spawn(&self) -> std::io::Result<()> {
-            Err(std::io::Error::other("refused launch reached the owner"))
-        }
-        fn supervise(&self, mut child: std::process::Child) -> std::io::Result<ExitStatus> {
-            child.wait()
-        }
-    }
-
     #[test]
     fn owned_service_refuses_policy_relaxation_before_touching_installation() {
         let strict = RunOptions {
@@ -746,12 +735,7 @@ mod managed_service_tests {
         opts.allow_unsigned_runtime = true;
         variants.push(opts);
         for opts in variants {
-            let result = run_owned_service(
-                Path::new("/missing/owned-service.toml"),
-                Path::new("/missing/payload"),
-                &opts,
-                &RefusedOwner,
-            );
+            let result = validate_owned_service_options(&opts);
             assert!(
                 matches!(result, Err(RunError::InvalidServiceLaunch(message))
                 if message == "owned service requires signed, confined, identity-free launch")
@@ -760,7 +744,7 @@ mod managed_service_tests {
     }
 
     #[test]
-    fn owned_service_requires_original_installation_before_owner_callback() {
+    fn owned_service_requires_original_installation() {
         let opts = RunOptions {
             mode: LaunchMode::Service {
                 passthrough_argv: vec![],
@@ -771,11 +755,12 @@ mod managed_service_tests {
             app_id: None,
             ..RunOptions::default()
         };
-        let result = run_owned_service(
+        validate_owned_service_options(&opts).unwrap();
+        let result = verified_original_manifest(
             Path::new("/missing/owned-service.toml"),
             Path::new("/missing/payload"),
             &opts,
-            &RefusedOwner,
+            "not-an-installed-package",
         );
         assert!(
             matches!(result, Err(RunError::InvalidServiceLaunch(message))
@@ -2181,10 +2166,15 @@ fn splice_app_dir(
     Ok(())
 }
 
-/// Settings remaps XDG into the app dir. Bind the session store over that
-/// path so a write to `~/.config/tilo/settings.json` is the document the
-/// open Settings window watches and paints.
+/// Settings remaps XDG into the app dir. Bind the parts of the session's
+/// `~/.config/tilo` it edits over that path
+/// ([`crate::appdir::SESSION_SETTINGS_BINDS`]), so a write to the settings
+/// document is the one the compositor watches and the open Settings window
+/// paints, while the rest of that directory (trust lists, registries,
+/// records) stays out of the sandbox.
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
     if package_id != "so.tilo.settings" {
         return Ok(());
     }
@@ -2192,7 +2182,14 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
         return Ok(());
     };
     let host = host.join("tilo");
-    std::fs::create_dir_all(&host)?;
+    for (relative, bind) in crate::appdir::SESSION_SETTINGS_BINDS {
+        if *bind == crate::appdir::SessionBind::Writable {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(host.join(relative))?;
+        }
+    }
     let entry = pop_entry(argv)?;
     crate::appdir::push_session_settings_bind(argv, &host);
     argv.push(entry);
@@ -3298,63 +3295,6 @@ pub fn run_with(
         ));
     }
     run_with_context(manifest, payload_root, opts, None, None)
-}
-
-/// Host-owned service lifetime, using the normal signed-package sandbox pipeline.
-///
-/// The owner receives only the actual child created after all launch policy
-/// checks. A child exit is not a proof that every provider writer is quiescent;
-/// callers must establish that separately before checkpointing crypto state.
-///
-/// # Errors
-/// Returns a policy error for non-service launches, unsigned installation
-/// selection, identity brokering or relaxed sandbox/runtime verification, and
-/// the normal launch error if package validation or sandbox setup fails.
-pub fn run_owned_service(
-    manifest_path: &Path,
-    payload_root: &Path,
-    opts: &RunOptions,
-    owner: &dyn ServiceProcessOwner,
-) -> Result<ExitStatus, RunError> {
-    validate_owned_service_options(opts)?;
-    let expected = opts.expected_package_hash.as_deref().ok_or_else(|| {
-        RunError::InvalidServiceLaunch("owned service requires original signed installation".into())
-    })?;
-    let manifest = verified_original_manifest(manifest_path, payload_root, opts, expected)?;
-    let observer = ServiceOwnerObserver(owner);
-    run_with_context(&manifest, payload_root, opts, None, Some(&observer))
-}
-
-/// Native host callbacks for one service process. Implementations must retain
-/// ownership of the child until it is reaped, including on cancellation/error.
-/// Credentials, enrollment and account readiness remain the host's responsibility.
-pub trait ServiceProcessOwner {
-    /// Recheck the original authority immediately before spawning.
-    ///
-    /// # Errors
-    /// Return an error if the original launch authority has retired.
-    fn before_spawn(&self) -> std::io::Result<()>;
-    /// Own and reap the actual sandbox process in its own process group.
-    /// This runs on the launch worker; the group is not a writer-quiescence proof.
-    ///
-    /// # Errors
-    /// Return errors encountered supervising or waiting for the child.
-    fn supervise(&self, child: std::process::Child) -> std::io::Result<ExitStatus>;
-}
-
-struct ServiceOwnerObserver<'a>(&'a dyn ServiceProcessOwner);
-
-impl crate::managed::EnrolledProcessObserver for ServiceOwnerObserver<'_> {
-    fn owns_process_group(&self) -> bool {
-        true
-    }
-    fn before_spawn(&self) -> std::io::Result<()> {
-        self.0.before_spawn()
-    }
-    fn child_created(&self) {}
-    fn supervise(&self, child: std::process::Child) -> std::io::Result<ExitStatus> {
-        self.0.supervise(child)
-    }
 }
 
 pub(crate) fn validate_owned_service_options(opts: &RunOptions) -> Result<(), RunError> {
@@ -5446,13 +5386,35 @@ mod app_dir_tests {
 
         splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
         let host = config.path().join("tilo");
-        assert!(host.is_dir(), "session store directory must exist to bind");
+        for writable in ["session", "accounts"] {
+            assert!(
+                host.join(writable).is_dir(),
+                "{writable} must exist to bind read-write"
+            );
+            assert!(
+                argv.windows(3).any(|w| w[0] == "--bind"
+                    && w[1] == host.join(writable).to_string_lossy()
+                    && w[2] == format!("/run/tilo/app/.config/tilo/{writable}")),
+                "Settings must bind {writable} over remapped XDG: {argv:?}"
+            );
+        }
         assert!(
-            argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == host.to_string_lossy()
-                && w[2] == "/run/tilo/app/.config/tilo"),
-            "Settings must bind the session store over remapped XDG: {argv:?}"
+            !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
+                || arg == crate::appdir::SANDBOX_SESSION_CONFIG),
+            "the whole session configuration root must never be bound: {argv:?}"
         );
+        for private in [
+            "identity",
+            "trusted-attestors.toml",
+            "revoked-keys.toml",
+            "registries.toml",
+            "records",
+        ] {
+            assert!(
+                !argv.iter().any(|arg| arg.ends_with(private)),
+                "{private} must stay out of the Settings sandbox: {argv:?}"
+            );
+        }
         assert!(
             argv.windows(3).any(|w| w[0] == "--setenv"
                 && w[1] == "TILO_SESSION_SETTINGS"
@@ -5496,7 +5458,11 @@ mod managed_spawn_policy_tests {
         supervised: AtomicUsize,
         own_group: AtomicBool,
     }
-    impl ServiceProcessOwner for NativeOwner {
+    impl crate::managed::EnrolledProcessObserver for NativeOwner {
+        fn owns_process_group(&self) -> bool {
+            true
+        }
+        fn child_created(&self) {}
         fn before_spawn(&self) -> std::io::Result<()> {
             self.checked.fetch_add(1, AtomicOrdering::SeqCst);
             if self.allowed {
@@ -5525,7 +5491,6 @@ mod managed_spawn_policy_tests {
                 supervised: AtomicUsize::new(0),
                 own_group: AtomicBool::new(false),
             };
-            let observer = ServiceOwnerObserver(&owner);
             let result = spawn_and_wait(
                 vec![],
                 vec![],
@@ -5544,7 +5509,7 @@ mod managed_spawn_policy_tests {
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
-                Some((&observer, None)),
+                Some((&owner, None)),
             );
             assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 1);
             assert_eq!(

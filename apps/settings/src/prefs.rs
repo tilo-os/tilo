@@ -9,7 +9,7 @@
 //! Preferences live in the **same** shared document the region store uses:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
+//! $XDG_CONFIG_HOME/tilo/session/settings.json   (falls back to ~/.config/tilo/session/settings.json)
 //! ```
 //!
 //! namespaced by domain so each section grows independently and unrelated
@@ -365,6 +365,9 @@ impl PowerActionPref {
     }
 }
 
+fn default_auto_suspend() -> bool {
+    settings_store::power::DEFAULT_AUTO_SUSPEND
+}
 fn default_suspend_minutes() -> u32 {
     15
 }
@@ -402,7 +405,10 @@ fn default_critical_action() -> PowerActionPref {
 #[model(check = PowerPrefs::valid)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
-    /// [`Self::suspend_minutes`].
+    /// [`Self::suspend_minutes`]. Unset means the shared default
+    /// ([`settings_store::power::DEFAULT_AUTO_SUSPEND`], off), the same value
+    /// the compositor and the `power.auto-suspend` action read.
+    #[serde(default = "default_auto_suspend")]
     pub auto_suspend: bool,
     /// Idle minutes before the session suspends; `0` disables idle-suspend.
     #[serde(default = "default_suspend_minutes")]
@@ -439,6 +445,49 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
+/// The person's desk widgets: which they keep, when each shows itself and
+/// at which edge. The compositor reads the same leaves
+/// ([`settings_store::desk_widgets`]), and the desk writes a pin or a
+/// widget dragged to another edge back here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+pub struct DeskWidgetsPrefs {
+    /// Now playing, with play/pause and next.
+    #[serde(default = "default_music_widget")]
+    pub music: settings_store::desk_widgets::WidgetPrefs,
+    /// The people in this workspace.
+    #[serde(default = "default_team_widget")]
+    pub team: settings_store::desk_widgets::WidgetPrefs,
+}
+
+fn default_music_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::Music,
+    )
+}
+
+fn default_team_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::Team,
+    )
+}
+
+impl Default for DeskWidgetsPrefs {
+    fn default() -> Self {
+        Self {
+            music: default_music_widget(),
+            team: default_team_widget(),
+        }
+    }
+}
+
+impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::desk_widgets::SECTION);
+}
+
+#[ui::tilo_resource::resource(kind = "settings.desk_widgets", label = "Desk widgets")]
+impl DeskWidgetsPrefs {}
+
 /// This device's idle and button preferences, read by the compositor's
 /// idle layer.
 impl ui::storage::SettingsSchema for PowerPrefs {
@@ -451,7 +500,7 @@ impl PowerPrefs {}
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
-            auto_suspend: true,
+            auto_suspend: default_auto_suspend(),
             suspend_minutes: default_suspend_minutes(),
             saver_suspend_minutes: default_saver_suspend_minutes(),
             balanced_suspend_minutes: default_suspend_minutes(),
@@ -592,6 +641,12 @@ pub struct AppearancePrefs {
     /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
+    /// The desktop's wallpaper: the id of a picture the system ships
+    /// ([`tilo_wallpapers::all`]), or [`tilo_wallpapers::CUSTOM`] for the
+    /// person's own picture, which the compositor keeps per device
+    /// (`settings_store::appearance::WALLPAPER`). Unset shows the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper: Option<String>,
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -673,6 +728,7 @@ impl Default for AppearancePrefs {
             sunset: default_sunset(),
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
+            wallpaper: None,
             distribution_defaults: None,
             forced_colors: false,
             distinct_letters: None,
@@ -1045,7 +1101,15 @@ mod tests {
         );
         assert_eq!(input.keyboard_layout, input.keyboard_layouts[0]);
         let power = PowerPrefs::default();
-        assert!(power.auto_suspend);
+        assert!(
+            !power.auto_suspend,
+            "a fresh install does not suspend on idle; the lid still suspends"
+        );
+        assert_eq!(
+            power.auto_suspend,
+            settings_store::power::AUTO_SUSPEND.default_value()
+        );
+        assert_eq!(power.lid_close_action, PowerActionPref::Suspend);
         assert_eq!(power.blank_minutes, 10);
         assert_eq!(power.lock_minutes, 5);
         let updates = UpdatePrefs::default();
@@ -1158,7 +1222,7 @@ mod tests {
             "source order and the active source survive"
         );
         let power = PowerPrefs {
-            auto_suspend: false,
+            auto_suspend: true,
             blank_minutes: 30,
             lock_minutes: 0,
             ..PowerPrefs::default()
@@ -1227,6 +1291,11 @@ mod tests {
         // Only some power keys: the rest read as their defaults.
         let p = read::<PowerPrefs>(r#"{"power":{"auto_suspend":false,"blank_minutes":15}}"#);
         assert!(!p.auto_suspend);
+        // A section that never chose: idle-suspend stays off, as it does in
+        // the compositor that reads the same document.
+        let p = read::<PowerPrefs>(r#"{"power":{"blank_minutes":15,"suspend_minutes":15}}"#);
+        assert!(!p.auto_suspend);
+        assert_eq!(p.blank_minutes, 15);
         assert_eq!(p.blank_minutes, 15);
         assert_eq!(p.lock_minutes, 5);
         assert_eq!(p.suspend_minutes, 15);
@@ -1461,7 +1530,11 @@ impl AppearancePrefs {
             &self.wallpaper_target,
             &crate::panes::appearance::WALLPAPER_TARGETS.map(|(_, value)| value),
             "where a new wallpaper shows",
-        )
+        )?;
+        match &self.wallpaper {
+            Some(wallpaper) => one_of(wallpaper, &tilo_wallpapers::values(), "the wallpaper"),
+            None => Ok(()),
+        }
     }
 }
 

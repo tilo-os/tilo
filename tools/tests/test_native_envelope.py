@@ -1,4 +1,4 @@
-"""The actual cgroup reader fails closed."""
+"""Actual cgroup reader and SDK diagnostic preserve coverage and fail closed."""
 from __future__ import annotations
 
 import os
@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,6 +109,35 @@ class NativeEnvelope(unittest.TestCase):
                 self.assertNotEqual(self.invoke("prepare", directory, env).returncode, 0)
                 self.assertEqual((directory / "memory.swap.max").read_text(), "max\n")
 
+    def test_t_checks_build_on_arm64_inside_the_qualified_envelope(self):
+        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        wrapper = (ROOT / "tools/ci/native-envelope.sh").read_text()
+        self.assertIn('--memory "${memory}g" --memory-swap "${memory}g" --cpus 24', wrapper)
+        for phase in ("envelope prepare", "envelope before", "envelope after || status=1"):
+            self.assertIn(phase, wrapper)
+        self.assertIn("22|36) ;;", wrapper)
+        for name, script in (("sdk-envelope", "tools/ci/envelope/sdk.sh"),
+                             ("web-size-envelope-bundle", "tools/ci/envelope/web-size.sh")):
+            with self.subTest(check=name):
+                check = checks[name]
+                self.assertEqual(check["requires"], ["arch=arm64"])
+                self.assertTrue(check["privileged"])
+                self.assertFalse(check["cache"])
+                self.assertEqual(check["dispatch_inputs"], {"memory_gib": "22"})
+                self.assertIn("tools/ci/native-envelope.sh", check["run"])
+                self.assertIn(script, check["run"])
+        self.assertEqual(checks["sdk-envelope"]["on"], ["dispatch"])
+        browser = checks["web-size-envelope"]
+        self.assertEqual(browser["on"], ["dispatch"])
+        self.assertEqual(browser["needs"], ["web-size-envelope-bundle"])
+        self.assertEqual(browser["requires"], ["arch=x86_64"])
+        self.assertIn("release_compute.py verify envelope/release-compute", browser["run"])
+        self.assertIn("qualify-packaged.mjs envelope/release-compute", browser["run"])
+        sdk = (ROOT / "tools/ci/envelope/sdk.sh").read_text()
+        for command in ("cargo test --locked -p tilo-caps", "cargo test --locked -p tilo-app-cli --lib targets::",
+                        "--test it outside_repo -- --ignored", "package --target linux apps/calculator"):
+            self.assertIn(command, sdk)
+            self.assertIn(command, checks["sdk-linux"]["run"])
 
 if __name__ == "__main__":
     unittest.main()

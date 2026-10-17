@@ -1,7 +1,7 @@
 # Tilo supply-chain security (operations)
 
 Status of security-plan §9 (signing / reproducibility / transparency) and how to
-operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-architecture-plan.md`.
+operate it. Companion to `docs/security/design-rationale.md`.
 
 ## What's in place
 

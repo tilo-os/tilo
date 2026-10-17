@@ -259,6 +259,11 @@ head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* p
 grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
 tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ "$(stat -c %a "$flight_dir")" = 700 ]
+# The log events, kept apart from the measurement stream, are bracketed by
+# the same start and end records.
+head -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+tail -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+[ "$(stat -c %a "$flight_dir/events.log")" = 600 ]
 # A dev image's compositor gets the control socket tilo-vm drives it through.
 grep -Fqx "control=$runtime_dir/tilo-session/test-control.sock" "$log.control"
 # It is still the person's login: a first login keeps identity setup.
@@ -297,6 +302,25 @@ grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/s
 head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A full or failing disk must never keep the person from logging in. Here the
+# state directory cannot exist at all (its parent is a file), so every write
+# the wrapper and the recorder try fails, as on a full disk; the tests may run
+# as a namespace root, which permissions would not stop. The desktop still
+# starts, its exit status still comes back, and its output still reaches the
+# journal (stdout).
+mkdir -p "$tmp/full-state"
+printf 'not a directory\n' >"$tmp/full-state/tilo"
+full_dir="$tmp/full-state/tilo/session-logs"
+set +e
+XDG_STATE_HOME="$tmp/full-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/full-log" TILO_SESSION_DESKTOP_STATUS=6 \
+  timeout 20 "$test_wrapper" --backend drm >"$tmp/full-stdout" 2>"$tmp/full-stderr"
+status=$?
+set -e
+[ "$status" = 6 ] || { cat "$tmp/full-stderr" >&2; exit 1; }
+grep -Fqx "desktop-output --backend drm trace=$full_dir/frame-trace.csv" "$tmp/full-stdout"
+grep -Fqx 'desktop --backend drm' "$tmp/full-log"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state
@@ -345,6 +369,8 @@ EOF
 cmp "$tmp/expected" "$log"
 # The next login keeps the previous record, which tilo-session-report reads.
 grep -Fq 'status=7' "$flight_dir/previous.log"
+grep -Fq 'status=7' "$flight_dir/previous-events.log"
+tail -n 1 "$flight_dir/events.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
 tail -n 1 "$flight_dir/latest.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
 python3 "$repo/dist/session/tilo-session-report.py" --root "$flight_dir" --previous >"$tmp/report"
 python3 - "$tmp/report" <<'PY'

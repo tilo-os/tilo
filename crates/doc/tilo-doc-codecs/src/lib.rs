@@ -30,6 +30,8 @@
     )
 )]
 
+#[cfg(feature = "markdown")]
+pub mod convert;
 pub mod format;
 pub mod xml_escape;
 

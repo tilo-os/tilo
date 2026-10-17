@@ -15,7 +15,7 @@
 //! freshness and pending-write check again before it commits, so nothing
 //! observed before the download is trusted after it.
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use fs_protocol::ContentHash;
 use fs_protocol::files::{HistoryJobResponseV1, HistoryJobStateV1 as State};
@@ -23,6 +23,7 @@ use iroh_blobs::Hash;
 
 use super::{Access, QuickFS};
 use crate::hydration::{Hydrator, Priority};
+use tilo_lock::MutexRecover as _;
 
 /// Jobs one mount keeps at once. Finished jobs nobody came back for are
 /// dropped first; past that a new request is refused rather than queued.
@@ -62,7 +63,7 @@ struct Job {
 
 impl Job {
     fn state(&self) -> State {
-        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.state.lock_recover()
     }
 }
 
@@ -77,7 +78,7 @@ pub(super) struct HistoryJobs {
 
 impl HistoryJobs {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<JobKey, Job>> {
-        self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
+        self.jobs.lock_recover()
     }
 
     /// Whether the content behind `hashes` is local, starting a job to make
@@ -144,11 +145,7 @@ impl HistoryJobs {
             let hashes = unique.clone();
             let state = Arc::clone(&state);
             #[cfg(test)]
-            let hold = self
-                .hold
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
+            let hold = self.hold.lock_recover().clone();
             async move {
                 #[cfg(test)]
                 if let Some(hold) = hold {
@@ -194,7 +191,7 @@ impl HistoryJobs {
             return false;
         };
         {
-            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = state.lock_recover();
             if !matches!(*state, State::Hydrating { .. }) {
                 return false;
             }
@@ -211,7 +208,7 @@ impl HistoryJobs {
     /// the returned semaphore gets a permit.
     pub(super) fn hold(&self) -> Arc<tokio::sync::Semaphore> {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&gate));
+        *self.hold.lock_recover() = Some(Arc::clone(&gate));
         gate
     }
 }
@@ -235,7 +232,7 @@ async fn all_local(hydrator: &Hydrator, hashes: &[Hash]) -> bool {
 
 /// Set a downloading job's state; a cancelled job keeps its state.
 fn advance(state: &Mutex<State>, next: State) {
-    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state.lock_recover();
     if matches!(*state, State::Hydrating { .. }) {
         *state = next;
     }

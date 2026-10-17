@@ -10,7 +10,7 @@
 //! legacy-windows stream.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tilo_relay_protocol::environment::{
     LegacyGuestOs, LegacyLaunch, LegacyLaunchOutcome, MemberIdentity,
@@ -20,6 +20,7 @@ use ush::legacy_relay::{LaunchReply, LaunchRequest, MAX_LINE_BYTES};
 
 use crate::environment_host::WeakEnvironmentHost;
 use crate::legacy_host::request_legacy_launch;
+use tilo_lock::MutexRecover as _;
 
 /// Routes members' legacy launches from this worker to the relay.
 #[derive(Clone, Default)]
@@ -43,20 +44,12 @@ impl LegacyLaunchRoute {
 
     /// The environment host whose sessions launches are made from.
     pub fn set_host(&self, host: WeakEnvironmentHost) {
-        *self
-            .inner
-            .host
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(host);
+        *self.inner.host.lock_recover() = Some(host);
     }
 
     /// The connection to the relay this worker serves, once attached.
     pub fn set_relay(&self, connection: iroh::endpoint::Connection) {
-        *self
-            .inner
-            .relay
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(connection);
+        *self.inner.relay.lock_recover() = Some(connection);
     }
 
     /// Route one launch for `member`.
@@ -67,20 +60,14 @@ impl LegacyLaunchRoute {
         let host = self
             .inner
             .host
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .lock_recover()
             .as_ref()
             .and_then(WeakEnvironmentHost::upgrade);
         let Some((workspace_id, session)) = host.and_then(|host| host.member_session(&member.user))
         else {
             return refused("you have no environment session on this worker");
         };
-        let relay = self
-            .inner
-            .relay
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let relay = self.inner.relay.lock_recover().clone();
         let Some(relay) = relay else {
             return refused("this worker is not attached to its relay");
         };

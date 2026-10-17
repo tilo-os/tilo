@@ -2,7 +2,7 @@
 //! answered through the same sheet controller the compositor draws, in the
 //! shell's words.
 
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_network_secret_agent::service::{AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS};
@@ -19,6 +19,7 @@ use zbus::zvariant::ObjectPath;
 
 use super::*;
 use crate::shell::portal_dialog::{PortalDialogController, PortalDialogQueue};
+use tilo_lock::MutexRecover as _;
 
 /// The agent served to a stand-in `NetworkManager`, asking in `queue`'s
 /// sheets as the session does.
@@ -69,10 +70,7 @@ async fn a_wifi_password_is_asked_in_the_sheet_and_returned_only_to_networkmanag
     let store = Arc::new(MemoryStore::default());
     let link = link(queue.clone(), Arc::clone(&store) as Arc<dyn SecretStore>).await;
     assert_eq!(
-        link.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_slice(),
+        link.registered.lock_recover().as_slice(),
         &[(AGENT_IDENTIFIER.to_string(), CAPABILITY_VPN_HINTS)],
         "registered once, under the stable identifier"
     );

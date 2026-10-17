@@ -31,6 +31,8 @@ use zeroize::Zeroize;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::panes::accounts::{BrowserOpener, PortalOpener};
+use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -38,6 +40,7 @@ use crate::widgets::{
     Item, SettingsSection, StatusTone, card, card_with_action, field_row, note, row, rows,
     semantic_status_pill, value_row,
 };
+use ui::lock::MutexRecover as _;
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
@@ -212,6 +215,39 @@ pub enum AgentModelsEffect {
         #[param("The provider's id")]
         provider: String,
     },
+    /// Start adding Google Vertex AI, which signs in with Google instead of
+    /// taking an API key. Shows its setup; signs in to nothing yet.
+    #[effect(view, label = "Add Google Vertex AI")]
+    AddGoogleVertex,
+    /// Sign in with Google in the browser for Vertex AI: for the provider
+    /// being added, or again for an existing one whose sign-in ended.
+    #[effect(row, label = "Sign in with Google")]
+    SignInWithGoogle {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+    },
+    /// Stop a Google sign-in, or the setup of a provider being added.
+    #[effect(view)]
+    CancelGoogleSignIn,
+    /// Put one of the person's listed Google Cloud projects in the setup.
+    #[effect(view)]
+    ChooseVertexProject {
+        #[param("The Google Cloud project id")]
+        project: String,
+    },
+    /// Save the Vertex AI provider being added, once signed in, or change
+    /// an existing one's project, location and model.
+    #[effect(row)]
+    SetVertexProvider {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+        #[param("The Google Cloud project billed for requests")]
+        project: String,
+        #[param("The Vertex AI location; `global` when omitted")]
+        location: Option<String>,
+        #[param("The model, for example gemini-4-argon; the default when omitted")]
+        model: Option<String>,
+    },
 }
 
 fn protocol_slug(protocol: ProviderProtocol) -> &'static str {
@@ -328,12 +364,21 @@ pub(crate) fn answer(
                 model.reviewing_local.set(None);
             }
             drop(model);
-            Ok(cx.thread(
-                move |_| work.run(control.as_ref()),
-                |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+            Ok(crate::device_read::job(
+                cx,
+                // The manager is asked again on the job too: the answer
+                // carries what the change left, read off the UI thread.
+                move || {
+                    let outcome = work.run(control.as_ref());
+                    (outcome, control.snapshot())
+                },
+                |app: &mut SettingsApp,
+                 (outcome, snapshot): (Result<String, String>, Snapshot),
+                 _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.refresh();
+                    model.snapshot_reads.supersede();
+                    model.apply_snapshot(snapshot);
                     if let Err(error) = &outcome {
                         model.notice = Some(error.clone());
                     }
@@ -343,58 +388,179 @@ pub(crate) fn answer(
         }
         AgentModelsEffect::SaveProviderKey { provider, key } => {
             let buffer = model.key_buffer(&provider);
+            let hosted = hosted_profiles(model.providers.get());
             drop(model);
-            Ok(cx.thread(
-                move |_| {
-                    let mut typed = buffer
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
-                    typed.zeroize();
-                    drop(typed);
-                    if value.trim().is_empty() {
-                        return Err(t_args(
-                            "agent-key-save-err",
-                            &[("error", "the key is empty".into())],
-                        ));
-                    }
-                    tilo_model_gateway::set_api_key(&provider, value).map_err(|error| {
-                        t_args("agent-key-save-err", &[("error", error.to_string().into())])
-                    })
+            Ok(crate::device_read::job(
+                cx,
+                // The keys are asked again on the job too: the answer
+                // carries whether the vault holds them now.
+                move || {
+                    let outcome = save_key(&buffer, key, &provider);
+                    (outcome, hosted_keys(hosted))
                 },
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &mut SettingsApp, (outcome, keys): (Result<(), String>, Keys), _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.read_keys();
+                    model.key_reads.supersede();
+                    model.apply_keys(keys);
                     model.provider_notice(outcome.as_ref().map(|()| t("agent-key-saved")));
                     outcome.map(|()| Effected::done())
                 },
             ))
         }
         AgentModelsEffect::RemoveProviderKey { provider } => {
+            let hosted = hosted_profiles(model.providers.get());
             drop(model);
-            Ok(cx.thread(
-                move |_| {
-                    tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
+            Ok(crate::device_read::job(
+                cx,
+                move || {
+                    let outcome = tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
                         t_args(
                             "agent-key-remove-err",
                             &[("error", error.to_string().into())],
                         )
-                    })
+                    });
+                    (outcome, hosted_keys(hosted))
                 },
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &mut SettingsApp, (outcome, keys): (Result<(), String>, Keys), _| {
                     let model = app.agent_models().model();
                     let mut model = model.borrow_mut();
-                    model.read_keys();
+                    model.key_reads.supersede();
+                    model.apply_keys(keys);
                     model.provider_notice(outcome.as_ref().map(|()| t("agent-key-removed")));
                     outcome.map(|()| Effected::done())
                 },
             ))
         }
+        AgentModelsEffect::AddGoogleVertex => {
+            if model.vertex.as_ref().is_none_or(|setup| setup.existing) {
+                model.cancel_vertex();
+                model.vertex = Some(VertexSetup::adding());
+            }
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::SignInWithGoogle { provider } => {
+            model.sign_in_with_google(provider.as_deref())?;
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::CancelGoogleSignIn => {
+            model.cancel_vertex();
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::ChooseVertexProject { project } => {
+            model
+                .vertex
+                .as_ref()
+                .filter(|setup| setup.choosing())
+                .ok_or_else(|| t("agent-vertex-sign-in-first"))?
+                .choose_project(&project);
+            Ok(Effected::done())
+        }
         provider => {
             let result = model.change_providers(provider);
             model.provider_notice(result.as_ref().map(|()| t("agent-provider-saved")));
             result.map(|()| Effected::done())
+        }
+    }
+}
+
+/// Store `key`, or what `buffer` holds when it is `None`, as `provider`'s
+/// API key in the gateway's vault, erasing the buffer. Never on the UI
+/// thread: the gateway answers over its socket.
+fn save_key(buffer: &Mutex<String>, key: Option<String>, provider: &str) -> Result<(), String> {
+    let mut typed = buffer.lock_recover();
+    let value = key.unwrap_or_else(|| std::mem::take(&mut *typed));
+    typed.zeroize();
+    drop(typed);
+    if value.trim().is_empty() {
+        return Err(t_args(
+            "agent-key-save-err",
+            &[("error", "the key is empty".into())],
+        ));
+    }
+    tilo_model_gateway::set_api_key(provider, value)
+        .map_err(|error| t_args("agent-key-save-err", &[("error", error.to_string().into())]))
+}
+
+/// What the model manager reported, or why it could not.
+type Snapshot = Result<LocalModelSnapshot, String>;
+
+/// Whether this device's vault holds each hosted provider's key, by
+/// provider id, or why that could not be told.
+type Keys = HashMap<String, Result<bool, String>>;
+
+/// A model's reads of the device while its pane is open, made one at a
+/// time off the UI thread and taken in at the sync their landing wakes.
+struct Rereads<T> {
+    read: crate::device_read::DeviceRead<T>,
+    /// Asked for while a read ran: read once more when it lands, so the
+    /// reading shows what changed meanwhile.
+    again: bool,
+    /// The read on its way began before a reading already taken in: it is
+    /// dropped when it lands rather than shown over the newer one.
+    stale: bool,
+}
+
+impl<T> Default for Rereads<T> {
+    fn default() -> Self {
+        Self {
+            read: crate::device_read::DeviceRead::default(),
+            again: false,
+            stale: false,
+        }
+    }
+}
+
+impl<T: Send + 'static> Rereads<T> {
+    /// Whether a read is on its way.
+    fn running(&self) -> bool {
+        !self.read.is_finished()
+    }
+
+    /// The reading that landed since last asked, unless a newer one was
+    /// taken in meanwhile.
+    fn landed(&mut self) -> Option<T> {
+        if self.running() {
+            return None;
+        }
+        let stale = std::mem::take(&mut self.stale);
+        let reading = self.read.take()?;
+        (!stale).then_some(reading)
+    }
+
+    /// Whether a read asked for while one ran is due now.
+    fn due_again(&mut self) -> bool {
+        let due = self.again && !self.running();
+        if due {
+            self.again = false;
+        }
+        due
+    }
+
+    /// Read with `read` off the UI thread, or once more after the read on
+    /// its way. Returns a reading to take in now: one that had landed, or,
+    /// on a host that runs no background work, the one read here.
+    fn ask(&mut self, read: impl FnOnce() -> T + Clone + Send + 'static) -> Option<T> {
+        if self.running() {
+            self.again = true;
+            return None;
+        }
+        // Finished stays finished until the next start: what landed is
+        // taken here, so the start below is not refused for it.
+        let landed = self.landed();
+        // This read answers what was asked for while the last one ran.
+        self.again = false;
+        if self.read.start(read.clone()) {
+            landed
+        } else {
+            Some(read())
+        }
+    }
+
+    /// A reading made after the read on its way began was taken in.
+    fn supersede(&mut self) {
+        if self.running() {
+            self.stale = true;
         }
     }
 }
@@ -490,8 +656,9 @@ fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
 }
 
 /// Ask the gateway whether this device's vault holds each of `hosted`'s
-/// keys: one blocking request each.
-fn hosted_keys(hosted: Vec<String>) -> HashMap<String, Result<bool, String>> {
+/// keys: one blocking request each, so never on the UI thread.
+fn hosted_keys(hosted: Vec<String>) -> Keys {
+    crate::device_read::off_ui_thread();
     hosted
         .into_iter()
         .map(|id| {
@@ -665,7 +832,11 @@ impl AgentModelsArea {
             .operation(offer(AgentModelsEffect::RemoveProvider {
                 provider: id.clone(),
             }));
-            let row = if model.needs_key(profile) {
+            let row = if profile.sign_in.is_some() {
+                row.operation(offer(AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(id.clone()),
+                }))
+            } else if model.needs_key(profile) {
                 row.operation(
                     SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
                         provider: id,
@@ -705,9 +876,23 @@ pub struct AgentModelsModel {
     provider_key_buffers: Mutex<HashMap<String, Arc<Mutex<String>>>>,
     provider_field_buffers: Mutex<HashMap<String, HostedFieldBuffers>>,
     limit_field_buffers: Mutex<HashMap<(String, String), LimitFieldBuffers>>,
-    /// Whether this device's vault holds each hosted provider's key, or why
-    /// that could not be told.
-    keys: HashMap<String, Result<bool, String>>,
+    /// Whether this device's vault holds each hosted provider's key (for
+    /// a provider that signs in, a usable sign-in), or why that could not
+    /// be told.
+    keys: Keys,
+    /// The manager asked again off the UI thread while a model is busy.
+    snapshot_reads: Rereads<Snapshot>,
+    /// The keys asked again off the UI thread when the providers change.
+    key_reads: Rereads<Keys>,
+    /// A Google Vertex AI sign-in: of a provider being added, or again of
+    /// an existing one.
+    vertex: Option<VertexSetup>,
+    /// The project, location and model fields of each Vertex AI provider.
+    vertex_fields: Mutex<HashMap<String, VertexFields>>,
+    /// Where Vertex AI sign-ins are sealed and forgotten.
+    custodian: account_custody::Custodian,
+    /// What opens Google's consent page.
+    opener: Arc<dyn BrowserOpener>,
     changed: bool,
 }
 
@@ -750,6 +935,12 @@ impl AgentModelsModel {
             provider_field_buffers: Mutex::new(HashMap::new()),
             limit_field_buffers: Mutex::new(HashMap::new()),
             keys: HashMap::new(),
+            vertex: None,
+            vertex_fields: Mutex::new(HashMap::new()),
+            custodian: account_custody::Custodian::live(),
+            opener: Arc::new(PortalOpener),
+            snapshot_reads: Rereads::default(),
+            key_reads: Rereads::default(),
             changed: false,
         };
         model.sync_local_profile();
@@ -763,22 +954,116 @@ impl AgentModelsModel {
         model
     }
 
-    /// Ask the gateway whether this device's vault holds each hosted
-    /// provider's key.
+    /// Ask the gateway, off the UI thread, whether this device's vault
+    /// holds each hosted provider's key; the answer is taken in at the
+    /// sync its landing wakes ([`Self::take_reads`]).
     fn read_keys(&mut self) {
-        self.keys = hosted_keys(hosted_profiles(self.providers.get()));
+        let hosted = hosted_profiles(self.providers.get());
+        if let Some(keys) = self.key_reads.ask(move || hosted_keys(hosted)) {
+            self.apply_keys(keys);
+        }
+    }
+
+    /// Take in what the gateway said of the keys.
+    fn apply_keys(&mut self, keys: Keys) {
+        self.keys = keys;
         self.changed = true;
     }
 
+    /// Take in the readings that landed, and ask again what was asked for
+    /// while they ran.
+    fn take_reads(&mut self) {
+        if let Some(snapshot) = self.snapshot_reads.landed() {
+            self.apply_snapshot(snapshot);
+        }
+        if let Some(keys) = self.key_reads.landed() {
+            self.apply_keys(keys);
+        }
+        if self.snapshot_reads.due_again() {
+            self.refresh();
+        }
+        if self.key_reads.due_again() {
+            self.read_keys();
+        }
+    }
+
     /// Whether `profile` is hosted and this device's vault has no key for
-    /// it: one that roamed here from another device needs its own.
+    /// it: one that roamed here from another device needs its own. For a
+    /// provider that signs in, whether it needs to sign in again.
     fn needs_key(&self, profile: &ProviderProfile) -> bool {
         profile.location == EndpointLocation::Hosted
             && matches!(self.keys.get(&profile.id), Some(Ok(false)))
     }
 
+    /// Open Google's consent page for Vertex AI: for the provider being
+    /// added when `provider` is `None`, else again for that provider.
+    fn sign_in_with_google(&mut self, provider: Option<&str>) -> Result<(), String> {
+        let current = self.vertex.take();
+        let reuse = |setup: &VertexSetup| match provider {
+            None => !setup.existing,
+            Some(id) => setup.profile_id == id,
+        };
+        let mut setup = match current {
+            Some(setup) if reuse(&setup) => setup,
+            other => {
+                self.vertex = other;
+                self.cancel_vertex();
+                match provider {
+                    None => VertexSetup::adding(),
+                    Some(id) => VertexSetup::again(
+                        self.providers
+                            .get()
+                            .config
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == id && profile.signs_in_with_google())
+                            .ok_or_else(|| t("agent-provider-gone"))?,
+                    ),
+                }
+            }
+        };
+        setup.begin(&self.custodian, &self.opener);
+        self.vertex = Some(setup);
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Stop the Vertex AI sign-in or setup. A provider that was being added
+    /// leaves no grant behind.
+    fn cancel_vertex(&mut self) {
+        if let Some(mut setup) = self.vertex.take() {
+            setup.cancel();
+            if !setup.existing {
+                // Nothing may have been sealed yet; there is nothing to report.
+                let _ = self
+                    .custodian
+                    .forget_oauth(&agent_vertex::grant_id(&setup.profile_id));
+            }
+        }
+        self.changed = true;
+    }
+
+    fn vertex_fields(&self, profile: &ProviderProfile) -> VertexFields {
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(profile.id.clone())
+            .or_insert_with(|| VertexFields::of(profile))
+            .clone()
+    }
+
+    /// Ask the manager again off the UI thread; its answer is taken in at
+    /// the sync its landing wakes ([`Self::take_reads`]).
     fn refresh(&mut self) {
-        match self.control.snapshot() {
+        let control = Arc::clone(&self.control);
+        if let Some(snapshot) = self.snapshot_reads.ask(move || control.snapshot()) {
+            self.apply_snapshot(snapshot);
+        }
+    }
+
+    /// Take in what the manager reported, or why it could not.
+    fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        match snapshot {
             Ok(snapshot) => {
                 self.snapshot = snapshot;
                 self.manager_available = true;
@@ -927,9 +1212,95 @@ impl AgentModelsModel {
         }
     }
 
+    /// Remove `provider` from `config` with its credential on this device:
+    /// its API key, or its Google sign-in.
+    fn remove_provider(
+        &mut self,
+        config: &mut ProviderConfig,
+        provider: &str,
+    ) -> Result<(), String> {
+        let removed = config
+            .remove(provider)
+            .ok_or_else(|| t("agent-provider-gone"))?;
+        if removed.sign_in.is_none() {
+            return tilo_model_gateway::remove_api_key(provider).map_err(|error| {
+                t_args(
+                    "agent-key-remove-err",
+                    &[("error", error.to_string().into())],
+                )
+            });
+        }
+        // Forgotten here only: revoking at Google would end every grant of
+        // Tilo's client for this person, Mail's included.
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == provider)
+        {
+            self.cancel_vertex();
+        }
+        self.custodian
+            .forget_oauth(&agent_vertex::grant_id(provider))
+            .map_err(|error| {
+                t_args(
+                    "agent-sign-in-forget-err",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider);
+        Ok(())
+    }
+
+    /// Add the Vertex AI provider being set up (`provider` `None`), once
+    /// signed in, or change an existing one; the provider's id.
+    fn set_vertex_provider(
+        &self,
+        config: &mut ProviderConfig,
+        provider: Option<String>,
+        fields: (&str, Option<&str>, Option<&str>),
+    ) -> Result<String, String> {
+        let (id, existing) = match provider {
+            Some(id) => (id, true),
+            None => (
+                self.vertex
+                    .as_ref()
+                    .filter(|setup| !setup.existing)
+                    .map(|setup| setup.profile_id.clone())
+                    .ok_or_else(|| t("agent-vertex-sign-in-first"))?,
+                false,
+            ),
+        };
+        if !existing && !agent_vertex::signed_in(&self.custodian, &id) {
+            return Err(t("agent-vertex-sign-in-first"));
+        }
+        agent_vertex::apply(config, &id, existing, fields)?;
+        Ok(id)
+    }
+
+    /// Close the setup of the Vertex AI provider `id` once it is saved, and
+    /// read its fields and sign-in again.
+    fn vertex_saved(&mut self, id: &str) {
+        if self
+            .vertex
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == id)
+        {
+            self.vertex = None;
+        }
+        self.vertex_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+        self.read_keys();
+    }
+
     /// Apply a provider change to the person's settings.
     fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
         let mut config = self.providers.get().config.clone();
+        let mut vertex_saved = None;
         match effect {
             AgentModelsEffect::SetModelRequestLimits {
                 provider,
@@ -945,8 +1316,7 @@ impl AgentModelsModel {
                     (max_output_tokens, runtime_context_tokens, plan_timeout_ms),
                 )?;
                 self.limit_field_buffers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .remove(&(provider, model));
             }
             AgentModelsEffect::AddProvider { protocol: slug } => {
@@ -990,15 +1360,19 @@ impl AgentModelsModel {
                 }
             }
             AgentModelsEffect::RemoveProvider { provider } => {
-                if config.remove(&provider).is_none() {
-                    return Err(t("agent-provider-gone"));
-                }
-                tilo_model_gateway::remove_api_key(&provider).map_err(|error| {
-                    t_args(
-                        "agent-key-remove-err",
-                        &[("error", error.to_string().into())],
-                    )
-                })?;
+                self.remove_provider(&mut config, &provider)?;
+            }
+            AgentModelsEffect::SetVertexProvider {
+                provider,
+                project,
+                location,
+                model,
+            } => {
+                vertex_saved = Some(self.set_vertex_provider(
+                    &mut config,
+                    provider,
+                    (&project, location.as_deref(), model.as_deref()),
+                )?);
             }
             _ => return Err("not a provider effect".into()),
         }
@@ -1013,6 +1387,9 @@ impl AgentModelsModel {
                 )
             })?;
         self.providers.refresh();
+        if let Some(id) = vertex_saved {
+            self.vertex_saved(&id);
+        }
         self.changed = true;
         Ok(())
     }
@@ -1417,10 +1794,7 @@ impl AgentModelsModel {
     }
 
     fn key_buffer(&self, profile_id: &str) -> Arc<Mutex<String>> {
-        let mut buffers = self
-            .provider_key_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_key_buffers.lock_recover();
         buffers
             .entry(profile_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(String::new())))
@@ -1428,10 +1802,7 @@ impl AgentModelsModel {
     }
 
     fn field_buffers(&self, profile: &ProviderProfile) -> HostedFieldBuffers {
-        let mut buffers = self
-            .provider_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.provider_field_buffers.lock_recover();
         buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
@@ -1465,6 +1836,11 @@ impl AgentModelsModel {
                     AgentModelsEffect::AddProvider {
                         protocol: "openai-compatible".into(),
                     },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
+                    AgentModelsEffect::AddGoogleVertex,
                 ))),
         )));
         for profile in config
@@ -1474,6 +1850,10 @@ impl AgentModelsModel {
         {
             let location = location_shown(profile.location);
             body.push(value_row(profile.display_label(), &location));
+            if profile.sign_in.is_some() {
+                self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
+                continue;
+            }
             let profile_id = profile.id.clone();
             let fields = self.field_buffers(profile);
             let label = fields
@@ -1648,21 +2028,7 @@ impl AgentModelsModel {
             } else {
                 Box::new(Text::new(&t("agent-key-none")).dimmed())
             }));
-            if profile.default_model.is_some() {
-                body.push(row(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-default-{profile_id}"),
-                        &if config.default_profile.as_deref() == Some(&profile.id) {
-                            t("agent-default-current")
-                        } else {
-                            t("agent-use-default")
-                        },
-                    ),
-                    AgentModelsEffect::SetDefaultProvider {
-                        provider: profile_id.clone(),
-                    },
-                ))));
-            }
+            body.extend(self.default_button(profile, config.default_profile.as_deref()));
         }
         for issue in config.validation_errors() {
             body.push(note(&t_args(
@@ -1673,16 +2039,133 @@ impl AgentModelsModel {
         card(&t("agent-hosted-title"), rows(body))
     }
 
+    /// The offer to make `profile` the default, when it has a model.
+    fn default_button(
+        &self,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) -> Option<Item> {
+        profile.default_model.as_ref()?;
+        Some(row(Box::new(self.cx.bind_invocation(
+            Button::new(
+                &format!("agent-models-default-{}", profile.id),
+                &if default_profile == Some(profile.id.as_str()) {
+                    t("agent-default-current")
+                } else {
+                    t("agent-use-default")
+                },
+            ),
+            AgentModelsEffect::SetDefaultProvider {
+                provider: profile.id.clone(),
+            },
+        ))))
+    }
+
+    /// A provider that signs in with Google: its project, location and
+    /// model, whether its sign-in still holds on this device, and the offer
+    /// to sign in again. It has no key, endpoint or protocol to edit.
+    fn push_sign_in_profile(
+        &self,
+        body: &mut Vec<Item>,
+        profile: &ProviderProfile,
+        default_profile: Option<&str>,
+    ) {
+        let profile_id = profile.id.clone();
+        self.vertex_fields(profile)
+            .push(&self.cx, body, &profile_id);
+        let setup = self
+            .vertex
+            .as_ref()
+            .filter(|setup| setup.profile_id == profile_id);
+        let waiting = setup.is_some_and(VertexSetup::waiting);
+        let state = self.keys.get(&profile_id);
+        if let Some(Err(error)) = state {
+            body.push(row(crate::widgets::error_caption(&t_args(
+                "agent-sign-in-read-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        // why: a sign-in status sentence or badge is a status line, not a label/control pair.
+        body.push(row(if waiting {
+            Box::new(Text::new(&t("agent-vertex-waiting")).dimmed())
+        } else if matches!(state, Some(Ok(true))) {
+            Box::new(Text::new(&t("agent-signed-in")).dimmed())
+        } else if self.needs_key(profile) {
+            semantic_status_pill(&t("agent-sign-in-again-needed"), StatusTone::Warning)
+        } else {
+            Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
+        }));
+        if let Some(message) = setup.and_then(VertexSetup::message) {
+            body.push(row(crate::widgets::error_caption(message)));
+        }
+        let sign_in: Box<dyn Widget> = if waiting {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-cancel-{profile_id}"),
+                    &t("agent-cancel"),
+                ),
+                AgentModelsEffect::CancelGoogleSignIn,
+            ))
+        } else {
+            Box::new(self.cx.bind_invocation(
+                Button::new(
+                    &format!("agent-models-vertex-sign-in-{profile_id}"),
+                    &t("agent-sign-in-again"),
+                ),
+                AgentModelsEffect::SignInWithGoogle {
+                    provider: Some(profile_id.clone()),
+                },
+            ))
+        };
+        body.push(row(Box::new(
+            Row::new()
+                .push(sign_in)
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-enabled-{profile_id}"),
+                        &if profile.enabled {
+                            t("agent-disable")
+                        } else {
+                            t("agent-enable")
+                        },
+                    ),
+                    AgentModelsEffect::SetProviderEnabled {
+                        provider: profile_id.clone(),
+                        on: !profile.enabled,
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        &t("agent-remove-provider"),
+                    ),
+                    AgentModelsEffect::RemoveProvider {
+                        provider: profile_id.clone(),
+                    },
+                ))),
+        )));
+        body.extend(self.default_button(profile, default_profile));
+    }
+
+    /// The setup of a Vertex AI provider being added, then the hosted
+    /// providers and their request limits.
+    fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
+        if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
+            cards.push(setup.card(&self.cx));
+        }
+        cards.push(self.hosted_profiles());
+        cards.push(self.request_limits_card());
+    }
+
     fn request_limit_buffers(
         &self,
         profile: &ProviderProfile,
         selected: &ModelDescriptor,
     ) -> LimitFieldBuffers {
         let key = (profile.id.clone(), selected.id.clone());
-        let mut buffers = self
-            .limit_field_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buffers = self.limit_field_buffers.lock_recover();
         let fields = buffers
             .entry(key)
             .or_insert_with(|| LimitFieldBuffers {
@@ -1814,8 +2297,7 @@ impl AgentModelsModel {
                 &t("agent-service-down-title"),
                 rows(vec![note(&t("agent-service-down-body"))]),
             ));
-            cards.push(self.hosted_profiles());
-            cards.push(self.request_limits_card());
+            self.push_provider_cards(&mut cards);
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
@@ -1849,8 +2331,7 @@ impl AgentModelsModel {
                 cards.push(self.model_card(model));
             }
         }
-        cards.push(self.hosted_profiles());
-        cards.push(self.request_limits_card());
+        self.push_provider_cards(&mut cards);
         crate::widgets::cards(cards)
     }
 }
@@ -2029,6 +2510,7 @@ impl ModelManagerCli {
 
 impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
             return Err(output.stderr_diagnostic());
@@ -2038,6 +2520,7 @@ impl LocalModelControl for ModelManagerCli {
     }
 
     fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(
             &[
                 "install",
@@ -2057,15 +2540,19 @@ impl LocalModelControl for ModelManagerCli {
     }
 
     fn start(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("start", id)
     }
     fn stop(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("stop", id)
     }
     fn remove(&self, id: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Self::command("remove", id)
     }
     fn stage_accelerator(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         let output = manager_run(&["stage-accelerator"], Duration::from_secs(30 * 60))?;
         output
             .status
@@ -2249,10 +2736,26 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn poll(&mut self) -> bool {
+        self.take_reads();
         if self.providers.refresh() {
             self.read_keys();
         }
-        if self.is_busy() && self.last_poll.elapsed() >= POLL_INTERVAL {
+        let polled = self.vertex.as_mut().map(VertexSetup::poll);
+        match polled {
+            None | Some(Polled::Nothing) => {}
+            Some(Polled::Changed) => self.changed = true,
+            Some(Polled::SignedInAgain) => {
+                self.vertex = None;
+                self.read_keys();
+                self.notice = Some(t("agent-vertex-signed-in"));
+            }
+        }
+        // While a model is busy the manager is asked again, one read at a
+        // time, each a while after the last landed.
+        if self.is_busy()
+            && !self.snapshot_reads.running()
+            && self.last_poll.elapsed() >= POLL_INTERVAL
+        {
             self.refresh();
         }
         std::mem::take(&mut self.changed)
@@ -2263,7 +2766,7 @@ impl PaneModel for AgentModelsModel {
     }
 
     fn busy(&self) -> bool {
-        self.is_busy()
+        self.is_busy() || self.vertex.as_ref().is_some_and(VertexSetup::waiting)
     }
 }
 
@@ -2285,6 +2788,7 @@ struct SampleManager;
 
 impl LocalModelControl for SampleManager {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+        crate::device_read::off_ui_thread();
         Ok(LocalModelSnapshot {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
@@ -2315,18 +2819,23 @@ impl LocalModelControl for SampleManager {
         })
     }
     fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn start(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn stop(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn remove(&self, _: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
     fn stage_accelerator(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -2628,6 +3137,169 @@ mod tests {
         assert!(save.params().iter().any(|param| param.name == "key"));
     }
 
+    /// Google Vertex AI is added only once signed in, with the project,
+    /// location and model chosen; it shows its sign-in rather than a key,
+    /// and removing it forgets its own grant and no other.
+    #[test]
+    fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
+        use account_custody::TokenSet;
+        use account_custody::cloud_projects::CloudProject;
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        let grant = |refresh: &str| TokenSet {
+            access_token: "access".into(),
+            scope: Some("https://www.googleapis.com/auth/cloud-platform".into()),
+            refresh_token: refresh.into(),
+            expires_in: 3600,
+            obtained_at: 0,
+        };
+        let mail = accounts::AccountId::new("ada@example.com");
+        pane.custodian
+            .seal_oauth(&mail, &grant("mail-refresh"))
+            .unwrap();
+
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        let add = |project: &str| AgentModelsEffect::SetVertexProvider {
+            provider: None,
+            project: project.into(),
+            location: None,
+            model: None,
+        };
+        assert_eq!(
+            pane.change_providers(add("tilo-509618")),
+            Err(t("agent-vertex-sign-in-first")),
+            "nothing is saved before the sign-in"
+        );
+        pane.custodian
+            .seal_oauth(&agent_vertex::grant_id(&id), &grant("vertex-refresh"))
+            .unwrap();
+        pane.vertex
+            .as_mut()
+            .unwrap()
+            .signed_in_for_test(vec![CloudProject {
+                id: "tilo-509618".into(),
+                name: "Tilo".into(),
+            }]);
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Tilo (tilo-509618)"),
+            "{text:#?}"
+        );
+        assert_eq!(
+            pane.change_providers(add("Not A Project")),
+            Err(t("agent-vertex-project-invalid"))
+        );
+        assert!(pane.providers.get().config.profiles.is_empty());
+
+        pane.change_providers(add("tilo-509618")).unwrap();
+        assert!(pane.vertex.is_none(), "the setup ends once saved");
+        let stored = pane.cx.settings::<AgentProviders>().get().config;
+        let profile = &stored.profiles[0];
+        assert_eq!(profile.id, id, "the grant was sealed for this provider");
+        assert!(profile.signs_in_with_google());
+        assert!(profile.credential.is_none());
+        assert_eq!(
+            profile.endpoint,
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.sign_in.as_ref().unwrap().billing_project.as_deref(),
+            Some("tilo-509618")
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-4-argon")
+        );
+        assert!(stored.validation_errors().is_empty());
+
+        shows_its_sign_in_and_forgets_only_its_grant(&mut pane, &id, &mail);
+    }
+
+    fn shows_its_sign_in_and_forgets_only_its_grant(
+        pane: &mut AgentModelsModel,
+        id: &str,
+        mail: &accounts::AccountId,
+    ) {
+        use account_custody::GrantState;
+        let id = id.to_string();
+        pane.keys.insert(id.clone(), Ok(false));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
+        assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
+        pane.keys.insert(id.clone(), Ok(true));
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Signed in with Google on this device."),
+            "{text:#?}"
+        );
+
+        pane.change_providers(AgentModelsEffect::SetVertexProvider {
+            provider: Some(id.clone()),
+            project: "other-project".into(),
+            location: Some("europe-west4".into()),
+            model: Some("gemini-2.5-pro".into()),
+        })
+        .unwrap();
+        let profile = pane.cx.settings::<AgentProviders>().get().config.profiles[0].clone();
+        assert_eq!(
+            profile.endpoint,
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/other-project/locations/europe-west4/endpoints/openapi"
+        );
+        assert_eq!(
+            profile.default_model.as_deref(),
+            Some("google/gemini-2.5-pro")
+        );
+        assert_eq!(
+            profile.sign_in.unwrap().billing_project.as_deref(),
+            Some("other-project")
+        );
+
+        pane.change_providers(AgentModelsEffect::RemoveProvider {
+            provider: id.clone(),
+        })
+        .unwrap();
+        assert!(pane.providers.get().config.profiles.is_empty());
+        assert_eq!(
+            pane.custodian
+                .oauth_grant_state(&agent_vertex::grant_id(&id))
+                .unwrap(),
+            GrantState::Missing
+        );
+        assert_eq!(
+            pane.custodian.oauth_grant_state(mail).unwrap(),
+            GrantState::Usable,
+            "Mail's grant of the same person is untouched"
+        );
+    }
+
+    /// Cancelling the setup of a provider being added leaves no grant.
+    #[test]
+    fn cancelling_a_vertex_setup_forgets_its_grant() {
+        let vault = tempfile::tempdir().unwrap();
+        let mut pane = model_over(mock(snapshot(None)));
+        pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
+        pane.vertex = Some(VertexSetup::adding());
+        let id = pane.vertex.as_ref().unwrap().profile_id.clone();
+        pane.custodian
+            .seal_oauth(
+                &agent_vertex::grant_id(&id),
+                &account_custody::TokenSet {
+                    access_token: "a".into(),
+                    scope: None,
+                    refresh_token: "r".into(),
+                    expires_in: 3600,
+                    obtained_at: 0,
+                },
+            )
+            .unwrap();
+        pane.cancel_vertex();
+        assert!(pane.vertex.is_none());
+        assert!(!agent_vertex::signed_in(&pane.custodian, &id));
+    }
+
     fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
@@ -2926,6 +3598,143 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// A model manager that takes requests at once but does not report
+    /// its snapshot until it is let go (or ten seconds pass), as a wedged
+    /// `tilo-model-manager`. Once let go it reports a model ready.
+    struct StalledManager(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+    /// A snapshot with one model called `name` in `phase`.
+    fn one_model(name: &str, phase: LocalModelPhase) -> LocalModelSnapshot {
+        LocalModelSnapshot {
+            models: vec![InstalledLocalModel {
+                package: LocalModelPackage {
+                    name: name.into(),
+                    ..package()
+                },
+                phase,
+            }],
+            ..snapshot(None)
+        }
+    }
+
+    impl LocalModelControl for StalledManager {
+        fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+            crate::device_read::off_ui_thread();
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err("the model manager never answered".into());
+                }
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            Ok(one_model(
+                "Porch Model",
+                LocalModelPhase::Ready {
+                    running: false,
+                    endpoint: None,
+                },
+            ))
+        }
+        fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn start(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn stop(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn remove(&self, _: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+        fn stage_accelerator(&self) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            Ok(())
+        }
+    }
+
+    /// A click is answered and the window keeps drawing while the model
+    /// manager takes its time to report: neither the snapshot asked after
+    /// the change nor the one a busy model's polling asks holds the window,
+    /// and the snapshot lands once the manager answers.
+    #[test]
+    fn a_stalled_model_manager_never_holds_the_window() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            let model = settings.agent_models().model();
+            let mut model = model.borrow_mut();
+            model.follow_local_profile = false;
+            model.control = Arc::new(StalledManager(stalled));
+            // A model downloading: the pane asks the manager again soon.
+            model.snapshot = one_model(
+                "Busy Model",
+                LocalModelPhase::Downloading {
+                    downloaded_bytes: 1,
+                    total_bytes: 4,
+                },
+            );
+            model.last_poll = ui::time::now()
+                .checked_sub(POLL_INTERVAL)
+                .unwrap_or_else(ui::time::now);
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        app.start_effect(&SettingsEffect::from(AgentModelsEffect::SetUpAccelerator))
+            .expect("the accelerator setup runs as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "the click waited {answered:?} on the model manager"
+        );
+        let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
+            app.with_widget::<SettingsApp, _>(|settings| {
+                let model = settings.agent_models().model().borrow();
+                model
+                    .snapshot
+                    .models
+                    .iter()
+                    .map(|model| model.package.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            shown(&mut app),
+            ["Busy Model"],
+            "the last snapshot is shown until the manager answers"
+        );
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while shown(&mut app) != ["Porch Model"] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the snapshot the manager reported is shown"
+            );
+            app.settle();
+            std::thread::yield_now();
+        }
     }
 
     /// Wait for a background read to end, as the warm-up's wake would.

@@ -70,8 +70,19 @@ pub(super) struct LocalAppConnection {
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
     pub(super) continuation_instance: Option<u64>,
     process: PeerProcess,
+    /// What Files hands over on its connection's descriptor lane: the only
+    /// app whose selected objects this broker takes. Other apps' descriptors
+    /// are closed on receipt.
+    pub(super) descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
     connected: AtomicBool,
 }
+
+/// The only app that hands this broker selected objects.
+const FILES: &str = "so.tilo.file-explorer";
+
+/// Selected objects one Files connection may have handed over and not yet
+/// named: two whole captures, each its sources and one destination.
+const MAX_HANDED_DESCRIPTORS: usize = 2 * (runtime_collab::file_clipboard::MAX_ENTRIES + 1);
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
@@ -161,26 +172,6 @@ impl PeerProcess {
     }
 
     #[cfg(target_os = "linux")]
-    fn duplicate(&self, descriptor: u32) -> Result<std::fs::File, String> {
-        use std::os::fd::FromRawFd as _;
-        let descriptor = i32::try_from(descriptor).map_err(|_| "invalid peer descriptor")?;
-        // SAFETY: owned kernel-attested pidfd, bounded descriptor number, zero
-        // flags. Success returns a fresh owned close-on-exec descriptor.
-        let result =
-            unsafe { libc::syscall(libc::SYS_pidfd_getfd, self.task.as_raw_fd(), descriptor, 0) };
-        let fd = i32::try_from(result).map_err(|_| "peer descriptor exceeds bound")?;
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        // SAFETY: successful pidfd_getfd transfers this fresh descriptor.
-        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
-    }
-    #[cfg(not(target_os = "linux"))]
-    fn duplicate(&self, _: u32) -> Result<std::fs::File, String> {
-        Err("peer descriptors require Linux".into())
-    }
-
-    #[cfg(target_os = "linux")]
     pub(super) fn alive(&self) -> bool {
         let mut poll = libc::pollfd {
             fd: self.task.as_raw_fd(),
@@ -225,6 +216,11 @@ impl LocalAppConnection {
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
+                descriptors: (app_id == FILES).then(|| {
+                    runtime_portal::descriptor_lane::ReceivedDescriptors::new(
+                        MAX_HANDED_DESCRIPTORS,
+                    )
+                }),
                 app_id,
                 workspace_id,
                 creation: launch.creation,
@@ -449,23 +445,28 @@ impl CapnpChannelHandle {
         })
     }
 
+    /// Selected objects the launcher-attested Files process handed over on
+    /// its own connection's descriptor lane, taken by lane number. The broker
+    /// never reaches into the app for a descriptor: that needs ptrace-attach
+    /// rights, which a hardened host withholds from everyone.
     pub(super) fn clipboard_descriptor_source(
         &self,
     ) -> Result<crate::services::SelectedDescriptorSource, String> {
         let context = self
             .native_media_context(false)
             .map_err(|error| error.to_string())?;
-        if context.app_id() != "so.tilo.file-explorer" {
+        if context.app_id() != FILES {
             return Err("selected descriptors belong only to Files".into());
         }
-        let local = self
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.clone())
+        let descriptors = self
+            .handed_descriptors()
             .ok_or("launcher-attested Files process unavailable")?;
         Ok(Arc::new(move |descriptor| {
             context.revalidate()?;
-            let file = local.process.duplicate(descriptor)?;
+            let file = descriptors
+                .take(descriptor)
+                .map(std::fs::File::from)
+                .ok_or("Files did not hand over this selected descriptor")?;
             context.revalidate()?;
             Ok(file)
         }))
@@ -489,6 +490,17 @@ impl CapnpChannelHandle {
         }
         Ok(peer)
     }
+
+    /// The descriptor lane of this connection's launcher-attested Files process.
+    pub(super) fn handed_descriptors(
+        &self,
+    ) -> Option<runtime_portal::descriptor_lane::ReceivedDescriptors> {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .and_then(|local| local.descriptors.clone())
+    }
+
     pub(super) fn native_media_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
@@ -520,41 +532,42 @@ impl CapnpChannelHandle {
 mod tests;
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
 mod descriptor_tests {
-    use super::*;
-    use std::os::unix::fs::MetadataExt as _;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn attested_peer_descriptor_preserves_selected_object_after_path_replacement() {
-        let directory = tempfile::tempdir().expect("descriptor fixture");
-        let path = directory.path().join("selected");
-        std::fs::write(&path, b"shown object").expect("original object");
-        let selected = std::fs::File::open(&path).expect("retained selected descriptor");
-        let original = selected.metadata().expect("original identity");
-        let (socket, _peer) = tokio::net::UnixStream::pair().expect("actual local socket");
-        let process = PeerProcess::from_socket(&socket).expect("kernel peer pidfd");
-        std::fs::rename(&path, directory.path().join("original")).expect("replace shown name");
-        std::fs::write(&path, b"replacement object").expect("new object");
-        let duplicated = process
-            .duplicate(u32::try_from(selected.as_raw_fd()).expect("fd"))
-            .expect("duplicate actual peer descriptor");
-        let retained = duplicated.metadata().expect("retained identity");
-        let replacement = std::fs::metadata(&path).expect("replacement identity");
-        assert_eq!(
-            (retained.dev(), retained.ino()),
-            (original.dev(), original.ino())
-        );
-        assert_ne!(
-            (retained.dev(), retained.ino()),
-            (replacement.dev(), replacement.ino())
-        );
-        assert!(process.duplicate(u32::MAX).is_err());
-        let descriptor = u32::try_from(selected.as_raw_fd()).expect("selected fd");
-        drop(selected);
+    /// Selected objects reach this broker only on the app's descriptor lane.
+    /// Pulling them out of the app's process (a pidfd descriptor grab, ptrace, process
+    /// memory access) needs ptrace-attach rights that hardened hosts withhold
+    /// from everyone (`kernel.yama.ptrace_scope = 3`), so no broker source may
+    /// depend on one.
+    #[test]
+    fn no_broker_path_reaches_into_an_app_process() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut pending = vec![root];
+        let mut offenders = Vec::new();
+        let forbidden = [
+            ["pidfd", "_getfd"].concat(),
+            ["SYS_", "ptrace"].concat(),
+            ["libc::", "ptrace"].concat(),
+            ["process_vm", "_readv"].concat(),
+            ["process_vm", "_writev"].concat(),
+        ];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("broker sources") {
+                let path = entry.expect("broker source").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let source = std::fs::read_to_string(&path).expect("broker source");
+                    for call in &forbidden {
+                        if source.contains(call.as_str()) {
+                            offenders.push(format!("{}: {call}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
         assert!(
-            process.duplicate(descriptor).is_err(),
-            "a closed selection is not adopted"
+            offenders.is_empty(),
+            "ptrace-dependent calls: {offenders:?}"
         );
     }
 }

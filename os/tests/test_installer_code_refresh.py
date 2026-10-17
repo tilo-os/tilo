@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 def load(name, path):
@@ -23,6 +23,88 @@ def load(name, path):
 
 protocol = load('refresh_protocol_test', ROOT / 'usr/libexec/tilo-installer-code-protocol.py')
 host = load('refresh_host_test', ROOT / 'dev/refresh-installer-code.py')
+
+
+console = load('installer_console_test', ROOT / 'dev/installer-console.py')
+
+
+class ConsoleTransport(unittest.TestCase):
+    def test_nonobject_frames_do_not_hide_the_matching_reply(self):
+        client, server = socket.socketpair()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        def serve():
+            with server.makefile('rb') as stream:
+                seq = json.loads(stream.readline())['seq']
+            server.sendall(b'null\n[]\n42\n'
+                + json.dumps({'seq': 'old', 'state': {}}).encode() + b'\n'
+                + json.dumps({'seq': seq, 'state': {'app': 'installer'}}).encode() + b'\n')
+        worker = threading.Thread(target=serve)
+        worker.start()
+        try:
+            with patch.object(console.socket, 'create_connection', return_value=client):
+                self.assertEqual(console.state('tcp://127.0.0.1:12345'), {'app': 'installer'})
+        finally:
+            client.close()
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+
+    def test_malformed_state_is_retryable_not_an_attribute_error(self):
+        for state in (None, [], 'booting'):
+            with self.subTest(state=state), patch.object(console, 'request', return_value={'state': state}):
+                with self.assertRaises(console.Unreachable):
+                    console.state('fixture')
+
+    def test_failed_connect_closes_the_socket(self):
+        client = Mock()
+        client.connect.side_effect = OSError('not ready')
+        with patch.object(console.socket, 'socket', return_value=client):
+            with self.assertRaises(console.Unreachable):
+                console.request('fixture', {'op': 'state_dump'})
+        client.close.assert_called_once()
+
+    def test_unterminated_response_is_bounded(self):
+        client = Mock()
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        client.recv.side_effect = [b'x' * 65536] * 33 + [b'']
+        with patch.object(console.socket, 'socket', return_value=client):
+            with self.assertRaisesRegex(console.Unreachable, 'too large'):
+                console.request('fixture', {'op': 'state_dump'})
+        self.assertLess(client.recv.call_count, 33)
+
+    def test_read_timeout_tracks_the_remaining_request_budget(self):
+        now = [0.0]
+        client = Mock()
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        budget = [1.0]
+        client.settimeout.side_effect = lambda seconds: budget.__setitem__(0, seconds)
+        def receive(_):
+            now[0] += min(0.6, budget[0])
+            if budget[0] < 0.6:
+                raise socket.timeout('read timed out')
+            return b'old boot output\n'
+        client.recv.side_effect = receive
+        with patch.object(console.socket, 'socket', return_value=client), \
+                patch.object(console.time, 'monotonic', side_effect=lambda: now[0]):
+            with self.assertRaises(console.Unreachable):
+                console.request('fixture', {'op': 'state_dump'}, timeout=1.0)
+        self.assertLessEqual(now[0], 1.01)
+
+    def test_poll_budget_includes_requests_and_retry_delay(self):
+        now = [0.0]
+        def unavailable(path, payload, timeout=15):
+            now[0] += timeout
+            raise console.Unreachable('booting')
+        def sleep(seconds):
+            now[0] += seconds
+        with patch.object(console, 'request', side_effect=unavailable), \
+                patch.object(console.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(console.time, 'sleep', side_effect=sleep):
+            with self.assertRaises(TimeoutError):
+                console.poll('fixture', lambda s: True, timeout=0.25)
+        self.assertLessEqual(now[0], 0.251)
 
 
 class Transport(unittest.TestCase):

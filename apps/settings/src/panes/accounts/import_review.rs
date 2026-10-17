@@ -132,7 +132,9 @@ impl ImportReview {
             }
             let mut account = accounts::Account::new(id, accounts::thunderbird::PENDING_TYPE);
             account.display_name.clone_from(&config.display_name);
-            account.set_config(&config);
+            account.config = config
+                .to_value()
+                .map_err(|_| t("accounts-import-save-failed"))?;
             additions.push(account);
         }
         if !self.choices.iter().any(|choice| choice.selected) {

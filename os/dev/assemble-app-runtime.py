@@ -146,9 +146,11 @@ def runtime_engines(directory):
     listing = directory / 'runtime-engines'
     if not listing.is_file():
         raise ValueError('build-thin-apps.sh left no runtime engine list beside the toolkit')
-    engines = [directory / name for name in listing.read_text().split()]
-    if any(not re.fullmatch(r'lib[a-z0-9_]+\.so', path.name) or not path.is_file()
-           for path in engines):
+    names = listing.read_text().split()
+    if any(not re.fullmatch(r'lib[a-z0-9_]+\.so', name) for name in names):
+        raise ValueError('a listed runtime engine is not a built library beside the toolkit')
+    engines = [directory / name for name in names]
+    if any(not path.is_file() for path in engines):
         raise ValueError('a listed runtime engine is not a built library beside the toolkit')
     return engines
 

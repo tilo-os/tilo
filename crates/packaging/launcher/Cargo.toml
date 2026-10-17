@@ -48,6 +48,7 @@ native-home-alias-qualification = []
 
 [dependencies]
 browser-continuity = { workspace = true, features = ["native"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

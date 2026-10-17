@@ -5,9 +5,9 @@
 # os/kernel-buildroot-snapshot.env, which build-kernel.yml and the OS image build FROM.
 #
 #   kernel-buildroot.sh build ARCH OUT       build and audit OUT/image.oci.tar (buildah image)
-#   kernel-buildroot.sh release OUT...       publish each signed OUT and write OUT/../pins.env,
-#                                            the published references and the inputs they were
-#                                            built from (skopeo image)
+#   kernel-buildroot.sh pins OUT...          after publish-kernel-buildroot published each OUT,
+#                                            write OUT/../pins.env: the published references and
+#                                            the inputs they were built from
 #   kernel-buildroot.sh pin                  write os/kernel-buildroot-snapshot.env from stable's
 #                                            pins (T_POINTER_KERNEL_BUILDROOT), when main builds
 #                                            the buildroot from the same inputs
@@ -50,13 +50,13 @@ case ${1:-} in
       command -v createrepo_c rpmbuild gcc clang cargo pahole >/dev/null
       cat /usr/lib/tilo/kernel-buildroot-srpm.txt' sh "$arch" "$BASE_REF"
     ;;
-  release)
+  pins)
     shift
-    (($#)) || die 'usage: kernel-buildroot.sh release OUT...'
+    (($#)) || die 'usage: kernel-buildroot.sh pins OUT...'
     lines=()
     for out in "$@"; do
       arch=$(basename "$out")
-      bash tools/ci/publish/oci-publish.sh release "$repository" "$out" "sha-{commit}-$arch"
+      [[ -s $out/receipt.json ]] || die "$out is not published"
       key=KERNEL_BUILDROOT_$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')_REF
       lines+=("$key=$repository@$(cat "$out/digest")")
     done
@@ -87,5 +87,5 @@ case ${1:-} in
     printf 'build(os): refresh native kernel buildroot snapshots\n' > .t-commit-message
     cat "$pins"
     ;;
-  *) die 'usage: kernel-buildroot.sh build|release|pin ...' ;;
+  *) die 'usage: kernel-buildroot.sh build|pins|pin ...' ;;
 esac

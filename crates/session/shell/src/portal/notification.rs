@@ -380,6 +380,7 @@ impl NotificationBackend {
             contact_endpoint: None,
             sender_name: None,
             sound: Self::sound(&notification),
+            incoming_call: false,
         });
     }
 

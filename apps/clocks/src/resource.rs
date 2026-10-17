@@ -75,10 +75,37 @@ fn scene(name: Option<&str>) -> &str {
     name.strip_suffix("-narrow").unwrap_or(name)
 }
 
+/// What the binary runs instead of opening a window.
+///
+/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
+/// database's self-check. It needs `runtime-engine`, the release build, where
+/// that code is in `libtilo_timezone_engine.so`; the check proves Clocks
+/// loads that library and runs it.
+const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
+    option: "--probe-timezone-engine",
+    run: probe_timezone_engine,
+}];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    let report = tilo_timezone_engine::self_check()?;
+    println!("clocks --probe-timezone-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_timezone_engine(_: &str) -> Result<(), String> {
+    Err("the time-zone engine library needs the `runtime-engine` feature".to_string())
+}
+
 impl ResourceApp for ClocksShell {
     type Resource = Clocks;
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
+
+    fn commands() -> &'static [ui::framework::Command] {
+        COMMANDS
+    }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

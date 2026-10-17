@@ -20,6 +20,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
+[resources]
+kinds = ["canvas.artwork"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -47,7 +50,9 @@ type = "gui"
 splash-budget = 250
 
 # Files opens a saved artwork in Canvas; a picture opens as an artwork the
-# size of the picture, one per file.
+# size of the picture, one per file. Photos opens pictures by default; Canvas
+# is offered for them under Open with.
 [providers]
+secondary = true
 mime = ["application/vnd.tilo.artwork+zip", "image/png", "image/jpeg", "image/webp"]
 ext = ["artwork", "png", "jpg", "jpeg", "webp"]

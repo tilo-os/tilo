@@ -79,6 +79,8 @@ pub(super) fn mount(
         search_requests: Rc::default(),
         instance_id: instance,
         app_id: APP.into(),
+        device_id: "test-device".into(),
+        host_person: UserId(author.into()),
         records: records.clone(),
         checkout: checkout.clone(),
         permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
@@ -87,6 +89,108 @@ pub(super) fn mount(
         writes_as_author,
     };
     (binding, scope, owner)
+}
+
+#[test]
+fn trusted_host_person_scope_rejects_reattribution_and_restores_after_nested_callbacks() {
+    use crate::invocation_scope::InvokerScope;
+    use tilo_actions::ActionInvoker;
+
+    let cache = PortableStorage::new("profile", "device").unwrap();
+    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    records.create_record(&checkout).unwrap();
+    let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
+    binding.author = UserId("agent".into());
+    binding.operation_context.invoker = Some(ActionInvoker::actor("person"));
+    let mut outer = AutoCommit::new();
+    assert_eq!(executing_host_person(), None);
+    assert!(!host_person_invocation_permitted());
+    binding
+        .with_record_frame(&mut outer, false, |doc, _| {
+            assert_eq!(executing_host_person().as_deref(), Some("person"));
+            assert!(host_person_invocation_permitted());
+            {
+                let _invoker = InvokerScope::enter(ActionInvoker::actor("agent"));
+                assert!(!host_person_invocation_permitted());
+            }
+            {
+                let _invoker = InvokerScope::enter(ActionInvoker::actor("person"));
+                assert!(host_person_invocation_permitted());
+            }
+            let mut nested = binding.clone();
+            nested.host_person = UserId("other-person".into());
+            nested
+                .with_record_frame(doc, false, |_, _| {
+                    assert_eq!(executing_host_person().as_deref(), Some("other-person"));
+                })
+                .unwrap();
+            assert_eq!(executing_host_person().as_deref(), Some("person"));
+        })
+        .unwrap();
+    assert_eq!(executing_host_person(), None);
+    assert!(!host_person_invocation_permitted());
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = binding.with_record_frame(&mut outer, false, |_, _| {
+            assert_eq!(executing_host_person().as_deref(), Some("person"));
+            panic!("callback unwound");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(executing_host_person(), None);
+    assert!(!host_person_invocation_permitted());
+}
+
+#[test]
+fn checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind() {
+    use crate::invocation_scope::InvokerScope;
+    use tilo_actions::ActionInvoker;
+    use tilo_resource::ActionCx;
+
+    let cache = PortableStorage::new("profile", "device").unwrap();
+    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    records.create_record(&checkout).unwrap();
+    let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
+    // Descriptive context is not the identity lent by the checked callback.
+    binding.operation_context.invoker = Some(ActionInvoker::actor("untrusted-label"));
+    let mut outer = AutoCommit::new();
+    assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
+    binding
+        .with_record_frame(&mut outer, false, |doc, _| {
+            assert_eq!(
+                ActionCx::for_apply(doc, b"preview", 0).author(),
+                Some("person")
+            );
+            let _invoker = InvokerScope::enter(ActionInvoker::actor("guest"));
+            binding
+                .with_record_frame(doc, false, |doc, _| {
+                    assert_eq!(
+                        ActionCx::for_apply(doc, b"preview", 0).author(),
+                        Some("guest")
+                    );
+                    assert!(!host_person_invocation_permitted());
+                })
+                .unwrap();
+            assert_eq!(
+                ActionCx::for_apply(doc, b"preview", 0).author(),
+                Some("person")
+            );
+        })
+        .unwrap();
+    assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = binding.with_record_frame(&mut outer, false, |doc, _| {
+            assert_eq!(
+                ActionCx::for_apply(doc, b"preview", 0).author(),
+                Some("person")
+            );
+            panic!("preview callback unwound");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
 }
 
 /// The actors of the changes `write` adds to the record.

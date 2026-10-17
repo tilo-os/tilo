@@ -7,13 +7,14 @@
 //! before the transport is torn down, whatever the client does.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use crate::Task;
 use crate::carrier::{OriginTask, origin_config};
 use crate::voice;
+use tilo_lock::MutexRecover as _;
 
 /// The voice relay's downlink to one session: every voice datagram stream
 /// the session is served is re-bundled ([`voice::Rebundler`]) with the
@@ -39,7 +40,7 @@ impl Downlink {
     /// Earlier objects to add to each bundle, sampling the connection's loss
     /// counters at most once per [`voice::LOSS_WINDOW`].
     pub(crate) fn level(&self, now: Instant) -> usize {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock_recover();
         let due = state
             .sampled
             .is_none_or(|at| now.saturating_duration_since(at) >= voice::LOSS_WINDOW);

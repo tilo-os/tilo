@@ -78,7 +78,7 @@ def layouts(ctx, layout: str = "de:nodeadkeys", *more: str):
     saved = dict(doc.get("input") or {})
 
     def write(document):
-        ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(document, indent=2).encode())
+        ctx.vm.write_home_file(".config/tilo/session/settings.json", json.dumps(document, indent=2).encode())
         time.sleep(2.5)
 
     doc.setdefault("input", {}).update(keyboard_layout=layout, keyboard_layouts=[layout, *more])

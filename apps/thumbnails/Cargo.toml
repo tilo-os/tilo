@@ -1,0 +1,58 @@
+[package]
+name = "thumbnails"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The thumbnails package: thumbnail-batch, the compute entrypoint that thumbnails a staged batch of images on whichever of a person's devices a job was placed on."
+
+# One command, no window: the compute worker launches it under the package
+# sandbox with a staged request and an output directory.
+[[bin]]
+name = "thumbnail-batch"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# The batch itself, shared with the requester's local fallback so both
+# produce the same bytes.
+thumbnail = { package = "tilo-thumbnail", path = "../../crates/media/thumbnail" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Packs, signs, reads back and verifies the package as the release pipeline
+# and a worker's install do, and reads its manifest as the worker does.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+image = { workspace = true, features = ["jpeg", "png"] }
+blake3.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+# A compute worker, its catalogue and its launcher sandbox (bubblewrap plus
+# the Landlock shim) exist on Linux only.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The production worker, catalogue and launcher sandbox the job runs through.
+tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+# The in-sandbox shim the test binary serves, and job cancellation.
+launcher = { path = "../../crates/packaging/launcher" }
+# Installs the packed tapp where the worker's catalogue reads it.
+package-store = { path = "../../crates/packaging/package-store", features = ["store"] }
+# Bakes and signs the runtime build the package names.
+runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
+# The worker and launcher read the device's stores from the environment.
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
+# The packaged entrypoint run by the production compute worker under the
+# real launcher sandbox. Its own `main`, because the launcher re-enters the
+# running executable as its in-sandbox Landlock shim.
+[[test]]
+name = "worker"
+path = "tests/worker.rs"
+harness = false
+
+[lints]
+workspace = true

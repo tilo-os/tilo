@@ -9,6 +9,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+use tilo_lock::MutexRecover as _;
 
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
@@ -77,24 +78,16 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     #[cfg(unix)]
     {
         use std::collections::HashMap;
-        use std::sync::{Mutex, OnceLock, PoisonError};
+        use std::sync::{Mutex, OnceLock};
         static SYNCED: OnceLock<Mutex<HashMap<PathBuf, [i64; 7]>>> = OnceLock::new();
         let synced = SYNCED.get_or_init(Mutex::default);
         // Taken before the barrier: a change racing it leaves a stale stamp.
         let before = stamp(path)?;
-        if synced
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(path)
-            == Some(&before)
-        {
+        if synced.lock_recover().get(path) == Some(&before) {
             return Ok(());
         }
         crate::fsync(&fs::File::open(path)?)?;
-        synced
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(path.to_owned(), before);
+        synced.lock_recover().insert(path.to_owned(), before);
         Ok(())
     }
     #[cfg(not(unix))]

@@ -14,6 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use media::audio::AudioGraph;
+use tilo_lock::MutexRecover as _;
 
 /// How often a graph that is being read is read again.
 const REFRESH_INTERVAL: Duration = Duration::from_millis(1_500);
@@ -81,7 +82,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, GraphState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock_recover()
     }
 }
 

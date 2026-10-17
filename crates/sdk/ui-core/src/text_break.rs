@@ -129,53 +129,39 @@ mod hyphenation {
 /// layouts are made again once [`hyphenation_generation`] moved.
 #[cfg(feature = "lazy-hyphenation")]
 mod hyphenation {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
     use super::{Hyphenate, MakeHyphenation};
+    use crate::deferred::Deferred;
 
-    static PATTERNS: OnceLock<Hyphenate> = OnceLock::new();
-    static LOAD: OnceLock<fn()> = OnceLock::new();
-    static REQUESTED: AtomicBool = AtomicBool::new(false);
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    static PATTERNS: Deferred<Hyphenate> = Deferred::new();
 
     /// The patterns, or `None` while their code is still to come (and then
     /// fetched).
     pub(super) fn patterns() -> Option<Hyphenate> {
-        let patterns = PATTERNS.get().copied();
-        if patterns.is_none() && !REQUESTED.swap(true, Ordering::AcqRel) {
-            match LOAD.get() {
-                Some(load) => load(),
-                None => REQUESTED.store(false, Ordering::Release),
-            }
-        }
-        patterns
+        PATTERNS.get()
     }
 
     /// Bumped when the patterns arrive: hyphenated layouts are made again
     /// once this moved.
     #[must_use]
     pub fn hyphenation_generation() -> u64 {
-        GENERATION.load(Ordering::Acquire)
+        PATTERNS.generation()
     }
 
     /// How the program fetches the patterns' code: `load` starts the fetch
     /// and, once the code is in, calls [`install_hyphenation`] (or
     /// [`hyphenation_load_failed`]).
     pub fn defer_hyphenation(load: fn()) {
-        let _ = LOAD.set(load);
+        PATTERNS.defer(load);
     }
 
     /// The patterns' code is in: text is hyphenated from now on.
     pub fn install_hyphenation(make: MakeHyphenation) {
-        if PATTERNS.set(make()).is_ok() {
-            GENERATION.fetch_add(1, Ordering::AcqRel);
-        }
+        PATTERNS.install(make());
     }
 
     /// The fetch failed: the next layout that hyphenates fetches again.
     pub fn hyphenation_load_failed() {
-        REQUESTED.store(false, Ordering::Release);
+        PATTERNS.load_failed();
     }
 }
 

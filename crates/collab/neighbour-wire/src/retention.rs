@@ -43,6 +43,21 @@ pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]>
     }
 }
 
+/// Whether only a channel's steward reads `msg`: a device's access request
+/// (plain or routed) and its acknowledgements of the steward's frames. The
+/// steward is the device that governs the channel's room; every other
+/// member ignores these. A host that governs the room itself, and so
+/// stewards its channels, need deliver them to no member and replay them
+/// to none.
+pub fn steward_only(msg: &NeighbourMsg) -> bool {
+    matches!(
+        msg,
+        NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
+            | NeighbourMsg::MlsGovernanceAck { .. }
+    )
+}
+
 /// Whether checkpoint `msg` is the whole of its route: its author's next
 /// one on the same channel leaves it nothing to add, so a host keeps only
 /// the latest. A device's latest certificate, access request and
@@ -403,6 +418,14 @@ mod tests {
         let (acked, kind) = retention(&ack, false).unwrap();
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(acked, mine);
+
+        // Requests and acknowledgements are the steward's alone; the frames
+        // it sends every member, and the genesis naming it, are not.
+        assert!(steward_only(&request(&device)));
+        assert!(steward_only(&routed(&device)));
+        assert!(steward_only(&ack));
+        assert!(!steward_only(&frame([0; 32])));
+        assert!(!steward_only(&change(2)));
     }
 
     fn host_persists_state_but_never_late_session_actions() {

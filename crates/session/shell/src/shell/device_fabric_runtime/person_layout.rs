@@ -36,6 +36,13 @@ fn cache() -> &'static Mutex<Option<Arc<PersonLayoutView>>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Forget the previous session's layout ([`super::start_session_for_test`]).
+#[cfg(test)]
+pub(super) fn forget_for_test() {
+    use tilo_lock::MutexRecover as _;
+    *cache().lock_recover() = None;
+}
+
 /// Preserve current checked device placements when no shared arrangement has
 /// anchored the device. The bridge does not write or guess hardware facts.
 pub(super) fn resolve(

@@ -133,7 +133,7 @@ mod tests {
             ),
             (
                 "three-finger gesture the shell takes",
-                BackendEvent::ShellGesture(GestureAction::ShowOverview),
+                BackendEvent::ShellGesture(GestureAction::ShowOverview, Instant::now()),
             ),
             ("folding into tablet mode", BackendEvent::TabletMode(true)),
         ]

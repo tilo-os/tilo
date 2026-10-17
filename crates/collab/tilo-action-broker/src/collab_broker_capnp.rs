@@ -28,6 +28,9 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
+#[cfg(test)]
+mod directory_disclosure_tests;
+mod directory_pagination;
 mod durable_local_invocation;
 mod file_clipboard;
 #[cfg(test)]
@@ -40,6 +43,7 @@ mod native_checkout;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
 #[cfg(test)]
@@ -104,7 +108,7 @@ use runtime_collab::raw::{
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Grant, KindSet, RoomPolicy, Subject, TreePath, roles,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -267,6 +271,33 @@ mod device_continuity_service_boundary_tests {
                 .expect("calls")
                 .push((context.clone(), command));
             Ok(self.reply.clone())
+        }
+
+        fn disconnect(&self, _peer_id: u64) {}
+
+        fn changed(
+            &self,
+            context: &NearbyTransferRequestContext,
+            after: u64,
+        ) -> Option<crate::services::NearbyTransferChange> {
+            self.calls.lock().expect("calls").push((
+                context.clone(),
+                runtime_collab::NearbyTransferCommand::Snapshot,
+            ));
+            Some(Box::pin(std::future::ready(after.wrapping_add(1))))
+        }
+    }
+
+    /// A host that answers commands but cannot say when its state changes.
+    struct UnannouncedNearby;
+
+    impl NearbyTransferServices for UnannouncedNearby {
+        fn command(
+            &self,
+            _context: &NearbyTransferRequestContext,
+            _command: runtime_collab::NearbyTransferCommand,
+        ) -> Result<runtime_collab::NearbyTransferReply, String> {
+            Ok(runtime_collab::NearbyTransferReply::Accepted)
         }
 
         fn disconnect(&self, _peer_id: u64) {}
@@ -524,6 +555,62 @@ mod device_continuity_service_boundary_tests {
     }
 
     #[test]
+    fn only_the_certified_files_route_waits_for_nearby_changes() {
+        let service = Arc::new(RecordingNearby::answering(
+            runtime_collab::NearbyTransferReply::Accepted,
+        ));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let change = nearby_transfer_change(&services, &files_context(), 4)
+            .expect("Files waits on its own route");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        assert_eq!(runtime.block_on(change), 5, "the host's next change");
+        assert_eq!(
+            service.calls.lock().expect("calls")[0].0,
+            files_context(),
+            "the host learns which connection waits, for its handles"
+        );
+
+        for (app, workspace) in [
+            ("so.tilo.browser", "workspace-7"),
+            (NEARBY_TRANSFER_APP_ID, ""),
+        ] {
+            let context = NearbyTransferRequestContext::authenticated(
+                41,
+                app,
+                workspace,
+                CrdtRoute::app(app, workspace).channel_key(),
+                Some("local-person".into()),
+            );
+            let refused = nearby_transfer_change(&services, &context, 0)
+                .err()
+                .expect("only the certified Files route in a workspace waits");
+            assert!(refused.to_string().contains("certified Files"));
+        }
+        assert_eq!(
+            service.calls.lock().expect("calls").len(),
+            1,
+            "a refused route never reaches the host"
+        );
+        for services in [
+            HostServices::default(),
+            HostServices {
+                nearby_transfer: Some(Arc::new(UnannouncedNearby)),
+                ..Default::default()
+            },
+        ] {
+            let unannounced = nearby_transfer_change(&services, &files_context(), 0)
+                .err()
+                .expect("a host that cannot announce changes says so");
+            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        }
+    }
+
+    #[test]
     fn nearby_transfer_is_unavailable_without_a_host_service() {
         let unsupported = delegate_nearby_transfer_command(
             &HostServices::default(),
@@ -752,13 +839,29 @@ impl BrokerActor {
     }
 
     /// The delegation a session-delegated agent carries in `room`, given by
-    /// `person`; nothing for any other actor.
+    /// `person`, with what that person allowed it for its task
+    /// ([`allow_for_task`]); nothing for any other actor.
     fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
         if !self.session_delegated {
             return Vec::new();
         }
         let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
+        let mut grants =
+            roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()));
+        if let Ok(tasks) = task_grants().lock()
+            && let Some((_, allowed)) = tasks.get(agent)
+        {
+            grants.extend(
+                allowed
+                    .iter()
+                    .filter(|grant| {
+                        grant.granted_by == Subject::Person(person.to_owned())
+                            && TreePath::room(room).covers(&grant.node)
+                    })
+                    .cloned(),
+            );
+        }
+        grants
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -952,6 +1055,58 @@ pub(crate) fn published_node(
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
+/// What people allowed session-delegated agents for the task each runs, by
+/// agent id, with the run they end with. Process-wide: a [`BrokerActor`] is
+/// a value rebuilt for every call, and these extend the delegation it
+/// carries ([`BrokerActor::session_grants`]).
+type TaskGrants = HashMap<String, (uuid::Uuid, Vec<Grant>)>;
+
+fn task_grants() -> &'static Mutex<TaskGrants> {
+    static GRANTS: std::sync::OnceLock<Mutex<TaskGrants>> = std::sync::OnceLock::new();
+    GRANTS.get_or_init(Mutex::default)
+}
+
+/// `person` allowed the session-delegated `agent` its outside actions in
+/// `app` of `room` until its run `execution` ends ("Allow for this task"):
+/// it then takes them without asking first. An action whose own contract
+/// asks for confirmation still asks every time.
+pub(crate) fn allow_for_task(
+    agent: &str,
+    execution: uuid::Uuid,
+    (room, app): (&str, &str),
+    person: &str,
+) {
+    let agent = agent.strip_prefix("agent:").unwrap_or(agent);
+    let grant = Grant::new(
+        format!("agent-task:{agent}:{room}:{app}"),
+        Subject::agent(agent),
+        TreePath::room(room).app(app),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        Subject::Person(person.to_owned()),
+    );
+    let Ok(mut tasks) = task_grants().lock() else {
+        return;
+    };
+    let entry = tasks
+        .entry(agent.to_owned())
+        .or_insert_with(|| (execution, Vec::new()));
+    if entry.0 != execution {
+        // Another run of the same agent id keeps nothing of this one.
+        *entry = (execution, Vec::new());
+    }
+    if !entry.1.iter().any(|held| held.id == grant.id) {
+        entry.1.push(grant);
+    }
+}
+
+/// The run `execution` ended: what it was allowed for its task ends too.
+fn end_task_grants(execution: uuid::Uuid) {
+    if let Ok(mut tasks) = task_grants().lock() {
+        tasks.retain(|_, (run, _)| *run != execution);
+    }
+}
+
 pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
     workspace.node().app(app)
 }
@@ -1687,6 +1842,7 @@ struct TaskRunEnvelope {
     task_id: String,
     title: String,
     instruction: Option<String>,
+    subject: Option<tilo_actions::SelectionSubject>,
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
@@ -2423,6 +2579,9 @@ impl CapnpBrokerState {
 /// stale eager `publishActions` snapshot.
 #[derive(Clone)]
 struct RegisteredActionDirectory {
+    pagination: directory_pagination::DirectoryPagination,
+    /// Certified publishing person, never a participant label or room role.
+    publishing_person: Option<String>,
     app_id: String,
     route: CrdtRoute,
     directory: action_directory::Client,
@@ -3247,6 +3406,9 @@ pub struct CapnpBrokerState {
     committed_read_id: AtomicU64,
     owner_commit_failure: Mutex<Option<String>>,
     owner_commit_order: AsyncMutex<()>,
+    /// Native task run reports apply one at a time, each from the state the
+    /// one before it committed ([`Self::report_native_task`]).
+    native_task_report_order: AsyncMutex<()>,
     /// The shell's one replicated workspace owner/capability authority.
     /// `None` exists only for transitional test/diagnostic brokers; a
     /// certified join fails closed when they have no authority to consult.
@@ -4082,6 +4244,7 @@ impl CapnpBrokerState {
                 committed_read_id: AtomicU64::new(1),
                 owner_commit_failure: Mutex::new(None),
                 owner_commit_order: AsyncMutex::new(()),
+                native_task_report_order: AsyncMutex::new(()),
                 membership,
                 trusted_devices,
                 certificate_authority: config
@@ -4581,12 +4744,22 @@ impl CapnpBrokerState {
         let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
         let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
         let max_depth = query.max_depth.min(Self::DIRECTORY_MAX_DEPTH);
+        let cursor = registered
+            .pagination
+            .source_cursor(
+                actor,
+                &query.revision,
+                &query.needle,
+                &query.parent_resource,
+                &query.cursor,
+            )
+            .map_err(|error| error.to_string())?;
         let mut request = registered.directory.query_request();
         {
             let mut wire = request.get().init_query();
             wire.set_peer_id(query.peer_id);
             wire.set_revision(&query.revision);
-            wire.set_cursor(&query.cursor);
+            wire.set_cursor(&cursor);
             wire.set_needle(&query.needle);
             wire.set_parent_resource(&query.parent_resource);
             wire.set_max_results(max_results);
@@ -4616,15 +4789,20 @@ impl CapnpBrokerState {
         }
         let page = runtime_collab::decode_action_directory_page(page)
             .map_err(|error| error.to_string())?;
-        filter_directory_page(
+        let mut page = filter_directory_page(
             self,
             cluster_id,
             actor,
             &registered.app_id,
+            registered.publishing_person.as_deref(),
             page,
             max_results,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        registered
+            .pagination
+            .shield(actor, &query.needle, &query.parent_resource, &mut page);
+        Ok(page)
     }
 
     /// Shell-local exact re-resolution. A `Found` row is policy-checked at
@@ -4681,8 +4859,15 @@ impl CapnpBrokerState {
                 revision: resolved,
             } if row.resource == resource
                 && row.action.as_deref() == Some(action)
-                && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-                    .map_err(|error| error.to_string())? =>
+                && permits_directory_row(
+                    self,
+                    cluster_id,
+                    actor,
+                    &registered.app_id,
+                    registered.publishing_person.as_deref(),
+                    &row,
+                )
+                .map_err(|error| error.to_string())? =>
             {
                 // A named revision is the one resolved; only an empty one
                 // takes the owner's word for which revision it read, and
@@ -4774,8 +4959,15 @@ impl CapnpBrokerState {
         // Resolve rechecked the current capability and actor.  Re-run the
         // validation immediately before constructing the invocation surface
         // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
+        if !permits_directory_row(
+            self,
+            cluster_id,
+            actor,
+            &registered.app_id,
+            registered.publishing_person.as_deref(),
+            &row,
+        )
+        .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
         {
             return Err(ActionDirectoryBridgeError::NotFound);
         }
@@ -5437,14 +5629,29 @@ impl CapnpBrokerState {
         // A certified local origin retains its original registered clock and
         // exact person/room through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
+        // Whether the actor is an agent the person's own device handed the
+        // session to here: the only agent a device-only action runs for.
+        let mut device_delegate = false;
         let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
             let admitted = self.current_action_caller(caller)?;
-            if caller.room != offered.0.route.cluster_id
-                || actor.is_agent
-                || actor.id != admitted.principal_id
-            {
+            // The person the admission certifies, or the one agent it admitted
+            // for them (an MCP session their device handed over): never
+            // another actor.
+            let admitted_actor = match &admitted.agent_id {
+                Some(agent) => {
+                    actor.is_agent
+                        && actor.id.strip_prefix("agent:")
+                            == Some(agent.strip_prefix("agent:").unwrap_or(agent))
+                }
+                None => !actor.is_agent && actor.id == admitted.principal_id,
+            };
+            if caller.room != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
             }
+            // A certified origin is a connection admitted on this device; a
+            // foreign device is one whose operating system Tilo does not
+            // control, still this device.
+            device_delegate = actor.is_agent && admitted.session_delegated;
             Some(
                 caller
                     .policy_time
@@ -5473,6 +5680,24 @@ impl CapnpBrokerState {
         };
         if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
             return Err("duplicate original invocation custody".into());
+        }
+        // A device-only action runs for the person at this device, and for
+        // the agent their own device handed the session; never for an agent
+        // admitted anywhere else. The app refuses everyone but its person
+        // and the agents acting for them.
+        if actor.is_agent
+            && !device_delegate
+            && offered
+                .1
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
+        {
+            return Err(
+                "a device-only action runs only for the person at this device or the agent their device handed the session"
+                    .into(),
+            );
         }
         let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
@@ -5842,6 +6067,9 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
+        if let Some(execution) = caller.execution_id() {
+            end_task_grants(execution);
+        }
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
@@ -6026,9 +6254,22 @@ impl CapnpBrokerState {
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the confirmation registry is unavailable".into(),
-        };
+        self.mint_confirmation_grant(peer_id, offered, argument, actor)
+            .map(Some)
+            .map_err(|reason| ActionHostError::Unavailable { reason })
+    }
+
+    /// Mint the one-use grant carrying a confirmation already decided to
+    /// the dispatch of `actor`'s invocation of `offered` on `peer_id` with
+    /// `argument`, and nothing else.
+    pub(crate) fn mint_confirmation_grant(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &BrokerActor,
+    ) -> Result<String, String> {
+        let unavailable = || "the confirmation registry is unavailable".to_owned();
         let token = uuid::Uuid::new_v4().to_string();
         let now = std::time::Instant::now();
         let expires = now
@@ -6048,7 +6289,7 @@ impl CapnpBrokerState {
             },
         );
         drop(grants);
-        Ok(Some(token))
+        Ok(token)
     }
 
     /// Record that the person `actor` acts for confirmed `actor`'s invocation
@@ -6327,6 +6568,7 @@ impl CapnpBrokerState {
                     .and_then(|resource| resource.agent_request.as_ref())
                     .map_or_else(|| task.title.clone(), |request| request.instruction.clone()),
             ),
+            subject: task.subject.clone(),
             run_id,
             lease: lease.clone(),
             planning: match task.route {
@@ -6506,10 +6748,13 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -6530,7 +6775,13 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
-        self.admit_task_action(run, lease, target, provenance, (surface, descriptor))
+        self.admit_task_action(
+            run,
+            lease,
+            target,
+            (provenance, confirmed),
+            (surface, descriptor),
+        )
     }
 
     fn admit_task_action(
@@ -6538,10 +6789,13 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -6558,14 +6812,6 @@ impl CapnpBrokerState {
         {
             return Err("task action publisher changed workspace or retired".into());
         }
-        let requirement = crate::services::NativeTaskActionRequirement {
-            binding: run.native.clone(),
-            app: surface.app_id.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
-            action: descriptor.action.clone(),
-            need: descriptor.contract.need(),
-        };
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
@@ -6573,17 +6819,29 @@ impl CapnpBrokerState {
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
-        let confirmation_required = descriptor
-            .contract
-            .confirmation_for_argument(contract_argument.as_deref().or(argument));
-        if !matches!(
-            confirmation_required,
+        let consequential = !matches!(
+            descriptor
+                .contract
+                .confirmation_for_argument(contract_argument.as_deref().or(argument)),
             tilo_actions::ConfirmationPolicy::None
-        ) {
+        );
+        // A native run pauses for its person where an action asks first
+        // (`native_task_confirmation`); an older run has nobody to ask.
+        if consequential && run.native.is_none() {
             return Err(
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
+        let requirement = crate::services::NativeTaskActionRequirement {
+            binding: run.native.clone(),
+            app: surface.app_id.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource: resource.into(),
+            action: descriptor.action.clone(),
+            need: descriptor.contract.need(),
+            consequential,
+            confirmed,
+        };
         if let Some(binding) = &run.native {
             let (caller, invocation) =
                 provenance.ok_or("native task action requires authenticated original caller")?;
@@ -6600,6 +6858,7 @@ impl CapnpBrokerState {
                         caller,
                         *invocation,
                         (surface.clone(), descriptor.clone()),
+                        confirmed || consequential,
                     )
                 })
         } else {
@@ -7066,6 +7325,7 @@ impl CapnpBrokerState {
             | CollabEvent::SelectedDiscoveryResult { .. }
             | CollabEvent::OpenSelectedV2Result { .. }
             | CollabEvent::OpenSelectedResult { .. }
+            | CollabEvent::NearbyTransferChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -8437,6 +8697,28 @@ fn delegate_browser_service_session_command(
     reply.encode().map_err(|_| refused())
 }
 
+/// The wait for Nearby Send's next change past `after` for the connection
+/// `context`: only the certified Files route in a workspace may wait, as only
+/// it may command.
+fn nearby_transfer_change(
+    services: &HostServices,
+    context: &crate::services::NearbyTransferRequestContext,
+    after: u64,
+) -> Result<crate::services::NearbyTransferChange, capnp::Error> {
+    if context.app_id() != NEARBY_TRANSFER_APP_ID || context.workspace_id().is_empty() {
+        return Err(capnp::Error::failed(
+            "Nearby Send requires the certified Files application route".into(),
+        ));
+    }
+    services
+        .nearby_transfer
+        .as_ref()
+        .and_then(|service| service.changed(context, after))
+        .ok_or_else(|| {
+            capnp::Error::unimplemented("this host does not say when Nearby Send changes".into())
+        })
+}
+
 fn delegate_nearby_transfer_command(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
@@ -8591,6 +8873,45 @@ impl channel_handle::Server for CapnpChannelHandle {
             results.get().set_change(change);
             Ok(())
         })
+    }
+
+    /// Resolves once what a Nearby Send snapshot would show may have changed
+    /// since `after`. Only the certified Files route may wait, the same route
+    /// every Nearby command is confined to, and it learns nothing but that
+    /// something changed: it asks for a snapshot, which is checked as always.
+    fn nearby_transfer_changed(
+        self: Rc<Self>,
+        params: channel_handle::NearbyTransferChangedParams,
+        mut results: channel_handle::NearbyTransferChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let context = crate::services::NearbyTransferRequestContext::authenticated(
+            self.peer_id,
+            route.app_id.clone(),
+            route.cluster_id.clone(),
+            route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
+        );
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        match nearby_transfer_change(&self.state.services, &context, after) {
+            Ok(change) => Promise::from_future(async move {
+                results.get().set_change(change.await);
+                Ok(())
+            }),
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn approved_check_reported_progress(
@@ -9964,6 +10285,12 @@ impl channel_handle::Server for CapnpChannelHandle {
             self.peer_id,
             RegisteredActionDirectory {
                 registration,
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: self
+                    .verified_identity
+                    .certificate
+                    .as_ref()
+                    .map(|cert| principal_id_for_root(cert.user_public_key)),
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -10091,6 +10418,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             HostWorkerReadGuard::for_channel(&state, self.peer_id, &self.verified_identity);
         Promise::from_future(async move {
             HostWorkerReadGuard::check(host_guard.as_ref())?;
+            let cursor = registered.pagination.source_cursor(
+                &actor,
+                &revision,
+                &needle,
+                &parent_resource,
+                &cursor,
+            )?;
             let mut forward = registered.directory.query_request();
             {
                 let mut query = forward.get().init_query();
@@ -10114,14 +10448,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ));
             }
             let page = runtime_collab::decode_action_directory_page(page)?;
-            let page = filter_directory_page(
+            let mut page = filter_directory_page(
                 &state,
                 &cluster,
                 &actor,
                 &registered.app_id,
+                registered.publishing_person.as_deref(),
                 page,
                 max_results,
             )?;
+            registered
+                .pagination
+                .shield(&actor, &needle, &parent_resource, &mut page);
             runtime_collab::write_action_directory_page(results.get().init_page(), &page)?;
             Ok(())
         })
@@ -10392,7 +10730,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        None,
+                        (None, false),
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
@@ -11259,9 +11597,13 @@ fn permits_directory_row(
     cluster_id: &str,
     actor: &BrokerActor,
     app_id: &str,
+    publishing_person: Option<&str>,
     row: &runtime_collab::ActionDirectoryRow,
 ) -> Result<bool, capnp::Error> {
     let question = directory_row_question(row)?;
+    if !question.disclosed_to(actor, publishing_person) {
+        return Ok(false);
+    }
     Ok(state
         .permits_directory_actions(cluster_id, actor, app_id, &[question])?
         .first()
@@ -11276,6 +11618,7 @@ struct DirectoryQuestion<'a> {
     action: &'a str,
     field: Option<&'a str>,
     kind: ActionKind,
+    private_view: bool,
 }
 
 impl<'a> DirectoryQuestion<'a> {
@@ -11286,6 +11629,7 @@ impl<'a> DirectoryQuestion<'a> {
         resource: &'a str,
         action: &'a str,
         contract: &'a tilo_actions::ActionContract,
+        operation: Option<tilo_actions::OperationKind>,
     ) -> Self {
         Self {
             resource_kind,
@@ -11293,7 +11637,21 @@ impl<'a> DirectoryQuestion<'a> {
             action,
             field: contract.field.as_deref(),
             kind: contract.kind,
+            // Read kind alone does not make a private UI view public.
+            // A declared document read, however, discloses document state
+            // under the caller's ordinary resource policy, not owner UI.
+            // That exception requires a known View kind: a tag alone cannot
+            // disclose resource-only metadata with an unknown governing kind.
+            private_view: (operation == Some(tilo_actions::OperationKind::View)
+                || operation.is_none())
+                && !contract.is_participant_view()
+                && !(operation == Some(tilo_actions::OperationKind::View)
+                    && contract.reads_document()),
         }
+    }
+
+    fn disclosed_to(&self, actor: &BrokerActor, publishing_person: Option<&str>) -> bool {
+        !self.private_view || (!actor.is_agent && publishing_person == Some(actor.id.as_str()))
     }
 }
 
@@ -11339,7 +11697,11 @@ fn directory_row_question(
                 || descriptor.resource_label != row.resource_label
                 || row.has_children
                 || row.visibility.as_ref().is_none_or(|visibility| {
-                    visibility.action != *action || visibility.contract != descriptor.contract
+                    visibility.action != *action
+                        || visibility.contract != descriptor.contract
+                        || visibility
+                            .governing_kind
+                            .is_some_and(|kind| kind != descriptor.operation_kind)
                 })
             {
                 return Err(capnp::Error::failed(
@@ -11392,6 +11754,7 @@ fn directory_row_question(
                 &row.resource,
                 action,
                 &descriptor.contract,
+                Some(descriptor.operation_kind),
             ))
         }
         (None, None) => {
@@ -11411,6 +11774,7 @@ fn directory_row_question(
                 &row.resource,
                 &visibility.action,
                 &visibility.contract,
+                visibility.governing_kind,
             ))
         }
         _ => Err(capnp::Error::failed(
@@ -11424,9 +11788,21 @@ fn filter_directory_page(
     cluster_id: &str,
     actor: &BrokerActor,
     app_id: &str,
+    publishing_person: Option<&str>,
     mut page: runtime_collab::ActionDirectoryPage,
     max_results: u32,
 ) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
+    validate_directory_text(
+        &page.revision,
+        "directory revision",
+        DIRECTORY_MAX_QUERY_REVISION_BYTES,
+        false,
+    )?;
+    if page.next_cursor.len() > DIRECTORY_MAX_CURSOR_BYTES {
+        return Err(capnp::Error::failed(
+            "invalid directory continuation".into(),
+        ));
+    }
     if page.rows.len() > usize::try_from(max_results).unwrap_or(usize::MAX) {
         return Err(capnp::Error::failed(
             "application exceeded directory result budget".into(),
@@ -11444,7 +11820,12 @@ fn filter_directory_page(
         .iter()
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
-    let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    let mut answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
+    for (answer, question) in answers.iter_mut().zip(&questions) {
+        if !question.disclosed_to(actor, publishing_person) {
+            *answer = Answer::Deny;
+        }
+    }
     drop(questions);
     // Listed when the actor may take it, or would be asked first; an action
     // asking first asks for the confirmation the person gives on their
@@ -12316,6 +12697,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 task_id: run.task_id,
                 title: run.title,
                 instruction: run.instruction,
+                subject: run.subject,
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
@@ -13732,6 +14114,9 @@ async fn drive_connection(
         None
     };
     let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
+    let handed_descriptors = local_media
+        .as_ref()
+        .and_then(|local| local.descriptors.clone());
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
         lease: Rc::new(ConnectionLease {
@@ -13744,7 +14129,16 @@ async fn drive_connection(
         directories,
         peer_id,
     });
-    let rpc = runtime_portal::serve_connected_io(stream, client.client);
+    // Files hands over the objects it selects on its own connection; the
+    // broker keeps them for the request naming them. Every other peer's
+    // descriptors are closed on receipt.
+    let rpc = match handed_descriptors {
+        Some(received) => runtime_portal::serve_connected_io(
+            runtime_portal::descriptor_lane::DescriptorStream::receiving(stream, received),
+            client.client,
+        ),
+        None => runtime_portal::serve_connected_io(stream, client.client),
+    };
     let _disconnect = DisconnectOnDrop(Some(rpc.get_disconnector()));
     rpc.await
 }
@@ -14808,6 +15202,8 @@ pub mod tests {
             survivor,
             RegisteredActionDirectory {
                 registration: Rc::new(uuid::Uuid::new_v4()),
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: Some("fixture-owner".into()),
                 app_id: fixture.route.app_id.clone(),
                 route: fixture.route.clone(),
                 directory: fixture.directory.clone(),
@@ -14922,6 +15318,11 @@ pub mod tests {
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::view();
+            // Opening Atlas changes the invoking participant's view, not the
+            // publishing participant's private UI.
+            contract
+                .tags
+                .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
@@ -14955,6 +15356,7 @@ pub mod tests {
                 descriptor: Some(descriptor),
                 has_children: false,
                 visibility: Some(runtime_collab::RowVisibility {
+                    governing_kind: Some(tilo_actions::OperationKind::View),
                     action: "open".into(),
                     contract,
                 }),
@@ -15055,9 +15457,26 @@ pub mod tests {
         pub route: CrdtRoute,
         pub peer_id: u64,
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        source_identity: Option<AdmittedJoinIdentity>,
     }
 
     impl LocalDirectoryFixture {
+        /// Install the source only after the production certificate, signature,
+        /// enrolled-device and current workspace admission checks succeed.
+        pub fn authenticate_source(&mut self, presentation: &[u8]) -> Result<CapRole, String> {
+            let source = verify_join_identity(
+                &self.route,
+                presentation,
+                self.state.membership.as_ref(),
+                self.state.trusted_devices.as_deref().map(Vec::as_slice),
+                self.state.services.native_certificates.as_deref(),
+            )?;
+            let role = source.role;
+            self.source_identity = Some(source);
+            self.reconnect_directory();
+            Ok(role)
+        }
+
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
         }
@@ -15069,6 +15488,13 @@ pub mod tests {
                 self.peer_id,
                 RegisteredActionDirectory {
                     registration: Rc::new(uuid::Uuid::new_v4()),
+                    pagination: directory_pagination::DirectoryPagination::default(),
+                    publishing_person: self.source_identity.as_ref().and_then(|source| {
+                        source
+                            .certificate
+                            .as_ref()
+                            .map(|certificate| principal_id_for_root(certificate.user_public_key))
+                    }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
                     directory: self.directory.clone(),
@@ -15091,21 +15517,23 @@ pub mod tests {
                 directories: Rc::clone(&self.directories),
                 channel_id: self.route.channel_key(),
                 peer_id: self.peer_id,
-                verified_identity: AdmittedJoinIdentity {
-                    host_scope: None,
-                    worker_registration: None,
-                    certificate: None,
-                    verified: VerifiedJoinIdentity {
-                        user_public_key: [0; 32],
-                        device_public_key: [0; 32],
-                        capped: false,
-                    },
-                    principal_id: "fixture-application".into(),
-                    display_handle: None,
-                    role: CapRole::Editor,
-                    agent_id: None,
-                    session_delegated: false,
-                },
+                verified_identity: self.source_identity.clone().unwrap_or_else(|| {
+                    AdmittedJoinIdentity {
+                        host_scope: None,
+                        worker_registration: None,
+                        certificate: None,
+                        verified: VerifiedJoinIdentity {
+                            user_public_key: [0; 32],
+                            device_public_key: [0; 32],
+                            capped: false,
+                        },
+                        principal_id: "fixture-application".into(),
+                        display_handle: None,
+                        role: CapRole::Editor,
+                        agent_id: None,
+                        session_delegated: false,
+                    }
+                }),
                 record_kind: None,
                 lease: None,
             })
@@ -15478,6 +15906,8 @@ pub mod tests {
             peer_id,
             RegisteredActionDirectory {
                 registration: Rc::new(uuid::Uuid::new_v4()),
+                pagination: directory_pagination::DirectoryPagination::default(),
+                publishing_person: None,
                 app_id: route.app_id.clone(),
                 route: route.clone(),
                 directory: directory.clone(),
@@ -15511,6 +15941,7 @@ pub mod tests {
             route,
             peer_id,
             invocation_rx,
+            source_identity: None,
         }
     }
 
@@ -15681,6 +16112,7 @@ pub mod tests {
                 descriptor: None,
                 has_children: true,
                 visibility: Some(runtime_collab::RowVisibility {
+                    governing_kind: Some(tilo_actions::OperationKind::View),
                     action: "open".into(),
                     contract: tilo_actions::ActionContract::view(),
                 }),
@@ -15768,6 +16200,7 @@ pub mod tests {
                 &fixture.cluster_id,
                 &BrokerActor::person("actor-a"),
                 &fixture.route.app_id,
+                None,
                 &row,
             )
             .is_err(),
@@ -15781,6 +16214,7 @@ pub mod tests {
                 &fixture.cluster_id,
                 &BrokerActor::person("actor-a"),
                 &fixture.route.app_id,
+                None,
                 &row,
             )
             .is_err(),
@@ -17915,6 +18349,7 @@ pub mod tests {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
                     unconfined: false,
+                    offers: Vec::new(),
                 }]
             }
             fn launch(

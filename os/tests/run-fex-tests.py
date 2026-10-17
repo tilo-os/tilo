@@ -19,7 +19,9 @@ import sys
 
 def run_ctest(command, environment, server, log_path):
     """Stop the suite if its server dies instead of reporting client failures."""
-    tests = subprocess.Popen(command, env=environment, start_new_session=True)
+    # CTest otherwise exits successfully when a filter or missing registration
+    # selects no tests, which cannot establish upstream FEX compatibility.
+    tests = subprocess.Popen([*command, "--no-tests=error"], env=environment, start_new_session=True)
     try:
         while server.poll() is None:
             try:

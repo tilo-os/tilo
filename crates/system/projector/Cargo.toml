@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
 postcard = { workspace = true, features = ["alloc"] }
@@ -24,6 +25,14 @@ tokio.workspace = true
 tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 workspace-hack = { version = "0.1" }
+miracast = { workspace = true, optional = true, features = ["networkmanager", "gstreamer"] }
+ashpd = { workspace = true, optional = true, features = ["screencast"] }
+
+[features]
+# Miracast sessions link GStreamer; without the feature a Miracast receiver
+# can be discovered but not connected to.
+default = ["miracast"]
+miracast = ["dep:miracast", "dep:ashpd"]
 
 [dev-dependencies]
 prost = "0.14.4"
@@ -40,6 +49,7 @@ rustls-pki-types = "1.14"
 futures-util.workspace = true
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 tilo-test-env = { path = "../../dev/test-env" }
+tempfile.workspace = true
 
 [[bin]]
 name = "tilo-projector"

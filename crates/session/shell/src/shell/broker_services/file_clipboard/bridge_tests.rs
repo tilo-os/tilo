@@ -148,19 +148,26 @@ async fn connect(socket: &Path, room: &str, identity: &[u8], record: &str) -> Co
         )
         .await
         .expect("handoff");
-    connect_stream(stream, room, identity, record).await
+    // This connection reaches the broker itself, so it carries its own lane.
+    let lane = runtime_portal::descriptor_lane::DescriptorSender::new();
+    let stream = runtime_portal::descriptor_lane::DescriptorStream::sending(stream, lane.clone());
+    connect_stream(stream, lane, room, identity, record).await
 }
 #[expect(
     clippy::future_not_send,
     reason = "Cap'n Proto runs on the test LocalSet"
 )]
-async fn connect_stream(
-    stream: tokio::net::UnixStream,
+async fn connect_stream<S>(
+    stream: S,
+    lane: runtime_portal::descriptor_lane::DescriptorSender,
     room: &str,
     identity: &[u8],
     record: &str,
-) -> Connection {
-    let (reader, writer) = stream.into_split();
+) -> Connection
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
+    let (reader, writer) = tokio::io::split(stream);
     let network = Box::new(capnp_rpc::twoparty::VatNetwork::new(
         futures_util::io::BufReader::new(reader.compat()),
         futures_util::io::BufWriter::new(writer.compat_write()),
@@ -170,7 +177,8 @@ async fn connect_stream(
     let mut rpc = capnp_rpc::RpcSystem::new(network, None);
     let client = runtime_collab::CollabClient::from_raw(
         rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server),
-    );
+    )
+    .with_descriptors(lane);
     let driver = tokio::task::spawn_local(async move {
         let _ = rpc.await;
     });

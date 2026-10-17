@@ -8,7 +8,7 @@ pub(crate) fn governor() -> (SigningKey, DeviceCert) {
 }
 
 /// A relay device of the person's own, certified with `capabilities`.
-fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+pub(crate) fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {
@@ -330,7 +330,12 @@ async fn assert_view_reader_refused(
     );
 }
 
-async fn admit_view_reader(rooms: &Rooms, room: &str, key: &SigningKey, member: &DeviceCert) {
+pub(crate) async fn admit_view_reader(
+    rooms: &Rooms,
+    room: &str,
+    key: &SigningKey,
+    member: &DeviceCert,
+) {
     let state = rooms.room(room).await.unwrap();
     let mut room = state.lock().await;
     let now = SystemTime::now();
@@ -435,6 +440,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         candidate
+            .governance_mut()
             .publish_governed_revocations(&[revoked], &key, now)
             .unwrap();
         let collaboration = room.collaboration().clone();
@@ -722,6 +728,7 @@ async fn legacy_window_write_respects_current_member_grants() {
         )
         .with_lifetime(Lifetime::Until(deadline.saturating_mul(1000)));
         candidate
+            .governance_mut()
             .put_governed_grants(&[read_only], &key, now)
             .unwrap();
         let collaboration = room.collaboration().clone();
@@ -1134,6 +1141,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let guard = current.lock().await;
     let binding = guard
         .peer()
+        .media()
         .resolve_media_binding("so.tilo.chat", "", &voice)
         .expect("the same native source resolves through production voice admission");
     assert_eq!(binding.channel_id, voice);
@@ -1206,14 +1214,20 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     let path = {
         let state = rooms.room(&created.room).await.unwrap();
         let governed = state.lock().await;
-        assert_eq!(governed.peer().room_name().as_deref(), Some("Plaza"));
+        assert_eq!(
+            governed.peer().governance().room_name().as_deref(),
+            Some("Plaza")
+        );
         governed.path.clone()
     };
     drop(rooms);
     relay.shutdown().await;
     let restored = GovernedRoom::open(path, &cert, &key).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
-    assert_eq!(restored.peer().room_name().as_deref(), Some("Plaza"));
+    assert_eq!(
+        restored.peer().governance().room_name().as_deref(),
+        Some("Plaza")
+    );
 }
 
 #[tokio::test]
@@ -1452,7 +1466,12 @@ fn install_bot(
         device: Some(bot_device(id, peer.room(), seed)),
     }));
     assert_eq!(
-        peer.apply_workspace_membership_command(cert, &command, key, SystemTime::now()),
+        peer.workspace_mut().apply_workspace_membership_command(
+            cert,
+            &command,
+            key,
+            SystemTime::now()
+        ),
         Ok(true)
     );
 }
@@ -1683,6 +1702,87 @@ async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
         "the node is a member of the group it stewards, so it holds the channel's keys"
     );
     assert!(asked.channels_dir().exists());
+    drop(steward);
+    asked.shut_down().await;
+}
+
+/// What a test runs inside a room's steward pass, by room.
+type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
+
+fn pass_hooks() -> &'static PassHooks {
+    static HOOKS: std::sync::OnceLock<PassHooks> = std::sync::OnceLock::new();
+    HOOKS.get_or_init(PassHooks::default)
+}
+
+/// Run the hook a test installed for `room`'s steward pass, where the pass
+/// does its MLS work.
+pub(crate) fn steward_pass_hook(room: &str) {
+    let hook = pass_hooks().lock().unwrap().get(room).cloned();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// A steward pass's MLS work holds no runtime worker. The pass stalls in
+/// its MLS work until the test, on a runtime with a single worker, lets it
+/// go: run on that worker, the pass would stall the test with it, and give
+/// up waiting unreleased.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
+    )
+)]
+async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
+    let asked =
+        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
+            .await;
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let entered_tx = std::sync::Mutex::new(entered_tx);
+    let released_rx = std::sync::Mutex::new(released_rx);
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&released);
+    pass_hooks().lock().unwrap().insert(
+        asked.room.clone(),
+        Arc::new(move || {
+            let _ = entered_tx.lock().unwrap().send(());
+            let in_time = released_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .is_ok();
+            observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
+    tilo_test_env::within("the steward pass starts its MLS work", async {
+        while entered.try_recv().is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Only this runtime's one worker can get here while the pass stalls.
+    release.send(()).unwrap();
+    let steward = asked.stewardship().await.expect("the node stewards");
+    tilo_test_env::within("the node admits the member to the channel", async {
+        while !steward
+            .channels
+            .lock()
+            .await
+            .members(asked.channel)
+            .is_some_and(|members| members.contains(&asked.member))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    pass_hooks().lock().unwrap().remove(&asked.room);
+    assert!(
+        released.load(std::sync::atomic::Ordering::SeqCst),
+        "the runtime's worker was free while the pass did its MLS work"
+    );
     drop(steward);
     asked.shut_down().await;
 }

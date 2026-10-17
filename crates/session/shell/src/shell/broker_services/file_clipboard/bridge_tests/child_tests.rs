@@ -239,7 +239,10 @@ async fn inherited_connection(info: &ChildInfo, record: &str) -> Connection {
     );
     stream.set_nonblocking(true).expect("async socket");
     let stream = tokio::net::UnixStream::from_std(stream).expect("async service descriptor");
-    connect_stream(stream, &info.room, &info.identity, record).await
+    // Selected objects ride the inherited connection's own descriptor lane,
+    // which the production hub writes; this private hub connection has none.
+    let lane = runtime_portal::service_descriptors("collab").expect("inherited descriptor lane");
+    connect_stream(stream, lane, &info.room, &info.identity, record).await
 }
 
 fn start_child(fixture: &Fixture, protected_path: PathBuf) {

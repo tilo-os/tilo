@@ -7,7 +7,7 @@
 
 
 pub mod workspace_fs {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type OpenParams<> = ::capnp::capability::Params<crate::fs_capnp::workspace_fs::open_params::Owned>;
     pub type OpenResults<> = ::capnp::capability::Results<crate::fs_capnp::workspace_fs::open_results::Owned>;
     pub type ListParams<> = ::capnp::capability::Params<crate::fs_capnp::workspace_fs::list_params::Owned>;
@@ -2640,7 +2640,7 @@ pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::
 
 
 pub mod file_handle {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ReadParams<> = ::capnp::capability::Params<crate::fs_capnp::file_handle::read_params::Owned>;
     pub type ReadResults<> = ::capnp::capability::Results<crate::fs_capnp::file_handle::read_results::Owned>;
     pub type WriteParams<> = ::capnp::capability::Params<crate::fs_capnp::file_handle::write_params::Owned>;
@@ -5846,7 +5846,7 @@ pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::
 
 
 pub mod directory_handle {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ListParams<> = ::capnp::capability::Params<crate::fs_capnp::directory_handle::list_params::Owned>;
     pub type ListResults<> = ::capnp::capability::Results<crate::fs_capnp::directory_handle::list_results::Owned>;
     pub type OpenDirectoryParams<> = ::capnp::capability::Params<crate::fs_capnp::directory_handle::open_directory_params::Owned>;
@@ -16882,7 +16882,7 @@ pub mod directory_handle {
 
 
 pub mod metadata_pin {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type MetadataParams<> = ::capnp::capability::Params<crate::fs_capnp::metadata_pin::metadata_params::Owned>;
     pub type MetadataResults<> = ::capnp::capability::Results<crate::fs_capnp::metadata_pin::metadata_results::Owned>;
     pub type CheckScopeParams<> = ::capnp::capability::Params<crate::fs_capnp::metadata_pin::check_scope_params::Owned>;
@@ -18093,7 +18093,7 @@ pub mod native_dir_entry {
 
 
 pub mod native_job {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type PollParams<> = ::capnp::capability::Params<crate::fs_capnp::native_job::poll_params::Owned>;
     pub type PollResults<> = ::capnp::capability::Results<crate::fs_capnp::native_job::poll_results::Owned>;
     pub type CancelParams<> = ::capnp::capability::Params<crate::fs_capnp::native_job::cancel_params::Owned>;
@@ -20169,7 +20169,7 @@ pub mod native_job {
 
 
 pub mod replacement_pin {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ObserveParams<> = ::capnp::capability::Params<crate::fs_capnp::replacement_pin::observe_params::Owned>;
     pub type ObserveResults<> = ::capnp::capability::Results<crate::fs_capnp::replacement_pin::observe_results::Owned>;
     pub type CheckParams<> = ::capnp::capability::Params<crate::fs_capnp::replacement_pin::check_params::Owned>;
@@ -23279,7 +23279,7 @@ pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::
 
 
 pub mod directory_cursor {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type PageParams<> = ::capnp::capability::Params<crate::fs_capnp::directory_cursor::page_params::Owned>;
     pub type PageResults<> = ::capnp::capability::Results<crate::fs_capnp::directory_cursor::page_results::Owned>;
 
@@ -25139,7 +25139,7 @@ pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::
 
 
 pub mod pending_replacement {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ObserveParams<> = ::capnp::capability::Params<crate::fs_capnp::pending_replacement::observe_params::Owned>;
     pub type ObserveResults<> = ::capnp::capability::Results<crate::fs_capnp::pending_replacement::observe_results::Owned>;
     pub type StartWithHistoryParams<> = ::capnp::capability::Params<crate::fs_capnp::pending_replacement::start_with_history_params::Owned>;
@@ -28617,7 +28617,7 @@ pub mod pending_replacement_observation {
 
 
 pub mod created_temporary {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type CheckScopeParams<> = ::capnp::capability::Params<crate::fs_capnp::created_temporary::check_scope_params::Owned>;
     pub type CheckScopeResults<> = ::capnp::capability::Results<crate::fs_capnp::created_temporary::check_scope_results::Owned>;
     pub type RetireParams<> = ::capnp::capability::Params<crate::fs_capnp::created_temporary::retire_params::Owned>;
@@ -30658,7 +30658,7 @@ pub mod created_temporary {
 
 
 pub mod history_read_subject {
-    #![allow(unused_variables)]
+    #![allow(unused_variables, reason = "capnpc-rust RPC dispatch templates may leave interface or method parameters unused")]
     pub type ObserveParams<> = ::capnp::capability::Params<crate::fs_capnp::history_read_subject::observe_params::Owned>;
     pub type ObserveResults<> = ::capnp::capability::Results<crate::fs_capnp::history_read_subject::observe_results::Owned>;
     pub type CheckScopeParams<> = ::capnp::capability::Params<crate::fs_capnp::history_read_subject::check_scope_params::Owned>;

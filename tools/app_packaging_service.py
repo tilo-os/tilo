@@ -12,7 +12,7 @@ import urllib.request
 import app_packaging_coordinator as core
 import app_packaging_product as product
 from accept_app_artifacts import FinalArtifactAcceptance
-from assemble_verified_apps import MAX_BYTES, ReadOnlyAPI
+from assemble_verified_apps import MAX_BYTES, ReadOnlyAPI, download_destination
 import app_channel_manifest as channel
 import canonical_verifier_bundle as bundle
 
@@ -58,31 +58,34 @@ class Transport:
         # The socket timeout bounds stalled reads. The deadline also bounds a
         # peer that keeps making partial progress. No response/error bodies log.
         deadline = time.monotonic() + (300 if output else 30)
+        # Redact remote failures only. Local destination errors must retain
+        # their filesystem type and path rather than masquerade as API errors.
         try:
-            with self.opener.open(request, timeout=30) as response:
-                product.require(response.geturl() == request.full_url, 'API redirect rejected')
-                length = response.headers.get('Content-Length')
-                product.require(length is None or (length.isdigit() and int(length) <= maximum), 'API response exceeds bound')
-                target = output.open('xb') if output else None
-                chunks, size = [], 0
-                try:
-                    while True:
-                        product.require(time.monotonic() < deadline, 'API request deadline exceeded')
-                        data = response.read1(min(65536, maximum + 1 - size))
-                        if not data:
-                            break
-                        size += len(data)
-                        product.require(size <= maximum, 'API response exceeds bound')
-                        if target:
-                            target.write(data)
-                        else:
-                            chunks.append(data)
-                    return None if target else b''.join(chunks)
-                finally:
-                    if target:
-                        target.close()
+            response = self.opener.open(request, timeout=30)
         except (urllib.error.URLError, OSError):
             raise ValueError('authenticated API request failed') from None
+        with response:
+            product.require(response.geturl() == request.full_url, 'API redirect rejected')
+            length = response.headers.get('Content-Length')
+            product.require(length is None or (length.isdigit() and int(length) <= maximum), 'API response exceeds bound')
+            chunks, size = [], 0
+            with download_destination(output) as target:
+                while True:
+                    product.require(time.monotonic() < deadline, 'API request deadline exceeded')
+                    try:
+                        data = response.read1(min(65536, maximum + 1 - size))
+                    except (urllib.error.URLError, OSError):
+                        raise ValueError('authenticated API request failed') from None
+                    if not data:
+                        break
+                    size += len(data)
+                    product.require(size <= maximum, 'API response exceeds bound')
+                    if target:
+                        target.write(data)
+                    else:
+                        chunks.append(data)
+                product.require(length is None or size == int(length), 'API response truncated')
+                return None if target else b''.join(chunks)
 
 
 class ManagedProduct(product.ProductForgejo):

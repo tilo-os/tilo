@@ -9,8 +9,12 @@
 # launcher's `system_authority`): read+exec on the host bin dirs, read on
 # /etc, the system bus filtered to the named authorities, the PipeWire
 # socket and the compositor's runtime state. Printing stays behind the
-# Print portal. The launcher also binds the shared `~/.config/tilo` tree,
-# including the account store and credential vault.
+# Print portal. The launcher also binds the parts of `~/.config/tilo` this
+# app edits (the settings document's own directory, the account stores and
+# their credential vault) and, read-only, the workspace tree; never the
+# identity store, trust lists, app registries or settings records. The
+# identity store is the host's: Settings administers identities and devices
+# through the host's `tilo.identity` actions.
 #
 
 
@@ -40,6 +44,8 @@ optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "se
 [actions]
 query = true
 invoke = true
+[resources]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

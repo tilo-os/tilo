@@ -239,7 +239,7 @@ impl ShellOverlayHost {
         true
     }
 
-    fn apply_now_playing_action(&mut self, action: CardAction, view: &NowPlayingView) {
+    pub(super) fn apply_now_playing_action(&mut self, action: CardAction, view: &NowPlayingView) {
         match action {
             CardAction::None => return,
             CardAction::Redraw => {}

@@ -12,13 +12,6 @@ use crate::shell::state::{Capability, FsMode, GRANT_SESSION, WorkspaceTree};
 use ui::a11y::Action;
 use vello::kurbo::Rect;
 
-struct SettingsReset;
-impl Drop for SettingsReset {
-    fn drop(&mut self) {
-        settings_store::install_source(None);
-    }
-}
-
 struct Receiver {
     port: u16,
     pins: Vec<String>,
@@ -197,7 +190,7 @@ fn chunks(stream: &mut impl BufRead) -> Vec<u8> {
 struct Fixture {
     // Workers stop before these environment/settings guards are released.
     home: tilo_test_env::TestHome,
-    _settings: SettingsReset,
+    _settings: crate::shell::test_support::InstalledSettings,
     root: tempfile::TempDir,
     path: std::path::PathBuf,
     scope: AirDropScope,
@@ -214,12 +207,12 @@ impl Fixture {
             "DBUS_SESSION_BUS_ADDRESS",
             "unix:path=/nonexistent/airdrop-fixture",
         );
-        settings_store::install_source(Some(Arc::new(
+        let settings = crate::shell::test_support::install_settings(Arc::new(
             settings_store::SessionSettings::open(settings_store::SessionPaths::beside(
                 home.config().join("settings.json"),
             ))
             .unwrap(),
-        )));
+        ));
         settings_store::update_section(
             "continuity",
             serde_json::json!({
@@ -260,7 +253,7 @@ impl Fixture {
         );
         Self {
             home,
-            _settings: SettingsReset,
+            _settings: settings,
             root,
             path,
             scope,

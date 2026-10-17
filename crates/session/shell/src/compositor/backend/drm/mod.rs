@@ -13,6 +13,7 @@
 pub mod access_keys;
 mod client_scanout;
 pub mod cpu_present;
+mod cursor_plane;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
@@ -28,6 +29,7 @@ pub mod scanout;
 pub mod seat_diag;
 pub mod session;
 mod tablet;
+mod topology;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -47,6 +49,7 @@ use crate::compositor::present::Presenter;
 use crate::shell::hdr_surface::{CpuComposite, HdrLayer};
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
+use tilo_lock::MutexRecover as _;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] (libseat session + udev + libinput) plus a [`paint::VelloDrmBridge`] for the vello → RGBA bytes path.
 pub struct DrmBackend {
@@ -169,7 +172,8 @@ impl DrmBackend {
 /// The scanouts are the *only* part of the DRM runtime the frame path touches; input-path state
 /// (libseat/udev/libinput, the runtime's inner calloop) stays on the loop thread, and the
 /// hardware cursor (`CursorPlanes`) owns its own dup of the card
-/// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
+/// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint, from a mover
+/// thread per output that a blocking commit cannot turn into a loop stall. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
 #[allow(
     clippy::struct_excessive_bools,
@@ -1161,10 +1165,7 @@ impl DrmPresenter {
         if let Some(bridge) = &mut self.paint {
             let _ = bridge.take_phase_timing();
         }
-        self.pointer = *self
-            .shared_pointer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.pointer = *self.shared_pointer.lock_recover();
         self.frame_owes = false;
         let present_gate = self.present_gate.clone();
         let _quiesced = quiesce_presentations(present_gate.as_ref());
@@ -1785,10 +1786,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
 /// through here, so one of them waits for the other. A poisoned gate still quiesces: the frame that panicked is over, and
 /// refusing the lock would let master drop under the next one.
 fn quiesce_presentations(gate: Option<&Arc<Mutex<()>>>) -> Option<std::sync::MutexGuard<'_, ()>> {
-    gate.map(|gate| {
-        gate.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    })
+    gate.map(|gate| gate.lock_recover())
 }
 
 /// Swizzle one already-encoded clip into an XRGB scanout. Pixels outside
@@ -3726,6 +3724,13 @@ impl Backend for DrmBackend {
         }
     }
 
+    fn poll_input(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
+        self.inner.dispatch_pending();
+        for ev in self.inner.dispatch.events.drain(..) {
+            callback(ev);
+        }
+    }
+
     fn outputs(&self) -> &[Output] {
         &self.outputs
     }
@@ -3747,9 +3752,7 @@ impl Backend for DrmBackend {
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
         let shared_pointer = self.inner.dispatch.hw_cursor.shared_position();
-        *shared_pointer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.inner.dispatch.pointer;
+        *shared_pointer.lock_recover() = self.inner.dispatch.pointer;
         // Any inline bridge in `self.paint` stays behind and is dropped with
         // the backend: `PresenterParts` has no field to carry it across.
         Some(Box::new(DrmPresenter::new(PresenterParts {
