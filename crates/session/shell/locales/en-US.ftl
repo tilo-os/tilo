@@ -1252,6 +1252,7 @@ search-action-shortcut-help-toggle = Show desktop help
 search-action-shortcut-help-toggle-subtitle = F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide
 search-action-desktop-tour-open = Take the desktop tour
 search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction to navigation, organisation and collaboration
+search-provider-device-local = Private windows
 search-action-feedback-open = Give feedback
 search-action-feedback-open-subtitle = Report a problem or an idea about the window in front; you review what is sent
 feedback-action-unavailable = Feedback is not available on this desktop

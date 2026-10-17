@@ -1241,6 +1241,11 @@ impl AppComponent {
     pub fn app_id(&self) -> &str {
         self.context.app_id()
     }
+    /// Whether the component was prepared as a private window
+    /// ([`HostContext::provide_private`]).
+    pub fn is_private(&self) -> bool {
+        self.context.is_private()
+    }
     /// A collaboration manager for this component's record, reached through
     /// the host's `connector` as an app the host launched: what a host
     /// showing the component inside its own process hands the App it runs
