@@ -374,7 +374,15 @@ fn plan_zone_args(zone: &Zone, out: &mut Vec<Invocation>) {
     out.push(firewall_cmd([
         "--permanent".to_string(),
         format!("--zone={name}"),
-        format!("--set-target={}", zone.target.short()),
+        format!(
+            "--set-target={}",
+            match zone.target {
+                Target::Default => "default",
+                Target::Accept => "ACCEPT",
+                Target::Drop => "DROP",
+                Target::Reject => "%%REJECT%%",
+            }
+        ),
     ]));
     for iface in &zone.interfaces {
         out.push(firewall_cmd([
@@ -478,7 +486,12 @@ mod tests {
 
     #[test]
     fn apply_includes_each_zones_default_policy_before_reload() {
-        for target in Target::ALL {
+        for (target, wire_target) in [
+            (Target::Default, "default"),
+            (Target::Accept, "ACCEPT"),
+            (Target::Drop, "DROP"),
+            (Target::Reject, "%%REJECT%%"),
+        ] {
             let mut config = crate::sample::sample_config();
             config.zone_mut(ZoneKind::Public).unwrap().target = target;
             let mut backend = Backend {
@@ -486,10 +499,8 @@ mod tests {
                 last_plan: Vec::new(),
             };
             backend.apply(&config).unwrap();
-            let expected = format!(
-                "firewall-cmd --permanent --zone=public --set-target={}",
-                target.short()
-            );
+            let expected =
+                format!("firewall-cmd --permanent --zone=public --set-target={wire_target}");
             let policy = backend
                 .last_plan()
                 .iter()
