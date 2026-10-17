@@ -823,6 +823,7 @@ impl App {
     /// History while `tab_presents`: the app draws no History band of its
     /// own, and offers its header row the control only while the tab row
     /// is hidden.
+    #[cfg(feature = "native")]
     pub(crate) fn set_window_presents_history(&mut self, tab_presents: bool) {
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
@@ -833,6 +834,7 @@ impl App {
 
     /// The History control the window shows for this app, if it has a
     /// History to open.
+    #[cfg(feature = "native")]
     pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         self.history
             .as_ref()
@@ -842,6 +844,7 @@ impl App {
 
     /// The window's History control was pressed: run it on this app's
     /// History door, as the History shortcut does.
+    #[cfg(feature = "native")]
     pub(crate) fn invoke_window_history_control(
         &mut self,
         control: crate::widget::HistoryControl,
