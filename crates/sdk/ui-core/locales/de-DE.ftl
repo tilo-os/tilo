@@ -421,15 +421,6 @@ history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 palette-name = Befehlspalette
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
-palette-hint-navigate = Navigieren
-palette-hint-select = Auswählen
-palette-hint-open = Öffnen
-palette-hint-run = Ausführen
-palette-hint-close = Schließen
-palette-result-count = { $count ->
-    [one] 1 Ergebnis
-   *[other] { $count } Ergebnisse
-}
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
 palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
