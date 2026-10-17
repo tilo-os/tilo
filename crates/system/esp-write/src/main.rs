@@ -36,6 +36,9 @@
 //! Exit status: 0 applied, 1 refused or failed, 2 usage. The test hook
 //! `TILO_ESP_WRITE_CRASH_AFTER=N` stops with 99 before operation N, leaving
 //! the plan in place as an interruption would.
+//!
+//! Run as `tilo-uki-cmdline` (the link `/usr/libexec/tilo-uki-cmdline`), it
+//! is the in-place UKI editor of `tilo_esp_write::uki` instead.
 
 use std::ffi::{CString, OsStr, OsString};
 use std::fmt::Write as _;
@@ -717,6 +720,11 @@ fn run(policy: &Policy) -> Result<()> {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
+    if let Some((argv0, rest)) = args.split_first()
+        && tilo_esp_write::uki::invoked_as(argv0)
+    {
+        return tilo_esp_write::uki::main(rest);
+    }
     let policy = match args.as_slice() {
         [_, caller] => POLICIES
             .iter()

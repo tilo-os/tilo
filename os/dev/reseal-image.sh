@@ -71,12 +71,19 @@ uki_name="${ukis[0]##*/}"
 [[ "$uki_name" =~ ^[A-Za-z0-9_.-]+\.efi$ ]] || die "invalid UKI filename"
 mv "${ukis[0]}" "$stage/uki.efi"
 chmod 0644 "$stage/uki.efi"
-python3 "$TILO_OS_DIR/dev/uki-cmdline.py" set "composefs=$digest" "$stage/uki.efi"
-python3 "$TILO_OS_DIR/dev/uki-cmdline.py" show "$stage/uki.efi"
+# The image's own UKI editor rewrites the digest, in a throwaway container
+# that commits nothing: the same tool the installed machine derives its
+# repair entry with.
+uki_cmdline() {
+  podman "${podman_args[@]}" run --rm --pull=never --network=none \
+    --entrypoint /usr/libexec/tilo-uki-cmdline -v "$stage:/stage:Z" "$image" "$@"
+}
+uki_cmdline set "composefs=$digest" /stage/uki.efi
+uki_cmdline show /stage/uki.efi
 copy_target=""
 if podman "${podman_args[@]}" cp "$container:/boot/tilo-target/tilo-target.efi" "$stage/target.efi" 2>/dev/null; then
   chmod 0644 "$stage/target.efi"
-  python3 "$TILO_OS_DIR/dev/uki-cmdline.py" set "composefs=$digest" "$stage/target.efi"
+  uki_cmdline set "composefs=$digest" /stage/target.efi
   copy_target='COPY target.efi /boot/tilo-target/tilo-target.efi'
 fi
 podman "${podman_args[@]}" rm "$container" >/dev/null

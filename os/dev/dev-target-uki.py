@@ -7,7 +7,8 @@ assembles a dev installer medium builds the target's UKI once, from the exact
 kernel, initramfs and pinned hardware DTB of the selected image, and carries it
 beside the target's OCI layout. The VM installer only verifies that payload
 against the installed image and writes the installed command line into the room
-reserved here (/usr/libexec/tilo-installer-dev-target-uki.py).
+reserved here (`tilo-installer-offline-target dev-target-uki`,
+crates/system/install-helpers/src/dev_target_uki.rs).
 
 The OCI image is not changed: its manifest digest is the target's identity. The
 constructor is the boot adapter's `uki-tools` stage
@@ -26,8 +27,9 @@ import sys
 import tempfile
 
 OUTPUT_NAME = "target-uki.efi"
-# Must equal CMDLINE_ROOM in tilo-installer-dev-target-uki.py. One token of
-# 2047 bytes: arm64's COMMAND_LINE_SIZE bounds what the installer writes back.
+# Must equal CMDLINE_ROOM in crates/system/install-helpers/src/dev_target_uki.rs,
+# whose tests read it from here. One token of 2047 bytes: arm64's
+# COMMAND_LINE_SIZE bounds what the installer writes back.
 CMDLINE_ROOM = "tilo.dev-target-cmdline-room"
 CMDLINE_BYTES = 2047
 ADAPTER = "os/Containerfile.dev-installer-base"

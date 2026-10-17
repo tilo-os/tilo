@@ -1,7 +1,7 @@
 //! The installed hardware profile, read exactly as
 //! `/usr/lib/tilo/hardware_profile.py` (`os/dev/hardware_profile.py`) reads
-//! it: `read_profile`, `development_origin`, `validate_target_imgref` and
-//! `trusted_path` with what they call.
+//! it: `read_profile`, `development_origin`, `validate_target_imgref`,
+//! `trusted_path` and `resolve_profile` with what they call.
 //!
 //! The installer still reads profiles through that module. A change to what
 //! it accepts must be made here too; `tests/profile.rs` holds both to the
@@ -106,6 +106,8 @@ pattern!(MODULE_NAME, r"[a-z0-9][a-z0-9_-]{0,63}");
 pattern!(KEYBOARD_ID, r"[0-9A-F]{4}");
 pattern!(KEYBOARD_NAME, r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}");
 pattern!(COMPATIBLE, r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*");
+pattern!(KERNEL_VERSION, r"[A-Za-z0-9][A-Za-z0-9._+-]*");
+pattern!(DTB_DIGEST, r"[0-9a-f]{64}");
 pattern!(
     KERNEL_ARG,
     r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?"
@@ -855,6 +857,72 @@ pub fn development_origin(root: &Root) -> Result<Option<Value>> {
     Ok(Some(target.clone()))
 }
 
+/// `resolve_profile`: the pinned device tree this image's hardware profile
+/// binds to kernel `kver`, or `None` when the image has no profile or its
+/// model boots with the firmware's own device tree.
+///
+/// # Errors
+/// A profile the module refuses, a kernel version or architecture that does
+/// not match it, or a DTB that is missing, malformed or differs from its
+/// pinned SHA-256.
+pub fn resolve_profile(root: &Root, kver: &str, architecture: &str) -> Result<Option<PathBuf>> {
+    let Some(data) = read_profile(root)? else {
+        return Ok(None);
+    };
+    require(
+        KERNEL_VERSION.is_match(kver),
+        "invalid kernel version for hardware profile",
+    )?;
+    let definition = read_definition(&root.trusted_path(DEFINITION_PATH, true)?)?;
+    let native = Value::from(architecture);
+    require(
+        ARCHITECTURES.contains(&architecture)
+            && data.get("architecture") == Some(&native)
+            && definition.get("architecture") == Some(&native),
+        "hardware profile requires a matching native image architecture",
+    )?;
+    // The reviewed definition is copied into the sealed rootfs. It binds the
+    // model to this kernel's DTB without model-specific branches in the
+    // builder.
+    let Some(devicetree) = definition.get("devicetree").and_then(Value::as_str) else {
+        require(
+            data.get("devicetree") == Some(&Value::Null)
+                && data.get("devicetree_sha256") == Some(&Value::Null),
+            "firmware-provided device tree profile must not override a DTB",
+        )?;
+        return Ok(None);
+    };
+    let relative = format!("usr/lib/modules/{kver}/dtb/{devicetree}");
+    require(
+        data.get("devicetree").and_then(Value::as_str) == Some(&format!("/{relative}")),
+        "hardware profile device tree does not match this kernel and model",
+    )?;
+    let digest = data
+        .get("devicetree_sha256")
+        .and_then(Value::as_str)
+        .filter(|digest| DTB_DIGEST.is_match(digest))
+        .ok_or_else(|| Error::value("hardware profile has no valid pinned DTB SHA-256"))?;
+    let dtb = root.trusted_path(&relative, true)?;
+    let payload = fs::read(&dtb).map_err(|e| Error::os(&e, &dtb))?;
+    let header = |at: usize| {
+        payload
+            .get(at..at.saturating_add(4))
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+    };
+    require(
+        payload.len() >= 40
+            && header(0) == Some(0xD00D_FEED)
+            && header(4).map(|size| size as usize) == Some(payload.len()),
+        "hardware profile device tree has an invalid flattened-device-tree header",
+    )?;
+    require(
+        sha256_hex(&payload) == digest,
+        "hardware profile device tree does not match its pinned SHA-256",
+    )?;
+    Ok(Some(dtb))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,6 +942,8 @@ mod tests {
             &*KEYBOARD_NAME,
             &*COMPATIBLE,
             &*KERNEL_ARG,
+            &*KERNEL_VERSION,
+            &*DTB_DIGEST,
         ] {
             assert_ne!(pattern.as_str(), never().as_str());
         }

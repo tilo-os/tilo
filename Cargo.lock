@@ -17492,6 +17492,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17869,6 +17870,8 @@ dependencies = [
  "sha2 0.11.0",
  "staging-handoff-model",
  "tempfile",
+ "tilo-board-successor",
+ "tilo-esp-write",
  "tilo-firstboot-files",
  "tilo-pycompat",
  "tilo-seal",

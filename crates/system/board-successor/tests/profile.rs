@@ -16,7 +16,9 @@ use std::path::Path;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tilo_board_successor::installed_profile;
-use tilo_board_successor::profile::{Root, development_origin, read_profile, validate_definition};
+use tilo_board_successor::profile::{
+    Root, development_origin, read_profile, resolve_profile, validate_definition,
+};
 
 const PROFILES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../os/hardware/profiles");
 const DEVELOPMENT_REF: &str = "registry.tilo.so/tilo/tilo-development:aarch64";
@@ -530,4 +532,61 @@ fn the_reader_tracks_the_shipped_module() {
     ] {
         assert!(module.contains(message), "{message}");
     }
+}
+
+#[test]
+fn the_profile_resolves_to_its_pinned_kernel_dtb() {
+    // A flattened device tree header: magic, then the total size.
+    let mut dtb = vec![0u8; 40];
+    dtb[..4].copy_from_slice(&0xD00D_FEEDu32.to_be_bytes());
+    dtb[4..8].copy_from_slice(&40u32.to_be_bytes());
+    let image = Image::lenovo("registry.tilo.so/tilo/tilo:latest");
+    let definition = shipped("lenovo-83ed");
+    let relative = format!(
+        "usr/lib/modules/7.2.7/dtb/{}",
+        definition["devicetree"].as_str().unwrap()
+    );
+    image.write(&relative, &dtb);
+    image.set_profile("devicetree", json!(format!("/{relative}")));
+    image.set_profile(
+        "devicetree_sha256",
+        json!(hex::encode(Sha256::digest(&dtb))),
+    );
+    assert_eq!(
+        resolve_profile(&image.root, "7.2.7", "aarch64").unwrap(),
+        Some(image.path(&relative))
+    );
+    let refused = |kver: &str, architecture: &str| {
+        resolve_profile(&image.root, kver, architecture)
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        refused("../7", "aarch64"),
+        "invalid kernel version for hardware profile"
+    );
+    assert_eq!(
+        refused("7.2.7", "x86_64"),
+        "hardware profile requires a matching native image architecture"
+    );
+    assert_eq!(
+        refused("7.2.8", "aarch64"),
+        "hardware profile device tree does not match this kernel and model"
+    );
+    let mut changed = dtb.clone();
+    changed[39] = 1;
+    image.write(&relative, &changed);
+    assert_eq!(
+        refused("7.2.7", "aarch64"),
+        "hardware profile device tree does not match its pinned SHA-256"
+    );
+    image.write(&relative, &changed[..39]);
+    assert_eq!(
+        refused("7.2.7", "aarch64"),
+        "hardware profile device tree has an invalid flattened-device-tree header"
+    );
+    assert_eq!(
+        resolve_profile(&Image::new().root, "7.2.7", "aarch64").unwrap(),
+        None
+    );
 }
