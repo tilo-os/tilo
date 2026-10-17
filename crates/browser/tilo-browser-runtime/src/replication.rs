@@ -300,7 +300,7 @@ impl Room {
     /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
     /// lets this page's person close and move what others made on its
     /// shared desktop; the answer sets the desktop's flag and wakes it.
-    fn ask_moderation_when_due(&mut self) {
+    fn ask_moderation_when_due(&self) {
         if !self.ready
             || !self
                 .mounts

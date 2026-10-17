@@ -169,7 +169,7 @@ impl DesktopChromeSource for PageChrome {
             }),
             strip_places: Some(places),
             watching: self.here.borrow().watching(),
-            own: self.own_chip(),
+            own: Some(self.own_chip()),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -198,7 +198,7 @@ impl PageChrome {
 
     /// This page's person as everyone here sees them: their name (numbered
     /// when someone else here shares it) and colour.
-    fn own_chip(&self) -> Option<tilo_desktop::chrome::OwnChip> {
+    fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
         let here = self.here.borrow();
         let name = here
             .own_shown()
@@ -206,7 +206,7 @@ impl PageChrome {
         let rgb = here
             .own_rgb()
             .unwrap_or_else(|| ui::presence::user_color(&name));
-        Some(tilo_desktop::chrome::OwnChip { name, rgb })
+        tilo_desktop::chrome::OwnChip { name, rgb }
     }
 }
 
@@ -810,7 +810,7 @@ impl BrowserShell {
                 })
             })
             .collect();
-        let rgb = self.chrome.own_chip().map(|own| own.rgb);
+        let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
         // others are shown beside it.
         let name = self

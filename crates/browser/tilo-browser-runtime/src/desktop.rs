@@ -7,6 +7,8 @@
 //! records themselves, so a reload restores the same windows on the same
 //! documents. A profile with no stored desktop is seeded with a window per
 //! requested application.
+pub(crate) type PersonIdentity = (String, (u8, u8, u8));
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -403,7 +405,7 @@ impl Shared {
         tree: &DesktopTree,
         me: &str,
         room: &str,
-        person: &mut dyn FnMut(&str) -> (String, (u8, u8, u8)),
+        person: &mut dyn FnMut(&str) -> PersonIdentity,
     ) -> HashMap<TabId, ui::widget::TabHolder> {
         if self.moderates.load(Ordering::Relaxed) {
             return HashMap::new();
