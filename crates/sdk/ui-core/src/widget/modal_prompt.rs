@@ -334,8 +334,8 @@ impl Widget for PromptBody {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.input)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Widget::ime_content(&self.input)
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

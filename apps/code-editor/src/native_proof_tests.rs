@@ -31,8 +31,9 @@ fn dictation_ime_final_uses_native_code_actions_and_system_undo() {
         app.harness()
             .ime_window()
             .expect("focused native code field")
+            .content
             .purpose,
-        winit::window::ImePurpose::Normal
+        ui::ime::InputPurpose::Text
     );
     app.harness()
         .send(&WindowEvent::Ime(winit::event::Ime::Preedit(

@@ -113,7 +113,7 @@ pub struct WindowState {
 
     /// The current IME purpose.
     ime_purpose: ImePurpose,
-    ime_multiline: bool,
+    ime_content_type: Option<crate::platform::wayland::ImeContentType>,
 
     /// The text inputs observed on the window.
     text_inputs: Vec<ZwpTextInputV3>,
@@ -220,7 +220,7 @@ impl WindowState {
             has_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
-            ime_multiline: false,
+            ime_content_type: None,
             last_configure: None,
             max_inner_size: None,
             min_inner_size: MIN_WINDOW_SIZE,
@@ -1131,7 +1131,7 @@ impl WindowState {
             applied = true;
             if allowed {
                 text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose, self.ime_multiline);
+                text_input.set_content_type_for(self.ime_purpose, self.ime_content_type);
             } else {
                 text_input.disable();
             }
@@ -1159,7 +1159,7 @@ impl WindowState {
         self.ime_purpose = purpose;
 
         for text_input in &self.text_inputs {
-            text_input.set_content_type_by_purpose(purpose, self.ime_multiline);
+            text_input.set_content_type_for(purpose, self.ime_content_type);
             text_input.commit();
         }
     }
@@ -1169,19 +1169,22 @@ impl WindowState {
         self.ime_purpose
     }
 
-    pub fn set_ime_multiline(&mut self, multiline: bool) {
-        if self.ime_multiline == multiline {
+    pub fn set_ime_content_type(
+        &mut self,
+        content: Option<crate::platform::wayland::ImeContentType>,
+    ) {
+        if self.ime_content_type == content {
             return;
         }
-        self.ime_multiline = multiline;
+        self.ime_content_type = content;
         for text_input in &self.text_inputs {
-            text_input.set_content_type_by_purpose(self.ime_purpose, multiline);
+            text_input.set_content_type_for(self.ime_purpose, content);
             text_input.commit();
         }
     }
 
-    pub fn ime_multiline(&self) -> bool {
-        self.ime_multiline
+    pub fn ime_content_type(&self) -> Option<crate::platform::wayland::ImeContentType> {
+        self.ime_content_type
     }
 
     /// Set the scale factor for the given window.

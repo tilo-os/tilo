@@ -2862,13 +2862,13 @@ impl Widget for EditorView {
         self.is_bound()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         // This is an action-owned source buffer, not input to a live process.
-        (self.is_focused && self.is_bound()).then_some(winit::window::ImePurpose::Normal)
+        (self.is_focused && self.is_bound()).then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         if self.composition.has_preedit() || self.pending_text_edit.is_some() {
             return None;
         }
@@ -3330,7 +3330,7 @@ mod tests {
     fn dictation_target_tracks_code_selection_content_and_pending_edits() {
         let (mut view, mut doc) = bound_editor("same source");
         view.set_focus(true);
-        assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        assert_eq!(view.ime_content(), Some(ui::ime::InputContent::TEXT));
         let key = [17; 32];
         let stamp = view.ime_edit_fingerprint(&key).expect("editable code");
         let caret = view.ime_cursor_rect();
@@ -3360,7 +3360,7 @@ mod tests {
         assert!(view.take_text_edit().is_some());
         assert!(view.ime_edit_fingerprint(&key).is_some());
         view.set_focus(false);
-        assert!(view.ime_purpose().is_none());
+        assert!(view.ime_content().is_none());
         assert!(view.ime_edit_fingerprint(&key).is_none());
     }
 

@@ -472,7 +472,7 @@ impl Widget for AddForm {
 
 /// Whether `widget` takes typed text (and so the caret).
 fn is_text_field(widget: &dyn Widget) -> bool {
-    widget.ime_purpose().is_some()
+    widget.ime_content().is_some()
 }
 
 /// One labelled text field bound to `state`.

@@ -993,12 +993,12 @@ impl Widget for HexView {
         None
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if self.goto.is_open() {
-            return Widget::ime_purpose(self.goto.content());
+            return Widget::ime_content(self.goto.content());
         }
         if self.find_open && Widget::is_focused(&self.find_bar) {
-            return self.find_bar.ime_purpose();
+            return self.find_bar.ime_content();
         }
         None
     }

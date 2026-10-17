@@ -1382,8 +1382,8 @@ impl Widget for RichTextLine {
         Widget::ime_cursor_rect(&self.inner)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
 
     /// `multiline` is cleared — a block editor stacks many of these to form a document.

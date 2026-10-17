@@ -1231,9 +1231,8 @@ impl Widget for CalculatorApp {
         }
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.host_focused
-            .then_some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        self.host_focused.then_some(ui::ime::InputContent::TEXT)
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
@@ -2257,10 +2256,10 @@ mod tests {
             .ime_cursor_rect()
             .expect("text entry must enable the browser editor and platform IME");
         assert!(caret.height() > 0.0 && app.area.contains(caret.center()));
-        assert_eq!(app.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        assert_eq!(app.ime_content(), Some(ui::ime::InputContent::TEXT));
         app.set_focus(false);
         assert!(app.ime_cursor_rect().is_none());
-        assert_eq!(app.ime_purpose(), None);
+        assert_eq!(app.ime_content(), None);
     }
 
     #[test]

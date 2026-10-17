@@ -3245,7 +3245,7 @@ impl Widget for TerminalWidget {
         })
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if self.focused
             && !self.context_menu.is_open()
             && !self.native_read_only
@@ -3257,14 +3257,14 @@ impl Widget for TerminalWidget {
                 .and_then(crate::native_editor::Client::snapshot)
                 .is_some()
         {
-            return Some(winit::window::ImePurpose::Normal);
+            return Some(ui::ime::InputContent::TEXT);
         }
         (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
-            .then_some(winit::window::ImePurpose::Terminal)
+            .then_some(ui::ime::InputContent::TERMINAL)
     }
 
     fn ime_requires_deferred_ack(&self) -> bool {
-        self.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+        self.ime_content() == Some(ui::ime::InputContent::TEXT)
     }
 
     fn start_deferred_text(&mut self) -> Option<ui::text_input::Receipt> {
@@ -3298,7 +3298,7 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         if let Some(snapshot) = self
             .native_editor
             .as_ref()

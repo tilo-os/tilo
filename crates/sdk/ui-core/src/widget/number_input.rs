@@ -1078,11 +1078,11 @@ impl Widget for NumberInput {
         self.field.ime_edit_fingerprint(key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         // Winit has no numeric purpose yet. Normal still activates the
         // standard text-input-v3 lifecycle; the field continues to validate
         // and clamp committed text itself.
-        Some(winit::window::ImePurpose::Normal)
+        Some(crate::ime::InputContent::TEXT)
     }
 
     /// Reports `Role::SpinButton` with the formatted value; an assistive

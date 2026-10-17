@@ -211,14 +211,14 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     );
 }
 #[test]
-fn canonical_composer_exports_ime_purpose_through_app_root() {
+fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
     crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
     let app = projection(&doc, me);
     assert!(app.is_focusable());
-    assert!(app.ime_purpose().is_some());
+    assert!(app.ime_content().is_some());
 }
 
 #[test]

@@ -659,7 +659,7 @@ impl Widget for WordProcessorWidget {
             self.ime_rect
         }
     }
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if self.styles_panel_full_window() {
             self.num_inputs
                 .iter()
@@ -667,11 +667,11 @@ impl Widget for WordProcessorWidget {
                     Some(slot.field) == self.editing_field
                         && self.visible_styles_rect(slot.rect).is_some()
                 })
-                .and_then(|slot| Widget::ime_purpose(&slot.input))
+                .and_then(|slot| Widget::ime_content(&slot.input))
         } else if self.find.is_open() {
-            self.find.ime_purpose()
+            self.find.ime_content()
         } else {
-            Some(winit::window::ImePurpose::Normal)
+            Some(ui::ime::InputContent::TEXT)
         }
     }
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {

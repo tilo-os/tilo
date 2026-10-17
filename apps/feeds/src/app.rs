@@ -2441,10 +2441,10 @@ impl ui::widget::Decorator for FeedsApp {
         }
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         match &self.modal {
-            Some(modal) => Widget::ime_purpose(&modal.dialog),
-            None => Widget::ime_purpose(&self.shell),
+            Some(modal) => Widget::ime_content(&modal.dialog),
+            None => Widget::ime_content(&self.shell),
         }
     }
 

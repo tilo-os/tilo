@@ -2751,10 +2751,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.set_focus(true);
-        assert_eq!(w.ime_purpose(), Some(winit::window::ImePurpose::Terminal));
+        assert_eq!(w.ime_content(), Some(ui::ime::InputContent::TERMINAL));
         assert_eq!(
-            ui::ime::ImeWindowState::from_widget(&w).unwrap().purpose,
-            winit::window::ImePurpose::Terminal
+            ui::ime::ImeWindowState::from_widget(&w).unwrap().content,
+            ui::ime::InputContent::TERMINAL
         );
         let stamp = w.ime_edit_fingerprint(&[9; 32]).unwrap();
         w.feed(b"x");

@@ -709,20 +709,20 @@ impl Widget for CodeEditor {
         Widget::ime_cursor_rect(&self.inner)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         if self.read_only || !self.inner.is_focused() {
             return None;
         }
         // Source text uses the shared input contract; no bytes go to a process.
-        self.inner.ime_purpose()
+        self.inner.ime_content()
     }
 
     fn ime_multiline(&self) -> bool {
-        self.ime_purpose().is_some() && self.inner.ime_multiline()
+        self.ime_content().is_some() && self.inner.ime_multiline()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         self.inner.ime_edit_fingerprint(key)
     }
 
@@ -1576,8 +1576,8 @@ mod document_tests {
         editor.set_focused(true);
         editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         assert_eq!(
-            Widget::ime_purpose(&editor),
-            Some(winit::window::ImePurpose::Normal)
+            Widget::ime_content(&editor),
+            Some(crate::ime::InputContent::TEXT)
         );
         let key = [19; 32];
         let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
@@ -1589,7 +1589,7 @@ mod document_tests {
         );
         assert_eq!(editor.value(), "日本語 café");
         editor.set_read_only(true);
-        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_content(&editor).is_none());
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
         dispatch(
             &mut editor,
@@ -1599,7 +1599,7 @@ mod document_tests {
         editor.set_read_only(false);
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_some());
         editor.set_focused(false);
-        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_content(&editor).is_none());
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
     }
 

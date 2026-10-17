@@ -1246,8 +1246,8 @@ impl Widget for ColorPicker {
         self.hex_input.ime_edit_fingerprint(key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.hex_input)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Widget::ime_content(&self.hex_input)
     }
 
     /// The colour picker reports `Role::ComboBox` — a selector whose

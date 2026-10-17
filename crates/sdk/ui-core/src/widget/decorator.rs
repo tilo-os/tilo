@@ -374,7 +374,7 @@ decorator_trait! {
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
-        fn ime_purpose() -> Option<winit::window::ImePurpose>;
+        fn ime_content() -> Option<crate::ime::InputContent>;
         fn ime_multiline() -> bool;
         fn presented() -> bool;
         fn opening() -> bool;
