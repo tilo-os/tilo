@@ -136,6 +136,39 @@ class ImageInterpreterTests(unittest.TestCase):
         self.write("os/usr/libexec/local-experiment", "#!/usr/bin/env python3\n", track=False)
         self.assertEqual(checker.check(self.root), ([], []))
 
+    def test_shell_scripts_that_run_python_fail_and_mentions_do_not(self) -> None:
+        self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | python3 -c 'import json'\n")
+        self.write("os/usr/libexec/tilo-heredoc", "#!/bin/sh\nout=$(python3 - <<PY\nPY\n)\n")
+        self.write("os/usr/libexec/tilo-mention", "#!/bin/sh\n# python3 used to do this\necho done\n")
+        new, _ = checker.check(self.root)
+        self.assertEqual(new, ["os/usr/libexec/tilo-heredoc", "os/usr/libexec/tilo-pipe"])
+
+    def test_host_payload_scripts_count_and_its_tests_do_not(self) -> None:
+        self.write("dist/session/tilo-helper.py", "print()\n")
+        self.write("dist/session/tests/fixture.py", "print()\n")
+        new, _ = checker.check(self.root)
+        self.assertEqual(new, ["dist/session/tilo-helper.py"])
+
+    def test_python_the_image_build_installs_counts(self) -> None:
+        self.write("tools/client.py", "print()\n")
+        self.write("os/dev/build-helper.py", "print()\n")
+        self.write(
+            "os/Containerfile",
+            "COPY tools/client.py /usr/libexec/tilo/client.py\n"
+            "COPY --chmod=0755 os/dev/build-helper.py \\\n    /usr/local/bin/\n"
+            "COPY --from=stage /out/bin/runner.py /usr/libexec/runner.py\n",
+        )
+        self.write(
+            "os/components.toml",
+            '[[component]]\nname = "x"\nfiles = [\n'
+            '  { from = "@manifest/scripts/check.py", to = "/usr/libexec/tilo-check", mode = "0755" },\n]\n',
+        )
+        new, _ = checker.check(self.root)
+        self.assertEqual(
+            new,
+            ["image:/usr/libexec/runner.py", "image:/usr/libexec/tilo-check", "image:/usr/libexec/tilo/client.py"],
+        )
+
     def test_baseline_entry_needs_a_reason(self) -> None:
         self.baseline("os/usr/libexec/tilo-legacy\n")
         with self.assertRaisesRegex(checker.BaselineError, "needs a reason"):

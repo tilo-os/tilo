@@ -2147,6 +2147,7 @@ COPY \
     os/scripts/verify-runtime-crypto-packages.sh \
     os/scripts/verify-no-ui-toolkits.sh \
     os/scripts/verify-no-cisco-openh264.sh \
+    os/scripts/verify-no-python-runtime.sh \
     /usr/local/bin/
 
 # Confine the collaborative filesystem daemon in its own SELinux domain
@@ -3355,8 +3356,11 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && bash /usr/local/bin/verify-no-cisco-openh264.sh \
+    # The rpmdb finaliser ran after every package change; none comes now.
+    && rm -f /usr/libexec/tilo/finalize-rpmdb \
+    && bash /usr/local/bin/verify-no-python-runtime.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
-             /usr/local/bin/verify-no-cisco-openh264.sh \
+             /usr/local/bin/verify-no-cisco-openh264.sh /usr/local/bin/verify-no-python-runtime.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
     # directory's time, so those are pinned to the epoch first, the time the
