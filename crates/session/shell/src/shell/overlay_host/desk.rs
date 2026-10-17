@@ -9,7 +9,7 @@
 //!
 //! The Super surface is the command palette opened field-only
 //! ([`ui::CommandPalette::set_field_only_while_empty`]) over a light scrim,
-//! with every widget open around it and the time and status above. Typing
+//! with every widget open around it and the time and status under the field. Typing
 //! searches exactly as the palette always has; Escape and a click outside
 //! close it through the palette's own paths.
 //!
@@ -54,6 +54,8 @@ pub(crate) const SUPER_SCRIM: f32 = 0.35;
 
 /// The music widget's glance pill.
 const MUSIC_GLANCE: Size = Size::new(240.0, 40.0);
+/// Space between the Super surface's field and the time card under it.
+const SUPER_HEADER_GAP: f64 = 16.0;
 /// Width of every open card.
 const CARD_WIDTH: f64 = 320.0;
 /// The band above an open card holding its pin.
@@ -100,6 +102,8 @@ pub(crate) struct DeskState {
     shown: BTreeMap<WidgetId, ui::Transition>,
     opened: BTreeMap<WidgetId, ui::Transition>,
     super_surface: Option<SuperSurface>,
+    /// Where the time card was last painted.
+    super_header_rect: std::cell::Cell<Option<Rect>>,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
     press: Option<Press>,
@@ -121,6 +125,7 @@ impl Default for DeskState {
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
             super_surface: None,
+            super_header_rect: std::cell::Cell::new(None),
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
             press: None,
@@ -799,7 +804,8 @@ impl ShellOverlayHost {
             Some(self.draw_desk(scene, transform, text_renderer, theme, presence))
         });
         super::overlay_part(scene, "shell.super-header", desktop, |scene| {
-            let openness = if super_up {
+            // Typing lists results where the card stands: it steps away.
+            let openness = if super_up && self.palette.shows_field_only() {
                 self.palette_transition.value(palette_now)
             } else {
                 0.0
@@ -817,7 +823,12 @@ impl ShellOverlayHost {
         });
     }
 
-    /// The time, the date and the machine's status above the Super
+    /// Where the Super surface's time card was last painted.
+    pub fn super_header_rect_for_tests(&self) -> Option<Rect> {
+        self.desk.super_header_rect.get()
+    }
+
+    /// The time, the date and the machine's status under the Super
     /// surface's search field.
     pub(crate) fn draw_super_header(
         &self,
@@ -830,7 +841,6 @@ impl ShellOverlayHost {
         if self.desk.super_surface.is_none() && openness <= f32::EPSILON {
             return None;
         }
-        let area = self.overlay_area();
         // The same clock the top bar shows, a fixture's pinned one included.
         let clock = self
             .chrome
@@ -840,8 +850,7 @@ impl ShellOverlayHost {
         let status = self
             .chrome
             .as_ref()
-            .map(|chrome| chrome.borrow().status.summary())
-            .unwrap_or_default();
+            .and_then(|chrome| chrome.borrow().status.reading());
         let colors = &theme.tokens.colors;
         let time_style = theme.text(TextRole::LargeTitle);
         let date_style = theme.text(TextRole::Body);
@@ -849,12 +858,23 @@ impl ShellOverlayHost {
         let date = format!("{} {}", clock.weekday, clock.date);
         let (time_w, time_h) = text.measure_style(&clock.clock, None, &time_style);
         let (date_w, date_h) = text.measure_style(&date, None, &date_style);
-        let (status_w, status_h) = text.measure_style(&status, None, &status_style);
+        // No reading, no line: the card never holds a stand-in.
+        let (status_w, status_h) = status.as_deref().map_or((0.0, 0.0), |status| {
+            text.measure_style(status, None, &status_style)
+        });
         let width = f64::from(time_w.max(date_w).max(status_w)) + 32.0;
         let height = f64::from(time_h + date_h + status_h) + 28.0;
-        // Clear of the workspace wheel at the strip's left end.
-        let left = area.x0 + self.wheel_clearance() + 24.0;
-        let card = Rect::new(left, area.y0 + 40.0, left + width, area.y0 + 40.0 + height);
+        // Under the field, on its left edge: the window's tab bar and
+        // toolbar end above the field's row, so the card never covers
+        // window chrome, and it never covers the field.
+        let field = ui::Widget::get_rect(&self.palette);
+        let card = Rect::new(
+            field.x0,
+            field.y1 + SUPER_HEADER_GAP,
+            field.x0 + width,
+            field.y1 + SUPER_HEADER_GAP + height,
+        );
+        self.desk.super_header_rect.set(Some(card));
         with_alpha(
             scene,
             transform,
@@ -863,11 +883,16 @@ impl ShellOverlayHost {
             |scene| {
                 paint_card_ground(scene, transform, theme, card);
                 let mut y = card.y0 + 14.0;
+                let status_line = status
+                    .iter()
+                    .map(|status| (status, &status_style, colors.text_dim, status_h));
                 for (line, style, color, h) in [
                     (&clock.clock, &time_style, colors.text_primary, time_h),
                     (&date, &date_style, colors.text_primary, date_h),
-                    (&status, &status_style, colors.text_dim, status_h),
-                ] {
+                ]
+                .into_iter()
+                .chain(status_line)
+                {
                     text.draw_style(
                         scene,
                         line,
