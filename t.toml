@@ -1124,7 +1124,8 @@ inputs = []
 
 # The job sandbox's tests of jobs with host ids of their own map blocks of host ids and make
 # idmapped mounts, which take real root; the job sandbox never gives it, so there they skip. They
-# are built here and run in a micro-VM, as root.
+# are built here and run in a micro-VM, as root, with the tests of overlays, which need to mount
+# them.
 [[check]]
 name = "sandbox-host-ids-build"
 requires = ["arch=x86_64"]
@@ -1145,7 +1146,7 @@ isolation = "vm"
 needs = ["sandbox-host-ids-build"]
 run = """
 cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job host_ids:: --nocapture --test-threads=1
+/target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
 """
 inputs = []
 

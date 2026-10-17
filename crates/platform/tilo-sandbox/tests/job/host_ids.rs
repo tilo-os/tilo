@@ -145,7 +145,7 @@ fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
         s.mount(Mount {
             dst: "/o".into(),
             kind: MountKind::Overlay {
-                lower: lower.clone(),
+                lowers: vec![lower.clone()],
                 upper: upper.clone(),
                 work: work.clone(),
             },
@@ -161,6 +161,52 @@ fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
     assert_eq!(owner(&upper.join("theirs")), (OWNER, OWNER));
     assert_eq!(
         std::fs::read_to_string(lower.join("theirs")).unwrap(),
+        "theirs\n"
+    );
+}
+
+#[test]
+fn stacked_layers_with_a_block_are_the_jobs_own_and_stay_the_owners() {
+    needs_root!();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bottom = owned_dir(dir.path(), "bottom");
+    let top = owned_dir(dir.path(), "top");
+    std::fs::write(top.join("top"), "top\n").unwrap();
+    std::os::unix::fs::chown(top.join("top"), Some(OWNER), Some(OWNER)).unwrap();
+    let layer = owned_dir(dir.path(), "layer");
+    let (upper, work) = (layer.join("upper"), layer.join("work"));
+    for d in [&upper, &work] {
+        std::fs::create_dir(d).unwrap();
+        std::os::unix::fs::chown(d, Some(OWNER), Some(OWNER)).unwrap();
+    }
+    let (status, out) = run(|s| {
+        with_block(s);
+        s.mount(Mount::overlay(
+            vec![top.clone(), bottom.clone()],
+            &upper,
+            &work,
+            "/o",
+        ));
+        s.mount(Mount {
+            dst: "/r".into(),
+            kind: MountKind::Layers {
+                lowers: vec![top.clone(), bottom.clone()],
+            },
+        });
+        shell(
+            s,
+            "stat -c %u /o/top /r/theirs; mkdir -p /o/d/e && echo mine > /o/d/e/mine && \
+             ln /o/top /o/linked && echo more >> /o/theirs && cat /r/top",
+        );
+    });
+    assert!(status.success(), "{out}");
+    assert_eq!(out, "0\n0\ntop\n");
+    for p in ["d", "d/e", "d/e/mine", "linked", "theirs"] {
+        assert_eq!(owner(&upper.join(p)), (OWNER, OWNER), "{p}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(top.join("theirs")).unwrap(),
         "theirs\n"
     );
 }

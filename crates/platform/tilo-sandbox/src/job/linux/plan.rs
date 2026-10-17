@@ -608,12 +608,12 @@ impl Builder {
                 )?;
                 self.writable(&inside, true)?;
             }
-            MountKind::Overlay { lower, upper, work } => {
-                let opts = if self.userns.is_some() {
-                    self.idmapped_layers(lower, upper, work)?
-                } else {
-                    overlay_options(lower, upper, work)?
-                };
+            MountKind::Overlay {
+                lowers,
+                upper,
+                work,
+            } => {
+                let opts = self.overlay_options(lowers, Some((upper, work)))?;
                 self.fs(
                     "overlay",
                     &inside,
@@ -622,29 +622,136 @@ impl Builder {
                 )?;
                 self.writable(&inside, true)?;
             }
+            MountKind::Layers { lowers } => {
+                if lowers.len() < 2 {
+                    return Err(SpawnError::Invalid(format!(
+                        "read-only layers at {} need at least two; one is a read-only bind",
+                        inside.display()
+                    )));
+                }
+                let opts = self.overlay_options(lowers, None)?;
+                self.fs(
+                    "overlay",
+                    &inside,
+                    libc::MS_NOSUID | libc::MS_NODEV | libc::MS_RDONLY,
+                    Some(&opts),
+                )?;
+            }
         }
         Ok(())
     }
 }
 
+/// An overlay's upper and work directories, for one the job writes to.
+type Writes<'a> = Option<(&'a PathBuf, &'a PathBuf)>;
+
+/// An overlay's layers as its options name them: the lowers, and the upper
+/// and work directories.
+type Named = (Vec<PathBuf>, Option<(PathBuf, PathBuf)>);
+
 impl Builder {
-    /// An overlay's layers as idmapped mounts in the staging root, and its
-    /// `-o` options naming them: overlayfs creates what the job writes with
-    /// the job's ids, which only an idmapped upper layer stores as the
-    /// owner's. The upper and work directories must share a mount, so their
-    /// common parent is the one idmapped.
-    fn idmapped_layers(
+    /// overlayfs `-o` options for `lowers` (the first on top) and, unless
+    /// read-only, the upper and work directories `writes` names.
+    ///
+    /// With a block of ids each layer is an idmapped mount in the staging
+    /// root, which the options name: overlayfs creates what the job writes
+    /// with the job's ids, which only an idmapped upper layer stores as the
+    /// owner's. Without a block the options name the layers through the old
+    /// root.
+    ///
+    /// `volatile`: what a job writes to an overlay is disposable, so
+    /// overlayfs never syncs the upper layer's filesystem, which it otherwise
+    /// does when the job's mount namespace goes and which waits for
+    /// everything dirty on that volume (gigabytes from the jobs' builds
+    /// beside it).
+    fn overlay_options(
         &mut self,
-        lower: &Path,
-        upper: &Path,
-        work: &Path,
+        lowers: &[PathBuf],
+        writes: Writes<'_>,
     ) -> Result<String, SpawnError> {
         use std::fmt::Write as _;
+        if lowers.is_empty() {
+            return Err(SpawnError::Invalid(
+                "an overlay without a lower layer".into(),
+            ));
+        }
         let real = |p: &Path| {
             std::fs::canonicalize(p)
                 .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))
         };
-        let (lower, upper, work) = (real(lower)?, real(upper)?, real(work)?);
+        let lowers = lowers
+            .iter()
+            .map(|l| real(l))
+            .collect::<Result<Vec<_>, _>>()?;
+        let writes = match writes {
+            Some((upper, work)) => Some((real(upper)?, real(work)?)),
+            None => None,
+        };
+        let (lowers, writes) = if self.userns.is_some() {
+            self.idmapped_layers(&lowers, writes)?
+        } else {
+            let old = |p: &Path| PathBuf::from(format!("{OLD}{}", p.display()));
+            (
+                lowers.iter().map(|l| old(l)).collect(),
+                writes.map(|(u, w)| (old(&u), old(&w))),
+            )
+        };
+        let shown = |p: &Path| {
+            let shown = p.display().to_string();
+            if shown.contains([',', ':', '\\']) {
+                return Err(SpawnError::Invalid(format!(
+                    "overlay path {shown} contains a comma, colon or backslash"
+                )));
+            }
+            Ok(shown)
+        };
+        let lowerdir = lowers
+            .iter()
+            .map(|l| shown(l))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(":");
+        let mut opts = String::from("userxattr");
+        if let Some((upper, work)) = writes {
+            let _ = write!(
+                opts,
+                ",volatile,upperdir={},workdir={}",
+                shown(&upper)?,
+                shown(&work)?
+            );
+        }
+        let _ = write!(opts, ",lowerdir={lowerdir}");
+        Ok(opts)
+    }
+
+    /// The layers bound idmapped under `/layers/<n>` in the staging root,
+    /// named as the overlay sees them there. The upper and work directories
+    /// must share a mount, so their common parent is the one idmapped.
+    fn idmapped_layers(
+        &mut self,
+        lowers: &[PathBuf],
+        writes: Option<(PathBuf, PathBuf)>,
+    ) -> Result<Named, SpawnError> {
+        let at = PathBuf::from(format!("/layers/{}", self.overlays));
+        self.overlays = self.overlays.saturating_add(1);
+        for dir in [Path::new("/layers"), &at] {
+            self.ops.push(Op::Mkdir(path_c(dir)?));
+        }
+        let mut named = Vec::with_capacity(lowers.len());
+        for (i, lower) in lowers.iter().enumerate() {
+            let lower_at = at.join(format!("lower{i}"));
+            self.ops.push(Op::Mkdir(path_c(&lower_at)?));
+            self.bind_at(
+                lower,
+                path_c(&lower_at)?,
+                libc::MS_BIND | libc::MS_REC,
+                Idmap::Required,
+                Owners::Job,
+            )?;
+            named.push(lower_at);
+        }
+        let Some((upper, work)) = writes else {
+            return Ok((named, None));
+        };
         let mut common = upper.clone();
         while !work.starts_with(&common) {
             if !common.pop() {
@@ -656,19 +763,8 @@ impl Builder {
                 .map(Path::to_path_buf)
                 .unwrap_or_default()
         };
-        let at = PathBuf::from(format!("/layers/{}", self.overlays));
-        self.overlays = self.overlays.saturating_add(1);
-        let (lower_at, upper_at) = (at.join("lower"), at.join("upper"));
-        for dir in [Path::new("/layers"), &at, &lower_at, &upper_at] {
-            self.ops.push(Op::Mkdir(path_c(dir)?));
-        }
-        self.bind_at(
-            &lower,
-            path_c(&lower_at)?,
-            libc::MS_BIND | libc::MS_REC,
-            Idmap::Required,
-            Owners::Job,
-        )?;
+        let upper_at = at.join("upper");
+        self.ops.push(Op::Mkdir(path_c(&upper_at)?));
         self.bind_at(
             &common,
             path_c(&upper_at)?,
@@ -676,45 +772,12 @@ impl Builder {
             Idmap::Required,
             Owners::Job,
         )?;
-        let mut opts = String::from("userxattr");
-        for (key, p) in [
-            ("lowerdir", lower_at),
-            ("upperdir", upper_at.join(beneath(&upper))),
-            ("workdir", upper_at.join(beneath(&work))),
-        ] {
-            let shown = p.display().to_string();
-            if shown.contains([',', ':', '\\']) {
-                return Err(SpawnError::Invalid(format!(
-                    "overlay path {shown} contains a comma, colon or backslash"
-                )));
-            }
-            let _ = write!(opts, ",{key}={shown}");
-        }
-        Ok(opts)
+        let (upper, work) = (
+            upper_at.join(beneath(&upper)),
+            upper_at.join(beneath(&work)),
+        );
+        Ok((named, Some((upper, work))))
     }
-}
-
-/// overlayfs `-o` options, with the old root's prefix on each path.
-///
-/// `volatile`: what a job writes to an overlay is disposable, so overlayfs never syncs the upper
-/// layer's filesystem, which it otherwise does when the job's mount namespace goes and which waits
-/// for everything dirty on that volume (gigabytes from the jobs' builds beside it).
-fn overlay_options(lower: &Path, upper: &Path, work: &Path) -> Result<String, SpawnError> {
-    use std::fmt::Write as _;
-    let mut opts = String::from("userxattr,volatile");
-    for (key, p) in [("lowerdir", lower), ("upperdir", upper), ("workdir", work)] {
-        let real = std::fs::canonicalize(p)
-            .map_err(|e| SpawnError::Invalid(format!("{}: {e}", p.display())))?;
-        let shown = format!("{OLD}{}", real.display());
-        if shown.contains([',', ':', '\\']) {
-            return Err(SpawnError::Invalid(format!(
-                "overlay path {} contains a comma, colon or backslash",
-                p.display()
-            )));
-        }
-        let _ = write!(opts, ",{key}={shown}");
-    }
-    Ok(opts)
 }
 
 /// The largest passwd or group file [`Builder::account`] copies: the
