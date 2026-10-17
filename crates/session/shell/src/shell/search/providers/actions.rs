@@ -1080,6 +1080,13 @@ const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Which window group of the focused strip, counting from 1 (1 to 9).",
 )];
 
+/// Parameters of `strip.focus-nth`.
+const STRIP_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "index",
+    ParamType::Integer,
+    "Which strip of the active workspace, counting from 1 at the top (1 to 9).",
+)];
+
 /// Relative window-management actions that move focus or the view.
 const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "window.focus-previous",
@@ -1091,6 +1098,7 @@ const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "tab.previous",
     "tab.next",
     "window.focus-nth",
+    "strip.focus-nth",
 ];
 
 /// Relative window-management actions that rearrange the desk.
@@ -1102,6 +1110,7 @@ const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-to-display-previous",
     "group.move-to-display-next",
     "group.maximize",
+    "group.restore",
     "group.fullscreen",
     "group.narrower",
     "group.wider",
@@ -2234,6 +2243,12 @@ impl Action {
             |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
         ),
         chrome(
+            "group.restore",
+            "search-action-group-restore",
+            "search-action-group-restore-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::RestoreWindow),
+        ),
+        chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
@@ -2276,6 +2291,24 @@ impl Action {
                         ShortcutAction::ALL
                             .into_iter()
                             .find(|action| action.focus_group_index() == Some(index))
+                    })
+                    .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
+                request_window_shortcut(st, action)
+            },
+        },
+        Action {
+            id: "strip.focus-nth",
+            label: "search-action-strip-focus-nth",
+            subtitle: "search-action-strip-focus-nth-subtitle",
+            params: STRIP_FOCUS_NTH_PARAMS,
+            apply: |st, args| {
+                let action = args
+                    .integer("index")
+                    .and_then(|index| usize::try_from(index).ok()?.checked_sub(1))
+                    .and_then(|index| {
+                        ShortcutAction::ALL
+                            .into_iter()
+                            .find(|action| action.focus_strip_index() == Some(index))
                     })
                     .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
                 request_window_shortcut(st, action)
@@ -4581,6 +4614,7 @@ const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
     ("group.maximize", "toggle-maximize"),
+    ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),
     ("group.wider", "resize-wider"),

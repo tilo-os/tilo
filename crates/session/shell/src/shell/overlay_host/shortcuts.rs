@@ -218,6 +218,24 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
     .collect()
 }
 
+/// The guide's note on going straight to a strip, with the live chords of
+/// the first and the last strip: "Super+1 … Super+9" by default.
+pub(super) fn shortcut_strip_jump_note(shortcuts: &ShortcutConfig) -> String {
+    let chord = |action: ShortcutAction| {
+        shortcuts
+            .bindings
+            .get(&action)
+            .map_or_else(|| t("guide-unassigned-inline"), shortcut_guide_chord)
+    };
+    t_args(
+        "guide-strip-jump",
+        &[
+            ("first", chord(ShortcutAction::FocusStrip1).into()),
+            ("last", chord(ShortcutAction::FocusStrip9).into()),
+        ],
+    )
+}
+
 /// The chords bound to published actions, as the guide lists them: what
 /// each runs, then its chord.
 pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
@@ -304,7 +322,8 @@ pub(super) fn shortcut_navigation_step(theme: &ui::theme::Theme) -> f64 {
 /// Lines of pointer notes: the fixed pointer line, your action chords and the
 /// vim-mode hint when present.
 pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
-    1_usize
+    // The pointer note and the strip-number note are always there.
+    2_usize
         .saturating_add(usize::from(has_summary))
         .saturating_add(usize::from(vim_mode))
 }
@@ -314,7 +333,7 @@ pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
 pub(super) fn shortcut_notes_height(lines: usize) -> f64 {
     #[allow(
         clippy::cast_precision_loss,
-        reason = "at most three note lines convert exactly"
+        reason = "at most four note lines convert exactly"
     )]
     let lines = lines as f64;
     4.0 + 14.0 + lines * 18.0

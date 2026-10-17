@@ -32,10 +32,13 @@ strip changes context; switching a window or tab changes focus within it.
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
 | Previous/next workspace | Super+Page Up/Page Down | Workspace arrows/wheel |
-| Previous/next strip | Super+Up/Down | Strip navigation |
+| Maximize/restore the focused window | Super+Up/Down (Super+M toggles) | Double-click the tab bar |
+| Strip above/below | Ctrl+Super+Up/Down | Strip navigation, three-finger vertical swipe |
+| Go to strip N, counting from the top (the Lounge strip is 1) | Super+1 … Super+9 | Strip navigation |
+| Carry the focused group to the strip above/below | Shift+Ctrl+Super+Up/Down | Drag onto another strip |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
-| Focus the Nth window of the strip | Super+1 … Super+9 | Select group/tab |
+| Focus the Nth window of the strip | Ctrl+Super+1 … Ctrl+Super+9 | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
 | Quick Settings | Super+Q | Top bar |
 | Keyboard guide | F1, Super+Shift+/ | — |
@@ -101,15 +104,24 @@ outside. Held alone that long, Super opens the same surface as a peek,
 which closes when Super comes up unless something was typed or clicked
 in it; a chord pressed during the hold closes the peek and runs. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
-Center key). Shift carries the focused group in the direction the bare
-arrow moves focus; carrying past the first or last strip does nothing, and
-the group lands after the destination strip's focused group. Super+M
-replaced Super+Up as the maximize default when Super+Up/Down took strips; a
-settings file that still holds a previous default takes the new one. Super+F makes a Wayland client full screen through
+Center key). Super+Up/Down maximize and restore the focused window group on
+any strip, as on Windows and GNOME; pressed again they do nothing, and
+Super+M toggles. Strips are one level out, on Ctrl+Super+Up/Down, and
+Super+1 … 9 go straight to a strip, counting from the top, so the shared
+Lounge strip is Super+1 where a workspace has one; a number past the last
+strip does nothing. Shift carries the focused group in the direction
+Ctrl+Super+Up/Down moves focus; carrying past the first or last strip does
+nothing, and the group lands after the destination strip's focused group.
+Before 2026-10-17 Super+Up/Down switched strips (maximizing only on the top
+strip), Super+Shift+Up/Down carried the group and Super+1 … 9 focused a
+window; a settings file that still holds one of those defaults takes the new
+one, and a chord the person chose stays. Ctrl+Super is rarely bound by apps,
+so these reach the desktop without taking app shortcuts. Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
 window group instead. Each resize step is 5% of the display's width. With
 one display, the move-to-display chords do nothing; displays are ordered left
-to right, then top to bottom. Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
+to right, then top to bottom. Super+Up/Down, Ctrl+Super+Up/Down, Super+1 … 9,
+Ctrl+Super+1 … 9, Super+E, Ctrl+Alt+T, Super+V, Super+A,
 Super+F, Super+Alt+8, Super+Alt+=, Super+Alt+-, Super+C and Ctrl+Alt+Delete are
 defaults, rebindable in Settings → Keyboard shortcuts.
 

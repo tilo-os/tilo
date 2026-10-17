@@ -12,14 +12,14 @@ behind each binding, and how every transition moves.
 ## One mental model
 
 ```text
-                 ↑ strip above                     Super+↑
+                 ↑ strip above                     Ctrl+Super+↑, Super+1…9
    ← window   [ focused group ]   window →         Super+← / →
-                 ↓ strip below                     Super+↓
+                 ↓ strip below                     Ctrl+Super+↓
 
+   the frame:          maximize / restore           Super+↑ / ↓
    the plane you see:  windows along strips, spread across your displays
-   one level out:      workspaces, on the wheel     Ctrl+Super + arrow
+   one level out:      workspaces, on the wheel     Super+Page Up / Page Down
    the glass:          which display                Alt+Super + arrow
-   the frame:          one group's own state        tabs, width, maximize, full screen
 ```
 
 A workspace is a **desk**: its strips stack top to bottom, a strip's window
@@ -34,15 +34,19 @@ Every input device says the same three things:
    both keep their meaning across a display seam. Spatial moves clamp at the
    ends; lists (Alt+Tab, overview rows) wrap. A move never spills into the next
    level: Super+→ on the last window does not switch workspace.
-2. **The level is a modifier, or a finger count.** Plain Super is the plane you
-   see; Ctrl+Super is workspaces; Alt+Super is displays. On a touchpad or a
-   touchscreen three fingers work the plane, four go one level out, and a pinch
-   is the overview.
+2. **The level is a modifier, or a finger count.** Plain Super+← / → walks the
+   windows of the strip, and plain Super+↑ / ↓ maximize and restore the focused
+   group, as on Windows and GNOME; Ctrl+Super+↑ / ↓ is strips, and Super+1…9
+   goes straight to a strip (1 is the top one, the shared Lounge strip where a
+   workspace has one); Super+Page Up / Page Down is workspaces; Alt+Super is
+   displays. On a touchpad or a touchscreen three fingers work the plane
+   (vertically, strips), four go one level out, and a pinch is the overview.
 3. **Shift carries.** Every "go" has a Shift twin that takes the focused group to
    the same place and keeps it focused. Dragging is the pointer's Shift.
 
-The frame of one group — its tabs, width, maximize and full screen — is not
-navigation, so it gets letters and brackets rather than arrows.
+The frame of one group — its tabs, width and full screen — is not navigation,
+so it gets letters and brackets rather than arrows; maximize and restore are
+the exception people already know, on Super+↑ / ↓.
 
 **Focus and view are different.** Focus is which tab receives keys; every
 chord moves it. Panning a strip (a three-finger swipe, a scroll over the tab
@@ -70,9 +74,10 @@ unless marked fixed.
 | Operation | Relative action | Keyboard | Touchpad and touchscreen | Pointer | Status |
 |---|---|---|---|---|---|
 | Previous / next window (tabs walked as one list, across displays) | `window.focus-previous` / `-next` | Super+← / → | 3 fingers horizontal: direct pan, snap on release, focus follows | click; Super+wheel | today; snap and focus-follow planned |
-| Nth / first / last group of the strip | `window.focus-nth` (`index`) | Super+1…9, Super+Home / End | — | click | 1…9 today |
-| Strip above / below | `strip.focus-previous` / `-next` | Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today |
-| Previous / next workspace | `workspace.previous` / `-next` | Ctrl+Super+arrows; Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc; Ctrl+Super+wheel | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
+| Nth / first / last group of the strip | `window.focus-nth` (`index`) | Ctrl+Super+1…9, Super+Home / End | — | click | 1…9 today |
+| Strip above / below | `strip.focus-previous` / `-next` | Ctrl+Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today |
+| Nth strip, from the top | `strip.focus-nth` (`index`) | Super+1…9 | — | strip ribbon | today |
+| Previous / next workspace | `workspace.previous` / `-next` | Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
 | Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
@@ -94,8 +99,8 @@ and Shift+F10 keys continue to reach the app's resource menu.
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
-| To the strip above / below | `group.move-to-strip-previous` / `-next` | Super+Shift+↑ / ↓ | drag onto another strip | today, except the drag |
-| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Ctrl+Super+Shift+↑ / ↓, Super+Shift+PageUp / PageDown | drag onto a wheel-disc entry (spring-loaded, 600 ms) | planned; one tab today via `tab.move` |
+| To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
+| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | drag onto a wheel-disc entry (spring-loaded, 600 ms) | planned; one tab today via `tab.move` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
 A workspace is the sandbox and sharing boundary. Carrying a group there moves
@@ -106,7 +111,7 @@ would show it; a chord opens the sheet and never bypasses it.
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| Maximize / restore | `group.maximize` | Super+M | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
+| Maximize, restore | `group.maximize` (toggle), `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag the right-edge handle; double-click it cycles ⅓, ½, ⅔ | steps today |
 | Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | today |
@@ -160,7 +165,7 @@ resizes, with a hit area at least 24 px wide under touch.
 - **Super + drag** anywhere on a window moves its group; Super + right-drag
   resizes it. Super chords are shell-owned, so no app loses a binding.
 - **Wheel**: over the tab bar it pans the strip; Super+wheel steps windows;
-  Ctrl+Super+wheel steps workspaces; over the wheel disc it turns the disc.
+  over the wheel disc it turns the disc.
 - **Every drop target is drawn while it would accept**: an insertion bar in a
   gap, a lift on a group to join, the target strip's ribbon segment, the target
   display's outline, a wheel-disc entry. Dragging against a display's outer
@@ -282,7 +287,8 @@ held by `the_first_frame_after_a_chord_shows_the_final_layout` in
 Small PRs, each carrying its action, chord, test and doc row together:
 
 1. This note.
-2. The strip axis: Super+↑ / ↓ focus strips, Super+Shift+↑ / ↓ carry a group to
+2. The strip axis: Ctrl+Super+↑ / ↓ focus strips (Super+↑ / ↓ until
+   2026-10-17), Shift+Ctrl+Super+↑ / ↓ carry a group to
    a strip (a new model operation), maximize on Super+M, with a saved shortcut
    table's retired defaults following the new ones. The window-management
    operations are published as relative actions.
@@ -296,14 +302,16 @@ Small PRs, each carrying its action, chord, test and doc row together:
    cuts the pan so the new window is on screen in the frame that opens it.
    Widths (open from 0, close from the last frame, resize) and maximize are
    next; layout still runs on every animated frame.
-6. The workspace level on Ctrl+Super, carrying through the consent sheet, and
-   the display level on Alt+Super.
+6. Carrying a group to another workspace through the consent sheet, and the
+   display level on Alt+Super.
 
 ## Open questions
 
 1. Four-finger workspaces are vertical, because the wheel is. macOS and
    Windows users expect horizontal. Keep vertical?
-2. Maximize moves to Super+M, giving up Windows' Win+↑. Acceptable?
-3. Super+Shift+↓ on the last strip: create a strip (niri-like), or clamp like
+2. Decided 2026-10-17: Super+↑ / ↓ are maximize and restore, as on Windows and
+   GNOME; strips moved to Ctrl+Super+↑ / ↓ and Super+1…9, and windows by
+   number to Ctrl+Super+1…9. Super+M keeps toggling maximize.
+3. Shift+Ctrl+Super+↓ on the last strip: create a strip (niri-like), or clamp like
    every other spatial move? This note clamps, and creating a strip stays a
    palette action.

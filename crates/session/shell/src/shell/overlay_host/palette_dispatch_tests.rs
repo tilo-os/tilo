@@ -1223,6 +1223,18 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         let description = guide.description.as_deref().expect("guide description");
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
+        assert!(
+            description.contains("maximize with Super+Up and restore with Super+Down"),
+            "{description}"
+        );
+        assert!(
+            description.contains("strips with Super+Ctrl+Up or Super+Ctrl+Down"),
+            "{description}"
+        );
+        assert!(
+            description.contains("straight to one with Super+1 through Super+9"),
+            "{description}"
+        );
         assert!(description.contains("Screenshot: Print Screen"));
         assert!(!description.contains("Shortcut guide:"));
     }
@@ -1235,6 +1247,32 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
+}
+
+/// The guide lists maximize/restore and strip switching as editable pairs,
+/// and notes Super+1…9 for going straight to a strip, from the live table.
+#[test]
+fn shortcut_guide_teaches_maximize_and_strip_chords() {
+    use settings_store::hardware::{KeyChord, ShortcutAction as A, ShortcutConfig};
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&(
+        "guide-row-maximize",
+        A::MaximizeWindow,
+        A::RestoreWindow
+    )));
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&("guide-row-strips", A::PreviousStrip, A::NextStrip)));
+    assert!(SHORTCUT_GUIDE_ROWS.contains(&(
+        "guide-row-move-group-strip",
+        A::MoveGroupToPreviousStrip,
+        A::MoveGroupToNextStrip
+    )));
+    let mut config = ShortcutConfig::default();
+    let note = shortcuts::shortcut_strip_jump_note(&config);
+    assert!(note.contains("Super+1") && note.contains("Super+9"), "{note}");
+    config
+        .set(A::FocusStrip1, KeyChord::parse("Alt+Shift+1").unwrap())
+        .unwrap();
+    let note = shortcuts::shortcut_strip_jump_note(&config);
+    assert!(note.contains("Alt+Shift+1"), "the note follows a rebind: {note}");
 }
 
 #[test]
