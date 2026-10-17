@@ -237,7 +237,7 @@ shortcut) and `Motion::context` for what only says where something went
 
 The workspace switch swaps the desk's content in place today; the vertical
 desk slide that should carry its direction cue, and the wheel turning with a
-keyboard switch, are not drawn yet.
+keyboard switch, are not drawn yet (#5248).
 
 **Reduced motion** (`theme.reduce_motion`) stays the global override: it
 collapses every duration to 0 and jumps springs to their targets, whatever
