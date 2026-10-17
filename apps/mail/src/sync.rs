@@ -7,7 +7,89 @@
 //! says what another client read, starred or removed. Scrolling past the
 //! oldest loaded message asks for the page before it.
 
+use std::collections::HashMap;
+
 use crate::model::{Folder, Mailbox, Message};
+
+/// Where one account's server keeps each folder: Gmail's Sent is
+/// `[Gmail]/Sent Mail`, Outlook's Trash is `Deleted Items`. Found from the
+/// server's folder list, by the special use the server marks a folder with
+/// (RFC 6154) and otherwise by the names servers commonly give it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Places {
+    names: HashMap<Folder, String>,
+}
+
+/// The names a server commonly gives a folder that is not marked with its
+/// use, compared without case against the whole name and its last part.
+fn common_names(folder: Folder) -> &'static [&'static str] {
+    match folder {
+        Folder::Sent => &["sent", "sent items", "sent messages", "sent mail"],
+        Folder::Drafts => &["drafts", "draft"],
+        Folder::Archive => &["archive", "archives", "all mail"],
+        Folder::Trash => &["trash", "deleted items", "deleted messages", "bin"],
+        Folder::Junk => &["junk", "spam", "junk e-mail", "junk email", "bulk mail"],
+        Folder::Inbox | Folder::Starred => &[],
+    }
+}
+
+/// The special use (RFC 6154) that marks a folder, as a server lists it.
+fn special_use(folder: Folder) -> &'static [&'static str] {
+    match folder {
+        Folder::Sent => &["Sent"],
+        Folder::Drafts => &["Drafts"],
+        // Archiving into "All Mail" is how Gmail archives.
+        Folder::Archive => &["Archive", "All"],
+        Folder::Trash => &["Trash"],
+        Folder::Junk => &["Junk"],
+        Folder::Inbox | Folder::Starred => &[],
+    }
+}
+
+impl Places {
+    /// The places a server's folder list gives: each listed folder's name
+    /// and the special uses it is marked with (`"Sent"`, `"All"`, …).
+    pub fn from_list(listed: &[(String, Vec<String>)]) -> Self {
+        let mut names = HashMap::new();
+        for folder in [
+            Folder::Sent,
+            Folder::Drafts,
+            Folder::Archive,
+            Folder::Trash,
+            Folder::Junk,
+        ] {
+            let by_use = special_use(folder).iter().find_map(|wanted| {
+                listed
+                    .iter()
+                    .find(|(_, uses)| uses.iter().any(|used| used.eq_ignore_ascii_case(wanted)))
+            });
+            let by_name = || {
+                listed.iter().find(|(name, _)| {
+                    let lower = name.to_lowercase();
+                    let last = lower.rsplit(['/', '.']).next().unwrap_or(&lower);
+                    common_names(folder)
+                        .iter()
+                        .any(|common| lower == *common || last == *common)
+                })
+            };
+            if let Some((name, _)) = by_use.or_else(by_name) {
+                names.insert(folder, name.clone());
+            }
+        }
+        Self { names }
+    }
+
+    /// The name of `folder` on the server.
+    pub fn name(&self, folder: Folder) -> &str {
+        match folder {
+            Folder::Inbox | Folder::Starred => "INBOX",
+            other => self
+                .names
+                .get(&other)
+                .map_or_else(|| other.imap_name(), String::as_str),
+        }
+    }
+}
 
 /// How many messages one page brings.
 pub const PAGE: u32 = 50;
@@ -103,6 +185,51 @@ mod tests {
             uid_validity: validity,
         });
         message
+    }
+
+    #[test]
+    fn folders_are_found_by_their_use_then_by_their_usual_names() {
+        let list = |entries: &[(&str, &[&str])]| -> Vec<(String, Vec<String>)> {
+            entries
+                .iter()
+                .map(|(name, uses)| {
+                    (
+                        (*name).to_owned(),
+                        uses.iter().map(|used| (*used).to_owned()).collect(),
+                    )
+                })
+                .collect()
+        };
+        let gmail = Places::from_list(&list(&[
+            ("INBOX", &[]),
+            ("[Gmail]/All Mail", &["All"]),
+            ("[Gmail]/Sent Mail", &["Sent"]),
+            ("[Gmail]/Spam", &["Junk"]),
+            ("[Gmail]/Trash", &["Trash"]),
+            ("[Gmail]/Drafts", &["Drafts"]),
+        ]));
+        assert_eq!(gmail.name(Folder::Sent), "[Gmail]/Sent Mail");
+        assert_eq!(gmail.name(Folder::Archive), "[Gmail]/All Mail");
+        assert_eq!(gmail.name(Folder::Junk), "[Gmail]/Spam");
+        assert_eq!(gmail.name(Folder::Starred), "INBOX");
+        let outlook = Places::from_list(&list(&[
+            ("INBOX", &[]),
+            ("Sent Items", &[]),
+            ("Deleted Items", &[]),
+            ("Junk Email", &[]),
+            ("Archive", &[]),
+        ]));
+        assert_eq!(outlook.name(Folder::Sent), "Sent Items");
+        assert_eq!(outlook.name(Folder::Trash), "Deleted Items");
+        assert_eq!(outlook.name(Folder::Junk), "Junk Email");
+        assert_eq!(outlook.name(Folder::Archive), "Archive");
+        let dovecot = Places::from_list(&list(&[("INBOX", &[]), ("INBOX.Sent", &[])]));
+        assert_eq!(dovecot.name(Folder::Sent), "INBOX.Sent");
+        assert_eq!(
+            dovecot.name(Folder::Drafts),
+            "Drafts",
+            "a folder the server does not list keeps its usual name"
+        );
     }
 
     #[test]

@@ -91,6 +91,12 @@ pub enum EngineRequest {
         account: AccountConfig,
         draft: Box<Draft>,
     },
+    /// Watch an account's inbox and say when it changes (IMAP IDLE), until
+    /// the account is watched again or the engine stops.
+    Watch {
+        request_id: EngineRequestId,
+        account: AccountConfig,
+    },
     /// Run the OAuth authorization-code + PKCE browser flow for an account and
     /// seal the resulting tokens in the vault under `account_id`.
     OAuthAuthorize {
@@ -151,6 +157,12 @@ impl EngineRequest {
             draft,
         }
     }
+    pub fn watch(account: AccountConfig) -> Self {
+        Self::Watch {
+            request_id: next_request_id(),
+            account,
+        }
+    }
     pub fn oauth_authorize(
         account_id: String,
         provider: OAuthProvider,
@@ -172,6 +184,7 @@ impl EngineRequest {
             | Self::Move { request_id, .. }
             | Self::Purge { request_id, .. }
             | Self::Send { request_id, .. }
+            | Self::Watch { request_id, .. }
             | Self::OAuthAuthorize { request_id, .. } => *request_id,
         }
     }
@@ -188,6 +201,7 @@ impl EngineRequest {
             Self::Move { .. } => EngineRequestKind::Move,
             Self::Purge { .. } => EngineRequestKind::Purge,
             Self::Send { .. } => EngineRequestKind::Send,
+            Self::Watch { .. } => EngineRequestKind::Watch,
             Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
         }
     }
@@ -204,6 +218,7 @@ pub enum EngineRequestKind {
     Move,
     Purge,
     Send,
+    Watch,
     OAuthAuthorize,
 }
 
@@ -227,6 +242,12 @@ pub enum EngineEvent {
         account_id: String,
         folder: Folder,
         synced: crate::sync::Synced,
+    },
+    /// A watched inbox changed on its server: new mail, or another client
+    /// read, starred or removed some. Carries the `Watch` that saw it.
+    Arrived {
+        request_id: EngineRequestId,
+        account_id: String,
     },
     /// A send completed; carries the wire byte count.
     Sent {
@@ -263,6 +284,7 @@ impl EngineEvent {
             | Self::Folders { request_id, .. }
             | Self::Fetched { request_id, .. }
             | Self::Sent { request_id, .. }
+            | Self::Arrived { request_id, .. }
             | Self::Authorized { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::Completed { request_id, .. } => *request_id,
@@ -350,6 +372,8 @@ impl MailEngine for StubEngine {
                     message: "Local change saved; it was not synchronized to IMAP".into(),
                 });
             }
+            // Offline there is no server to watch; the request just ends.
+            EngineRequest::Watch { .. } => {}
             EngineRequest::OAuthAuthorize { account_id, .. } => {
                 // Sign-in needs the live network stack; the offline build can't
                 // complete it. Surface a clear reason instead of silently
@@ -400,7 +424,7 @@ impl MailEngine for StubEngine {
 pub fn spawn(content: ContentStore, wake: Wake) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     #[cfg(feature = "live")]
     {
-        match live::LiveEngine::new(content.clone()) {
+        match live::LiveEngine::new(content.clone(), std::sync::Arc::clone(&wake)) {
             Ok(engine) => spawn_waking(Box::new(engine), wake),
             Err(e) => {
                 tracing::warn!(error = %e, "mail: live engine unavailable, using offline backend");
@@ -499,6 +523,13 @@ pub mod live {
         /// between requests, with when it last answered: a refresh or a
         /// flag change costs one round trip, not a TLS handshake and a login.
         sessions: std::collections::HashMap<String, (ImapSession, std::time::Instant)>,
+        /// Where each account's server keeps its folders, by address, from
+        /// its folder list.
+        places: std::collections::HashMap<String, crate::sync::Places>,
+        /// Each watched account's inbox watch, by address.
+        watches: std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
+        /// Wakes the window when a watch hears of new mail.
+        wake: super::Wake,
     }
 
     /// A kept connection idle longer than this answers a NOOP before it is
@@ -522,7 +553,7 @@ pub mod live {
         ///
         /// Returns `Err` if the app runtime that drives the IMAP/SMTP sockets
         /// cannot be started (e.g. the OS refuses its thread).
-        pub fn new(content: tilo_content::ContentStore) -> Result<Self, String> {
+        pub fn new(content: tilo_content::ContentStore, wake: super::Wake) -> Result<Self, String> {
             let rt = ui::rt::try_app().map_err(|e| e.to_string())?;
             Ok(Self {
                 rt,
@@ -530,7 +561,38 @@ pub mod live {
                 content,
                 custodian: Custodian::live(),
                 sessions: std::collections::HashMap::new(),
+                places: std::collections::HashMap::new(),
+                watches: std::collections::HashMap::new(),
+                wake,
             })
+        }
+
+        /// Watch `account`'s inbox from now on, in place of any earlier
+        /// watch of it.
+        fn start_watch(
+            &mut self,
+            request_id: EngineRequestId,
+            account: AccountConfig,
+            out: &Sender<EngineEvent>,
+        ) {
+            if let Some(earlier) = self.watches.remove(&account.email) {
+                earlier.abort();
+            }
+            let out = out.clone();
+            let wake = std::sync::Arc::clone(&self.wake);
+            let account_id = account.email.clone();
+            let arrived = move || {
+                let _ = out.send(EngineEvent::Arrived {
+                    request_id,
+                    account_id: account_id.clone(),
+                });
+                wake();
+            };
+            let key = account.email.clone();
+            let task = self
+                .rt
+                .spawn(watch_inbox(account, self.tls.clone(), arrived));
+            self.watches.insert(key, task);
         }
 
         /// Run `op` on `account`'s kept connection, opening one when there
@@ -586,16 +648,29 @@ pub mod live {
             self.rt.block_on(future).map_err(|e| e.to_string())?
         }
 
+        /// Where `account`'s server keeps its folders, listed once.
+        fn places_of(&mut self, account: &AccountConfig) -> Result<crate::sync::Places, String> {
+            if let Some(places) = self.places.get(&account.email) {
+                return Ok(places.clone());
+            }
+            let listed = self.run(account, |session| Box::pin(list_folders(session)))?;
+            let places = crate::sync::Places::from_list(&listed);
+            self.places.insert(account.email.clone(), places.clone());
+            Ok(places)
+        }
+
         fn handle_fetch(
             &mut self,
             account: &AccountConfig,
             folder: Folder,
             want: crate::sync::Want,
         ) -> Result<crate::sync::Synced, String> {
+            let places = self.places_of(account)?;
             let owner = account.clone();
             self.run(account, move |session| {
                 let account = owner.clone();
-                Box::pin(async move { sync_folder(session, &account, folder, want).await })
+                let places = places.clone();
+                Box::pin(async move { sync_folder(session, &account, folder, &places, want).await })
             })
         }
 
@@ -604,10 +679,12 @@ pub mod live {
             account: &AccountConfig,
             message: &Message,
         ) -> Result<(), String> {
+            let places = self.places_of(account)?;
             let message = message.clone();
             self.run(account, move |session| {
                 let message = message.clone();
-                Box::pin(async move { store_flags(session, &message).await })
+                let places = places.clone();
+                Box::pin(async move { store_flags(session, &message, &places).await })
             })
         }
 
@@ -617,10 +694,12 @@ pub mod live {
             message: &Message,
             to: Folder,
         ) -> Result<(), String> {
+            let places = self.places_of(account)?;
             let message = message.clone();
             self.run(account, move |session| {
                 let message = message.clone();
-                Box::pin(async move { move_message(session, &message, to).await })
+                let places = places.clone();
+                Box::pin(async move { move_message(session, &message, to, &places).await })
             })
         }
 
@@ -629,10 +708,12 @@ pub mod live {
             account: &AccountConfig,
             message: &Message,
         ) -> Result<(), String> {
+            let places = self.places_of(account)?;
             let message = message.clone();
             self.run(account, move |session| {
                 let message = message.clone();
-                Box::pin(async move { purge_message(session, &message).await })
+                let places = places.clone();
+                Box::pin(async move { purge_message(session, &message, &places).await })
             })
         }
 
@@ -653,7 +734,12 @@ pub mod live {
         ) {
             let listed = self.run(&account, |session| Box::pin(list_folders(session)));
             match listed {
-                Ok(folders) => {
+                Ok(listed) => {
+                    self.places.insert(
+                        account.email.clone(),
+                        crate::sync::Places::from_list(&listed),
+                    );
+                    let folders = listed.into_iter().map(|(name, _)| name).collect();
                     let _ = out.send(EngineEvent::Connected {
                         request_id,
                         account_id: account.email.clone(),
@@ -805,6 +891,9 @@ pub mod live {
                 EngineRequest::Send { account, draft, .. } => {
                     self.process_send(request_id, kind, &account, &draft, out);
                 }
+                EngineRequest::Watch { account, .. } => {
+                    self.start_watch(request_id, account, out);
+                }
                 EngineRequest::OAuthAuthorize {
                     account_id,
                     provider,
@@ -911,23 +1000,105 @@ pub mod live {
         }
     }
 
-    /// The IMAP mailbox + search predicate a [`Folder`] maps to. `Starred` is a
-    /// virtual view of INBOX filtered by `\Flagged`.
-    fn mailbox_and_search(folder: Folder) -> (&'static str, &'static str) {
-        match folder {
-            Folder::Starred => ("INBOX", "FLAGGED"),
-            other => (other.imap_name(), "ALL"),
+    /// How long one IDLE lasts before it is renewed: under the 30 minutes
+    /// after which RFC 2177 lets a server drop an idle client.
+    const IDLE_RENEW: std::time::Duration = std::time::Duration::from_secs(25 * 60);
+    /// The first wait before a watch that failed connects again; each
+    /// further failure doubles it, up to [`WATCH_RETRY_MAX`].
+    const WATCH_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
+    const WATCH_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+    /// Watch `account`'s inbox on a connection of its own, held in IMAP IDLE:
+    /// whenever the server says the inbox changed, `arrived` hears of it, so
+    /// new mail shows within seconds instead of at the next refresh. A watch
+    /// whose connection fails connects again after a growing pause; one the
+    /// server does not offer IDLE to ends (the periodic refresh covers it).
+    async fn watch_inbox(
+        account: AccountConfig,
+        tls: Arc<rustls::ClientConfig>,
+        arrived: impl Fn() + Send + Sync + 'static,
+    ) {
+        let mut pause = WATCH_RETRY;
+        loop {
+            // Sign in afresh each time: an OAuth token may have been
+            // renewed since the last connection.
+            let owner = account.clone();
+            let creds =
+                tokio::task::spawn_blocking(move || resolve_auth(&Custodian::live(), &owner))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|creds| creds);
+            let watched = match creds {
+                Ok(creds) => idle_until_failure(&account, &creds, tls.clone(), &arrived).await,
+                Err(error) => Err(error),
+            };
+            match watched {
+                Ok(()) => return,
+                Err(error) => {
+                    tracing::debug!(%error, "mail: the inbox watch stopped; connecting again later");
+                }
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(WATCH_RETRY_MAX);
         }
     }
 
-    /// LIST every mailbox the server advertises.
-    async fn list_folders(session: &mut ImapSession) -> Result<Vec<String>, String> {
+    /// One watching connection, until it fails (`Err`) or the server turns
+    /// out not to offer IDLE (`Ok`).
+    async fn idle_until_failure(
+        account: &AccountConfig,
+        creds: &AuthCreds,
+        tls: Arc<rustls::ClientConfig>,
+        arrived: &(impl Fn() + Sync),
+    ) -> Result<(), String> {
+        let mut session = connect_session(account, creds, tls).await?;
+        let offered = session
+            .capabilities()
+            .await
+            .map_err(|e| e.to_string())?
+            .has_str("IDLE");
+        if !offered {
+            return Ok(());
+        }
+        session.select("INBOX").await.map_err(|e| e.to_string())?;
+        loop {
+            let mut idle = session.idle();
+            idle.init().await.map_err(|e| e.to_string())?;
+            let (wait, _stop) = idle.wait_with_timeout(IDLE_RENEW);
+            let response = wait.await.map_err(|e| e.to_string())?;
+            session = idle.done().await.map_err(|e| e.to_string())?;
+            if let async_imap::extensions::idle::IdleResponse::NewData(_) = response {
+                arrived();
+            }
+        }
+    }
+
+    /// LIST every mailbox the server advertises, with the special uses it
+    /// marks each with (`"Sent"`, `"All"`, …).
+    async fn list_folders(session: &mut ImapSession) -> Result<Vec<(String, Vec<String>)>, String> {
+        use async_imap::types::NameAttribute;
         let stream = session
             .list(Some(""), Some("*"))
             .await
             .map_err(|e| e.to_string())?;
         stream
-            .map_ok(|n| n.name().to_string())
+            .map_ok(|listed| {
+                let uses = listed
+                    .attributes()
+                    .iter()
+                    .filter_map(|attribute| match attribute {
+                        NameAttribute::All => Some("All"),
+                        NameAttribute::Archive => Some("Archive"),
+                        NameAttribute::Drafts => Some("Drafts"),
+                        NameAttribute::Junk => Some("Junk"),
+                        NameAttribute::Sent => Some("Sent"),
+                        NameAttribute::Trash => Some("Trash"),
+                        _ => None,
+                    })
+                    .map(str::to_owned)
+                    .collect();
+                (listed.name().to_owned(), uses)
+            })
             .try_collect()
             .await
             .map_err(|e| e.to_string())
@@ -938,10 +1109,11 @@ pub mod live {
         session: &mut ImapSession,
         account: &AccountConfig,
         folder: Folder,
+        places: &crate::sync::Places,
         want: crate::sync::Want,
     ) -> Result<crate::sync::Synced, String> {
         use crate::sync::{CATCH_UP_LIMIT, PAGE, Synced, Want};
-        let (mailbox, _) = mailbox_and_search(folder);
+        let mailbox = places.name(folder);
         let selected = session.select(mailbox).await.map_err(|e| e.to_string())?;
         let validity = selected.uid_validity.unwrap_or(0);
         let exists = selected.exists;
@@ -1167,9 +1339,13 @@ pub mod live {
     /// Select the folder its server holds `message` in and find its UID
     /// there: the one the server reported, while the folder keeps that
     /// numbering, otherwise by its `Message-ID`.
-    async fn locate(session: &mut ImapSession, message: &Message) -> Result<u32, String> {
+    async fn locate(
+        session: &mut ImapSession,
+        message: &Message,
+        places: &crate::sync::Places,
+    ) -> Result<u32, String> {
         let folder = message.server.map_or(message.folder, |at| at.folder);
-        let (mailbox, _) = mailbox_and_search(folder);
+        let mailbox = places.name(folder);
         let selected = session.select(mailbox).await.map_err(|e| e.to_string())?;
         if let Some(at) = message.server
             && selected.uid_validity == Some(at.uid_validity)
@@ -1180,8 +1356,12 @@ pub mod live {
     }
 
     /// STORE `\Seen`/`\Flagged` to match the local message's flag state.
-    async fn store_flags(session: &mut ImapSession, message: &Message) -> Result<(), String> {
-        let uid = locate(session, message).await?;
+    async fn store_flags(
+        session: &mut ImapSession,
+        message: &Message,
+        places: &crate::sync::Places,
+    ) -> Result<(), String> {
+        let uid = locate(session, message, places).await?;
         let seen_op = if message.read {
             "+FLAGS.SILENT (\\Seen)"
         } else {
@@ -1207,10 +1387,11 @@ pub mod live {
         session: &mut ImapSession,
         message: &Message,
         to: Folder,
+        places: &crate::sync::Places,
     ) -> Result<(), String> {
-        let uid = locate(session, message).await?;
+        let uid = locate(session, message, places).await?;
         session
-            .uid_mv(uid.to_string(), to.imap_name())
+            .uid_mv(uid.to_string(), places.name(to))
             .await
             .map_err(|e| e.to_string())
     }
@@ -1218,8 +1399,12 @@ pub mod live {
     /// Permanently delete exactly one UID. UID EXPUNGE deliberately avoids the
     /// dangerous plain EXPUNGE fallback, which could remove messages another
     /// client marked `\\Deleted` concurrently.
-    async fn purge_message(session: &mut ImapSession, message: &Message) -> Result<(), String> {
-        let uid = locate(session, message).await?;
+    async fn purge_message(
+        session: &mut ImapSession,
+        message: &Message,
+        places: &crate::sync::Places,
+    ) -> Result<(), String> {
+        let uid = locate(session, message, places).await?;
         let deleted = session
             .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
             .await
@@ -1665,9 +1850,11 @@ pub mod live {
                         .await
                         .expect("list folders over TLS");
                     assert!(
-                        folders.iter().any(|f| f == "INBOX"),
+                        folders.iter().any(|(name, _)| name == "INBOX"),
                         "server folders: {folders:?}"
                     );
+                    let places = crate::sync::Places::from_list(&folders);
+                    assert_eq!(places.name(Folder::Sent), "Sent");
 
                     // … and the first sync of a folder fetches its newest page
                     // and parses the RFC 5322 message into our model.
@@ -1675,6 +1862,7 @@ pub mod live {
                         &mut session,
                         &account,
                         Folder::Inbox,
+                        &places,
                         crate::sync::Want::Latest { known: None },
                     )
                     .await

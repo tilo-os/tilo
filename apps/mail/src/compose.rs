@@ -478,6 +478,11 @@ pub struct ComposeWindow {
     /// Whether the person typed, attached or formatted anything since the
     /// window opened: closing such a message keeps it as a draft.
     touched: bool,
+    /// Who the person writes to, for completing recipients; set by the app
+    /// when the composer opens.
+    book: Option<crate::address_book::AddressBook>,
+    /// The completions offered under the recipient field being typed in.
+    completions: ui::widget::SuggestionList,
     dock: DockState,
     /// Window rect in screen coordinates. The source of truth for placement;
     /// movable + resizable mutate it directly.
@@ -555,6 +560,8 @@ impl ComposeWindow {
             open: false,
             replying_to: None,
             touched: false,
+            book: None,
+            completions: ui::widget::SuggestionList::new(),
             dock: DockState::Pane,
             pane: None,
             has_keys: false,
@@ -931,6 +938,8 @@ impl ComposeWindow {
     pub fn open_blank(&mut self) {
         self.open = true;
         self.has_keys = true;
+        self.book = None;
+        self.completions.clear();
         self.replying_to = None;
         self.touched = false;
         self.sender = None;
@@ -1001,6 +1010,113 @@ impl ComposeWindow {
         // A reopened draft is a draft already.
         self.touched = true;
         self.set_focus(Field::Body);
+    }
+
+    /// Whether the composer waits for the person's correspondents.
+    pub(crate) fn wants_address_book(&self) -> bool {
+        self.open && self.book.is_none()
+    }
+
+    /// Complete recipients from `book`.
+    pub(crate) fn set_address_book(&mut self, book: crate::address_book::AddressBook) {
+        self.book = Some(book);
+    }
+
+    /// The recipient field with the keys, if one has them.
+    fn recipient_field(&mut self) -> Option<&mut TextInput> {
+        match self.focus {
+            Field::To => Some(&mut self.to),
+            Field::Cc => Some(&mut self.cc),
+            Field::Bcc => Some(&mut self.bcc),
+            _ => None,
+        }
+    }
+
+    /// Offer the correspondents the recipient being typed could be.
+    fn refresh_completions(&mut self) {
+        let viewport = self.bounds;
+        let Some((text, anchor)) = self
+            .recipient_field()
+            .map(|field| (field.value().to_owned(), field.get_rect()))
+        else {
+            self.completions.clear();
+            return;
+        };
+        let Some(book) = self.book.as_ref() else {
+            self.completions.clear();
+            return;
+        };
+        let (_, typing) = crate::address_book::last_recipient(&text);
+        let offered: Vec<ui::widget::Suggestion> = book
+            .complete(typing, &text)
+            .into_iter()
+            .map(|addr| {
+                let suggestion = ui::widget::Suggestion::labelled(addr.rfc5322(), addr.display());
+                if addr.name.is_some() {
+                    suggestion.with_detail(addr.email)
+                } else {
+                    suggestion
+                }
+            })
+            .collect();
+        self.completions.set_suggestions(offered);
+        if self.completions.has_content() {
+            self.completions.set_highlight(Some(0));
+        }
+        self.completions.set_anchor(anchor);
+        self.completions.set_viewport(viewport);
+    }
+
+    /// Put the offered completion `index` into the recipient field.
+    fn accept_completion(&mut self, index: usize) {
+        let Some(chosen) = self
+            .completions
+            .suggestions()
+            .get(index)
+            .map(|suggestion| suggestion.value.clone())
+        else {
+            return;
+        };
+        if let Some(field) = self.recipient_field() {
+            let completed = crate::address_book::complete_with(field.value(), &chosen);
+            field.set_text(&completed);
+        }
+        self.completions.clear();
+        self.dirty = true;
+    }
+
+    /// Keys the offered completions take: arrows move through them, Enter
+    /// or Tab takes one, Esc puts them away. `true` when the key was theirs.
+    fn completion_key(&mut self, event: &WindowEvent) -> bool {
+        use winit::event::KeyEvent as WKeyEvent;
+        use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
+        if !self.completions.has_content() {
+            return false;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                WKeyEvent {
+                    logical_key: WKey::Named(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        match key {
+            WNamedKey::ArrowDown => self.completions.move_highlight(true),
+            WNamedKey::ArrowUp => self.completions.move_highlight(false),
+            WNamedKey::Enter | WNamedKey::Tab => {
+                let index = self.completions.highlight().unwrap_or(0);
+                self.accept_completion(index);
+            }
+            WNamedKey::Escape => self.completions.clear(),
+            _ => return false,
+        }
+        self.dirty = true;
+        true
     }
 
     /// The message this one answers.
@@ -1650,6 +1766,11 @@ impl ComposeWindow {
                 ..
             } => {
                 let pt = self.last_mouse;
+                if let Some(index) = self.completions.row_at(pt) {
+                    self.accept_completion(index);
+                    return (true, ComposeAction::None);
+                }
+                self.completions.clear();
                 if !self.rect.contains(pt) {
                     if self.in_pane() {
                         // The list beside it takes the click, and the keys
@@ -1715,6 +1836,11 @@ impl ComposeWindow {
         // window), Enter confirms, everything else edits the field.
         if self.prompt.is_some() {
             return self.handle_prompt_key(event, ctx);
+        }
+        // Offered recipients take their keys first (Esc puts them away
+        // rather than closing the message).
+        if self.completion_key(event) {
+            return (true, ComposeAction::None);
         }
         // Escape closes.
         if Self::is_escape_press(event) {
@@ -1815,6 +1941,7 @@ impl ComposeWindow {
         if let Some(inp) = self.focused_input() {
             inp.handle_event(event, &mut ctx.event_ctx(&mut h, &mut ft));
         }
+        self.refresh_completions();
         self.dirty = true;
     }
 
@@ -2511,6 +2638,8 @@ impl ComposeWindow {
             self.bcc.draw(scene, t, tr, &panel, presence);
         }
         self.subject.draw(scene, t, tr, &panel, presence);
+        // Offered recipients float over everything under the field.
+        self.completions.paint(scene, t, tr, theme);
     }
 }
 

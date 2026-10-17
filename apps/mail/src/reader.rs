@@ -20,8 +20,9 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
 use ui::widget::{
-    AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, ChipFace, ChipLead, EmptyState,
-    EmptyStateContent, ScrollRegion, TaffyTreeExt, TextInput, WebView, Widget,
+    AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, Button, ButtonFace, ChipFace,
+    ChipLead, ControlSize, EmptyState, EmptyStateContent, ScrollRegion, TaffyTreeExt, TextInput,
+    WebView, Widget,
 };
 use ui::{TextKind, TextRole};
 
@@ -78,8 +79,11 @@ fn open_link(url: &str) {
 /// The open message's text: a read-only field, so it can be selected and
 /// copied and its addresses open.
 struct BodyText {
-    /// The message and whether its HTML part is shown.
-    key: (MessageId, bool),
+    /// The message, whether its HTML part is shown, and whether the quote
+    /// it ends with is shown.
+    key: (MessageId, bool, bool),
+    /// Whether the message ends with a quote that is folded away.
+    folded: bool,
     /// The style the runs were coloured in.
     style: crate::html_mail::DocumentStyle,
     input: TextInput,
@@ -87,16 +91,21 @@ struct BodyText {
 
 impl BodyText {
     fn new(
-        key: (MessageId, bool),
+        key: (MessageId, bool, bool),
         style: crate::html_mail::DocumentStyle,
         message: &Message,
         html: Option<&str>,
         theme: &Theme,
     ) -> Self {
         let quiet = ui::color::to_rgb8(theme.tokens.colors.text_dim);
-        let (runs, links) = match html {
-            Some(html) => html_runs(html, style.font_px, quiet),
-            None => (plain_runs(&message.body, quiet), Vec::new()),
+        let show_quote = key.2;
+        let (runs, links, folded) = if let Some(html) = html {
+            html_runs(html, style.font_px, quiet, show_quote)
+        } else {
+            let (shown, quote) = split_trailing_quote(&message.body);
+            let folded = quote && !show_quote;
+            let text = if folded { shown } else { message.body.as_str() };
+            (plain_runs(text, quiet), Vec::new(), folded)
         };
         let input = TextInput::local()
             .multiline(true)
@@ -109,8 +118,46 @@ impl BodyText {
             .with_runs(runs)
             .with_links(links)
             .with_read_only(true);
-        Self { key, style, input }
+        Self {
+            key,
+            folded,
+            style,
+            input,
+        }
     }
+}
+
+/// `body` without the quote it ends with: the replied-to message under
+/// its "On …, X wrote:" line. The second value says whether there was one.
+/// A message that is all quote keeps it.
+fn split_trailing_quote(body: &str) -> (&str, bool) {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let line = |index: usize| lines.get(index).copied().unwrap_or_default();
+    let mut start = lines.len();
+    while start > 0 && line(start - 1).trim().is_empty() {
+        start -= 1;
+    }
+    let end = start;
+    while start > 0 && line(start - 1).trim_start().starts_with('>') {
+        start -= 1;
+    }
+    if start == end {
+        return (body, false);
+    }
+    if start > 0
+        && line(start - 1)
+            .trim_end()
+            .to_ascii_lowercase()
+            .ends_with("wrote:")
+    {
+        start -= 1;
+    }
+    let shown: usize = lines.iter().take(start).map(|kept| kept.len() + 1).sum();
+    let shown = body.get(..shown.min(body.len())).unwrap_or(body).trim_end();
+    if shown.trim().is_empty() {
+        return (body, false);
+    }
+    (shown, true)
 }
 
 /// A plain-text body as runs; quoted lines are quieter.
@@ -130,15 +177,27 @@ fn plain_runs(body: &str, quiet: [u8; 3]) -> Vec<ui::RichSpan> {
 
 /// An HTML body as runs, and where its links go, in byte ranges of the
 /// runs' text. `body_px` is the size a heading is scaled from.
-fn html_runs(
-    html: &str,
-    body_px: f32,
-    quiet: [u8; 3],
-) -> (Vec<ui::RichSpan>, Vec<(std::ops::Range<usize>, String)>) {
+/// The runs of an HTML body, where its links go, and whether a quote it ends
+/// with was folded away (`show_quote` keeps it).
+fn html_runs(html: &str, body_px: f32, quiet: [u8; 3], show_quote: bool) -> HtmlRuns {
     let mut runs = Vec::new();
     let mut links = Vec::new();
     let mut at = 0;
-    for run in crate::html_text::render(html) {
+    let mut read = crate::html_text::render(html);
+    // The quoted runs at the end, and the blank ones among them.
+    let quote_from = read
+        .iter()
+        .rposition(|run| !run.quote && !run.text.trim().is_empty())
+        .map_or(0, |last| last + 1);
+    let folded = !show_quote
+        && quote_from > 0
+        && read
+            .get(quote_from..)
+            .is_some_and(|tail| tail.iter().any(|run| run.quote));
+    if folded {
+        read.truncate(quote_from);
+    }
+    for run in read {
         let end = at + run.text.len();
         if let Some(target) = &run.link {
             links.push((at..end, target.clone()));
@@ -156,8 +215,15 @@ fn html_runs(
         runs.push(span);
         at = end;
     }
-    (runs, links)
+    (runs, links, folded)
 }
+
+/// What [`html_runs`] makes of a body.
+type HtmlRuns = (
+    Vec<ui::RichSpan>,
+    Vec<(std::ops::Range<usize>, String)>,
+    bool,
+);
 
 /// The label of an attachment chip.
 pub(crate) fn attachment_label(attachment: &crate::model::Attachment) -> String {
@@ -371,6 +437,10 @@ pub struct MessageReader {
     /// The header of each earlier message as last painted: a click opens
     /// or closes that message.
     headers: Vec<(Rect, MessageId)>,
+    /// Messages whose closing quote the person unfolded.
+    quotes_open: HashSet<MessageId>,
+    /// The "show the quote" button under each folded message, as painted.
+    quote_buttons: Vec<(Rect, MessageId)>,
     /// Whether the reader has the keyboard, which its text uses.
     focused: bool,
     /// A button is held over the text: the pointer is selecting.
@@ -402,6 +472,8 @@ impl MessageReader {
             active: None,
             expanded: HashSet::new(),
             headers: Vec::new(),
+            quotes_open: HashSet::new(),
+            quote_buttons: Vec::new(),
             focused: false,
             selecting: false,
             dirty: true,
@@ -468,6 +540,10 @@ impl MessageReader {
     }
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
+        // Mail is still arriving: nothing to say about a selection yet.
+        if state.fetching_first && state.mailbox.messages.is_empty() {
+            return;
+        }
         let count = state.selected_bulk_ids().len();
         let title = if state.bulk_selecting {
             match count {
@@ -521,7 +597,11 @@ impl MessageReader {
     ) {
         let theme = flow.ctx.theme;
         let style = crate::html_mail::DocumentStyle::from_theme(theme);
-        let key = (message.id, html.is_some());
+        let key = (
+            message.id,
+            html.is_some(),
+            self.quotes_open.contains(&message.id),
+        );
         let needs_rebuild = self
             .bodies
             .get(&message.id)
@@ -546,6 +626,23 @@ impl MessageReader {
             presence,
         );
         flow.y += height;
+        if body.folded {
+            // The quote it ends with waits behind a quiet button.
+            flow.y += f64::from(theme.tokens.spacing.s2);
+            let side = ButtonFace::height(ControlSize::Small, theme);
+            let button = Rect::new(flow.x, flow.y, flow.x + side * 1.5, flow.y + side);
+            Button::paint(
+                flow.ctx.scene,
+                flow.ctx.transform,
+                flow.ctx.text,
+                theme,
+                &ButtonFace::icon_only(button, Icon::MoreHorizontal, "Show quoted text")
+                    .control_size(ControlSize::Small)
+                    .hovered(button.contains(flow.pointer)),
+            );
+            self.quote_buttons.push((button, message.id));
+            flow.y += side;
+        }
     }
 
     #[expect(
@@ -565,6 +662,7 @@ impl MessageReader {
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         // What this frame paints is all that can be pressed.
         self.remote_button = None;
+        self.quote_buttons.clear();
         let messages = state.selected_thread_messages();
         let Some(head) = messages.last().copied() else {
             self.attachments.clear();
@@ -588,6 +686,7 @@ impl MessageReader {
                 .map(|message| message.id)
                 .collect();
             self.active = Some(head_id);
+            self.quotes_open.clear();
             self.bodies
                 .retain(|id, _| messages.iter().any(|message| message.id == *id));
         }
@@ -769,6 +868,19 @@ impl MessageReader {
             return true;
         }
         if let Some(id) = self
+            .quote_buttons
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, id)| *id)
+        {
+            if !self.quotes_open.remove(&id) {
+                self.quotes_open.insert(id);
+            }
+            self.dirty = true;
+            self.shared.borrow_mut().dirty = true;
+            return true;
+        }
+        if let Some(id) = self
             .headers
             .iter()
             .find(|(rect, _)| rect.contains(point))
@@ -869,12 +981,15 @@ impl MessageReader {
 
     /// What the pointer at `point` lights up: an attachment chip, or the
     /// remote-content button.
-    fn hover_at(&self, point: Point) -> (Option<usize>, bool) {
+    fn hover_at(&self, point: Point) -> (Option<usize>, bool, Option<usize>) {
         (
             self.attachments
                 .iter()
                 .position(|(rect, _, _)| rect.contains(point)),
             self.remote_button.is_some_and(|rect| rect.contains(point)),
+            self.quote_buttons
+                .iter()
+                .position(|(rect, _)| rect.contains(point)),
         )
     }
 
@@ -1333,6 +1448,57 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
         assert!(
             !reader.expanded.contains(&first_id),
             "a second click closes it"
+        );
+    }
+
+    #[test]
+    fn a_closing_quote_folds_behind_a_button() {
+        let body =
+            "Sounds good, see you then.\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n> \n> Maya\n";
+        let (shown, quote) = split_trailing_quote(body);
+        assert!(quote);
+        assert_eq!(shown, "Sounds good, see you then.");
+        assert_eq!(
+            split_trailing_quote("> all of it is quote\n"),
+            ("> all of it is quote\n", false),
+            "a message that is only a quote keeps it"
+        );
+        assert!(!split_trailing_quote("No quote.\n").1);
+
+        let shared = MailState::shared(MailState::new_live(
+            crate::account::AccountStore::new(),
+            crate::app::avatar_store_offline(),
+        ));
+        let mut message = crate::transport::parse_eml(
+            format!("From: a@x\r\nSubject: S\r\nMessage-ID: <q@x>\r\n\r\n{body}").as_bytes(),
+            100,
+            Folder::Inbox,
+        )
+        .unwrap();
+        message.read = true;
+        let id = message.id;
+        {
+            let mut st = shared.borrow_mut();
+            st.mailbox.insert(message);
+            st.selected = Some(id);
+        }
+        let mut reader = MessageReader::new(shared);
+        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+        draw(&mut reader);
+        let text = |reader: &MessageReader| {
+            reader
+                .bodies
+                .get(&id)
+                .map(|body| body.input.value().to_owned())
+                .unwrap_or_default()
+        };
+        assert!(!text(&reader).contains("Lunch at noon"), "the quote waits");
+        let (button, _) = *reader.quote_buttons.first().expect("a button unfolds it");
+        assert!(reader.press(button.center()));
+        draw(&mut reader);
+        assert!(
+            text(&reader).contains("Lunch at noon"),
+            "and shows on a click"
         );
     }
 
