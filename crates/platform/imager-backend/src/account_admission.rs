@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, io};
 
-// This fixed image closure matches RECEIVING_DEPENDENCIES in the producer.
-const RECEIVING_DEPENDENCIES: &[&str] = &[
+/// The fixed measured Python receiving closure of an installed service receiver.
+pub const RECEIVING_DEPENDENCIES: &[&str] = &[
     "/usr/libexec/tilo-installer-receive-fixture/receive.py",
     "/usr/libexec/tilo-installer-receive-fixture/semantic.py",
     "/usr/libexec/tilo-installer-receive-fixture/firstuse.py",
@@ -302,89 +302,13 @@ pub fn receiving_candidate(
 }
 
 /// Authenticate the actual installed consumer proof before target custody writes.
+/// The check re-executes the installed probes and compares the image receipt.
 /// # Errors
-/// Refuses old/missing consumers, an untrusted verifier, or failed native checks.
+/// Refuses old/missing consumers, untrusted artifacts, or failed native checks.
 #[cfg(target_os = "linux")]
 pub fn installed() -> io::Result<ConsumerCapability> {
-    use std::{
-        fs::OpenOptions,
-        io::Read,
-        os::unix::fs::{MetadataExt, OpenOptionsExt},
-        process::{Command, Stdio},
-    };
-    const VERIFIER: &str = "/usr/libexec/tilo-verify-account-consumer-capability";
-    // Every namespace edge is root-controlled; a target user cannot replace
-    // the verifier with their importer or another executable between checks.
-    for path in ["/", "/usr", "/usr/libexec", VERIFIER] {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 || metadata.file_type().is_symlink()
-        {
-            return Err(unavailable());
-        }
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(VERIFIER)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.mode() & 0o111 == 0 || metadata.len() > 1024 * 1024 {
-        return Err(unavailable());
-    }
-    let mut child = Command::new(VERIFIER)
-        .arg("--check")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let stdout = child.stdout.take().ok_or_else(unavailable)?;
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    let _reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout
-            .take(16 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes);
-        let _ = send.send(result);
-    });
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(150))
-        .ok_or_else(unavailable)?;
-    let result = receive.recv_timeout(std::time::Duration::from_secs(150));
-    let bytes = match result {
-        Ok(Ok(bytes)) if bytes.len() <= 16 * 1024 => bytes,
-        _ => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable());
-        }
-    };
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(unavailable());
-            }
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    // Retain the original verifier handle until all target checks finish.
-    let observed = std::fs::symlink_metadata(VERIFIER)?;
-    if observed.dev() != metadata.dev()
-        || observed.ino() != metadata.ino()
-        || file.metadata()?.ino() != metadata.ino()
-    {
-        return Err(unavailable());
-    }
-    let proof: ConsumerCapability = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    let value = crate::installed_consumers::account::check().map_err(|_| unavailable())?;
+    let proof: ConsumerCapability = serde_json::from_value(value).map_err(|_| unavailable())?;
     proof.validate()?;
     Ok(proof)
 }
@@ -400,86 +324,17 @@ fn unavailable() -> io::Error {
 mod tests {
     use super::*;
 
-    // This is a serialization/measurement fixture, not native readiness evidence.
-    // Execute the real Python route producer with actual files; only the owned
-    // sandbox qualification callback is replaced by its explicit test response.
-    fn python_contract() -> Vec<u8> {
-        let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/scripts");
-        let script = r"
-import importlib.util, json, pathlib, sys, tempfile
-scripts = pathlib.Path(sys.argv[1])
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, scripts / (name + '.py'))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-service = load('service-consumer-capability')
-verifier = load('verify-account-consumer-capability')
-with tempfile.TemporaryDirectory() as temporary:
-    root = pathlib.Path(temporary).resolve()
-    for path in (*service.RECEIVING_DEPENDENCIES, '/usr/bin/shell', '/usr/bin/python3.13'):
-        target = root / path.removeprefix('/')
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(('fixture: ' + path).encode())
-        target.chmod(0o755)
-    (root / 'usr/bin/python3').symlink_to('python3.13')
-    sdk = dict(schema=1, protected_grant_protocol=1,
-        credential_helper_sha256='1'*64, runtime_root_hash='2'*64,
-        runtime_probe_sha256='3'*64, runtime_library_sha256='4'*64,
-        runtime_version='2026.10', runtime_library='lib/libruntime_dylib.so')
-    candidate = dict(schema=1, protocol=2, sdk_runtime_root_hash=sdk['runtime_root_hash'],
-        browser_package_hash='5'*64, browser_publisher='6'*64,
-        browser_binary_sha256='7'*64, cef_runtime_version='2026.10-chromium',
-        cef_runtime_root_hash='8'*64, cef_runtime_publisher='9'*64,
-        cef_host_sha256='a'*64, qualification_script_sha256='b'*64,
-        origin_storage_qualification_sha256='b'*64)
-    def fixture_qualifier(command, env, request):
-        facts = json.loads(request)
-        return json.dumps(dict(schema=2, service_session_protocol=2,
-            receiving_route_qualification_sha256=facts['receiving_route_qualification_sha256'],
-            private_list_verified=True, private_resolve_verified=True,
-            isolated_profile_verified=True, revocation_verified=True,
-            no_vault_mount_verified=True, origin_storage_persisted=True,
-            chat_destination_navigation_verified=True)).encode()
-    primitives = (verifier.digest, verifier.interpreter, verifier.regular)
-    # The default callback must never fabricate a successful receiving route.
-    try:
-        service.qualify_receiving_route(root, sdk, candidate, primitives, '/usr/bin/shell')
-    except ValueError:
-        pass
-    else:
-        raise AssertionError('default route qualification fabricated readiness')
-    sdk['service_sessions'] = service.qualify_receiving_route(
-        root, sdk, candidate, primitives, '/usr/bin/shell', fixture_qualifier)
-    receipt = root / 'receipt.json'
-    receipt.write_text(json.dumps(sdk, sort_keys=True, separators=(',', ':')))
-    # Exercise the installed verifier's strict saved-receipt reader too.
-    print(json.dumps(verifier.read_receipt(receipt, sdk), sort_keys=True, separators=(',', ':')))
-";
-        let output = std::process::Command::new("python3")
-            .arg("-I")
-            .arg("-c")
-            .arg(script)
-            .arg(scripts)
-            .output()
-            .expect("Python contract producer must be available");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.len() <= 16 * 1024);
-        output.stdout
-    }
-
+    #[cfg(target_os = "linux")]
     fn admitted(value: serde_json::Value) -> bool {
         serde_json::from_value::<ConsumerCapability>(value)
             .is_ok_and(|proof| proof.supports_service_session_protocol(2))
     }
 
+    // The installed producer's real measured closure over fixture files.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn real_python_measured_closure_is_admitted_and_mutations_fail_closed() {
-        let bytes = python_contract();
+    fn measured_closure_is_admitted_and_mutations_fail_closed() {
+        let bytes = crate::installed_consumers::tests::account::route_contract_receipt();
         let proof: ConsumerCapability = serde_json::from_slice(&bytes).unwrap();
         proof.validate().unwrap();
         assert!(proof.supports_service_session_protocol(2));
@@ -578,6 +433,7 @@ with tempfile.TemporaryDirectory() as temporary:
         assert_protocol_compatibility(&proof, valid);
     }
 
+    #[cfg(target_os = "linux")]
     fn assert_protocol_compatibility(proof: &ConsumerCapability, valid: serde_json::Value) {
         let mut cookies = proof.clone();
         let service = cookies.service_sessions.as_mut().unwrap();
@@ -594,6 +450,7 @@ with tempfile.TemporaryDirectory() as temporary:
         assert!(!proof.supports_service_session_protocol(3));
     }
 
+    #[cfg(target_os = "linux")]
     fn assert_recomputed_closure_refused(proof: &ConsumerCapability) {
         // Recomputing the digest cannot admit an expanded/replaced dependency
         // set, nor break the entrypoint's binding to its inventory member.
