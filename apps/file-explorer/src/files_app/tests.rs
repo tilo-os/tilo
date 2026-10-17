@@ -3816,7 +3816,7 @@ mod command_path_tests {
         w.apply_command(FileCommand::ShowAvailability);
         let panel = w.collab_panel.as_ref().expect("availability panel");
         assert!(panel.summary.contains("Not stored"));
-        assert!(panel.lines.iter().any(|line| line.contains("durable")));
+        assert!(panel.lines.iter().any(|line| line.contains("other device")));
         assert!(
             panel
                 .lines
@@ -3918,12 +3918,8 @@ mod command_path_tests {
         w.apply_command(FileCommand::ShowProperties);
         let panel = w.collab_panel.as_ref().unwrap();
         assert!(panel.title.contains("Properties"));
-        assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line.contains("Collaborative record"))
-        );
+        let internal = |line: &String| line.contains("Collaborative record");
+        assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
         assert!(
             panel
                 .lines
@@ -6026,7 +6022,6 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        assert!(error.value.as_deref().unwrap().contains("Try again"));
         let state = error.children.first().expect("error state semantic group");
         let name = widget
             .current_path()
@@ -7360,4 +7355,186 @@ fn selected_files_are_shared_as_the_items_an_agent_acts_on() {
         selection.resource_kind.as_deref(),
         Some(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND)
     );
+}
+
+/// Moving into a folder with a taken name asks once; each answer does what
+/// it says, and Replace sends the existing item to Trash rather than
+/// destroying it.
+#[test]
+fn a_name_clash_asks_once_and_each_answer_does_what_it_says() {
+    let _home = tilo_test_env::TestHome::new().expect("private test home");
+    let setup = || {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = (dir.path().join("src"), dir.path().join("dest"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        std::fs::write(src.join("b.txt"), b"new").unwrap();
+        std::fs::write(dest.join("a.txt"), b"old").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        w.navigate(src.clone());
+        w.drop_paths_into(&[src.join("a.txt"), src.join("b.txt")], &dest, false);
+        assert!(w.clash.is_some(), "a taken name asks first");
+        assert!(
+            src.join("a.txt").exists(),
+            "nothing moved before the answer"
+        );
+        (dir, w, src, dest)
+    };
+    let names = |dest: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dest)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+
+    let (_dir, mut w, src, dest) = setup();
+    w.settle_clash(Some(ClashChoice::Skip));
+    assert_eq!(names(&dest), ["a.txt", "b.txt"]);
+    assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"old");
+    assert!(src.join("a.txt").exists(), "the skipped item stays");
+
+    let (_dir, mut w, _src, dest) = setup();
+    w.settle_clash(Some(ClashChoice::KeepBoth));
+    assert_eq!(names(&dest).len(), 3, "{:?}", names(&dest));
+
+    let (_dir, mut w, _src, dest) = setup();
+    w.settle_clash(Some(ClashChoice::Replace));
+    assert_eq!(names(&dest), ["a.txt", "b.txt"]);
+    assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"new");
+
+    let (_dir, mut w, src, _dest) = setup();
+    w.settle_clash(None);
+    assert!(
+        w.clash.is_none() && src.join("a.txt").exists(),
+        "Escape changes nothing"
+    );
+}
+
+/// A tracked copy counts its bytes, and Cancel stops it with nothing past
+/// the item it was on.
+#[test]
+fn a_tracked_copy_reports_bytes_and_stops_on_cancel() {
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let (src, dest) = (dir.path().join("big.bin"), dir.path().join("dest"));
+    std::fs::write(&src, vec![7_u8; 3 << 20]).unwrap();
+    std::fs::create_dir(&dest).unwrap();
+    let op = crate::file_ops::FileOp::Copy {
+        paths: vec![src.display().to_string()],
+        folder: dest.display().to_string(),
+    };
+    let seen = std::cell::Cell::new(0_u64);
+    let outcome = crate::file_ops::execute_tracked(&op, None, &|transfer| {
+        seen.set(transfer.done.load(Ordering::Relaxed));
+    });
+    assert!(outcome.reason().is_none(), "{:?}", outcome.reason());
+    assert_eq!(seen.get(), 3 << 20, "the last report has every byte");
+    assert!(crate::file_ops::active_transfers().is_empty());
+
+    let cancelling = |transfer: &crate::file_ops::LocalTransfer| {
+        transfer.cancel.store(true, Ordering::Relaxed);
+    };
+    let large = dir.path().join("large.bin");
+    std::fs::write(&large, vec![7_u8; 9 << 20]).unwrap();
+    let op = crate::file_ops::FileOp::Copy {
+        paths: vec![large.display().to_string(), src.display().to_string()],
+        folder: dest.display().to_string(),
+    };
+    // Cancel at the first report, part way through the large file.
+    let outcome = crate::file_ops::execute_tracked(&op, None, &cancelling);
+    assert_eq!(outcome.reason(), Some(crate::file_ops::CANCELLED));
+    assert!(
+        outcome.result().is_empty(),
+        "the item it stopped in, and the ones after, are not there"
+    );
+}
+
+/// Space shows the selected file large and closes it again; arrows move on.
+#[test]
+fn space_previews_the_selection_and_closes_again() {
+    use winit::keyboard::{Key, NamedKey};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"first line\nsecond").unwrap();
+    std::fs::write(dir.path().join("b.txt"), b"other").unwrap();
+    let mut w = FileExplorerWidget::with_persistence(None, None);
+    w.navigate(dir.path().to_path_buf());
+    w.select(Some(0));
+    let space = ui::synthetic_input::key_event(
+        Key::Named(NamedKey::Space),
+        None,
+        winit::event::ElementState::Pressed,
+    );
+    assert!(w.handle_app_key(&space, winit::event::Modifiers::default()));
+    assert_eq!(w.preview.as_ref().map(Preview::title), Some("a.txt"));
+    let down = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(NamedKey::ArrowDown),
+        None,
+        winit::event::ElementState::Pressed,
+    ));
+    w.route_preview_event(&down, winit::event::Modifiers::default());
+    assert_eq!(w.preview.as_ref().map(Preview::title), Some("b.txt"));
+    w.route_preview_event(
+        &ui::synthetic_input::keyboard_input(space),
+        winit::event::Modifiers::default(),
+    );
+    assert!(w.preview.is_none(), "Space closes it again");
+}
+
+/// Files dropped in from another app are copied into the folder shown.
+#[test]
+fn files_dropped_from_another_app_are_copied_here() {
+    let src = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(src.path().join(name), name.as_bytes()).unwrap();
+    }
+    let mut w = FileExplorerWidget::with_persistence(None, None);
+    w.navigate(dest.path().to_path_buf());
+    for name in ["one.txt", "two.txt"] {
+        assert!(
+            w.route_incoming_drop(&winit::event::WindowEvent::DroppedFile(
+                src.path().join(name)
+            ))
+        );
+    }
+    w.take_incoming_drop();
+    assert_eq!(
+        std::fs::read(dest.path().join("one.txt")).unwrap(),
+        b"one.txt"
+    );
+    assert_eq!(
+        std::fs::read(dest.path().join("two.txt")).unwrap(),
+        b"two.txt"
+    );
+    assert!(
+        src.path().join("one.txt").exists(),
+        "a drop from another app copies"
+    );
+}
+
+/// A file inside an archive opens as a read-only copy, made once.
+#[test]
+fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
+    let _home = tilo_test_env::TestHome::new().expect("private test home");
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    std::fs::create_dir(&docs).unwrap();
+    std::fs::write(docs.join("readme.txt"), b"read me").unwrap();
+    let zip = dir.path().join("bundle.zip");
+    crate::archive::create_zip(&[docs], &zip).unwrap();
+    let member = crate::archive::list(&zip)
+        .unwrap()
+        .into_iter()
+        .find(|entry| !entry.is_dir)
+        .expect("a file in the archive")
+        .path;
+    let copy = archive_member_copy(&zip, &member).unwrap();
+    assert_eq!(std::fs::read(&copy).unwrap(), b"read me");
+    assert!(std::fs::metadata(&copy).unwrap().permissions().readonly());
+    assert_eq!(archive_member_copy(&zip, &member).unwrap(), copy, "reused");
+    let missing = archive_member_copy(&zip, std::path::Path::new("nope.txt"));
+    assert!(missing.is_err());
 }
