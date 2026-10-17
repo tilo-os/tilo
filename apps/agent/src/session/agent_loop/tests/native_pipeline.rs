@@ -559,6 +559,40 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
     );
 }
 
+/// After a restart the step's resource is published through a new window,
+/// under a new alias: it is still the same resource, so the run resumes at
+/// it rather than leaving it to the model.
+#[test]
+fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
+    let mut f = native_run_fixture(
+        "add a closing line",
+        World {
+            awaiting: Some(("append-paragraph".into(), 1)),
+            ..World::default()
+        },
+        vec![turn(&[finish("Added the closing line.", true)], 24)],
+    );
+    let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
+    let descriptor = drafted(&mut f);
+    let hex: String = DOC.bytes().map(|byte| format!("{byte:02x}")).collect();
+    f.run.paused = Some(runtime_collab::TaskRunPausedStep {
+        app: "so.tilo.word-processor".into(),
+        resource: format!(
+            "{}old-window:publication:{hex}",
+            tilo_actions::selection::BOUND_RESOURCE_PREFIX
+        ),
+        action: "append-paragraph".into(),
+        draft: tilo_actions::Draft::render(&descriptor, &arguments),
+        arguments_digest: tilo_actions::draft::arguments_digest(&arguments),
+    });
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    assert_eq!(world.steps.len(), 1, "the step ran once: {:?}", world.steps);
+    drop(world);
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert!(bodies[0].to_string().contains("has resumed at that step"));
+}
+
 /// A paused step whose draft does not give back the exact arguments it was
 /// confirmed for is not guessed at: nothing runs before the model, which is
 /// told what waits so that it asks for that step again.
