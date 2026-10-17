@@ -186,7 +186,11 @@ change.
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
 `vello_encoding` 0.9.0 from crates.io, verbatim, except for the files
-below and the publication identity in `Cargo.toml` (see "Published forks").
+below, the publication identity in `Cargo.toml` (see "Published forks") and
+the `skrifa` requirement in both manifests: 0.44 instead of 0.42, the version
+the toolkit, cosmic-text and swash use, so glyph outlines are drawn by one
+copy of the font parser instead of two (about 230 KB of the web desktop's
+start module). vello 0.9's use of skrifa compiles unchanged against 0.44.
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
 against the published crate to confirm.
