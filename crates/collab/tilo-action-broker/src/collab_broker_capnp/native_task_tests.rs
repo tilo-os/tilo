@@ -1201,6 +1201,7 @@ async fn progress_sent_right_after_acceptance_applies_in_order() {
                     &run,
                     runtime_collab::TaskRunUpdate::Progress {
                         message: "Reviewing the catalogue".into(),
+                        presentation: None,
                     },
                 ),
             );
