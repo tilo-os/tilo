@@ -344,7 +344,7 @@ struct Desktop {
     /// The name and colour each person who opened a window here had when
     /// last seen, by user root: their windows still name them once they
     /// left.
-    people: RefCell<HashMap<String, (String, (u8, u8, u8))>>,
+    people: RefCell<HashMap<String, crate::desktop::PersonIdentity>>,
 }
 
 impl Desktop {
@@ -1204,33 +1204,18 @@ fn present_component(
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
+    let inputs = HostContextInputs {
+        records: record.clone(),
+        views,
+        device_id: config.device.clone(),
+        instance_id: config.instance,
+        permissions,
+        author: UserId(config.author()),
+        action_context: tilo_actions::ActionContext::default(),
+    };
     let mut context = match named_new {
-        Some(id) => HostContext::prepare_new_record(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            id,
-        ),
-        None => HostContext::prepare(
-            definition,
-            HostContextInputs {
-                records: record.clone(),
-                views,
-                device_id: config.device.clone(),
-                instance_id: config.instance,
-                permissions,
-                author: UserId(config.author()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &target,
-        ),
+        Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+        None => HostContext::prepare(definition, inputs, &target),
     }
     .map_err(error)?;
     context.provide_models(config.models()?);
