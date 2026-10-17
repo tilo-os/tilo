@@ -256,7 +256,14 @@ impl App {
                         *request_id,
                         pending.capture.clone(),
                     );
-                pending.retry_at = now + pending.retry_delay;
+                // The transport owns a four-second RPC deadline. Do not
+                // enqueue another report behind an ordinary in-flight call.
+                let wait = if result.is_ok() {
+                    pending.retry_delay.max(crate::time::Duration::from_secs(5))
+                } else {
+                    pending.retry_delay
+                };
+                pending.retry_at = now + wait;
                 pending.retry_delay =
                     (pending.retry_delay * 2).min(crate::time::Duration::from_secs(30));
                 if let Err(error) = result {
