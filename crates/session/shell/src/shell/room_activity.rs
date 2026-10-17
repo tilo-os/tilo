@@ -1044,13 +1044,11 @@ impl ActivityHost for NativeActivityHost {
                 .broker
                 .clone()
                 .ok_or("the session's action broker is not running yet")?;
-            let session = crate::shell::certified_action_session::CertifiedActionSession::open(
-                broker,
-                &request.room,
-                None,
-            )?;
+            // The session is opened on the undo's own thread: admitting it
+            // reads the workspace, which the pane's caller may hold.
             return self.undos.start(
-                session.door(),
+                broker,
+                request.room.clone(),
                 request.invocation,
                 task_id.clone(),
                 steps.clone(),
