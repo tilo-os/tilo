@@ -4,7 +4,8 @@ A14 opens Files as the session's first Files launch and times it from the app's 
 startup marks (process start to `first-frame-presented`, written by every Tilo app to
 `<data home>/tilo-rooms/<room>/<package>/.local/state/startup-<N>.json`). A frame alone
 is not a working window, so it also reads the folder listing off the app's AT-SPI tree
-with the image's external AT-SPI client, the one the installed-image gate drives.
+with the checkout's external AT-SPI client (tools/atspi_external_client.py), copied into
+the guest for the check: it is test tooling and the image does not ship it.
 
 R05 judges the GPU: `tilo system health --gpu --json` and the adapter line every app
 window logs (see acceptance/gpu.py). A VM without a render node cannot show a CPU
@@ -36,6 +37,8 @@ SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 MARKS_WAIT_S = 10
 LISTING_WAIT_S = 30
 KPI_BUDGETS = Path(__file__).resolve().parents[4] / "tools/perf/kpi-budgets.toml"
+ATSPI_CLIENT = Path(__file__).resolve().parents[4] / "tools/atspi_external_client.py"
+GUEST_ATSPI_CLIENT = ".cache/acceptance/atspi_external_client.py"
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -44,7 +47,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # root was there, and the names in the folder listing (None: no listing found).
 ATSPI_PROBE = r'''
 import importlib.util, json, os, re, sys, time
-CLIENT = os.environ.get("TILO_ATSPI_CLIENT", "/usr/libexec/tilo/atspi-external-client.py")
+CLIENT = os.environ["TILO_ATSPI_CLIENT"]
 program, root_name, list_name, timeout = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
 try:
     spec = importlib.util.spec_from_file_location("atspi_client", CLIENT)
@@ -283,6 +286,7 @@ def files_start(ctx, res):
     ctx.reset()
     marker = f"acc-files-{int(time.time())}"
     ctx.vm.exec(f'mkdir -p "$HOME/{marker}"')
+    ctx.vm.write_home_file(GUEST_ATSPI_CLIENT, ATSPI_CLIENT.read_bytes())
     since_ms = _first_int(ctx.vm.exec("date +%s%3N"))
     log_lines = _first_int(ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)) or 0
     problems, unobserved = [], []
@@ -293,7 +297,8 @@ def files_start(ctx, res):
                           check=False)
         request_s = parse_launch_latency(log, FILES)
         probe_out = ctx.vm.exec(
-            f"python3 - {FILES_PROGRAM} {shlex.quote(FILES_ROOT)} {shlex.quote(FILES_LIST)} "
+            f'TILO_ATSPI_CLIENT="$HOME/{GUEST_ATSPI_CLIENT}" python3 - {FILES_PROGRAM} '
+            f"{shlex.quote(FILES_ROOT)} {shlex.quote(FILES_LIST)} "
             f"{LISTING_WAIT_S} <<'EOF'\n{ATSPI_PROBE}\nEOF", timeout=LISTING_WAIT_S + 60, check=False)
         ctx.shot(f"{label}-listing")
         try:

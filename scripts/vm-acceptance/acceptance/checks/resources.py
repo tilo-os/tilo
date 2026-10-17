@@ -1085,10 +1085,22 @@ def frame_work(ctx, res):
 
 # -- the installed-desktop gates of build-image.yml, on this run's VM -------------
 
-BOOT_GATE = "/usr/libexec/tilo/boot-performance-gate.sh"
+# Test tooling the image does not ship: the run copies it from the checkout into the guest.
+BOOT_GATE = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_gate.sh"
 BOOT_TOTAL = re.compile(r"kernel\+userspace reached usable greeter in (\d+)\.(\d{3})s")
 BOOT_PHASES = re.compile(r"phases: kernel ([0-9.]+)s, initrd ([0-9.]+)s, userspace to greeter ([0-9.]+)s")
 GATE_EXIT = re.compile(r"^GATE-EXIT=(\d+)$", re.M)
+
+
+def guest_script(script: Path, env: str = "") -> str:
+    """A shell fragment that writes `script` into a private directory in the guest and runs it
+    there with `env` assignments; the directory goes when the calling shell exits."""
+    body = script.read_text()
+    end = "TILO_GUEST_SCRIPT_EOF"
+    assert end not in body
+    return (f'd="$(mktemp -d)" && trap \'rm -rf "$d"\' EXIT && cat > "$d/{script.name}" <<\'{end}\'\n'
+            f"{body}{'' if body.endswith(chr(10)) else chr(10)}{end}\n"
+            f'{env} bash "$d/{script.name}"')
 
 
 def parse_boot_gate(text: str) -> dict:
@@ -1107,13 +1119,13 @@ def parse_boot_gate(text: str) -> dict:
 
 @check("R06", AREA, "The VM booted kernel and userspace to a usable greeter within budget")
 def boot(ctx, res):
-    """The release gate's boot check (os/tests/boot_performance_gate.sh, shipped in the
-    image): graphical.target and greetd's login endpoint up, no device timeout, the
+    """The release gate's boot check (os/tests/boot_performance_gate.sh, copied into the
+    guest for the run): graphical.target and greetd's login endpoint up, no device timeout, the
     image's boot contract, all within the budget. It reads this boot's monotonic
     timestamps, so it may run at any point of the run."""
     budget = ctx.config["budgets"]["boot_to_greeter_s"]
-    text = ctx.vm.root_exec(f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget} {BOOT_GATE} 2>&1; echo GATE-EXIT=$?",
-                            timeout=180)
+    text = ctx.vm.root_exec(guest_script(BOOT_GATE, f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget}")
+                            + " 2>&1; echo GATE-EXIT=$?", timeout=180)
     ctx.write("R06-boot-gate.txt", text)
     gate = parse_boot_gate(text)
     res.metrics.update({k: v for k, v in gate.items() if k != "exit"}, budget_s=budget)
