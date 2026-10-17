@@ -47,6 +47,11 @@ use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
+use tilo_actions::task_step::TaskStep;
+
+/// Most steps a run tells the person about. The task keeps a bounded number
+/// of public notes per run; the rest are for its outcome and its questions.
+const MOST_STEPS_TOLD: usize = 64;
 
 mod resume;
 
@@ -283,6 +288,11 @@ pub(super) struct LoopState {
     settled: Vec<(String, Handled)>,
     /// Results too long for one observation, read on a page at a time.
     pages: crate::pages::Pages,
+    /// The step the person was last told the run is at, and how many
+    /// steps they were told: told once each time it changes, a bounded
+    /// number of times per run.
+    told_step: Option<String>,
+    steps_told: usize,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -832,6 +842,8 @@ impl Session {
             in_flight: Vec::new(),
             settled: Vec::new(),
             pages: crate::pages::Pages::new(),
+            told_step: None,
+            steps_told: 0,
         };
         self.task_deadline = run.execution_budget.map(|budget| {
             ui::time::now()
@@ -1457,6 +1469,90 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
+    /// What `call` does, as the step the person is told the run is at:
+    /// searching the web, reading or changing an application's documents,
+    /// or finding out what an application can do. `None` for a call that
+    /// is no step of its own (finishing, reading on in a long result).
+    fn step_of(&mut self, state: &LoopState, call: &StreamedCall) -> Option<TaskStep> {
+        let catalogue = self.task_catalogue();
+        let app_name = |app: &str| {
+            catalogue
+                .offers
+                .iter()
+                .find(|offer| {
+                    offer.app == app && offer.descriptor.resource_kind == surface::APPLICATION_KIND
+                })
+                .map_or_else(
+                    || app.rsplit('.').next().unwrap_or(app).to_owned(),
+                    |offer| offer.descriptor.resource_label.clone(),
+                )
+        };
+        match call.name.as_str() {
+            tools::INVOKE => {
+                let id = call.input.get("operation").and_then(Value::as_str)?;
+                let id = state.revealed.resolve(id).unwrap_or_else(|_| id.to_owned());
+                let offer = surface::find(&catalogue.offers, &id)?;
+                let descriptor = &offer.descriptor;
+                if descriptor.resource_kind == surface::APPLICATION_KIND {
+                    return None;
+                }
+                if descriptor.resource_kind.starts_with("web.search") {
+                    return Some(TaskStep::Searching);
+                }
+                let reads = descriptor.kind == tilo_actions::OperationKind::View
+                    || descriptor.contract.kind == tilo_actions::ActionKind::Read;
+                let app = app_name(&offer.app);
+                Some(if reads {
+                    TaskStep::Reading(app)
+                } else {
+                    TaskStep::Editing(app)
+                })
+            }
+            tools::LIST_OPERATIONS | tools::DESCRIBE_OPERATION => {
+                let app = call
+                    .input
+                    .get("application")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        let id = call.input.get("operation").and_then(Value::as_str)?;
+                        let id = state.revealed.resolve(id).unwrap_or_else(|_| id.to_owned());
+                        surface::find(&catalogue.offers, &id).map(|offer| offer.app.clone())
+                    })?;
+                Some(TaskStep::Exploring(app_name(&app)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Tell the person the run is at `call`'s step, once each time the step
+    /// changes: what the composer and Task Center show while it runs.
+    fn tell_step(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &mut LoopState,
+        call: &StreamedCall,
+    ) -> Result<()> {
+        let Some(step) = self.step_of(state, call) else {
+            return Ok(());
+        };
+        let note = step.note();
+        if state.told_step.as_deref() == Some(note.as_str()) || state.steps_told >= MOST_STEPS_TOLD
+        {
+            return Ok(());
+        }
+        state.steps_told += 1;
+        state.told_step = Some(note.clone());
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message: note,
+                // A step is a public note, appended to the task's history.
+                presentation: None,
+            },
+        )
+    }
+
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1464,6 +1560,7 @@ impl Session {
         call: &StreamedCall,
         failed: &mut bool,
     ) -> Result<Handled> {
+        self.tell_step(run, state, call)?;
         match call.name.as_str() {
             tools::PLAN => {
                 let mut input = call.input.clone();

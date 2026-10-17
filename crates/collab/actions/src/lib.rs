@@ -147,6 +147,7 @@ pub mod resource;
 pub mod schema;
 pub mod selection;
 pub mod surface;
+pub mod task_step;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
@@ -161,11 +162,12 @@ pub use context::{
     MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
-    DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
-    MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, Offload,
-    PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
+    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, COMPENSATED_UNDO_TAG,
+    ConfirmationPolicy, DOCUMENT_READ_TAG, ExecutionMode, INCOMING_MESSAGE_FACET,
+    INCOMING_MESSAGE_TAG, LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES,
+    MAX_OFFLOAD_OUTPUT_BYTES, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX,
+    OPENS_PATH_TAG, Offload, PROGRAMMATIC_TAG, ResultSpec, RetryPolicy, RiskLevel,
+    UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};

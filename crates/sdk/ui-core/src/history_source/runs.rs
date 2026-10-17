@@ -100,6 +100,9 @@ pub struct AgentRun {
     /// How the agent selected the work it performed (for example, a model's
     /// short rationale or an explicit deterministic fallback reason).
     pub decision: Option<String>,
+    /// The workspace task this run worked, when an agent ran one: the id
+    /// its changes are grouped under, which undo names to take them back.
+    pub task: Option<String>,
     pub at: SystemTime,
     /// The per-application steps, in the order they happened.
     pub steps: Vec<RunStep>,
@@ -243,6 +246,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
             issued_by: doc.str_at(&rec, "issued_by"),
             instruction: doc.str_at(&rec, "instruction"),
             decision: doc.str_at(&rec, "decision"),
+            task: doc.str_at(&rec, "task"),
             at,
             steps,
         });
@@ -250,6 +254,15 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
     // Stable order so two peers with the same document build the same list.
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+/// Mark run `key` as an agent's run of workspace task `task`. Leaves the
+/// transaction open, as [`record_run_with_details`] does.
+pub fn set_run_task(doc: &mut AutoCommit, key: &str, task: &str) -> bool {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, key) else {
+        return false;
+    };
+    doc.put(&rec, "task", task).is_ok()
 }
 
 fn put_optional(doc: &mut AutoCommit, rec: &ObjId, key: &str, value: Option<&str>) {

@@ -3451,8 +3451,9 @@ pub struct CapnpBrokerState {
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
-    /// Shortcut runs the door finished, until history records them.
-    shortcut_runs: crate::automation::ShortcutRuns,
+    /// Shortcut runs the door finished and agent runs of workspace tasks
+    /// that ended, until history records them.
+    ended_runs: crate::task_runs::EndedRuns,
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
@@ -4272,7 +4273,7 @@ impl CapnpBrokerState {
                 pending_invocations: Mutex::new(HashMap::new()),
                 approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
-                shortcut_runs: crate::automation::ShortcutRuns::default(),
+                ended_runs: crate::task_runs::EndedRuns::default(),
                 app_action_access: RwLock::new(
                     services
                         .app_action_access

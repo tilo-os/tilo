@@ -161,6 +161,14 @@ pub const INCOMING_MESSAGE_FACET: &str = "incoming-message";
 /// catalogue show it.
 pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
 
+/// [`ActionContract::tags`] entry of an action that reaches outside its
+/// document through a queue (a file rename the device carries out) and whose
+/// undo queues the compensating change. It is still an
+/// [`Outside`](ActionKind::Outside) action for the grants deciding it, but it
+/// can be taken back: a person reviewing it is told it changes their work,
+/// not that it sends something away.
+pub const COMPENSATED_UNDO_TAG: &str = "undo:compensated";
+
 /// What one invocation of an action is, for the grants deciding it: its kind,
 /// the one field of its resource it writes when it writes only one (a reply
 /// writes the `comments`), which places it below that field in the tree, and
@@ -539,6 +547,13 @@ impl ActionContract {
     /// own data. See [`UNTRUSTED_CONTENT_TAG`].
     pub fn carries_untrusted_content(&self) -> bool {
         self.tags.iter().any(|tag| tag == UNTRUSTED_CONTENT_TAG)
+    }
+
+    /// Whether the action, once taken, can be undone: the host's undo
+    /// reverts a document change, and an outside one declared with its
+    /// compensation ([`COMPENSATED_UNDO_TAG`]) is undone by queueing it.
+    pub fn can_be_undone(&self) -> bool {
+        self.reversible || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG)
     }
 
     /// Whether confirmation depends on the invocation's arguments. See

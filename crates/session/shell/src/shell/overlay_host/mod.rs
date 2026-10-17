@@ -18670,6 +18670,81 @@ impl Drop for UpdateSteps {
     }
 }
 
+impl ShellOverlayHost {
+    /// Show the paused action a notification's activation asked for: in the
+    /// composer that follows its run when there is one, so the person
+    /// answers it beside their work; on its card in Task Center otherwise.
+    fn reveal_requested_draft(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let Some(task_id) = chrome.borrow_mut().take_task_draft_request() else {
+            return false;
+        };
+        if self.agent_quick_composer.reveal_run(&task_id) {
+            return true;
+        }
+        chrome
+            .borrow_mut()
+            .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                task_id: Some(task_id),
+                ..crate::shell::chrome_state::ActivityFocus::default()
+            }));
+        false
+    }
+
+    /// Tell the open composer what its followed run is doing now, from the
+    /// room's task review: the step it is at, and the action it waits for
+    /// the person on, which the composer shows and answers as the card
+    /// does. Returns whether the composer changed.
+    fn pump_composer_run(&mut self) -> bool {
+        use crate::shell::agent_quick_composer::DraftAnswer;
+        let Some(owner) = self.agent_quick_composer.owner().cloned() else {
+            return false;
+        };
+        let glance = self
+            .agent_quick_composer
+            .followed()
+            .map(|run| run.task.task_id.clone())
+            .and_then(|task| self.room_activity.run_glance(&owner.room, &task));
+        let before = self.agent_quick_composer.shows_paused_any();
+        self.agent_quick_composer.glance(&owner, glance);
+        let mut changed = before != self.agent_quick_composer.shows_paused_any();
+        let answered = match self.agent_quick_composer.take_draft_answer() {
+            Some(DraftAnswer::Confirm(draft)) => Some((draft, true)),
+            Some(DraftAnswer::Decline(draft)) => Some((draft, false)),
+            Some(DraftAnswer::Edit(draft)) => {
+                if let Some(chrome) = &self.chrome {
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
+                            task_id: Some(draft.task_id.clone()),
+                            ..crate::shell::chrome_state::ActivityFocus::default()
+                        },
+                    ));
+                }
+                self.room_activity.edit_paused_draft(&draft.task_id);
+                changed = true;
+                None
+            }
+            None => None,
+        };
+        // Answered only while the review still shows that exact draft, so
+        // a draft that changed meanwhile is never answered by mistake.
+        if let Some((draft, confirm)) = answered
+            && self
+                .room_activity
+                .run_glance(&draft.room, &draft.task_id)
+                .is_some_and(|glance| glance.paused.as_ref() == Some(&draft))
+        {
+            if let Err(error) = self.room_activity.answer_paused_draft(&draft, confirm) {
+                tracing::warn!(%error, "the composer could not answer the paused action");
+            }
+            changed = true;
+        }
+        changed
+    }
+}
+
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
@@ -18761,6 +18836,7 @@ impl Widget for ShellOverlayHost {
             .fold(false, |changed, actions| {
                 actions.pump(&mut self.agent_quick_composer) | changed
             });
+        let action_dirty = action_dirty | self.reveal_requested_draft() | self.pump_composer_run();
         if action_dirty {
             self.agent_quick_composer.sync(doc, path);
         }
@@ -22426,6 +22502,13 @@ impl ShellOverlayHost {
                     self.room_activity.apply_deep_link(focus);
                 }
             }
+        } else if visible
+            && let Some(chrome) = self.chrome.as_ref()
+            && let Some(focus) = chrome.borrow_mut().take_activity_focus_request()
+        {
+            // Activity was already showing: a later request to show a task
+            // (a notification's Review, the composer's Edit) still lands.
+            self.room_activity.apply_deep_link(focus);
         } else if !visible
             && self.room_activity_was_open
             && let Some(chrome) = self.chrome.as_ref()

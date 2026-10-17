@@ -281,6 +281,9 @@ pub mod __private {
         pub answer: VerbAnswer,
         /// It records a message someone received (`#[action(incoming_message)]`).
         pub incoming_message: bool,
+        /// Its outside consequence is undone by a compensating verb
+        /// (`#[action(undo = ...)]`).
+        pub compensated: bool,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -427,6 +430,10 @@ pub mod __private {
         if verb.incoming_message {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
+        }
+        if verb.compensated {
+            decl.tags
+                .push(tilo_actions::COMPENSATED_UNDO_TAG.to_owned());
         }
         match verb.answer {
             VerbAnswer::Created => {}

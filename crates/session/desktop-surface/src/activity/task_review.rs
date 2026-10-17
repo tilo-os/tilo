@@ -58,6 +58,15 @@ pub enum TaskReviewCommand {
         confirmation_id: String,
         edits: Vec<tilo_actions::DraftEdit>,
     },
+    /// Undo everything the agent's run of the task changed, as one: each
+    /// document it changed undoes the changes grouped under the task, through
+    /// its own history (which also takes back what a change queued outside
+    /// it, such as a file renamed on disk). Later edits by others are kept.
+    UndoRun {
+        task_id: String,
+        /// The documents the run changed: each step's app and record.
+        steps: Vec<(String, String)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

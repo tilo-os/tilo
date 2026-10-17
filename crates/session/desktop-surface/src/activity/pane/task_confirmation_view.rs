@@ -67,6 +67,37 @@ pub struct ConfirmationNotice {
     pub gist: Option<String>,
 }
 
+/// What an agent's run of a task is doing now, for a surface beside the
+/// work (the agent composer) rather than in Task Center.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunGlance {
+    /// The step the run is at, in the person's language ("Editing Notes…").
+    pub step: Option<String>,
+    /// The action it is paused at, waiting for the person.
+    pub paused: Option<PausedDraft>,
+}
+
+/// The action a run is paused at, as the confirmation card presents it:
+/// the same status, risk, heading, meta and fields, for a surface that shows
+/// the card's content with its own widgets and answers it the same way.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PausedDraft {
+    pub room: String,
+    pub task_id: String,
+    pub run_epoch: u64,
+    pub confirmation_id: String,
+    /// "Waiting for your confirmation".
+    pub status: String,
+    /// How far the action reaches, as the card's chip says it.
+    pub risk: String,
+    /// The action, as the card's heading says it.
+    pub action: String,
+    /// Who asks, and on what.
+    pub meta: String,
+    /// Each field's label and value, in the card's order.
+    pub fields: Vec<(String, String)>,
+}
+
 impl ConfirmationNotice {
     /// The banner's title: who asks, and what.
     #[must_use]
@@ -196,6 +227,12 @@ fn risk_label(confirmation: &WorkspaceTaskConfirmation) -> (String, Tone) {
         RiskLevel::Privileged => ("activity-confirm-risk-privileged", Tone::Danger),
         RiskLevel::Sensitive => ("activity-confirm-risk-sensitive", Tone::Warning),
         RiskLevel::None | RiskLevel::Low => match confirmation.kind {
+            // Queued for this device and undone by queueing its revert (a
+            // file renamed or moved in the workspace): it changes the
+            // person's work rather than sending anything away.
+            tilo_action_policy::ActionKind::Outside if confirmation.draft.undoable => {
+                ("activity-confirm-risk-changes", Tone::Info)
+            }
             tilo_action_policy::ActionKind::Outside => {
                 ("activity-confirm-risk-sends", Tone::Warning)
             }
@@ -206,6 +243,29 @@ fn risk_label(confirmation: &WorkspaceTaskConfirmation) -> (String, Tone) {
         },
     };
     (t(key), tone)
+}
+
+/// A run's public note as the step it names, in the person's language; the
+/// note as it is when it names none of the steps every run takes.
+fn step_line(note: &str) -> Option<String> {
+    use tilo_actions::task_step::TaskStep;
+    let note = note.trim();
+    if note.is_empty() {
+        return None;
+    }
+    Some(match TaskStep::parse(note) {
+        Some(TaskStep::Searching) => t("activity-task-step-searching"),
+        Some(TaskStep::Reading(app)) => {
+            t_args("activity-task-step-reading", &[("app", app.into())])
+        }
+        Some(TaskStep::Editing(app)) => {
+            t_args("activity-task-step-editing", &[("app", app.into())])
+        }
+        Some(TaskStep::Exploring(app)) => {
+            t_args("activity-task-step-exploring", &[("app", app.into())])
+        }
+        None => note.to_owned(),
+    })
 }
 
 /// What a message's field is called on the card, in the session's language.
@@ -262,6 +322,105 @@ fn value_text(value: &DraftValue) -> String {
 }
 
 impl RoomActivityPane {
+    /// What the agent's run of task `task_id` in `room` is doing now: its
+    /// latest step, and the action it waits for the person on, if any. Read
+    /// from the room owner's review, which the host keeps current; `None`
+    /// while there is none for the room.
+    #[must_use]
+    pub fn run_glance(&self, room: &str, task_id: &str) -> Option<RunGlance> {
+        let Some(Ok(snapshot)) = self.host.task_review_snapshot(room) else {
+            return None;
+        };
+        let task = snapshot.tasks.iter().find(|task| task.id == task_id)?;
+        let control = snapshot.controls.get(task_id);
+        let epoch = control
+            .and_then(|control| control.active_run.as_ref())
+            .map(|run| run.epoch);
+        let step = epoch.and_then(|epoch| {
+            task.audit
+                .iter()
+                .rev()
+                .filter(|event| event.action() == "public-progress" && event.for_run(epoch))
+                .find_map(|event| event.note.as_deref().and_then(step_line))
+        });
+        let paused = control
+            .and_then(|control| control.confirmation.as_ref())
+            .filter(|held| held.is_waiting() && Some(held.run_epoch) == epoch)
+            .map(|held| PausedDraft {
+                room: room.to_owned(),
+                task_id: task_id.to_owned(),
+                run_epoch: held.run_epoch,
+                confirmation_id: held.id.clone(),
+                status: t("activity-confirm-waiting"),
+                risk: risk_label(held).0,
+                action: held.draft.action_label.clone(),
+                meta: t_args(
+                    "activity-confirm-meta",
+                    &[
+                        ("agent", self.agent_label(&held.agent_id).into()),
+                        ("resource", held.draft.resource_label.as_str().into()),
+                    ],
+                ),
+                fields: held
+                    .draft
+                    .fields
+                    .iter()
+                    .map(|field| (row_label(field), value_text(&field.value)))
+                    .collect(),
+            });
+        Some(RunGlance { step, paused })
+    }
+
+    /// Answer `draft` as the card does: confirm it as it stands, or decline
+    /// it. Returns the request's invocation, which
+    /// [`ActivityHost::poll_task_review`](crate::activity::ActivityHost::poll_task_review)
+    /// answers.
+    ///
+    /// # Errors
+    /// The room's review is unavailable or the host refused the request.
+    pub fn answer_paused_draft(
+        &mut self,
+        draft: &PausedDraft,
+        confirm: bool,
+    ) -> Result<uuid::Uuid, String> {
+        let Some(Ok(snapshot)) = self.host.task_review_snapshot(&draft.room) else {
+            return Err("the task's review is unavailable".into());
+        };
+        let invocation = uuid::Uuid::new_v4();
+        self.host
+            .submit_task_review(crate::activity::TaskReviewRequest {
+                room: draft.room.clone(),
+                observed_actor: snapshot.actor.clone(),
+                invocation,
+                command: TaskReviewCommand::AnswerConfirmation {
+                    task_id: draft.task_id.clone(),
+                    run_epoch: draft.run_epoch,
+                    confirmation_id: draft.confirmation_id.clone(),
+                    answer: if confirm {
+                        WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() }
+                    } else {
+                        WorkspaceTaskConfirmationAnswer::Decline { reason: None }
+                    },
+                },
+            })?;
+        Ok(invocation)
+    }
+
+    /// The outcome of an answer [`Self::answer_paused_draft`] sent: `None`
+    /// while it is on its way.
+    #[must_use]
+    pub fn paused_answer_outcome(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
+        self.host.poll_task_review(invocation)
+    }
+
+    /// Open task `task_id`'s paused action for editing, as the card's Edit
+    /// does, once Task Center shows that task.
+    pub fn edit_paused_draft(&mut self, task_id: &str) {
+        self.selected_task = Some(task_id.to_owned());
+        self.view = super::ActivityView::Tasks;
+        self.apply_confirmation_action(TaskAction::EditDraft);
+    }
+
     /// The confirmation the selected task's run waits on, from the owner's
     /// review: still waiting, or answered and on its way to the run.
     pub(super) fn reviewed_confirmation(
@@ -1115,4 +1274,88 @@ fn draw_body(paint: &mut PaintCtx<'_>, body: Rect, y: f64, text: &str) -> f64 {
         }
     }
     block.y1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_action_policy::ActionKind;
+    use tilo_actions::{ActionContract, RiskLevel};
+
+    fn paused(
+        label: &str,
+        kind: ActionKind,
+        risk: RiskLevel,
+        tags: &[&str],
+    ) -> WorkspaceTaskConfirmation {
+        let contract = ActionContract {
+            kind,
+            risk,
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            ..ActionContract::default()
+        };
+        let descriptor = tilo_actions::ActionDescriptor {
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new("folder", "do"),
+            resource_kind: "files.folder".into(),
+            resource_label: "Folder".into(),
+            action_label: label.into(),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract,
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        };
+        let arguments = serde_json::Map::new();
+        let digest = tilo_actions::draft::arguments_digest(&arguments);
+        WorkspaceTaskConfirmation {
+            id: WorkspaceTaskConfirmation::id_for("folder", "do", &digest),
+            asking: uuid::Uuid::from_u128(1),
+            run_epoch: 1,
+            agent_id: "scribe".into(),
+            app: "so.tilo.file-explorer".into(),
+            resource_kind: "files.folder".into(),
+            resource: "folder".into(),
+            action: "do".into(),
+            kind,
+            risk,
+            draft: tilo_actions::Draft::render(&descriptor, &arguments),
+            arguments_digest: digest,
+            requested_at: 1,
+            state: tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting,
+        }
+    }
+
+    fn chip(confirmation: &WorkspaceTaskConfirmation) -> String {
+        risk_label(confirmation).0
+    }
+
+    /// A rename or move in the workspace is queued for the device and
+    /// undone by queueing its revert: it changes the person's work, and
+    /// only an action that cannot be taken back is said to send outside.
+    #[test]
+    fn an_undoable_queued_change_is_not_said_to_send_outside() {
+        let rename = paused(
+            "Rename an entry here",
+            ActionKind::Outside,
+            RiskLevel::Low,
+            &[tilo_actions::COMPENSATED_UNDO_TAG],
+        );
+        assert_eq!(chip(&rename), t("activity-confirm-risk-changes"));
+        let send = paused("Send", ActionKind::Outside, RiskLevel::Low, &[]);
+        assert_eq!(chip(&send), t("activity-confirm-risk-sends"));
+        let edit = paused("Edit", ActionKind::Undoable, RiskLevel::Low, &[]);
+        assert_eq!(chip(&edit), t("activity-confirm-risk-changes"));
+        let read = paused("Read", ActionKind::Read, RiskLevel::None, &[]);
+        assert_eq!(chip(&read), t("activity-confirm-risk-reads"));
+        let delete = paused(
+            "Delete permanently",
+            ActionKind::Outside,
+            RiskLevel::Destructive,
+            &[],
+        );
+        assert_eq!(chip(&delete), t("activity-confirm-risk-deletes"));
+    }
 }
