@@ -271,30 +271,7 @@ if { [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --cached-target ]; }; } && [
     && grep -qw tilo.install /proc/cmdline \
     && timeout 5s systemd-detect-virt --vm --quiet \
     || die "backend code probe requires the opted-in development VM"
-  python3 - "$0" "${2:-}" <<'PY'
-import hashlib, importlib.util, json, os, sys, shutil
-from pathlib import Path
-context = Path('/proc/self/attr/current').read_text().strip().strip('\0')
-enforcing = Path('/sys/fs/selinux/enforce').read_bytes().strip() == b'1'
-assert enforcing and context.split(':')[2] in ('init_t', 'unconfined_service_t'), f'backend probe did not execute in enforcing system service: enforcing={enforcing} domain={context!r}'
-# The development target's profile resolver is compiled into tilo-installer-offline-target.
-resolver = hashlib.sha256(Path('/usr/libexec/tilo-installer-offline-target').read_bytes()).hexdigest()
-target = None
-if sys.argv[2] == '--cached-target':
-    path = Path('/etc/tilo/installer-code-bootstrap/tilo-installer-code-target-probe.py')
-    spec = importlib.util.spec_from_file_location('cached_target_probe', path)
-    probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
-    target = probe.probe()
-print(json.dumps({'schema':'tilo.installer-code-backend-probe.v1', 'transient':1,
-                  'domain':context, 'enforcing':enforcing, 'tag':'initial',
-                  'runtime_tools':{'ukify_path':shutil.which('ukify'),'objcopy_path':shutil.which('objcopy'),
-                      'ukify_candidates':{path:Path(path).is_file() for path in ('/usr/lib/systemd/ukify','/usr/bin/ukify')},
-                      'python_modules':{name:importlib.util.find_spec(name) is not None for name in ('pefile','cryptography')}},
-                  'profile_resolver_sha256':resolver,
-                  'cached_target':target,
-                  'helper_sha256':hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()}, sort_keys=True))
-PY
-  exit 0
+  exec /usr/libexec/tilo-vm-install-proof code-refresh-probe "$0" ${2:+"$2"}
 fi
 
 # Resolve one native-issued generation for every setup consumer in this run.

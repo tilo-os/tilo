@@ -383,6 +383,67 @@ fn a_system_prompt_with_no_window_to_sit_on_is_a_system_modal_overlay() {
     );
 }
 
+/// Beside a 2x laptop panel, a 1x monitor: a parentless system prompt
+/// opens centred on the display the person is working on, never on the
+/// seam between the two.
+#[test]
+fn a_system_modal_opens_on_the_focused_display() {
+    let outputs = shell::compositor::backend::headless::output_fixture("laptop-beside-1080p")
+        .expect("fixture");
+    let mut h = Harness::new();
+    h.state.set_output_layout(&outputs);
+    let (width, height) = shell::compositor::backend::logical_geometry(&outputs);
+    h.state.output_size = (
+        i32::try_from(width).expect("width"),
+        i32::try_from(height).expect("height"),
+    );
+    let displays: Vec<shell::shell::state::Display> = outputs
+        .iter()
+        .map(|o| {
+            let r = o.logical_rect();
+            shell::shell::state::Display {
+                id: o.id.0,
+                monitor: format!("output:{}", o.id.0),
+                x: r.x0,
+                y: r.y0,
+                width: r.width(),
+                height: r.height(),
+            }
+        })
+        .collect();
+    h.state.workspace_tree.write().reconcile_displays(&displays);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+    let id = h.state.top_system_modal().expect("the prompt");
+    store().publish_rgba(id, &opaque(300, 200), 300, 200);
+
+    for output in outputs.iter().rev() {
+        h.state
+            .workspace_tree
+            .write()
+            .desktop
+            .outputs
+            .set_focused(output.id.0);
+        let display = output.logical_rect();
+        let placed = h.state.system_modal_surfaces();
+        assert_eq!(placed.len(), 1);
+        let (_, rect) = placed[0];
+        assert_eq!(
+            rect.center(),
+            display.center(),
+            "the prompt {rect:?} is centred on the focused display {display:?}"
+        );
+    }
+}
+
 #[test]
 fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
     let mut h = Harness::new();

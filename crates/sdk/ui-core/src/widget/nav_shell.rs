@@ -2003,6 +2003,18 @@ impl NavShell {
         downcast(slot)
     }
 
+    /// The sidebar as the widget the app gave it, to read: the one waiting
+    /// to be shown, if a swap is pending.
+    pub fn sidebar_ref<T: Widget + 'static>(&self) -> Option<&T> {
+        let [sidebar, ..] = &self.pending.bodies;
+        let slot = match sidebar {
+            Some(Staged(pending)) => pending.as_deref(),
+            None => self.sidebar.as_deref(),
+        };
+        slot.and_then(|widget| widget.as_any())
+            .and_then(|any| any.downcast_ref::<T>())
+    }
+
     /// The overview as the widget the app gave it.
     pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
         let slot = match at_mut(&mut self.pending.bodies, Column::Overview) {

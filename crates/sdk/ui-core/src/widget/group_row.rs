@@ -2231,6 +2231,70 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
+    /// Make room on screen for `group_id`, a window that has just opened,
+    /// beside the window next to it: the one it opened to the right of, else
+    /// the one after it. When the two don't fit together they share the
+    /// display ([`tilo_desktop_model::width::share_beside`]); when no share
+    /// leaves both usable, nothing changes and the strip scrolls to the new
+    /// window instead. New widths are stamped as pending width changes, so
+    /// the host persists them the way it persists a resize. Returns whether
+    /// any width changed.
+    pub fn share_with_neighbour(&mut self, group_id: u64) -> bool {
+        let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
+            return false;
+        };
+        let lane = self.lane_of_group(group_id);
+        let usable_per_group = self.usable_per_group();
+        let usable = usable_per_group
+            .get(idx)
+            .copied()
+            .unwrap_or(DEFAULT_STRIP_USABLE_PX);
+        let beside = |i: usize| {
+            self.groups.get(i).is_some_and(|g| {
+                !g.is_closing() && !g.maximized && self.lane_of_group(g.id) == lane
+            })
+        };
+        let neighbour = match idx.checked_sub(1) {
+            Some(left) if beside(left) => left,
+            _ if beside(idx.saturating_add(1)) => idx.saturating_add(1),
+            _ => return false,
+        };
+        let (Some(opened), Some(next_to)) = (self.groups.get(idx), self.groups.get(neighbour))
+        else {
+            return false;
+        };
+        if opened.maximized || usable_per_group.get(neighbour) != Some(&usable) {
+            return false;
+        }
+        let gap = if self.external_navigation {
+            0.0
+        } else {
+            HANDLE_SLOT_PX
+        };
+        // The run pans past its leading gutter, so a pair can be seen whole
+        // across that too.
+        let screen = usable + self.pan_of_lane(lane.unwrap_or(0)).inset;
+        let Some((neighbour_width, opened_width)) = tilo_desktop_model::width::share_beside(
+            next_to.width(),
+            opened.width(),
+            usable,
+            screen,
+            gap,
+        ) else {
+            return false;
+        };
+        for (i, width) in [(neighbour, neighbour_width), (idx, opened_width)] {
+            if let Some(g) = self.groups.get_mut(i)
+                && g.width() != width
+            {
+                g.set_width(width);
+                g.stamp_pending_width_change();
+            }
+        }
+        self.structure_dirty = true;
+        true
+    }
+
     /// Move one existing group to its persisted strip position without
     /// publishing a user drag.  Shell reconciliation uses this after a
     /// remote/document revision changes the order: keeping the original
@@ -2698,6 +2762,54 @@ impl GroupRow {
     /// sees nothing change afterwards and never frames it again: the focused
     /// new window is left off screen.
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
+        let (lane, rect) = self.settled_rect_of(group_id)?;
+        self.pan_of_lane(lane).scroll_target_for(rect)
+    }
+
+    /// Pan so that `keep` and `also` are both wholly in view when they fit
+    /// on screen together, else just `keep`; glided like
+    /// [`Self::scroll_group_into_view_animated`]. For a window that opened
+    /// beside the one the person is in without taking their focus: both
+    /// are shown, and if they cannot be, the person keeps what they were
+    /// looking at. `false` when neither has been laid out in one lane or
+    /// nothing has to move.
+    pub fn scroll_groups_into_view_animated(
+        &mut self,
+        keep: u64,
+        also: u64,
+        now: Instant,
+        source: MotionSource,
+    ) -> bool {
+        let (Some((lane, kept)), Some((also_lane, added))) =
+            (self.settled_rect_of(keep), self.settled_rect_of(also))
+        else {
+            return self.scroll_group_into_view_animated(keep, now, source);
+        };
+        let pan = self.pan_of_lane(lane);
+        let both = kept.union(added);
+        let rect = if also_lane == lane && both.width() <= pan.viewport.width() {
+            both
+        } else {
+            kept
+        };
+        let Some(sx) = pan.scroll_target_for(rect) else {
+            return false;
+        };
+        self.pan_of_group_mut(keep).absolute = false;
+        if source.lands_at_once() {
+            let slide = self.motion.context(source, self.motion.durations.fast());
+            self.pan_of_group_mut(keep).slide_to(sx, now, slide);
+        } else {
+            let omega = self.move_omega;
+            self.pan_of_group_mut(keep).ease_to(sx, now, omega);
+        }
+        self.scroll_dirty = true;
+        true
+    }
+
+    /// Where `group_id` will be once the slot-width springs of it and the
+    /// groups before it have settled, and the lane it is in.
+    fn settled_rect_of(&self, group_id: u64) -> Option<(usize, Rect)> {
         let g = self.groups.iter().find(|g| g.id == group_id)?;
         // No layout pass has placed this group yet, so it has no position.
         if !self.laid_group_ids.contains(&group_id) {
@@ -2716,7 +2828,7 @@ impl GroupRow {
         }
         let own = g.dest_width_px() - g.layout_width_px();
         rect = Rect::new(rect.x0 + shift, rect.y0, rect.x1 + shift + own, rect.y1);
-        self.pan_of_lane(lane).scroll_target_for(rect)
+        Some((lane, rect))
     }
 
     /// Whether, in any run, one group is severed by the viewport's left
@@ -8740,6 +8852,86 @@ mod tests {
             .filter(|(id, x0, x1)| !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5)
             .map(|(id, _, _)| *id)
             .collect()
+    }
+
+    /// A 1280 px display with the wheel disc's gutter before the strip: the
+    /// window in use, then one that has just opened beside it.
+    fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
+        let mut row = strip_at(1, viewport_w, inset, crate::widget::WIDTH_NORMAL_PERMILLE);
+        let mut opened = make_group(200, &[2]);
+        opened.start_spawn_animation();
+        row.insert_group(opened, 1);
+        row
+    }
+
+    #[test]
+    fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
+        // Phase `two_windows_share_a_1280_display`.
+        {
+            let mut row = opened_beside(1280.0, 251.0);
+            assert!(
+                row.share_with_neighbour(200),
+                "two two-thirds windows overflow 1280 px"
+            );
+            relayout_strip(&mut row, 1280.0);
+            relayout_strip(&mut row, 1280.0);
+            let spans = row.group_canvas_spans();
+            let (first, last) = (spans[0], spans[1]);
+            assert!(
+                last.2 - first.1 <= 1280.0,
+                "both windows fit on the screen together: {spans:?}"
+            );
+            for (id, x0, x1) in &spans {
+                assert!(
+                    x1 - x0 >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
+                    "window {id} opens at a usable width: {spans:?}"
+                );
+            }
+            assert!(
+                row.groups[1].take_pending_width_change().is_some(),
+                "the new width is handed to the host to persist"
+            );
+
+            row.scroll_groups_into_view_animated(
+                100,
+                200,
+                crate::time::now(),
+                MotionSource::default(),
+            );
+            let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
+            assert!(
+                first.1 >= to - 0.5 && last.2 <= to + 1280.0 + 0.5,
+                "the pan shows both whole: spans {spans:?}, scroll {to}"
+            );
+        }
+        // Phase `a_display_too_narrow_to_share_leaves_widths_alone`.
+        {
+            let mut row = opened_beside(800.0, 0.0);
+            assert!(
+                !row.share_with_neighbour(200),
+                "two windows under the side-by-side minimum would both be unusable"
+            );
+            assert_eq!(
+                row.groups[0].width().permille(),
+                WindowWidth::Normal.permille()
+            );
+            assert_eq!(row.groups[1].width(), WindowWidth::Normal);
+        }
+        // Phase `windows_that_cannot_both_be_shown_keep_the_selected_one`.
+        {
+            let mut row = strip_at(2, 800.0, 0.0, 1000);
+            row.scroll_groups_into_view_animated(
+                100,
+                200,
+                crate::time::now(),
+                MotionSource::default(),
+            );
+            let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
+            assert!(
+                to.abs() < 0.5,
+                "the window the person is in stays framed, not the new one: {to}"
+            );
+        }
     }
 
     #[test]

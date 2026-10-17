@@ -94,9 +94,8 @@ pub enum FileCommand {
     RenameCancel,
     /// Move the selection to the trash.
     Delete,
-    /// Restore the most recent, locally verified move-to-Trash. This is an
-    /// ephemeral filesystem affordance, never a replayable collaborative undo.
-    UndoLastTrash,
+    /// Take back the last change: the window's Undo, as Ctrl+Z.
+    Undo,
     /// Copy / cut the selection into the clipboard.
     Copy,
     /// Provider browse and transfer controls share the semantic effect handler.

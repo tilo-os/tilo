@@ -196,17 +196,23 @@ impl ShellOverlayHost {
     }
 
     /// Where a desktop-wide overlay opens — palette, toasts, prompts,
-    /// help: the focused display, or the whole desktop when there is one.
+    /// help, readouts: the focused display, or the whole desktop when there
+    /// is one. [`Self::surface_area`] without an anchor.
     pub fn overlay_area(&self) -> Rect {
-        self.focused_output().map_or(self.rect, |o| o.rect())
+        self.surface_area(None)
     }
 
-    /// The display holding the full top bar, which the tray's popovers
-    /// hang from.
-    pub fn tray_area(&self) -> Rect {
-        self.primary_output()
-            .filter(|_| self.is_partitioned())
-            .map_or(self.rect, |p| p.rect())
+    /// The display a shell surface opened from `anchor` (the control,
+    /// caret or pointer it came from) sits on: the one holding the anchor,
+    /// else the focused display. The one placement rule for every shell
+    /// surface, shared with the overlay stack's layers
+    /// ([`super::layers::LayerGeometry::display_for`]): across a 2x laptop
+    /// panel and a 1x monitor beside it the host's own rect is both
+    /// displays, centred on the seam and taller than the panel.
+    pub fn surface_area(&self, anchor: Option<Point>) -> Rect {
+        let outputs = self.layer_outputs();
+        self.layer_geometry(&outputs)
+            .display_for(anchor.map(|p| Rect::from_points(p, p)))
     }
 
     /// Wheel-disc slot plus its gap, sized for the display it sits on.

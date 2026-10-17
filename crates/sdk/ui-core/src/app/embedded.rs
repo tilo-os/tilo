@@ -45,6 +45,8 @@ const SETTLE_FRAMES: usize = 3;
 /// An app a host shows in a region of its own scene.
 pub struct EmbeddedApp {
     app: App,
+    /// Its actions are offered to this device's automation only.
+    device_local: bool,
     rect: KurboRect,
     region: Region,
     focused: bool,
@@ -148,7 +150,17 @@ impl EmbeddedApp {
             damage: super::SurfaceDamage::default(),
             painted_damage: PaintedDamage::default(),
             accepts_copies: false,
+            device_local: false,
         })
+    }
+
+    /// Offer the app's actions to its own device's automation
+    /// ([`AppWidget::device_local_resources`]): for a private window, which
+    /// has no collaboration route that would publish them.
+    #[must_use]
+    pub fn with_device_local_actions(mut self) -> Self {
+        self.device_local = true;
+        self
     }
 
     /// Whether the host keeps the pixels it presented and can move them
@@ -807,6 +819,23 @@ impl AppWidget for EmbeddedApp {
     /// The app keeps its own record; the host binds none for it.
     fn uses_host_record(&self) -> bool {
         false
+    }
+    fn device_local_resources(&self) -> Option<Vec<tilo_actions::Resource>> {
+        self.device_local.then(|| {
+            crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
+        })
+    }
+    fn invoke_device_local_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        if !self.device_local {
+            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+        }
+        let started = self.app.invoke_local_resource_action(address, arguments);
+        self.wants_frame.set(true);
+        started
     }
     fn app_kind(&self) -> AppKind {
         self.app_widget()

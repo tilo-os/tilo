@@ -133,13 +133,9 @@ class Transport(unittest.TestCase):
         protocol.send(output, self.raw)
         self.assertEqual(output.getvalue(), struct.pack('!I', len(self.raw)) + self.raw)
 
-    def test_canonical_profile_source_maps_only_to_existing_runtime_module(self):
-        module = self.source/'os/dev/hardware_profile.py'
-        module.parent.mkdir(parents=True)
-        module.write_bytes(b'canonical profile implementation\n')
-        files, _ = protocol.validate(protocol.bundle(self.source, 'a'*40, True))
-        self.assertEqual(files['usr/lib/tilo/hardware_profile.py'], module.read_bytes())
-        self.assertNotIn('usr/lib/tilo/uki_hardware_profile.py', protocol.ALLOWLIST)
+    def test_no_profile_module_is_refreshable(self):
+        # The image's hardware-profile reader is compiled; no Python module ships.
+        self.assertFalse(any(path.endswith('.py') for path in protocol.ALLOWLIST))
 
     def test_bad_hash_path_duplicates_and_packet_size_refused(self):
         packet = json.loads(self.raw)
@@ -211,7 +207,7 @@ class Transport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'LF line endings'):
             protocol.bundle(self.source, 'a' * 40, False)
         for name in ('tilo-vm-install-proof.py', 'tilo-installer-code-refresh.py',
-                     'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py',
+                     'tilo-installer-code-protocol.py',
                      'tilo-verified-boot-install-preflight'):
             self.assertNotIn('usr/libexec/' + name, protocol.ALLOWLIST)
 
@@ -261,71 +257,13 @@ class SeedDaemon(unittest.TestCase):
 
 
 class Bootstrap(unittest.TestCase):
-    def test_promotion_receipt_masks_only_cmdline_payload_and_virtual_size(self):
-        probe=load('promotion_pe_identity',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
-        raw=bytearray(512); raw[:2]=b'MZ'; struct.pack_into('<I',raw,60,64); raw[64:68]=b'PE\0\0'
-        struct.pack_into('<H',raw,70,1); raw[88:96]=b'.cmdline'; struct.pack_into('<I',raw,96,4)
-        struct.pack_into('<II',raw,104,64,256); raw[256:260]=b'old\0'
-        changed=bytearray(raw); changed[256:260]=b'new\0'; struct.pack_into('<I',changed,96,3)
-        self.assertEqual(probe.non_cmdline_bytes(raw),probe.non_cmdline_bytes(changed))
-        changed[200]=1
-        self.assertNotEqual(probe.non_cmdline_bytes(raw),probe.non_cmdline_bytes(changed))
-        struct.pack_into('<I',changed,108,500)
-        with self.assertRaisesRegex(ValueError,'bounds'): probe.non_cmdline_bytes(changed)
-
-    def test_promotion_metadata_is_bounded_before_archive_or_scratch_writes(self):
-        builder=load('bounded_promotion_builder',ROOT/'dev/make-installer-probe-fixture.py')
-        probe=load('bounded_promotion_probe',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
-        with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); (root/'input').write_bytes(b'kernel')
-            for metadata in ([], {'composefs_digest':'a'*128,'origin':'x'*16385,
-                                  'loader':'entry','update_origin':'registry/test'}):
-                with self.assertRaisesRegex(ValueError,'invalid promotion fixture'):
-                    builder.create(root,root/'invalid.tar','sha256:'+'a'*64,metadata)
-                self.assertFalse((root/'invalid.tar').exists())
-            with self.assertRaisesRegex(ValueError,'invalid scratch promotion fixture'):
-                probe.promotion_probe(None,root,{'promotion':[]},'7')
-            self.assertFalse((root/'promotion-target').exists())
-
-    def test_original_ci_boot_fixture_validates_real_archive_and_refuses_tampering(self):
-        from types import SimpleNamespace
-        probe=load('original_boot_fixture',ROOT/'dev/installer-code-bootstrap/tilo-installer-code-target-probe.py')
-        builder=load('boot_fixture_builder',ROOT/'dev/make-installer-probe-fixture.py')
-        with tempfile.TemporaryDirectory() as temporary:
-            base=Path(temporary); root=base/'inputs'; root.mkdir()
-            for name,data in {'kernel/7/vmlinuz':b'kernel','kernel/7/initramfs.img':b'initrd',
-                              'usr/lib/tilo/hardware-profile.json':b'{"id":"lenovo-83ed"}',
-                              'padding':b'x'*(1024*1024)}.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(data)
-            archive=base/'inputs.tar'; builder.create(root,archive,'sha256:'+'a'*64)
-            sysblock=base/'sys'; (sysblock/archive.name).mkdir(parents=True)
-            ro=sysblock/archive.name/'ro'; ro.write_text('1')
-            def validate(projected):
-                self.assertEqual((projected/'kernel/7/vmlinuz').read_bytes(),b'kernel')
-                return '7',projected/'kernel/7/vmlinuz',projected/'kernel/7/initramfs.img',None
-            helper=SimpleNamespace(image_inputs=validate)
-            with patch.object(probe,'FIXTURE_DEVICE',archive), patch.object(probe,'SYS_BLOCK',sysblock), patch.object(probe,'SCRATCH_ROOT',base), \
-                    patch.object(Path,'is_block_device',return_value=True), \
-                    patch.object(probe,'run',return_value=str(archive.stat().st_size)), \
-                    patch.object(probe,'HELPER',root/'kernel/7/vmlinuz'):
-                result=probe.fixture_probe(helper)
-                self.assertEqual(result['profile'],'lenovo-83ed')
-                self.assertEqual(result['mount']['uki_fixture']['sha256'],hashlib.sha256(archive.read_bytes()).hexdigest())
-                ro.write_text('0')
-                with self.assertRaisesRegex(ValueError,'writable'): probe.fixture_probe(helper)
-                ro.write_text('1')
-                data=archive.read_bytes(); archive.write_bytes(data.replace(b'kernel',b'BROKEN',1))
-                with self.assertRaisesRegex(ValueError,'differ'): probe.fixture_probe(helper)
-            (root/'symlink').symlink_to(root/'kernel/7/vmlinuz')
-            with self.assertRaisesRegex(ValueError,'symlinks'): builder.create(root,base/'bad.tar','sha256:'+'a'*64)
-
     def test_seed_validation_precedes_any_bind_and_exec_uses_frozen_daemon(self):
         from types import SimpleNamespace
         bootstrap = load('refresh_bootstrap_test', ROOT / 'dev/installer-code-bootstrap/tilo-installer-code-bootstrap.py')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             files = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
-                     'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py')
+                     'tilo-installer-code-protocol.py', 'tilo-vm-install-proof.py')
             for name in files: (root / name).write_bytes(name.encode())
             receipt = {'schema':'tilo.installer-code-bootstrap.v1',
                        'files':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}}

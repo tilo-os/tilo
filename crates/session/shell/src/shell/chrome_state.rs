@@ -892,6 +892,14 @@ pub struct ChromeState {
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
     shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    /// What private windows offer this device's automation, as the overlay
+    /// host last read it ([`crate::shell::device_local_actions`]).
+    pub(crate) device_local_windows: Vec<crate::shell::device_local_actions::DeviceLocalWindow>,
+    /// Changes whenever `device_local_windows` does.
+    pub(crate) device_local_revision: u64,
+    /// Invocations of those actions waiting for the overlay host.
+    pub(crate) device_local_invocations:
+        Vec<crate::shell::device_local_actions::DeviceLocalInvocation>,
     cancel_tab_drag_requested: bool,
     axis_navigation_enabled: bool,
     axis_gather_requested: bool,
@@ -1069,6 +1077,9 @@ impl ChromeState {
             topbar_editor_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
+            device_local_windows: Vec::new(),
+            device_local_revision: 0,
+            device_local_invocations: Vec::new(),
             cancel_tab_drag_requested: false,
             axis_navigation_enabled: false,
             axis_gather_requested: false,

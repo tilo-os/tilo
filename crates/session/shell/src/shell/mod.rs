@@ -50,6 +50,7 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod device_local_actions;
 pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;

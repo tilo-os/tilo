@@ -252,6 +252,9 @@ def row(run: dict[str, Any]) -> dict[str, Any]:
         # Guests that opened the chat's first part, which a join does not
         # replay once later parts exist.
         "scrollback": report.get("scrollback") or {},
+        # The admission part of each join (`/join` and redeeming the
+        # invitations), apart from waiting for the rooms to replay.
+        "admit_ms": report.get("admit_ms") or {},
         # Where the host's time went (tilo_relay::timing), per phase.
         "timings": report.get("timings") or {},
     }
@@ -365,6 +368,10 @@ def markdown(summary: dict[str, Any]) -> str:
             f"| {r['rss_mib_peak']} "
             f"| {r['egress_mbit_s']:.1f} | {r['driver_cores']:.1f} |")
     for r in summary["rows"]:
+        admit = r.get("admit_ms") or {}
+        if r.get("kind") == "history" and admit:
+            lines.append(f"- {r['name']}: admission {admit.get('p50', 0):.0f} / {admit.get('p95', 0):.0f} ms "
+                         "(p50 / p95) of each join")
         back = r.get("scrollback") or {}
         if back.get("count"):
             lines.append(f"- {r['name']}: {back['count']} guests scrolled back to the chat's first part, "
