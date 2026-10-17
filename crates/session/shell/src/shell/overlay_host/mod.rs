@@ -14552,6 +14552,9 @@ impl ShellOverlayHost {
         }
         use settings_store::hardware::ShortcutAction;
         if shortcut_pressed(ShortcutAction::Search) {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::Search),
+            );
             if !repeat {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
                 self.refresh_search_results(state, path);
@@ -14560,6 +14563,11 @@ impl ShellOverlayHost {
             return true;
         }
         if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(
+                    ShortcutAction::WorkspaceOverview,
+                ),
+            );
             if !repeat && let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
                 st.overlays.overview = !st.overlays.overview;
@@ -14571,11 +14579,19 @@ impl ShellOverlayHost {
             return true;
         }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::QuickSettings),
+            );
             if !repeat && let Some(chrome) = self.chrome.clone() {
                 chrome.borrow_mut().toggle_quick_settings();
             }
             *handled = true;
             return true;
+        }
+        if let Some(action) = configured_action {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(action),
+            );
         }
         if let Some(action) = configured_action
             && self.handle_desktop_chord(action, repeat, ui::tokens::MotionSource::Keyboard)
@@ -14749,6 +14765,9 @@ impl ShellOverlayHost {
             .into_iter()
             .find(|action| shortcut_pressed(*action))
         {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(action),
+            );
             self.run_navigation_shortcut(action, repeat, ui::tokens::MotionSource::Keyboard);
             *handled = true;
             return true;
@@ -18711,6 +18730,11 @@ impl ShellOverlayHost {
     ) -> bool {
         if !self.palette_visible {
             return false;
+        }
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Surface("palette"),
+            );
         }
         // Before the row hit-test below so a chip click doesn't fall
         // through to the top result.

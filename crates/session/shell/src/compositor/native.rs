@@ -798,6 +798,8 @@ const SLOW_KEY: Duration = Duration::from_millis(8);
 
 impl KeySteps {
     fn start() -> Self {
+        // A handler noted for an earlier key is not this key's.
+        let _ = crate::compositor::key_latency::take_key_handler();
         Self {
             started: Instant::now(),
             steps: ClientSteps::start(),
@@ -808,9 +810,18 @@ impl KeySteps {
 impl Drop for KeySteps {
     fn drop(&mut self) {
         let total = self.started.elapsed();
+        let handler = crate::compositor::key_latency::take_key_handler();
         if total >= SLOW_KEY {
             self.steps.mark("rest");
-            eprintln!("SLOW-KEY total={total:?} ({})", self.steps);
+            match handler {
+                Some(handler) => {
+                    eprintln!(
+                        "SLOW-KEY total={total:?} handler={handler:?} ({})",
+                        self.steps
+                    );
+                }
+                None => eprintln!("SLOW-KEY total={total:?} ({})", self.steps),
+            }
         }
     }
 }
