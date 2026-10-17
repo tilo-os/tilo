@@ -138,6 +138,9 @@ pub struct NavRowFace<'a> {
     /// The people on this row's place, by identity, each a mark in their
     /// presence colour.
     pub presence: &'a [String],
+    /// Something new waits behind the row (an unread conversation): its
+    /// label stands out at rest, in primary ink and the strong weight.
+    pub unread: bool,
 }
 
 impl<'a> NavRowFace<'a> {
@@ -167,6 +170,7 @@ impl<'a> NavRowFace<'a> {
             checked: None,
             level: None,
             presence: &[],
+            unread: false,
         }
     }
 
@@ -308,6 +312,13 @@ impl<'a> NavRowFace<'a> {
     #[must_use]
     pub fn level(mut self, fraction: f32) -> Self {
         self.level = Some(fraction.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Mark the row as holding something unread.
+    #[must_use]
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread = unread;
         self
     }
 
@@ -559,7 +570,11 @@ pub fn label_style(theme: &Theme, face: &NavRowFace<'_>) -> TextStyle {
         NavRowStyle::Rail => TextRole::Caption,
     };
     let style = theme.text(role);
-    if face.lifted() { style.strong() } else { style }
+    if face.lifted() || face.unread {
+        style.strong()
+    } else {
+        style
+    }
 }
 
 /// The heavier of a row's two weights: elision is measured with it, so a
@@ -863,7 +878,7 @@ pub fn paint_nav_row(
     }
     // Primary ink once the row is chosen or under the pointer; secondary at
     // rest, so the selected row reads by ink as well as by its lift.
-    let ink = if face.lifted() || face.state.hover {
+    let ink = if face.lifted() || face.state.hover || face.unread {
         colors.text_primary
     } else {
         colors.text_dim

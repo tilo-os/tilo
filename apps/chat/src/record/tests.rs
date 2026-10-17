@@ -467,6 +467,7 @@ fn channels_and_categories_are_made_moved_and_deleted() {
             name: name.into(),
             category: Some(id(&projects)),
             kind: None,
+            topic: None,
         }))
         .unwrap();
     }
@@ -476,6 +477,7 @@ fn channels_and_categories_are_made_moved_and_deleted() {
             name: "x".into(),
             category: None,
             kind: None,
+            topic: None,
         }))
         .is_err()
     );
@@ -544,6 +546,7 @@ fn a_channel_category_must_belong_to_its_workspace() {
             name: "project".into(),
             category: Some(category),
             kind: None,
+            topic: None,
         })
     };
     let before = ada.state().unwrap();

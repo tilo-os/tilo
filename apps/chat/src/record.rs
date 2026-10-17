@@ -1014,6 +1014,7 @@ impl Chat {
         #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
             ChannelKind,
         >,
+        #[param("What the channel is about")] topic: Option<String>,
     ) -> Result<(), Refusal> {
         if !self.workspaces.contains(workspace) {
             return Err(Refusal::new("there is no such workspace"));
@@ -1039,6 +1040,9 @@ impl Chat {
                 workspace: workspace.clone(),
                 category,
                 name: name.to_owned(),
+                topic: topic
+                    .map(|topic| topic.trim().to_owned())
+                    .unwrap_or_default(),
                 kind,
                 ..Channel::default()
             },

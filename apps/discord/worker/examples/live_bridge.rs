@@ -632,6 +632,7 @@ async fn live(token: String, guild_id: String) -> usize {
             name: "made-in-tilo".into(),
             category: None,
             kind: None,
+            topic: None,
         }),
     )
     .await;

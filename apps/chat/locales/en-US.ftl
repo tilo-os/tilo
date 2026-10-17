@@ -127,7 +127,6 @@ chat-context-sharing = Sharing live Chat context
 chat-context-following = Following live Chat context · Stop following in workspace controls
 chat-context-stop = Stop sharing
 chat-header-call-open = Open call
-chat-header-voice-call = Voice call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
@@ -295,3 +294,27 @@ chat-person-status = Set their status to { $new ->
     [offline] offline
    *[other] { $new }
 }
+
+## Making and changing channels
+chat-sheet-new-channel = Create channel
+chat-sheet-new-category = Create category
+chat-sheet-edit-channel = Edit channel
+chat-sheet-create-channel = Create channel
+chat-sheet-create-category = Create category
+chat-sheet-save = Save
+chat-sheet-cancel = Cancel
+chat-sheet-kind = Channel type
+chat-sheet-text = Text
+chat-sheet-text-about = Messages, pictures, files and threads
+chat-sheet-voice = Voice
+chat-sheet-voice-about = Talk, share your screen and see each other
+chat-sheet-channel-name = Name
+chat-sheet-category-name = Category name
+chat-sheet-text-placeholder = new-channel
+chat-sheet-voice-placeholder = Lounge
+chat-sheet-category-placeholder = Projects
+chat-sheet-category = Category
+chat-sheet-no-category = None
+chat-sheet-topic = Topic
+chat-sheet-topic-placeholder = What this channel is for (optional)
+chat-mention-alert = { $name } mentioned you in #{ $channel }

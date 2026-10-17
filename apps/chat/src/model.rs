@@ -160,6 +160,9 @@ pub struct Channel {
     /// filled in `crate::app::ChatApp::reload` from the read watermark; the
     /// active channel is always shown as 0.
     pub unread: u32,
+    /// Unread messages that mention the local peer, derived like
+    /// [`Self::unread`].
+    pub mentions: u32,
     /// Archived channels are hidden from the sidebar to cut clutter but stay in
     /// the document (and reachable via the Ctrl+K command palette to unarchive).
     /// Convergent state — a plain scalar flag toggled by an action.
