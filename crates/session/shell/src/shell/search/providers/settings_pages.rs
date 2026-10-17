@@ -278,6 +278,22 @@ impl SearchProvider for SettingsPagesProvider {
         page_icon(slug)
     }
 
+    /// A setting the system settings offer in place (its value on the row,
+    /// changed without opening Settings) is one row for people, that one;
+    /// its "open the page at it" row stays for agents and the page itself
+    /// still lists it.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        _needle: &str,
+        _chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        result
+            .id
+            .strip_prefix("setting:")
+            .is_some_and(super::system_settings::offers_in_place)
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         self.with_built(&ctx, |built| {
             crate::shell::search::usage::order_ties_after(self.ranked(built, ctx.needle.trim()))

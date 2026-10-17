@@ -1178,6 +1178,9 @@ search-kind-videos = Videos
 search-kind-playlists = Playlists
 search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
+search-kind-answers = Answers
+search-kind-people = People
+search-group-recent = Recent
 
 # Search scopes
 search-scope-this-app = This app
@@ -1209,15 +1212,21 @@ permission-request-confirm = Confirm this permission decision
 search-provider-shortcuts = Shortcuts
 search-provider-tray = Tray
 search-provider-files = Files
+search-provider-quick-answers = Quick answers
+search-provider-people = People
+search-answer-sum = { $expression } =
+search-answer-copied = Copied
+search-answer-open-address = Open { $address }
+search-answer-web = Search the web for “{ $query }”
+search-answer-no-browser = No app on this desktop opens web addresses.
+search-answer-bad-address = That address can’t be opened.
+search-people-invited = Invited
+search-action-emoji-picker = Choose an emoji
+search-action-emoji-picker-subtitle = Insert it where you’re typing
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
 
 # Search result badges
-search-badge-media = Media
-search-badge-session = Session
-search-badge-quick-action = Quick action
-search-badge-shortcut = Shortcut
-search-badge-tray = Tray
 
 # Search: media transport for a running player
 search-media-pause = Pause { $player }
@@ -1234,9 +1243,11 @@ search-record-in-another-workspace = In another workspace
 
 # Search: files
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
+search-files-folder-failed = Files couldn’t open this folder.
+search-files-home = Home
+search-files-location = { $folder } · { $age }
 
 # Search: host apps
-search-host-app-subtitle = { $source } · unconfined host app · { $id }
 
 # Search: app action jobs and resources
 search-app-job = Action job { $id }
@@ -1285,7 +1296,7 @@ search-action-feedback-open-subtitle = Report a problem or an idea about the win
 feedback-action-unavailable = Feedback is not available on this desktop
 search-action-topbar-editor = Edit top bar
 search-action-topbar-editor-subtitle = Reorder, add or remove top-bar widgets
-search-action-overview-toggle = Toggle workspace overview
+search-action-overview-toggle = Show workspace overview
 search-action-overview-toggle-subtitle = Show all workspaces in the wheel view
 search-action-settings-open = Open workspace settings
 search-action-settings-open-subtitle = Identity, people, privacy, apps and files for this workspace
@@ -1324,7 +1335,7 @@ search-action-display-change-keep-subtitle = Confirm the display layout that was
 search-action-display-change-revert = Revert display settings
 search-action-display-change-revert-subtitle = Restore the display layout from before the last change
 search-action-display-outputs-inspect = Inspect displays
-search-action-display-outputs-inspect-subtitle = Attached displays with their scale, position, mode and primary, the current layout and any change waiting to be kept
+search-action-display-outputs-inspect-subtitle = Scale, position and mode of each display
 search-action-bluetooth-pairing-decline = Decline Bluetooth pairing
 search-action-bluetooth-pairing-decline-subtitle = Refuse the pairing request on screen, or stop the pairing whose code it shows
 search-action-capture-open = Screenshot or float part of the screen
@@ -1401,16 +1412,16 @@ search-action-tab-move-to-group-previous = Move this tab into the group on the l
 search-action-tab-move-to-group-previous-subtitle = Move the focused tab into the neighbouring window group on the left
 search-action-tab-move-to-group-next = Move this tab into the group on the right
 search-action-tab-move-to-group-next-subtitle = Move the focused tab into the neighbouring window group on the right
-search-action-notifications-dnd-toggle = Toggle Do Not Disturb
-search-action-notifications-dnd-toggle-subtitle = Silence notification banners; held notifications go to history
-search-action-appearance-theme-dark = Set dark theme
-search-action-appearance-theme-dark-subtitle = Use the dark appearance for chrome and apps
-search-action-appearance-theme-light = Set light theme
-search-action-appearance-theme-light-subtitle = Use the light appearance for chrome and apps
-search-action-appearance-high-contrast = Set high contrast
-search-action-appearance-high-contrast-subtitle = Increase contrast in the current appearance
-search-action-appearance-language = Set language
-search-action-appearance-language-subtitle = Change the desktop language in settings
+search-action-notifications-dnd-toggle = Do Not Disturb
+search-action-notifications-dnd-toggle-subtitle = Hold notification banners until you’re back
+search-action-appearance-theme-dark = Dark theme
+search-action-appearance-theme-dark-subtitle = Dark chrome and apps
+search-action-appearance-theme-light = Light theme
+search-action-appearance-theme-light-subtitle = Light chrome and apps
+search-action-appearance-high-contrast = High contrast
+search-action-appearance-high-contrast-subtitle = More contrast in the current theme
+search-action-appearance-language = Change language
+search-action-appearance-language-subtitle = The desktop’s language, in Settings
 search-action-identity-connect = Add an existing identity
 search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
 search-action-identity-select = Use identity in this workspace
@@ -1467,14 +1478,14 @@ search-action-agent-remove = Remove an agent
 search-action-agent-remove-subtitle = Take an agent out of this workspace and revoke everything it could do here, at once
 search-action-record-bring = Add an item to this workspace
 search-action-record-bring-subtitle = Make it available here without moving the original
-search-action-quick-settings-brightness-set = Set display brightness
-search-action-quick-settings-brightness-set-subtitle = Set a monitor's brightness percentage: the panel backlight or an external monitor over DDC/CI
-search-action-quick-settings-volume-set = Set output volume
-search-action-quick-settings-volume-set-subtitle = Set this device's default audio output percentage
+search-action-quick-settings-brightness-set = Brightness
+search-action-quick-settings-brightness-set-subtitle = Set how bright a screen is
+search-action-quick-settings-volume-set = Volume
+search-action-quick-settings-volume-set-subtitle = Set the sound output level
 search-action-quick-settings-wifi-set-enabled = Set Wi-Fi enabled state
 search-action-quick-settings-wifi-set-enabled-subtitle = Enable or disable this device's Wi-Fi radio
-search-action-quick-settings-power-profile-set = Set power profile
-search-action-quick-settings-power-profile-set-subtitle = Choose saver, balanced, or performance for this device
+search-action-quick-settings-power-profile-set = Power mode
+search-action-quick-settings-power-profile-set-subtitle = Saver, balanced or performance
 search-action-quick-settings-vpn-set-enabled = Set VPN enabled state
 search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one named VPN connection on this device
 search-action-quick-settings-bluetooth-set-enabled = Set Bluetooth enabled state
@@ -1526,12 +1537,11 @@ search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
 # Search: applications
-search-apps-detail-grouped = { $group } · { $detail }
-search-apps-open = Open { $app }
 search-apps-shortcut-subtitle = Shortcut
 search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
 search-apps-verification-pending = Registry verification pending
 search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-store-subtitle-bare = App Store · { $trust }
 search-apps-view-in-store = View { $app } in App Store
 search-apps-store-failed = Couldn't open App Store for { $app }
 
@@ -2502,8 +2512,8 @@ session-diagnostics-profile-already-recording = A profile is already recording t
 session-diagnostics-profile-not-created = The profile could not be created: { $error }
 
 device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
-search-action-activity-acknowledge = Acknowledge viewed activity
-search-action-activity-acknowledge-subtitle = Keep unseen changes and waiting tasks pending
+search-action-activity-acknowledge = Mark activity as seen
+search-action-activity-acknowledge-subtitle = What you’ve looked at stops counting as new
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
 search-action-activity-tasks = Review workspace goals and agent work
 search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
@@ -2540,7 +2550,6 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
 search-provider-system-settings = System settings
-search-badge-settings = Settings
 setting-never = Never
 setting-minutes = { $minutes ->
         [one] 1 minute
@@ -2554,9 +2563,6 @@ setting-mode-automatic = Automatic
 setting-mode-unset = Follows the theme
 setting-get = { $name }: { $value }
 setting-get-detail = Read the current value and the values that are allowed
-setting-current = Currently { $value }
-setting-set = Change { $name }
-setting-toggle = Toggle { $name }
 setting-power-lock-after = Lock screen after
 setting-power-lock-after-words = lock screen automatically sperren sperrzeit
 setting-power-blank-after = Turn screen off after
@@ -2613,7 +2619,6 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
-search-host-app-open = Open { $app }
 
 # Installed prepared setup and original-file migration.
 onboarding-prepared-title = Welcome home
@@ -2792,15 +2797,12 @@ agent-quick-stop-refused = Couldn't stop it. Try again.
 ## the lists of every language whatever language the desktop speaks.
 search-kind-settings-pages = Settings
 search-settings-page-subtitle = Personal Settings
-search-toggle-wifi-on = Wi-Fi: turn on
-search-toggle-wifi-off = Wi-Fi: turn off
-search-toggle-wifi-subtitle = Switch the Wi-Fi radio of this device
-search-toggle-bluetooth-on = Bluetooth: turn on
-search-toggle-bluetooth-off = Bluetooth: turn off
-search-toggle-bluetooth-subtitle = Switch the Bluetooth radio of this device
-search-toggle-airplane-mode-on = Airplane mode: turn on
-search-toggle-airplane-mode-off = Airplane mode: turn off
-search-toggle-airplane-mode-subtitle = Switch off every wireless radio of this device
+search-toggle-wifi = Wi-Fi
+search-toggle-wifi-subtitle = Turn Wi-Fi on or off
+search-toggle-bluetooth = Bluetooth
+search-toggle-bluetooth-subtitle = Turn Bluetooth on or off
+search-toggle-airplane-mode = Airplane mode
+search-toggle-airplane-mode-subtitle = Turn every wireless radio off
 search-badge-state-current = Current
 search-provider-settings-pages = Settings pages
 search-kw-dictation-toggle = dictate, dictation, speech to text, voice typing, voice input, microphone
@@ -2889,6 +2891,7 @@ search-kw-quick-settings-wifi-toggle = wifi, wi-fi, wlan, wireless, internet, ne
 search-kw-quick-settings-bluetooth-toggle = bluetooth, headphones, pair, wireless
 search-kw-quick-settings-airplane-mode-toggle = airplane mode, flight mode, aeroplane, radios off, offline
 search-kw-session-lock = lock screen, lock, lock computer, secure, screensaver, away
+search-kw-emoji-picker = emoji, emojis, smiley, emoticon, :
 search-kw-session-switch-user = switch user, switch account, change user, other user, fast user switching
 search-kw-session-suspend = sleep, suspend, standby, hibernate, nap
 search-kw-session-restart = restart, reboot, reset computer, power cycle

@@ -54,6 +54,12 @@ pub fn focused_group(st: &ChromeState) -> Option<GroupId> {
         .or_else(|| strip.window_groups.first().map(|g| g.id))
 }
 
+/// Where something chosen from search opens: as a tab in the group whose
+/// "+" opened the palette, otherwise where search puts a new window.
+pub(crate) fn search_placement(st: &ChromeState) -> Placement {
+    crate::shell::placement::placement_for_target(&st.tree(), st.strip_viewport(), st.open_target)
+}
+
 /// Resolve a [`Destination`] into the placement the splice will use.
 fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
     match dest {

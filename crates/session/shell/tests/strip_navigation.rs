@@ -476,7 +476,13 @@ fn ctrl_super_shift_arrows_carry_the_focused_group_between_strips() {
 
     h.key(Key::Named(NamedKey::ArrowUp), carry);
     let (strips, active, focused) = layout(&h);
-    assert_eq!(strips[0], (upper, vec![groups[1], groups[0], groups[2], groups[3], groups[4]]));
+    assert_eq!(
+        strips[0],
+        (
+            upper,
+            vec![groups[1], groups[0], groups[2], groups[3], groups[4]]
+        )
+    );
     assert_eq!(strips[1], (lower, vec![resident]));
     assert_eq!((active, focused), (upper, Some(groups[0])));
 }
@@ -543,14 +549,20 @@ fn super_up_maximizes_and_super_down_restores_on_any_strip() {
         assert!(!maximized(&mut h, strip));
 
         h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
-        assert!(!maximized(&mut h, strip), "Super+Down on a normal window does nothing");
+        assert!(
+            !maximized(&mut h, strip),
+            "Super+Down on a normal window does nothing"
+        );
         assert_eq!(plane(&h).1, strip, "Super+Down never changes strip");
 
         h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
         assert!(maximized(&mut h, strip), "Super+Up maximizes");
         assert_eq!(plane(&h).1, strip, "Super+Up never changes strip");
         h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
-        assert!(maximized(&mut h, strip), "a second Super+Up keeps it maximized");
+        assert!(
+            maximized(&mut h, strip),
+            "a second Super+Up keeps it maximized"
+        );
 
         h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
         assert!(!maximized(&mut h, strip), "Super+Down restores");
@@ -627,7 +639,12 @@ fn window_actions_run_the_operations_their_chords_run() {
     assert_eq!(plane(&h).1, lower, "strip.focus-nth is Super+2");
     for index in [0, 10] {
         assert!(
-            invoke(&h, "strip.focus-nth", &serde_json::json!({ "index": index })).is_err(),
+            invoke(
+                &h,
+                "strip.focus-nth",
+                &serde_json::json!({ "index": index })
+            )
+            .is_err(),
             "index {index} names no strip chord"
         );
     }
@@ -651,7 +668,10 @@ fn window_actions_run_the_operations_their_chords_run() {
     assert!(!upper_maximized(&mut h), "group.restore is Super+Down");
     invoke(&h, "group.restore", &none).unwrap();
     h.host.run_requested_shortcut_actions();
-    assert!(!upper_maximized(&mut h), "restoring a normal group changes nothing");
+    assert!(
+        !upper_maximized(&mut h),
+        "restoring a normal group changes nothing"
+    );
 
     invoke(&h, "group.move-right", &none).unwrap();
     h.host.run_requested_shortcut_actions();
@@ -1489,15 +1509,24 @@ fn every_close_route_commits_the_exact_surface_durably() {
 #[test]
 fn ctrl_super_number_jumps_to_that_window_in_the_strip() {
     let mut h = Harness::new();
-    h.key(Key::Character("3".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
+    h.key(
+        Key::Character("3".into()),
+        ModifiersState::SUPER | ModifiersState::CONTROL,
+    );
     h.tick();
     assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
 
-    h.key(Key::Character("1".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
+    h.key(
+        Key::Character("1".into()),
+        ModifiersState::SUPER | ModifiersState::CONTROL,
+    );
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    h.key(Key::Character("9".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
+    h.key(
+        Key::Character("9".into()),
+        ModifiersState::SUPER | ModifiersState::CONTROL,
+    );
     h.tick();
     assert_eq!(
         h.active_window(),

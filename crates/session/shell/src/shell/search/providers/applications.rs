@@ -53,31 +53,14 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     }
 }
 
-/// The empty palette's second line: the app's starting-point group, then
-/// its metadata.
-fn grouped_detail(package_id: &str, metadata: String) -> String {
-    t_args(
-        "search-apps-detail-grouped",
-        &[
-            (
-                "group",
-                ui::search::system::starting_point_group(package_id).into(),
-            ),
-            ("detail", metadata.into()),
-        ],
-    )
-}
-
-fn app_detail(needle: &str, package_id: &str, category: Option<&str>, version: &str) -> String {
-    let metadata = match category {
-        Some(category) => format!("Tilo · {category} · {package_id}"),
-        None => format!("Tilo · {package_id} · {version}"),
-    };
-    if needle.is_empty() {
-        grouped_detail(package_id, metadata)
-    } else {
-        metadata
-    }
+/// An app row's second line: its category, or nothing. The package id,
+/// vendor and version are how a developer tells builds apart, not how a
+/// person recognises an app; the id stays searchable, never shown.
+fn app_detail(category: Option<&str>) -> Option<String> {
+    category
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .map(str::to_owned)
 }
 
 pub struct ApplicationsProvider {
@@ -319,25 +302,13 @@ impl ApplicationsProvider {
                 continue;
             };
             let launch_app = Arc::clone(&app);
-            // A declared category is a more useful second line than the version.
-            let detail = app_detail(
-                needle,
-                &app.package_id,
-                app.category.as_deref(),
-                &app.version,
-            );
+            let detail = app_detail(app.category.as_deref());
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
                 app.package_id.clone(),
-                t_args(
-                    "search-apps-open",
-                    &[(
-                        "app",
-                        app.name_for(&crate::shell::i18n::current_locale()).into(),
-                    )],
-                ),
-                Some(detail),
+                app.name_for(&crate::shell::i18n::current_locale()),
+                detail,
                 presentation_score(needle, &app.package_id, score),
                 move |_doc, _root, chrome: &Chrome| {
                     launch_resolved_installed_app(chrome, &launch_app)
@@ -407,7 +378,7 @@ impl ApplicationsProvider {
                     ResourceKind::Application,
                     self.id(),
                     record.id,
-                    t_args("search-apps-open", &[("app", record.name.as_str().into())]),
+                    record.name,
                     Some(t("search-apps-shortcut-subtitle")),
                     score,
                     move |_doc, _root, chrome: &Chrome| {
@@ -518,21 +489,22 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            let detail = app_detail(
-                needle,
-                &app.package_id,
-                app.category.as_deref(),
-                &app.version,
-            );
+            let detail = app_detail(app.category.as_deref());
             let trust = if app.trust.trim().is_empty() {
                 t("search-apps-verification-pending")
             } else {
                 app.trust.clone()
             };
-            let subtitle = t_args(
-                "search-apps-store-subtitle",
-                &[("trust", trust.into()), ("detail", detail.into())],
-            );
+            let subtitle = match detail {
+                Some(detail) => t_args(
+                    "search-apps-store-subtitle",
+                    &[("trust", trust.into()), ("detail", detail.into())],
+                ),
+                None => t_args(
+                    "search-apps-store-subtitle-bare",
+                    &[("trust", trust.into())],
+                ),
+            };
             out.push(SearchResult {
                 shortcut: None,
                 kind: ResourceKind::Application,
@@ -985,9 +957,20 @@ impl Default for ApplicationsProvider {
     }
 }
 
+/// Whether an installed app's row (its id the package id) opens the app
+/// whose windows announce `app_id`. A store offer ("app:…") is not open.
+fn package_row_opens(result: &SearchResult, app_id: &str) -> bool {
+    result.kind == ResourceKind::Application
+        && !result.id.starts_with("app:")
+        && crate::shell::launcher::app_id_matches_package(app_id, &result.id)
+}
+
 impl SearchProvider for ApplicationsProvider {
     fn id(&self) -> &'static str {
         PROVIDER_ID
+    }
+    fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
+        package_row_opens(result, app_id)
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND
@@ -1195,7 +1178,17 @@ fn searchable_fields(
     other_names: impl IntoIterator<Item = String>,
     keywords: &[String],
 ) -> Vec<(String, tilo_search::FieldWeight)> {
-    let other_names: Vec<String> = other_names.into_iter().collect();
+    // The registry's names in other languages are the name too: a German
+    // desktop types "Dateien" for Files whether its manifest is local or not.
+    let mut other_names: Vec<String> = other_names.into_iter().collect();
+    for name in tilo_desktop_search::availability::names_for(package_id) {
+        if !other_names
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
+        {
+            other_names.push((*name).to_owned());
+        }
+    }
     let registry = tilo_desktop_search::availability::keywords_for(package_id);
     ui::search::system::application_search_fields(
         name,
@@ -1741,13 +1734,13 @@ mod tests {
             let p = ApplicationsProvider::new();
             let out = p.results_for("hel", vec![app("so.tilo.hello", "Hello")]);
             assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Open Hello");
+            assert_eq!(out[0].title, "Hello", "the title is the app's name");
             assert_eq!(out[0].id, "so.tilo.hello");
             assert_eq!(out[0].score, 100, "prefix match on the display name");
             assert_eq!(
                 out[0].subtitle.as_deref(),
-                Some("Tilo · so.tilo.hello · 0.1.0"),
-                "the row names the package it will launch, and nothing about where it opens"
+                None,
+                "no vendor, package id or version under an app's name"
             );
         }
 
@@ -1787,8 +1780,8 @@ mod tests {
             assert_eq!(out[0].score, 34, "category ranks below name and id matches");
             assert_eq!(
                 out[0].subtitle.as_deref(),
-                Some("Tilo · Office · so.tilo.sheets"),
-                "a declared category is the more useful second line than the version"
+                Some("Office"),
+                "a declared category is the only metadata a row shows"
             );
         }
 
@@ -1922,7 +1915,10 @@ mod tests {
                 "Calendar",
             );
             assert_eq!(rows.len(), 1);
-            assert!(rows[0].subtitle.as_deref().unwrap().contains("Tilo"));
+            assert_eq!(
+                rows[0].id, "app:so.tilo.calendar",
+                "the Tilo app is offered"
+            );
         }
 
         // Phase `host_terminal_does_not_hide_tilo_terminal`.
@@ -1969,7 +1965,7 @@ mod tests {
             );
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].id, "portal-valid");
-            assert_eq!(out[0].title, "Open Project board");
+            assert_eq!(out[0].title, "Project board");
             assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
         }
     }
@@ -2031,10 +2027,9 @@ mod tests {
             );
             assert!(
                 out.iter()
-                    .find(|row| row.id == "so.tilo.browser")
-                    .and_then(|row| row.subtitle.as_deref())
-                    .is_some_and(|subtitle| subtitle.contains("Start here")),
-                "the ordering must also be explained on screen"
+                    .filter_map(|row| row.subtitle.as_deref())
+                    .all(|subtitle| !subtitle.contains("so.tilo") && !subtitle.contains("0.1.0")),
+                "no package id or version on a row"
             );
         }
 
@@ -2374,7 +2369,7 @@ mod tests {
             },
         );
         assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Open unique-tail");
+        assert_eq!(page.results[0].title, "unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
         assert!(!provider.index.building());
     }
@@ -2490,7 +2485,7 @@ mod tests {
         let last = format!("so.tilo.fixture-{:03}", count - 1);
         assert_eq!(
             select(&last).as_deref(),
-            Some(format!("Open Fixture {:03}", count - 1).as_str()),
+            Some(format!("Fixture {:03}", count - 1).as_str()),
             "an installed app past the first page must still open by its address"
         );
         assert!(
@@ -2534,7 +2529,7 @@ mod tests {
         )
         .select(&resource)
         .map(|action| action.title().to_string());
-        assert_eq!(opened.as_deref(), Some("Open Calculator"));
+        assert_eq!(opened.as_deref(), Some("Calculator"));
     }
 
     #[test]
@@ -2656,6 +2651,9 @@ impl SearchProvider for NativeApplicationsProvider {
     fn id(&self) -> &'static str {
         "native-applications"
     }
+    fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
+        package_row_opens(result, app_id)
+    }
     fn name(&self) -> &'static str {
         "Applications"
     }
@@ -2689,7 +2687,7 @@ impl SearchProvider for NativeApplicationsProvider {
                     ResourceKind::Application,
                     self.id(),
                     id,
-                    t_args("search-apps-open", &[("app", app.display_name.into())]),
+                    app.display_name,
                     None,
                     score,
                     move |_doc, _root, chrome: &Chrome| {

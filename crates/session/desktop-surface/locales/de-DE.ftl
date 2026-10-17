@@ -524,11 +524,11 @@ desktop-view-replay-activity = Arbeitsbereich-Aktivität wiedergeben
 
 ## Desktop window search
 search-provider-desktop-windows = Fenster auf dem Desktop
-search-badge-tab = Tab
-search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
 search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
+search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich verschieben
+search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
 search-window-group-untitled = Unbenanntes Fenster
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
@@ -537,12 +537,7 @@ search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
 search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
-search-window-focus-place = Geöffnet in diesem Arbeitsbereich
-search-window-focus-place-strip = Geöffnet in der Leiste „{ $strip }“
-search-window-focus-detail-shared = { $place } · { $count ->
-    [one] 1 Tab
-   *[other] { $count } Tabs
-}
+search-window-focus-place-strip = Leiste „{ $strip }“
 # Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
 # Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
 search-window-verb-close = schließen beenden close quit

@@ -704,6 +704,13 @@ pub struct ChromeState {
     pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
+    /// The active workspace's windows (tabs), most recently focused first, as
+    /// Alt+Tab walks them: search lists "windows to go back to" in this order
+    /// and switches an app's row to its latest window.
+    pub recent_windows: Vec<crate::shell::state::TabId>,
+    /// Whether this view follows a collaborator, published by the overlay
+    /// host that owns the follow: "Stop following" is only offered then.
+    pub following: bool,
     /// Copied here once per frame from
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
@@ -1032,6 +1039,8 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             search_resource_scope: None,
             open_target: OpenTarget::default(),
+            recent_windows: Vec::new(),
+            following: false,
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,

@@ -2290,6 +2290,12 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
         ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::PeopleProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::QuickAnswersProvider::new(),
+        ));
         (search_registry, room_records, qs_action_slot)
     }
 
@@ -7619,10 +7625,22 @@ impl ShellOverlayHost {
 
     /// Record the focused window as the most recently used one.
     fn observe_window_focus(&mut self) {
-        if let Some(chrome) = self.chrome.as_ref()
-            && let Ok(state) = chrome.try_borrow()
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let recent = match chrome.try_borrow() {
+            Ok(state) => {
+                let tree = state.tree();
+                self.layers.window_switcher.observe(&tree.desktop);
+                self.layers.window_switcher.recent_tabs(&tree.desktop)
+            }
+            Err(_) => return,
+        };
+        // Search reads the same recency Alt+Tab walks.
+        if let Ok(mut state) = chrome.try_borrow_mut()
+            && state.recent_windows != recent
         {
-            self.layers.window_switcher.observe(&state.tree().desktop);
+            state.recent_windows = recent;
         }
     }
 
@@ -8299,6 +8317,11 @@ impl ShellOverlayHost {
             return;
         }
         let previous_room = self.followed_room.take();
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Ok(mut state) = chrome.try_borrow_mut()
+        {
+            state.following = peer_id.is_some();
+        }
         self.followed_peer = peer_id;
         self.followed_tab = None;
         self.followed_session = None;
@@ -10053,7 +10076,12 @@ impl ShellOverlayHost {
             self.palette_visible = true;
             return;
         }
-        crate::shell::search::usage::record(&result.provider_id, &result.id);
+        // What was typed for it, too: the same text leads with it next time.
+        crate::shell::search::usage::record_choice(
+            self.palette.query(),
+            &result.provider_id,
+            &result.id,
+        );
         // A switch flips where the person can see it: keep the palette open
         // and rebuild its rows now, so the row shows the state it was just
         // switched to. One whose state lands later is rebuilt when the
@@ -10254,7 +10282,8 @@ impl ShellOverlayHost {
             self.show_step_error(error.user_message());
             return;
         }
-        crate::shell::search::usage::record(&result.provider_id, &result.id);
+        // What was typed for it, too: the same text leads with it next time.
+        crate::shell::search::usage::record_choice(&flow.query, &result.provider_id, &result.id);
         self.end_palette_steps();
         self.palette_visible = false;
         self.palette.close();
@@ -14900,8 +14929,8 @@ impl ShellOverlayHost {
             }
             ShortcutAction::MaximizeWindow | ShortcutAction::RestoreWindow => {
                 if !repeat {
-                    let _ = self
-                        .set_focused_group_maximized(action == ShortcutAction::MaximizeWindow);
+                    let _ =
+                        self.set_focused_group_maximized(action == ShortcutAction::MaximizeWindow);
                 }
             }
             ShortcutAction::DetachTab => {

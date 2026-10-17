@@ -207,6 +207,23 @@ fn logout_contract() -> tilo_actions::ActionContract {
     }
 }
 
+/// What a tier earns for a session row. Lock, restart and shut down end
+/// what the person is doing, so they come up only for their name, or for a
+/// word they are known by typed from its start: never because a keyword is
+/// misspelt into something else, or holds the query in the middle.
+fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32> {
+    use ui::search::MatchTier;
+    if weight == FieldWeight::KEYWORD
+        && matches!(
+            tier,
+            MatchTier::Typo | MatchTier::WordPrefix | MatchTier::Word | MatchTier::Contains
+        )
+    {
+        return None;
+    }
+    tier.rank_in(weight)
+}
+
 pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
@@ -236,7 +253,7 @@ impl SessionActionsProvider {
     pub fn new(policy: SessionActionPolicy) -> Self {
         Self {
             policy,
-            ranker: ui::search::ListIndex::default(),
+            ranker: ui::search::ListIndex::default().with_ranks(session_ranks),
             built: RefCell::default(),
         }
     }
@@ -376,7 +393,7 @@ impl SessionActionsProvider {
             id: id.into(),
             title: t(title_key),
             subtitle: Some(t(detail_key)),
-            badge: Some(t("search-badge-session")),
+            badge: None,
             score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),
@@ -403,7 +420,7 @@ impl SessionActionsProvider {
             id: LOGOUT_ID.into(),
             title: t("search-session-logout"),
             subtitle: Some(t("search-session-logout-detail")),
-            badge: Some(t("search-badge-session")),
+            badge: None,
             score: 0,
             params: confirmation_params(&contract),
             contract: Some(contract),

@@ -1229,6 +1229,13 @@ impl Action {
             "dictation-action-cancel-detail",
             |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
         ),
+        // "emoji" or a lone ":" in search: the same picker Super+. opens.
+        chrome(
+            "emoji.picker",
+            "search-action-emoji-picker",
+            "search-action-emoji-picker-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
+        ),
         chrome(
             "navigation.axis.enable",
             "search-action-axis-enable",
@@ -2842,6 +2849,19 @@ pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
 pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
+/// Whether the action `id` has something to act on now. Most always do;
+/// these act on something that comes and goes.
+fn action_available(id: &str, chrome: &ChromeState) -> bool {
+    match id {
+        "projection.close" => chrome.overlays.projection,
+        "presence.follow.stop" => chrome.following,
+        BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
+            .current()
+            .is_some(),
+        _ => true,
+    }
+}
+
 /// Decline the Bluetooth pairing question on screen, or stop the pairing
 /// whose code it displays.
 ///
@@ -3164,6 +3184,27 @@ impl SearchProvider for ActionsProvider {
     }
     fn available_in_active_app_scope(&self) -> bool {
         true
+    }
+    /// A radio's set-enabled form is for agents: a person flips the switch
+    /// row beside it, which already shows whether it is on. And an action
+    /// with nothing to act on (closing a sheet that is not open, declining a
+    /// pairing nobody asked for, stopping a follow that is not happening)
+    /// only takes a row from one that would do something: it is offered
+    /// only when the query names it exactly, where running it says why not.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        needle: &str,
+        chrome: &ChromeState,
+    ) -> bool {
+        if QS_TOGGLES
+            .iter()
+            .any(|toggle| toggle.set_enabled == result.id)
+        {
+            return true;
+        }
+        !action_available(&result.id, chrome)
+            && tilo_search::fold(needle.trim()) != tilo_search::fold(&result.title)
     }
     /// An address is looked up in the whole table. The shell offers more
     /// actions than one palette page shows, so the first page of an empty
@@ -4157,7 +4198,7 @@ impl ActionsProvider {
                 on_begin_invoke,
             });
         }
-        // One-step switches for the radios: "wifi" finds "Wi-Fi: turn off", not a
+        // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
         // form asking for `enabled`, and the row says what it is now. They run
         // the same set-enabled action with the opposite of the live state.
         for toggle in QS_TOGGLES {
@@ -4169,7 +4210,8 @@ impl ActionsProvider {
                 continue;
             }
             let on = radio_is_on(ctx.chrome, set_enabled_id);
-            let title = t(if on { toggle.turn_off } else { toggle.turn_on });
+            // A switch is its noun; the pill says whether it is on.
+            let title = t(toggle.name);
             let subtitle = t(toggle.subtitle);
             let params = base.params.clone();
             let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
@@ -4666,12 +4708,12 @@ pub(crate) fn action_shortcut(
 
 /// A Quick Settings radio offered as a one-step toggle: the set-enabled
 /// action it drives, its own id, and the catalogue keys of its row's title
-/// (to turn the radio on, or off) and subtitle.
+/// and subtitle.
 struct QsToggle {
     set_enabled: &'static str,
     id: &'static str,
-    turn_on: &'static str,
-    turn_off: &'static str,
+    /// The switch's name; its state is the row's pill.
+    name: &'static str,
     subtitle: &'static str,
 }
 
@@ -4680,22 +4722,19 @@ const QS_TOGGLES: &[QsToggle] = &[
     QsToggle {
         set_enabled: QS_WIFI_ID,
         id: "quick-settings.wifi.toggle",
-        turn_on: "search-toggle-wifi-on",
-        turn_off: "search-toggle-wifi-off",
+        name: "search-toggle-wifi",
         subtitle: "search-toggle-wifi-subtitle",
     },
     QsToggle {
         set_enabled: QS_BLUETOOTH_ID,
         id: "quick-settings.bluetooth.toggle",
-        turn_on: "search-toggle-bluetooth-on",
-        turn_off: "search-toggle-bluetooth-off",
+        name: "search-toggle-bluetooth",
         subtitle: "search-toggle-bluetooth-subtitle",
     },
     QsToggle {
         set_enabled: QS_AIRPLANE_ID,
         id: "quick-settings.airplane-mode.toggle",
-        turn_on: "search-toggle-airplane-mode-on",
-        turn_off: "search-toggle-airplane-mode-off",
+        name: "search-toggle-airplane-mode",
         subtitle: "search-toggle-airplane-mode-subtitle",
     },
 ];
@@ -6119,13 +6158,13 @@ mod tests {
         };
 
         // Locale.
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
         let _restore = RestoreLocale;
         ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(crate::shell::i18n::current_locale(), "de-DE");
-        assert_eq!(language(&provider).as_deref(), Some("Sprache festlegen"));
+        assert_eq!(language(&provider).as_deref(), Some("Sprache ändern"));
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(language(&provider).as_deref(), Some("Set language"));
+        assert_eq!(language(&provider).as_deref(), Some("Change language"));
 
         // Active workspace: governance rows address the workspace now active.
         let (first_room, second, second_room) = {
@@ -7035,7 +7074,7 @@ mod tests {
             "writing the store without selecting the live catalogue leaves chrome English"
         );
         assert_eq!(t("tab-closed-undo"), "Rückgängig");
-        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
+        assert_eq!(t("search-action-appearance-language"), "Sprache ändern");
     }
 
     #[test]
