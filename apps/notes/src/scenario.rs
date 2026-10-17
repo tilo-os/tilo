@@ -63,6 +63,7 @@ pub const SCENARIOS: &[&str] = &[
     "find",
     "scrolled",
     "sidebar_scroll",
+    "mention",
 ];
 
 /// A 16:9-ish desktop window that shows the sidebar and a full page.
@@ -95,6 +96,7 @@ fn types_into_new_note(scenario: Option<&str>) -> bool {
                 | "paragraph_click"
                 | "typed_lists"
                 | "slash"
+                | "mention"
                 | "slash_applied"
                 | "heading"
                 | "fenced_code"
@@ -477,6 +479,10 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("slash") => driver.type_text("/"),
+        Some("mention") => {
+            show_room(driver);
+            driver.type_text("Ask @");
+        }
         Some("slash_applied") => {
             driver.type_text("/h1");
             driver.key("Enter");
@@ -644,6 +650,23 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
     presence.upsert_remote_cursor("bob".into(), [1500.0, 380.0], Some("Bob"));
     driver.set_presence_context(presence);
     Ok(())
+}
+
+/// The room around the note: two people and an agent the `@` list offers.
+fn show_room(driver: &mut FrameHarness) {
+    use ui::permissions::UserId;
+    use ui::presence::{ParticipantKind, PresenceCtx};
+    let mut presence = PresenceCtx::empty();
+    for (id, name, kind) in [
+        ("alice", "Alice Moreau", ParticipantKind::Person),
+        ("aaron", "Aaron Kim", ParticipantKind::Person),
+        ("agent:scribe", "Scribe", ParticipantKind::Agent),
+    ] {
+        presence.set_display_name(UserId(id.into()), name);
+        presence.set_participant_kind(UserId(id.into()), kind);
+    }
+    driver.set_presence_context(presence);
+    driver.relayout();
 }
 
 /// Open the narrow drawer when the notes tree is hidden behind it.
