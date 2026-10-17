@@ -17871,6 +17871,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "staging-handoff-model",
+ "tar",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-board-successor",

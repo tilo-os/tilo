@@ -191,7 +191,11 @@ impl FileExplorerWidget {
                     ));
                 }
             }
-            Err(reason) => self.status = Some(reason),
+            Err(reason) => self.notify_failure(
+                t_args("files-open-failed", &[arg("name", name)]),
+                &reason,
+                None,
+            ),
         }
         true
     }

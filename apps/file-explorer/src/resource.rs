@@ -261,13 +261,13 @@ fn record_native(
 
 #[resource(kind = "files.folder", label = "Folder", initialize = FileExplorer::with_default_places)]
 impl FileExplorer {
-    /// Pin a folder to the Favourites in the sidebar.
-    #[action(label = "Add to Favourites")]
+    /// Pin a folder to the Favorites in the sidebar.
+    #[action(label = "Add to Favorites")]
     pub fn add_bookmark(
         &mut self,
         #[param("Folder path on this device, or a stored place such as xdg:documents")]
         place: String,
-        #[param("Position among the Favourites, from 0; the end when none")] at: Option<usize>,
+        #[param("Position among the Favorites, from 0; the end when none")] at: Option<usize>,
     ) -> Result<(), Refusal> {
         let place = place.trim();
         if place.is_empty() {
@@ -287,8 +287,8 @@ impl FileExplorer {
         Ok(())
     }
 
-    /// Unpin a folder from the Favourites.
-    #[action(label = "Remove from Favourites")]
+    /// Unpin a folder from the Favorites.
+    #[action(label = "Remove from Favorites")]
     pub fn remove_bookmark(
         &mut self,
         #[param("Folder path on this device, or a stored place such as xdg:documents")]
@@ -1250,7 +1250,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         self.effect_statuses()
     }
 
-    /// Pin the folder shown to the Favourites, or unpin it; change the
+    /// Pin the folder shown to the Favorites, or unpin it; change the
     /// files of the folder shown.
     fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
         let mut declarations = Vec::new();
@@ -1260,12 +1260,12 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     .bind(file_explorer::RemoveBookmark::paths().place, place)
                     .declaration(
                         "remove-current-bookmark",
-                        "Remove this folder from Favourites",
+                        "Remove this folder from Favorites",
                     )
             } else {
                 FileExplorer::ADD_BOOKMARK
                     .bind(file_explorer::AddBookmark::paths().place, place)
-                    .declaration("add-current-bookmark", "Add this folder to Favourites")
+                    .declaration("add-current-bookmark", "Add this folder to Favorites")
             });
         }
         declarations.extend(self.file_op_declarations());
@@ -2895,7 +2895,7 @@ mod tests {
         assert_eq!(
             sentences,
             [
-                "Added ~/Projects to Favourites",
+                "Added ~/Projects to Favorites",
                 "Created the folder Inbox",
                 "Renamed draft.txt to final.txt",
             ]

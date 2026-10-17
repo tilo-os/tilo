@@ -78,6 +78,11 @@ impl TabMenuLayer {
             .open_anchored(Rect::new(at.x, at.y, at.x, at.y), viewport);
     }
 
+    /// Where the menu was opened, which decides the display it sits on.
+    pub(crate) const fn anchor_point(&self) -> Point {
+        self.anchor
+    }
+
     pub(crate) fn focus_first_action(&mut self) {
         self.menu.focus_first_action();
     }

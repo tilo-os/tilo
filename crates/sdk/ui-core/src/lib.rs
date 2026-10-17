@@ -287,6 +287,7 @@ pub mod theme;
 mod theme_document;
 mod theme_layers;
 pub mod tokens;
+pub mod type_ahead;
 pub mod ui_graph;
 pub mod undo;
 pub mod uri;

@@ -36,10 +36,9 @@ const FILE_LIMIT: usize = 512 * 1024;
 /// tilo-staging-handoff, tilo-vm-install-proof with this daemon) come from
 /// the base image's install-helpers component; a checkout holds no file to
 /// send for them.
-pub const ALLOWLIST: [&str; 3] = [
+pub const ALLOWLIST: [&str; 2] = [
     "usr/libexec/tilo-install",
     "usr/libexec/tilo-boot-mount-contract",
-    "usr/lib/tilo/hardware_profile.py",
 ];
 const TIMEOUT: Duration = Duration::from_secs(30);
 const HELLO: &[u8] = b"TILO-CODE-HELLO-1\n";

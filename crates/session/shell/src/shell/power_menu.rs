@@ -620,12 +620,12 @@ impl ShellLayer for PowerMenu {
                 button: MouseButton::Left,
                 ..
             } => match cx.cursor {
-                Some(point) => self.click(cx.geometry.viewport, point),
+                Some(point) => self.click(cx.geometry.display_for(None), point),
                 None => return Routed::Pass,
             },
             WindowEvent::CursorMoved { .. } => {
                 if let Some(point) = cx.cursor
-                    && self.hover(cx.geometry.viewport, point)
+                    && self.hover(cx.geometry.display_for(None), point)
                 {
                     cx.request(LayerIntent::Repaint);
                 }
@@ -646,7 +646,7 @@ impl ShellLayer for PowerMenu {
 
     fn draw(&mut self, cx: &mut LayerPaint<'_>) {
         self.draw(
-            cx.geometry.viewport,
+            cx.geometry.display_for(None),
             cx.scene,
             cx.transform,
             cx.text_renderer,
@@ -659,7 +659,7 @@ impl ShellLayer for PowerMenu {
     }
 
     fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
-        self.accessibility_rect_for_path(geometry.viewport, path)
+        self.accessibility_rect_for_path(geometry.display_for(None), path)
     }
 
     fn focus_accessibility(&mut self, path: &[usize]) -> bool {

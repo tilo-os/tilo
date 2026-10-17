@@ -309,10 +309,6 @@ fn python_host_bundle_validates_to_the_identical_receipt() {
             "#!/bin/bash\necho development\n",
         ),
         ("os/usr/libexec/tilo-boot-mount-contract", "contract é\n"),
-        (
-            "os/dev/hardware_profile.py",
-            "canonical profile implementation\n",
-        ),
     ] {
         let path = checkout.path().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -340,7 +336,7 @@ fn python_host_bundle_validates_to_the_identical_receipt() {
     allowlist.sort_unstable();
     assert_eq!(python["allowlist"], json!(allowlist));
     let (files, receipt) = validate(python["raw"].as_str().unwrap().as_bytes()).unwrap();
-    assert_eq!(files.len(), 3);
+    assert_eq!(files.len(), 2);
     assert_eq!(receipt, python["receipt"]);
     assert_eq!(
         Dumps::SORTED.dumps(&receipt),

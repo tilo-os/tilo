@@ -50,6 +50,59 @@ pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
     }
 }
 
+/// Narrowest a window is made to open beside another so that both are on
+/// screen together. Below it, an app's own layout (a sidebar and a body,
+/// a header with its controls) no longer fits, so a share narrower than
+/// this is worse than the strip scrolling to show the new window whole.
+pub const SIDE_BY_SIDE_MIN_PX: f64 = 480.0;
+
+/// Widths that put a window just opened beside `neighbour` on screen
+/// together with it. `screen_px` is how wide a run of windows can be and
+/// still be seen whole (the strip pans past its leading gutter, so this can
+/// exceed `strip_usable_px`, which widths are fractions of); the two are
+/// `gap_px` apart. `None` when they already fit, or when no share leaves
+/// both at least [`SIDE_BY_SIDE_MIN_PX`]: the strip scrolls then, framing
+/// the new window whole on its own.
+///
+/// The window the person was in keeps its width when the space beside it
+/// is enough for the new one; otherwise the two share the screen equally.
+/// Returns `(neighbour, opened)`.
+pub fn share_beside(
+    neighbour: WindowWidth,
+    opened: WindowWidth,
+    strip_usable_px: f64,
+    screen_px: f64,
+    gap_px: f64,
+) -> Option<(WindowWidth, WindowWidth)> {
+    let usable = strip_usable_px.max(1.0);
+    let beside = neighbour.resolve(usable);
+    let room = screen_px - gap_px - beside;
+    if room >= opened.resolve(usable) {
+        return None;
+    }
+    // Floored so that rounding never pushes the pair a pixel past the edge.
+    let fitting = |px: f64| WindowWidth::Fraction(floor_permille(px, usable));
+    if room >= SIDE_BY_SIDE_MIN_PX {
+        return Some((neighbour, fitting(room)));
+    }
+    let half = (screen_px - gap_px) / 2.0;
+    (half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
+}
+
+/// The largest per-mille of `usable` that resolves to no more than `px`.
+fn floor_permille(px: f64, usable: f64) -> u16 {
+    let raw = (px.max(0.0) / usable * 1000.0).floor();
+    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the storable per-mille range above, which fits losslessly in u16"
+    )]
+    {
+        clamped as u16
+    }
+}
+
 /// Persisted width of a [`crate::WindowGroup`], as a fraction of the
 /// strip's usable width — a stored pixel count would mean a different
 /// screen share on every monitor.
@@ -125,6 +178,89 @@ impl<'de> Deserialize<'de> for WindowWidth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pixels the pair takes, gap included, on `usable`.
+    fn pair_px(pair: (WindowWidth, WindowWidth), usable: f64, gap: f64) -> f64 {
+        pair.0.resolve(usable) + gap + pair.1.resolve(usable)
+    }
+
+    #[test]
+    fn a_window_opened_beside_another_shares_the_screen_with_it() {
+        // Phase `two_windows_on_a_1280_screen_both_fit_on_it`.
+        {
+            // A 1280 px display whose strip starts past the 251 px wheel
+            // gutter and ends 32 px short of the edge: two-thirds of what
+            // is left is 665 px, and two of those overflow the screen.
+            let (usable, screen) = (997.0, 1248.0);
+            let pair = share_beside(
+                WindowWidth::Normal,
+                WindowWidth::Normal,
+                usable,
+                screen,
+                8.0,
+            )
+            .expect("two two-thirds windows overflow one screen");
+            assert_eq!(
+                pair.0,
+                WindowWidth::Normal,
+                "the window in use keeps its width"
+            );
+            assert!(pair_px(pair, usable, 8.0) <= screen, "{pair:?}");
+            assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+        }
+        // Phase `a_wide_window_shares_the_screen_equally`.
+        {
+            let (usable, screen) = (997.0, 1248.0);
+            let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, 8.0)
+                .expect("a full-width window leaves no room beside it");
+            assert_eq!(pair.0, pair.1, "neither keeps more than its half");
+            assert!(pair_px(pair, usable, 8.0) <= screen, "{pair:?}");
+            assert!(
+                pair.0.resolve(usable) >= 615.0,
+                "the pair uses the whole screen, not just the usable width: {pair:?}"
+            );
+        }
+        // Phase `room_beside_a_narrow_window_is_taken_without_moving_it`.
+        {
+            let usable = 1904.0;
+            let pair = share_beside(
+                WindowWidth::Normal,
+                WindowWidth::Normal,
+                usable,
+                usable,
+                8.0,
+            )
+            .expect("two two-thirds windows overflow a wide screen too");
+            assert_eq!(
+                pair.0,
+                WindowWidth::Normal,
+                "the window in use keeps its width"
+            );
+            assert!(pair_px(pair, usable, 8.0) <= usable, "{pair:?}");
+            assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+        }
+        // Phase `windows_that_already_fit_are_left_alone`.
+        {
+            assert_eq!(
+                share_beside(
+                    WindowWidth::Narrow,
+                    WindowWidth::Narrow,
+                    1904.0,
+                    1904.0,
+                    8.0
+                ),
+                None
+            );
+        }
+        // Phase `a_screen_too_narrow_to_share_scrolls_instead`.
+        {
+            assert_eq!(
+                share_beside(WindowWidth::Normal, WindowWidth::Normal, 800.0, 800.0, 8.0),
+                None,
+                "two windows under the side-by-side minimum would both be unusable"
+            );
+        }
+    }
 
     #[test]
     fn widths_load_as_clamped_fractions_with_a_pixel_floor() {

@@ -52,6 +52,72 @@ fn ensure_destination_is_outside_source(src: &Path, dest_dir: &Path) -> Result<(
     Ok(())
 }
 
+/// An operation's failure as a person reads it. Reasons cross the Files
+/// document as text; one that is the system's error message
+/// (`Permission denied (os error 13)`) becomes plain copy for the common
+/// cases, and loses the error number otherwise. Files' own reasons are
+/// already copy and pass through.
+pub(crate) fn readable_error(reason: &str) -> String {
+    let reason = reason.trim();
+    let Some((text, code)) = os_error(reason) else {
+        return reason.to_owned();
+    };
+    let key = match code {
+        1 | 13 => Some("files-error-permission"),
+        2 => Some("files-error-not-found"),
+        16 => Some("files-error-busy"),
+        17 => Some("files-error-exists"),
+        28 | 122 => Some("files-error-no-space"),
+        30 => Some("files-error-read-only"),
+        39 => Some("files-error-not-empty"),
+        _ => None,
+    };
+    key.map_or_else(
+        || {
+            let mut chars = text.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        },
+        crate::i18n::t,
+    )
+}
+
+/// A system error message split into its words and its error number.
+fn os_error(reason: &str) -> Option<(&str, i32)> {
+    let (text, code) = reason
+        .trim()
+        .strip_suffix(')')?
+        .rsplit_once(" (os error ")?;
+    Some((text, code.parse().ok()?))
+}
+
+/// Why a folder can't be listed, as far as what to do about it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FolderFailure {
+    /// No permission to look inside.
+    Permission,
+    /// It isn't there (any more), or isn't a folder.
+    Missing,
+    /// Anything else, which trying again may get past.
+    Other,
+}
+
+impl FolderFailure {
+    pub(crate) fn of(reason: &str) -> Self {
+        match os_error(reason).map(|(_, code)| code) {
+            Some(1 | 13) => Self::Permission,
+            Some(2 | 20) => Self::Missing,
+            _ => Self::Other,
+        }
+    }
+
+    /// Whether Try again can help: not while the cause stays.
+    pub(crate) fn may_pass(self) -> bool {
+        self == Self::Other
+    }
+}
+
 // --- trash ----------------------------------------------------------------
 
 pub use host_fs::trash::{is_trash_dir, trash_dir};
@@ -1014,6 +1080,33 @@ fn copy_capability_entry(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn system_errors_read_as_copy() {
+        let denied = std::io::Error::from_raw_os_error(13).to_string();
+        assert_eq!(
+            readable_error(&denied),
+            crate::i18n::t("files-error-permission")
+        );
+        let full = std::io::Error::from_raw_os_error(28).to_string();
+        assert_eq!(
+            readable_error(&full),
+            crate::i18n::t("files-error-no-space")
+        );
+        // An unmapped system error keeps its words, not its number.
+        let odd = std::io::Error::from_raw_os_error(40).to_string();
+        let shown = readable_error(&odd);
+        assert!(!shown.contains("os error"), "{shown}");
+        assert!(
+            shown.chars().next().is_some_and(char::is_uppercase),
+            "{shown}"
+        );
+        // Files' own reasons are copy already.
+        assert_eq!(
+            readable_error("A file with that name already exists"),
+            "A file with that name already exists"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

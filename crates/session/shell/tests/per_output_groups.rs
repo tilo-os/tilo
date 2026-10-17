@@ -1245,8 +1245,8 @@ fn a_mirrored_pair_beside_a_monitor_is_two_displays() {
 }
 
 /// A desktop-wide overlay opens on the display in use rather than centred
-/// on the seam between two: the palette and toasts on the focused display,
-/// Quick Settings under the tray on the primary's full top bar.
+/// on the seam between two: the palette, toasts and Quick Settings on the
+/// focused display.
 #[test]
 fn overlays_open_on_the_focused_display() {
     let mut desk = Desk::fixture("docked-laptop");
@@ -1282,8 +1282,8 @@ fn overlays_open_on_the_focused_display() {
         desk.settle();
         let quick_settings = desk.fb.host().quick_settings_rect_for_tests();
         assert!(
-            within(primary, quick_settings),
-            "Quick Settings {quick_settings:?} hangs from the tray on {primary:?}"
+            within(display, quick_settings),
+            "Quick Settings {quick_settings:?} opens on the focused display {display:?}"
         );
     }
 }

@@ -1,5 +1,5 @@
 //! The installed hardware profile, read exactly as
-//! `/usr/lib/tilo/hardware_profile.py` (`os/dev/hardware_profile.py`) reads
+//! `os/dev/hardware_profile.py`, the image builders' module, reads
 //! it: `read_profile`, `development_origin`, `validate_target_imgref`,
 //! `trusted_path` and `resolve_profile` with what they call.
 //!

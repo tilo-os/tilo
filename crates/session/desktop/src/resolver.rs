@@ -213,13 +213,21 @@ pub fn app_tile(
     wake: impl Fn(ui::WakeEvent) + Send + Sync + 'static,
 ) -> Result<Box<dyn AppWidget>, LaunchError> {
     let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    // A private window has no collaboration route; its actions still reach
+    // this device's own automation, and nothing beyond it.
+    let device_local = component.is_private();
     let app = match collaboration {
         Some(collaboration) => {
             ui::App::from_component_with_collaboration(component, inputs, collaboration)?
         }
         None => ui::App::from_component(component, inputs)?,
     };
-    Ok(Box::new(ui::app::EmbeddedApp::new(app, wake)?))
+    let app = ui::app::EmbeddedApp::new(app, wake)?;
+    Ok(Box::new(if device_local {
+        app.with_device_local_actions()
+    } else {
+        app
+    }))
 }
 
 pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {

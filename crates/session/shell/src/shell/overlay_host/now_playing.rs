@@ -75,7 +75,8 @@ impl ShellOverlayHost {
             qs.x1,
             qs.y1 + SIBLING_GAP + height,
         );
-        if below.y1 <= self.rect.y1 - PANEL_PAD {
+        let area = self.overlay_area();
+        if below.y1 <= area.y1 - PANEL_PAD {
             return Some(below);
         }
         let beside = Rect::new(
@@ -84,8 +85,7 @@ impl ShellOverlayHost {
             qs.x0 - SIBLING_GAP,
             qs.y0 + height,
         );
-        (beside.x0 >= self.rect.x0 + PANEL_PAD && beside.y1 <= self.rect.y1 - PANEL_PAD)
-            .then_some(beside)
+        (beside.x0 >= area.x0 + PANEL_PAD && beside.y1 <= area.y1 - PANEL_PAD).then_some(beside)
     }
 
     /// The card's laid-out rect and model together, for input and semantics.

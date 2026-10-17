@@ -513,7 +513,6 @@ files = [
   { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
   { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
   { from = "tilo-board-successor", to = "/usr/libexec/tilo-board-successor", mode = "0755" },
-  { from = "@manifest/dev/hardware_profile.py", to = "/usr/lib/tilo/hardware_profile.py", mode = "0644" },
   { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
 

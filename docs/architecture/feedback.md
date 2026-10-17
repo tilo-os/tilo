@@ -99,6 +99,14 @@ review, and changing the subject discards an earlier review. Hosts that cannot
 take a screenshot (`FeedbackHost::offers_screenshots`) do not show the
 screenshot choice; a screenshot requested anyway is refused, not dropped.
 
+A private window has no collaboration route, so its actions are offered to its
+own device instead: the native desktop's `device-local` catalogue lists what each
+open private window's door publishes and runs an invocation through that door as
+the window's person (`tilo-control actions invoke device-local <id>`). Nothing is
+published to a room or answered for another device. Typing the issue, including
+the app, review, send and retry are the composer's ordinary field edits and
+effects, the same ones its controls use.
+
 `tilo_desktop::feedback::PrivateFeedback` binds an already-admitted host adapter
 to the profile's durable store. Its outbox is a private package key pinned to
 the exact destination. Native hosts install it through
@@ -130,9 +138,12 @@ selects a destination before desktop mounting. `WasmPeer` requests admission fro
 its connected host, matches both roots/devices against retained certificates,
 requires the reporter's actual current standing and the room's sandbox, and installs the trusted Rust startup
 custody. The helper waits for this acknowledgment and never joins another room.
-Sending queues the registered ClientLocal action on the existing Chat record and
-uses the peer's ordinary Write publication. It does not invoke a document write
-on the host as another person. Receipt requests are bounded and retries preserve
+Sending invokes Chat's `submit-feedback` on the destination owner over the
+existing remote-action transport. The owner runs it in an app worker of its own
+as the reporter, under the standing the room's policy gives them now, so the
+action's `comments` grant decides: a commenter can file a report without any
+document Write. The invocation answers only once the owner's durable store holds
+the change. Receipt requests are bounded and retries preserve
 the approved submission identity; loss of session admission or stale policy fails
 closed. Description-only capture is the production default.
 
@@ -196,24 +207,22 @@ the response. A governor-created primary uses the empty wire record name and its
 internal SDK primary identity; windowless creation receives the actual selected
 room rather than inventing a starter workspace.
 
-This read path does not grant document authorship or broaden the room-action
-service's existing host-person invocation policy. A browser's existing
-ClientLocal Chat action still submits through its certified participant and
-normal peer publication. The signed HTTPS fixture retries one reviewed payload,
+This read path does not grant document authorship. The room-action service runs
+document actions for the host's own person, and for anyone else the room admits
+only actions on a `comments` field, each in a worker opened as that person with
+their current standing, so the door refuses what their grants do not cover.
+A comment filed this way succeeds only once the host acknowledges saving the
+change (the session's durability barrier); publishing it, or the worker's copy,
+is not a save. The host's own document actions still answer at publication. The signed HTTPS fixture retries one reviewed payload,
 checks opted-in personal context redaction and current/stale source revisions,
 reads a retained receipt, resumes an approved mutation after disconnecting before
 publication, retries that same identity once, and reads its attributed triage
 through the public status action after restarting the host. It also confirms
 that an unpublished local-only report
-cannot return a receipt. Host-side document actions retain their existing peer
-publication limitation: publish/local cache completion alone is not a durable
-commit acknowledgment. A separate writer correction requires qualification.
-No anonymous/public-guest submission journey is established by these tests.
-The existing browser frame transport signs document frames as `OpClass::Splice`,
-which maps to Write under governed admission. The app's Comment requirement alone
-does not establish that transport authority. An admitted demo participant and its
-actual overrides must be qualified; never infer a broader document grant from
-permission to submit a report.
+cannot return a receipt. A second fixture admits a separate person as Commenter:
+they file through the owner, get the signed receipt at once, file again without a
+second report, and are refused triage, which needs Write. Raw document frames
+still need Write (`OpClass::Splice`); filing never publishes one as the reporter.
 
 Private component paints propagate declared capture protection through the
 existing `SecretPaint` boundary. The browser binds protection to the scene only
@@ -242,8 +251,9 @@ publishing, changing access policy or connecting personal resources/accounts.
 receipt primitive. Enrollment is a non-deserializable host input containing the
 already-admitted destination, certified owner and reporter `Caller`s, current
 permission context and actual publication requirement. Every send and receipt
-rechecks that admission. Browser Splice still requires Write; a Comment action
-does not supply it. Missing roles, changed routes and restricted actions refuse.
+rechecks that admission. The browser files through the owner's submit action,
+which needs only the reporter's comment grant. Missing roles, changed routes and
+restricted actions refuse.
 Read-only admission can confirm a previously durable report through its exact
 receipt reader; it cannot resend the report or perform new publication.
 
@@ -286,8 +296,7 @@ acknowledgment. The enrolled runtime must bind its existing action IO and serve
 `CanonicalDestination::receipt` through that owner's authenticated service;
 the browser bootstrap must register the resulting Rust startup custody. Do not
 reinterpret the current semantic-read projection as this service, inject role
-claims from public config, broaden host-person invocation policy or grant Write
-to make guest Splice pass. Live acceptance still needs the actual existing
+claims from public config, or grant Write to reporters who only comment. Live acceptance still needs the actual existing
 destination, permitted reporter role and this owner-service binding.
 
 The adapter's headless fixture dispatches the real Chat action, persists through

@@ -5,24 +5,20 @@ files-time-unknown = unbekannter Zeitpunkt
 
 ## Tastaturkurzbefehle
 files-shortcuts-title = Tastaturkurzbefehle
-files-shortcuts-summary = Dateien-Steuerung mit der Tastaturkonvention des aktuellen Desktops
-files-shortcuts-primary = Primäre Modifikatortaste: Strg auf den meisten Desktops, Befehl unter macOS
-files-shortcuts-navigate = Auswahl bewegen: ↑ und ↓
-files-shortcuts-range = Bereich auswählen: Umschalt + ↑ und ↓
-files-shortcuts-grid = Raster-Navigation: ← / → bewegen sich horizontal; ↑ / ↓ nach sichtbarer Zeile
-files-shortcuts-open = Auswahl öffnen: Eingabe
-files-shortcuts-rename = Umbenennen: F2
-files-shortcuts-trash = In den Papierkorb verschieben: Entf
-files-shortcuts-location = Ort bearbeiten: Primär + L
-files-shortcuts-refresh = Aktualisieren: F5
-files-shortcuts-new-folder = Neuer Ordner: Primär + Umschalt + N
-files-shortcuts-edit = Kopieren, ausschneiden, einfügen, Papierkorb rückgängig, alles auswählen: Primär + C / X / V / Z / A
-files-shortcuts-hidden = Versteckte Dateien zeigen oder ausblenden: Primär + H
-files-shortcuts-size = Elementgröße ändern: Primär + + / −
-files-shortcuts-size-reset = Größe zurücksetzen: Primär + 0
-files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
-files-shortcuts-close = Diese Hilfe öffnen: ? oder F1
-files-shortcuts-dismiss = Blätter und Menüs schließen: Esc
+files-shortcuts-row = { $action }: { $keys }
+files-shortcuts-open = Öffnen
+files-shortcuts-back-forward = Zurück, vor
+files-shortcuts-up = Übergeordneter Ordner
+files-shortcuts-location = Zu einem Ort gehen
+files-shortcuts-rename = Umbenennen
+files-shortcuts-new-folder = Neuer Ordner
+files-shortcuts-trash = In den Papierkorb
+files-shortcuts-copy-cut-paste = Kopieren, ausschneiden, einfügen
+files-shortcuts-undo-redo = Rückgängig, wiederholen
+files-shortcuts-select-all = Alles auswählen
+files-shortcuts-hidden = Versteckte Dateien zeigen
+files-shortcuts-size = Größere, kleinere Elemente
+files-shortcuts-refresh = Aktualisieren
 
 ## Verfügbarkeit: Aktionen und Status
 files-opening-document = Dokument wird geöffnet…
@@ -360,7 +356,6 @@ files-clipboard-source-changed = Das angezeigte Objekt unterscheidet sich von de
 files-clipboard-unavailable = Die Datei-Zwischenablage des Arbeitsbereichs ist nicht verfügbar.
 files-clipboard-empty = Die Datei-Zwischenablage des Arbeitsbereichs ist leer.
 files-clipboard-undone = Einfügen rückgängig gemacht.
-files-clipboard-partial = { $count } Elemente eingefügt. Einige Elemente konnten nicht eingefügt werden: { $error }
 files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
 files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
@@ -403,8 +398,10 @@ files-loading-folder = { $path } wird geladen
 files-loading-title = Ordner wird geöffnet
 files-loading-detail = { $path } wird geladen
 files-directory-read-failed = Dieser Ordner konnte nicht geöffnet werden: { $error }
-files-load-error-title = Dieser Ordner konnte nicht geöffnet werden
-files-load-error-detail = { $path }: { $error }
+files-load-error-title = „{ $name }“ konnte nicht geöffnet werden
+files-folder-error-permission = Ihnen fehlt die Berechtigung, den Inhalt zu sehen.
+files-folder-error-missing = Er wurde verschoben oder gelöscht.
+files-open-enclosing = Übergeordneten Ordner öffnen
 files-a11y-load-error = Ordner konnte nicht geladen werden: { $error }. Erneut versuchen ist verfügbar
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Zum Schließen Escape drücken
 files-a11y-dialog-close = { $summary }. Zum Schließen Escape drücken
@@ -444,8 +441,6 @@ files-properties-summary = Dateisystemmetadaten
 
 ## Ergebnisse gewöhnlicher Vorgänge
 files-new-folder-default-name = Neuer Ordner
-files-created-folder = Ordner erstellt
-files-new-folder-failed = Neuer Ordner fehlgeschlagen: { $error }
 files-permanently-deleted = { $count } { $count ->
     [one] Element wurde
    *[other] Elemente wurden
@@ -463,31 +458,15 @@ files-restore-failed = Wiederherstellung fehlgeschlagen: { $error }
 files-trash-already-empty = Der Papierkorb ist bereits leer
 files-emptied-trash = Papierkorb geleert ({ $count })
 files-empty-trash-failed = Leeren des Papierkorbs fehlgeschlagen: { $error }
-files-copied = { $count } { $count ->
-    [one] Element wurde
-   *[other] Elemente wurden
-} kopiert
-files-cut = { $count } { $count ->
-    [one] Element wurde
-   *[other] Elemente wurden
-} ausgeschnitten
 files-created-file = Datei erstellt
 files-new-file-failed = Neue Datei fehlgeschlagen: { $error }
 files-added-favourite = Zu Favoriten hinzugefügt
 files-removed-favourite = Aus Favoriten entfernt
-files-moved-with-failures = { $moved } nach „{ $destination }“ verschoben ({ $failed } fehlgeschlagen)
 files-moved-to-folder = { $count } { $count ->
     [one] Element wurde
    *[other] Elemente wurden
 } nach „{ $destination }“ verschoben
 files-nothing-to-move = Nichts zu verschieben
-files-pasted = { $count } { $count ->
-    [one] Element wurde
-   *[other] Elemente wurden
-} eingefügt
-files-pasted-with-failures = { $count } eingefügt ({ $failed } fehlgeschlagen)
-files-renamed = Umbenannt
-files-rename-failed = Umbenennen fehlgeschlagen: { $error }
 
 ## Kontext-, Ansichts- und Sortiermenüs
 files-menu-open = Öffnen
@@ -534,13 +513,6 @@ files-archive-extracted =
         [one] 1 Datei entpackt
        *[other] { $count } Dateien entpackt
 }
-files-undo-move-trash = In Papierkorb verschieben rückgängig
-files-undo-trash-restored = { $count } { $count ->
-    [one] 1 Element wiederhergestellt
-   *[other] { $count } Elemente wiederhergestellt
-}
-files-undo-trash-unavailable = Rückgängig ist nicht mehr verfügbar, weil sich der Papierkorb geändert hat
-files-undo-trash-failed = Papierkorbelemente konnten nicht wiederhergestellt werden: { $error }
 files-archive-extracted-partial = { $count } Dateien entpackt; { $failures }
 files-archive-extract-failed = Archiv konnte nicht entpackt werden: { $error }
 files-archive-created = { $name } erstellt
@@ -678,3 +650,28 @@ files-mounted-open = Schreibgeschützte Konvertierung öffnen
 files-mounted-copy = Unabhängige bearbeitbare Kopie erstellen…
 files-mounted-independent = Änderungen an einer unabhängigen lokalen Kopie ändern das Cloud-Original nicht.
 file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } erstellt
+
+## Hinweise
+files-notice-undo = Rückgängig
+files-notice-open-with = Öffnen mit …
+files-notice-dismiss = Schließen
+files-menu-undo = Rückgängig
+files-open-failed = „{ $name }“ konnte nicht geöffnet werden
+files-open-unavailable = Dateien kann in diesem Fenster keine Dokumente öffnen.
+files-open-no-answer = Die Arbeitsumgebung hat nicht geantwortet.
+files-new-folder-failed-title = Der Ordner konnte nicht erstellt werden
+files-rename-failed-title = Umbenennen nicht möglich
+files-trash-failed = Verschieben in den Papierkorb nicht möglich
+files-move-failed = Nicht alles konnte nach „{ $destination }“ verschoben werden
+files-paste-failed = { $count } von { $total } { $total ->
+    [one] Element konnte
+   *[other] Elementen konnten
+} nicht eingefügt werden
+files-clipboard-partial = Nicht alles konnte eingefügt werden
+files-error-permission = Dafür fehlt die Berechtigung.
+files-error-not-found = Es existiert nicht mehr.
+files-error-busy = Es wird gerade verwendet.
+files-error-exists = Es gibt bereits etwas mit diesem Namen.
+files-error-no-space = Es ist nicht genug Speicherplatz frei.
+files-error-read-only = Dieser Ort ist schreibgeschützt.
+files-error-not-empty = Der Ordner ist nicht leer.
