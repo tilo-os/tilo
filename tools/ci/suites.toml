@@ -1930,3 +1930,12 @@ readers = ["crates/packaging/install/tests/runtime_package.rs"]
 [[unrequired]]
 suite = "tools/ci/windows/wine-test.sh"
 reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary, so t's wine/windows-x86_64-tests check runs it after build/windows-x86_64-tests"
+
+[[group]]
+name = "cloud-rystic-ci"
+inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh"]
+suites = ["tools/ci/test_rystic_ci.py"]
+
+[[unrequired]]
+suite = "tools/ci/run-rystic-ci.sh"
+reason = "metered integration runner; t's cloud-rystic, weekly-cloud-rystic and cloud-rystic-contracts checks execute it with native build artifacts and a trusted RYSTIC_CI_TOKEN secret"

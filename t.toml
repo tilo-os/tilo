@@ -978,6 +978,14 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9d
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 inputs = ["tools/ci/suites.py", "tools/ci/suites.toml", "tools/test-assets.py", "tools/web/fixture-assets.mjs", "tools/web/fixture-assets.test.mjs", "tools/with-test-environment.sh"]
+
+[[check]]
+name = "suite-cloud-rystic-ci"
+run = "python3 tools/ci/suites.py run --jobs 8 --group cloud-rystic-ci"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
+requires = ["arch=x86_64"]
+inputs = ["tools/ci/run-rystic-ci.sh", "tools/ci/rystic_ci.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_rystic_ci.py", "tools/with-test-environment.sh"]
 # END generated
 
 # ---------------------------------------------------------------------------
@@ -4532,3 +4540,67 @@ images = ""
 expected_content_sha256 = ""
 publish = "true"
 # END generated
+
+# Compile and install before any metered twin starts. Artifacts carry exact
+# binary checksums; t's cargo graph and needs/outputs bind them to the inputs.
+[[check]]
+name = "cloud-rystic-build"
+run = """
+python3 tools/ci/rystic_ci.py build --artifacts "$CARGO_TARGET_DIR/rystic-ci"
+python3 tools/ci/rystic_ci.py install-cli --artifacts "$CARGO_TARGET_DIR/rystic-ci"
+"""
+cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
+inputs = ["tools/ci/rystic_ci.py", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
+outputs = ["/target/rystic-ci/**"]
+requires = ["arch=x86_64", "os=linux"]
+default = false
+cost = "minutes"
+
+# Informational on relevant main changes; never grants credentials to a local
+# snapshot or fork. Unchanged inputs reuse the result rather than another lease.
+[[check]]
+name = "cloud-rystic"
+run = "bash tools/ci/run-rystic-ci.sh supported"
+needs = ["cloud-rystic-build"]
+cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
+inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
+outputs = ["/target/rystic-results/**"]
+requires = ["arch=x86_64", "os=linux"]
+isolation = "vm"
+secrets = ["RYSTIC_CI_TOKEN"]
+on = ["main", "dispatch"]
+default = false
+cost = "minutes"
+
+# Exercise unchanged pinned releases once a week as well as source changes.
+[[check]]
+name = "weekly-cloud-rystic"
+run = "bash tools/ci/run-rystic-ci.sh supported"
+needs = ["cloud-rystic-build"]
+cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
+inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
+outputs = ["/target/rystic-results/**"]
+requires = ["arch=x86_64", "os=linux"]
+isolation = "vm"
+secrets = ["RYSTIC_CI_TOKEN"]
+on = ["schedule:0 4 * * 0", "dispatch"]
+default = false
+cache = false
+cost = "minutes"
+
+# Known unsupported contracts remain real failures, separate from the supported
+# check: placeholder DOCX exports and Dropbox ID-addressed replacement.
+[[check]]
+name = "cloud-rystic-contracts"
+run = "bash tools/ci/run-rystic-ci.sh strict"
+needs = ["cloud-rystic-build"]
+cargo_packages = ["cloud-source-dropbox", "cloud-source-gdrive", "tilo-fs"]
+inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh", "crates/system/cloud-source-gdrive/tests/validate_docx.py"]
+outputs = ["/target/rystic-results/**"]
+requires = ["arch=x86_64", "os=linux"]
+isolation = "vm"
+secrets = ["RYSTIC_CI_TOKEN"]
+on = ["dispatch"]
+default = false
+cache = false
+cost = "minutes"
