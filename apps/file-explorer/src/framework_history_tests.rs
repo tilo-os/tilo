@@ -307,7 +307,9 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         original_heads,
         "file restore must not write incidental State"
     );
-    driver.key("Escape");
+    // The result lookup reports in the toolbar, not a modal. Escape here
+    // would leave History rather than dismiss a restore review.
+    wait(driver, "history-files-undo");
     driver.click_named("history-files-undo").unwrap();
     confirm(driver, "backend undo");
     transport.returned.wait(driver, 2);

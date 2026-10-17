@@ -121,6 +121,25 @@ fn an_open_drive_this_window_can_read_opens_here() {
 }
 
 #[test]
+fn sample_drive_opens_the_capture_folder_without_asking_the_shell() {
+    let capture = tempfile::tempdir().unwrap();
+    let mut files = FileExplorerWidget::new();
+    files.open_path(capture.path().to_path_buf());
+    files.debug_show_sample_drives();
+    files.set_drive_opener(refuse_open);
+    assert_eq!(files.drives.shown.len(), 2);
+    assert_eq!(
+        files.drives.shown[1].open_at.as_deref(),
+        capture.path().to_str()
+    );
+    let elsewhere = tempfile::tempdir().unwrap();
+    files.open_path(elsewhere.path().to_path_buf());
+    assert!(files.apply_command(FileCommand::OpenDrive("sdb1:7".into())));
+    assert_eq!(files.current_path(), capture.path());
+    assert!(files.status.is_none());
+}
+
+#[test]
 fn every_drive_is_a_resource_with_an_open_action() {
     // Drives are the host person's, like cloud accounts: published only
     // inside their own callback.

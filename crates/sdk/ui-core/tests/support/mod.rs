@@ -131,14 +131,7 @@ pub fn pump(relay: &mut MemoryRelay) {
     for (from, req) in pending {
         match req {
             CollabRequest::Document { mutation, .. } => {
-                let mutation = match mutation {
-                    tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
-                        collab_types::DocumentMutation::Incremental(data)
-                    }
-                    tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
-                        collab_types::DocumentMutation::Snapshot(data)
-                    }
-                };
+                let mutation = relay_mutation(mutation);
                 let event = document_event(&mutation, &from);
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
@@ -162,30 +155,10 @@ pub fn pump(relay: &mut MemoryRelay) {
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::FetchScrollback { artifact, .. } => {
-                // The test broker holds no op log — answer the requester
-                // with an empty, exhausted batch.
-                if let Some(inbox) = inboxes.get_mut(&from) {
-                    inbox.push_back(CollabEvent::ScrollbackBatch {
-                        artifact,
-                        ops: Vec::new(),
-                        decrypted_payloads: Vec::new(),
-                        oldest_seq: None,
-                        exhausted: true,
-                    });
-                }
+                respond_with_empty_scrollback(&mut inboxes, &from, artifact);
             }
             CollabRequest::RequestDocumentSnapshot => {
-                // Production chooses the lowest broker peer id other than the
-                // requester. This route-agnostic harness has one shared test
-                // channel, so use the lexical peer id for the same one-holder
-                // invariant.
-                if let Some(id) = peer_ids.iter().filter(|id| *id != &from).min()
-                    && let Some(inbox) = inboxes.get_mut(id)
-                {
-                    inbox.push_back(CollabEvent::DocumentSnapshotRequested {
-                        route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
-                    });
-                }
+                request_document_snapshot(&mut inboxes, &peer_ids, &from);
             }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 refuse_workspace_control(&mut inboxes, &from, session_id);
@@ -251,6 +224,51 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // fan out through another application's document channel.
             }
         }
+    }
+}
+
+fn relay_mutation(
+    mutation: tilo_ui::collaboration::DocumentMutation,
+) -> collab_types::DocumentMutation {
+    match mutation {
+        tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
+            collab_types::DocumentMutation::Incremental(data)
+        }
+        tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
+            collab_types::DocumentMutation::Snapshot(data)
+        }
+    }
+}
+
+fn respond_with_empty_scrollback(
+    inboxes: &mut PeerInboxes,
+    from: &str,
+    artifact: collab_types::ArtifactId,
+) {
+    // The test broker holds no op log — answer the requester
+    // with an empty, exhausted batch.
+    if let Some(inbox) = inboxes.get_mut(from) {
+        inbox.push_back(CollabEvent::ScrollbackBatch {
+            artifact,
+            ops: Vec::new(),
+            decrypted_payloads: Vec::new(),
+            oldest_seq: None,
+            exhausted: true,
+        });
+    }
+}
+
+fn request_document_snapshot(inboxes: &mut PeerInboxes, peer_ids: &[String], from: &str) {
+    // Production chooses the lowest broker peer id other than the
+    // requester. This route-agnostic harness has one shared test
+    // channel, so use the lexical peer id for the same one-holder
+    // invariant.
+    if let Some(id) = peer_ids.iter().filter(|id| id.as_str() != from).min()
+        && let Some(inbox) = inboxes.get_mut(id)
+    {
+        inbox.push_back(CollabEvent::DocumentSnapshotRequested {
+            route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+        });
     }
 }
 

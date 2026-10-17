@@ -1103,6 +1103,12 @@ mod durable_local_matrix {
     }
 
     include!("display_control_tests.rs");
+    include!("person_chat_rpc_tests.rs");
+    mod person_chat_sdk_owner {
+        include!("person_chat_sdk_owner_tests.rs");
+    }
+    include!("person_chat_selected_view_tests.rs");
+    include!("private_draft_rpc_tests.rs");
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");

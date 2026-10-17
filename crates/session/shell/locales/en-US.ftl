@@ -1,3 +1,13 @@
+person-quick-accessible-name = Message person
+person-quick-message = Message
+person-quick-title = { $person }
+person-quick-placeholder = Write a private message…
+person-quick-editor-name = Private message draft
+person-quick-send = Send private message
+person-quick-expand = Open private conversation
+person-quick-close = Close message draft
+person-quick-unavailable = Private conversation source unavailable. Your draft is kept.
+
 # Continuing on this desktop what you were just doing on another device.
 continuity-continue = Continue { $app } from { $device }
 continuity-continue-subtitle = Focus the tab you were just using on { $device }

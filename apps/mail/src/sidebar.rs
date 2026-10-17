@@ -43,16 +43,25 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
         .iter()
         .enumerate()
         .map(|(index, account)| {
-            // Only the active account's mailbox is loaded, so only its
-            // folders can say how much is waiting in them.
-            let loaded = index == state.accounts.active;
+            // The active account's folders count what the mailbox shows; an
+            // other account's inbox counts the unread mail kept or fetched
+            // for it.
+            let active = index == state.accounts.active;
             let items = AccountStore::folders_for(account)
                 .into_iter()
                 .map(|folder| {
                     let item = NavItem::new(folder_row_id(index, folder), folder.title())
                         .icon(folder.icon());
-                    if !loaded {
-                        return item;
+                    if !active {
+                        if folder != Folder::Inbox {
+                            return item;
+                        }
+                        return match u32_of_usize(
+                            state.mailbox.unread_count_of(&account.config.email, folder),
+                        ) {
+                            0 => item,
+                            unread => item.live_count(unread),
+                        };
                     }
                     match folder {
                         // Unread mail is what waits for the person.
@@ -158,7 +167,10 @@ mod tests {
             (unread > 0).then_some(ui::chrome::NavCount::Live(unread))
         );
         let other = &sections[1].items[0];
-        assert_eq!(other.count, None, "an unloaded account shows no counts");
+        assert_eq!(
+            other.count, None,
+            "an account with no mail kept or fetched shows no counts"
+        );
         assert_eq!(selected_row(&state), Some(folder_row_id(0, Folder::Inbox)));
     }
 }

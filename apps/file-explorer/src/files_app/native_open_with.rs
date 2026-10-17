@@ -44,11 +44,7 @@ impl Discovery {
         {
             return Some(request.request_id.clone());
         }
-        if !force {
-            if let Some((_, request)) = state.queued.iter().find(|(held, _)| held == path) {
-                return Some(request.request_id.clone());
-            }
-        } else {
+        if force {
             let removed = state
                 .queued
                 .iter()
@@ -59,6 +55,8 @@ impl Discovery {
             for id in removed {
                 state.origins.remove(&id);
             }
+        } else if let Some((_, request)) = state.queued.iter().find(|(held, _)| held == path) {
+            return Some(request.request_id.clone());
         }
         if !force
             && state
@@ -71,8 +69,10 @@ impl Discovery {
         if state.queued.len() >= MAX_PATHS {
             return None;
         }
+        let (invocation, origin) =
+            scope.map_or((None, None), |(scope, origin)| (Some(scope), Some(origin)));
         let request = discovery::Request {
-            invocation: scope.as_ref().map(|(scope, _)| scope.clone()),
+            invocation,
             protocol: discovery::PROTOCOL.into(),
             schema: 1,
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -82,7 +82,7 @@ impl Discovery {
             return None;
         }
         let id = request.request_id.clone();
-        if let Some((_, origin)) = scope {
+        if let Some(origin) = origin {
             state.origins.insert(id.clone(), origin);
         }
         if force {
@@ -189,10 +189,10 @@ impl Discovery {
             return false;
         };
         let mut state = self.0.borrow_mut();
-        if !state
+        if state
             .pending
             .as_ref()
-            .is_some_and(|(id, _, _, _)| id == request_id)
+            .is_none_or(|(id, _, _, _)| id != request_id)
         {
             return false;
         }

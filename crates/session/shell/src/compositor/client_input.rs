@@ -990,7 +990,7 @@ pub fn touch_target(
 /// keyboard, popups, fullscreen and floating windows before tiles, and a
 /// tile's subsurface before the tile.
 fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u64, (f64, f64))> {
-    if fb.host().agent_marker_pointer_at(point) {
+    if fb.host().agent_marker_pointer_at(point) || fb.host().person_marker_pointer_at(point) {
         return None;
     }
     let (x, y) = (&point.0, &point.1);
@@ -2170,7 +2170,10 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
         && (fb.host().dictation_pointer_at(state.client_input.cursor())
             || fb
                 .host()
-                .agent_marker_pointer_at(state.client_input.cursor()))
+                .agent_marker_pointer_at(state.client_input.cursor())
+            || fb
+                .host()
+                .person_marker_pointer_at(state.client_input.cursor()))
     {
         return None;
     }

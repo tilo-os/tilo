@@ -104,6 +104,7 @@ impl PresenceStatus {
 #[derive(Clone, Copy, Debug)]
 pub struct AvatarFace<'a> {
     name: &'a str,
+    #[cfg(feature = "local-daemons")]
     identity: &'a str,
     tint: Tint<'a>,
     image: Option<&'a peniko::ImageData>,
@@ -119,6 +120,7 @@ impl<'a> AvatarFace<'a> {
     pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
             name,
+            #[cfg(feature = "local-daemons")]
             identity,
             tint: Tint::Identity(identity),
             image: None,
@@ -1054,8 +1056,11 @@ mod tests {
             .with_widget_mut::<Avatar, _>(|avatar| (std::ptr::from_ref(avatar), avatar.get_rect()))
             .unwrap();
         name.set("Ada Lovelace".to_owned());
-        // Pump the actual retained widget binding and layout; a name edit must
-        // not rebuild the neighbouring editor or replace its presentation state.
+        // Run the root's production update/sync/layout passes before inspecting
+        // the widgets: with_widget_mut invokes its visitor before pumping a frame.
+        // A name edit must not rebuild the neighbouring editor or replace its
+        // presentation state.
+        harness.relayout();
         harness
             .with_widget_mut::<Avatar, _>(|avatar| {
                 assert_eq!(std::ptr::from_ref(avatar), original.0);
@@ -1077,6 +1082,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(feature = "local-daemons")]
     #[test]
     fn explicit_canonical_photo_is_drawn_by_shared_avatar() {
         let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();

@@ -539,6 +539,24 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 
     fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+        match &effect {
+            ChatEffect::AdoptPrivateDraft { token } => {
+                let invocation = cx
+                    .invocation()
+                    .ok_or("private draft requires original person invocation")?;
+                return ui::person_chat::with_invocation(Some(invocation), || {
+                    self.adopt_private_draft(token, invocation)
+                });
+            }
+            ChatEffect::OpenDirectConversation { .. }
+            | ChatEffect::SendDirectMessage { .. }
+            | ChatEffect::ReadDirectConversation { .. } => {
+                return ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.answer_effect(effect)
+                });
+            }
+            _ => {}
+        }
         if let ChatEffect::ReadWorkspace {
             workspace,
             message,

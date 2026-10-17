@@ -986,6 +986,10 @@ impl Relay {
                 .accept(
                     crate::rooms::ROOM_ADMIN_ALPN,
                     crate::rooms::RoomAdminProtocol::new(rooms.clone()),
+                )
+                .accept(
+                    tilo_relay_session::rooms::private::PRIVATE_ALPN,
+                    crate::rooms::PrivateProtocol::new(rooms.clone()),
                 );
         }
         for (alpn, handler) in additional_protocols {

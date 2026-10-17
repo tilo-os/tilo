@@ -208,12 +208,16 @@ impl ChatApp {
         }
         self.draw_header(scene, tf, tr, theme, hits);
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let width = composer_editor_width(field_w, theme, true);
+        let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect(tr, theme);
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
             push_clip(scene, tf, area);
-            self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
+            if self.direct_person.is_some() {
+                self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+            } else {
+                self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
+            }
             scene.pop_layer();
         }
         // Older messages fade at the header edge when more history is above.
@@ -689,8 +693,9 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let row_h = nav_row_height(theme);
-        let mut y = side.y0;
-        let mut first = true;
+        let mut y =
+            self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
+        let mut first = y <= side.y0;
         let mut workspaces = self.workspaces.clone();
         workspaces.sort_by(|left, right| left.name.cmp(&right.name));
         for workspace in workspaces {
@@ -760,7 +765,8 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let mut y = side.y0;
+        let mut y =
+            self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
         y = self.draw_channel_group(
             PaintCtx::new(scene, tf, tr, theme),
             presence,
@@ -830,6 +836,54 @@ impl ChatApp {
             }
         }
         self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits);
+    }
+
+    /// Keep private history reachable in both the global Inbox and workspace tree,
+    /// before a long channel list can consume the navigation's visible area.
+    fn draw_person_navigation(
+        &self,
+        paint: PaintCtx<'_>,
+        side: Rect,
+        mut y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        if self.person_contacts.is_empty() {
+            return y;
+        }
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let section_h = nav_section_height(theme, y <= side.y0);
+        chrome::paint_nav_section(
+            scene,
+            tf,
+            tr,
+            theme,
+            &NavSectionFace::new(
+                Rect::new(side.x0, y, side.x1, y + section_h),
+                &crate::i18n::t("chat-contacts-section"),
+            ),
+        );
+        y += section_h;
+        for contact in &self.person_contacts {
+            let row_h = nav_item_height(theme, false, false);
+            let row = Rect::new(side.x0, y, side.x1, y + row_h);
+            if row.y1 > side.y1 {
+                break;
+            }
+            let face = NavRowFace::new(row, &contact.display_name).state(SelectionState::new(
+                self.direct_person.as_deref() == Some(contact.public_key.as_str()),
+                self.hovered(row),
+                false,
+            ));
+            chrome::paint_nav_row(scene, tf, tr, theme, &face);
+            ChatApp::push_hit(hits, row, Hit::DirectPerson(contact.public_key.clone()));
+            y += row_h;
+        }
+        y
     }
 
     /// Broker-authenticated Agents are entry points into their task conversations.
@@ -1120,6 +1174,13 @@ impl ChatApp {
         } else {
             String::new()
         };
+        if let Some(peer) = &self.direct_person {
+            return HeaderIdentityText {
+                name: self.person_display_name(peer),
+                kind: Some(crate::i18n::t("chat-person-chat-private")),
+                context: String::new(),
+            };
+        }
         if let Some(agent) = &self.direct_agent {
             return HeaderIdentityText {
                 name: self
@@ -1182,10 +1243,18 @@ impl ChatApp {
         } else {
             h.x0 + self.chrome.gutter
         };
-        let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
+        let controls = if self.direct_person.is_some() {
+            h
+        } else {
+            self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits)
+        };
         let mut cluster_left =
             self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
-        for command in self.model_controls(&self.active_channel) {
+        for command in self
+            .model_controls(&self.active_channel)
+            .into_iter()
+            .filter(|_| self.direct_person.is_none())
+        {
             let caption = crate::i18n::t(&format!("chat-model-{command}"));
             let height = ButtonFace::height(ControlSize::Small, theme);
             let width =
@@ -1376,6 +1445,13 @@ impl ChatApp {
         h: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        if self.direct_person.is_some() {
+            return self.draw_private_header_buttons(
+                &mut PaintCtx::new(scene, tf, tr, theme),
+                h,
+                hits,
+            );
+        }
         let sp = &theme.tokens.spacing;
         let control = ButtonFace::height(ControlSize::Regular, theme);
         let cy = h.center().y;
@@ -1449,6 +1525,55 @@ impl ChatApp {
             (right, cy, control),
             hits,
         )
+    }
+
+    fn draw_private_header_buttons(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        h: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        let control = ButtonFace::height(ControlSize::Regular, paint.theme);
+        let gap = f64::from(paint.theme.tokens.spacing.s2);
+        let mut right = h.x1 - self.chrome.gutter;
+        if self.header_has_search(paint.text, paint.theme, h, control, true) {
+            let search = square(Point::new(right - control / 2.0, h.center().y), control);
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::icon_only(search, Icon::Search, &crate::i18n::t("chat-header-search"))
+                    .hovered(self.hovered(search)),
+            );
+            ChatApp::push_hit(hits, search, Hit::Search);
+            right = search.x0 - gap;
+        }
+        let window = square(Point::new(right - control / 2.0, h.center().y), control);
+        let label = crate::i18n::t(if self.conversation_surface {
+            "chat-agent-return"
+        } else {
+            "chat-agent-float"
+        });
+        Button::paint(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            &ButtonFace::icon_only(window, Icon::ExternalLink, &label)
+                .hovered(self.hovered(window)),
+        );
+        ChatApp::push_hit(hits, window, Hit::AgentWindow);
+        if self.conversation_surface {
+            return window.x0;
+        }
+        let drag = square(
+            Point::new(window.x0 - gap - control / 2.0, h.center().y),
+            control,
+        );
+        ui::surface::floating_drag_grip(paint.scene, paint.transform, drag, paint.theme.text_dim);
+        ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
+        drag.x0
     }
 
     fn header_has_search(
@@ -1556,6 +1681,93 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------------ messages
+    fn draw_person_messages(
+        &mut self,
+        mut paint: PaintCtx<'_>,
+        presence: &PresenceCtx,
+        area: Rect,
+    ) {
+        let gap = f64::from(paint.theme.tokens.spacing.s3);
+        let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
+        let style = paint.theme.text(TextRole::Caption);
+        let heading_h = self.chrome.body_line;
+        let mut heights = Vec::new();
+        for message in &self.person_messages {
+            let (previous, editor) = self
+                .person_body_views
+                .entry(message.id.clone())
+                .or_insert_with(|| (String::new(), crate::composer::MessageEditor::local()));
+            if previous != &message.text {
+                editor.set_text(&message.text);
+                previous.clone_from(&message.text);
+            }
+            heights.push(
+                editor.measure(width, f32::INFINITY, paint.theme, paint.text) + heading_h + gap,
+            );
+        }
+        let total: f64 = heights.iter().sum();
+        self.scroll_content = total;
+        self.scroll_viewport = area.height();
+        let overflow = (total - area.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, overflow);
+        let mut y = area.y0 - overflow + self.scroll;
+        if let Some(error) = &self.person_error {
+            let color = paint.theme.text_dim;
+            line_in(
+                &mut paint,
+                error,
+                &style,
+                color,
+                area.x0 + self.chrome.gutter,
+                area,
+                width,
+            );
+            return;
+        }
+        if self.person_messages.is_empty() {
+            let label = crate::i18n::t("chat-person-chat-empty-conversation");
+            let color = paint.theme.text_dim;
+            line_in(
+                &mut paint,
+                &label,
+                &style,
+                color,
+                area.x0 + self.chrome.gutter,
+                area,
+                width,
+            );
+        }
+        for (message, height) in self.person_messages.iter().zip(heights) {
+            let author = if Some(&message.author) == self.direct_person.as_ref() {
+                self.person_display_name(&message.author)
+            } else {
+                self.me.name.clone()
+            };
+            let heading = Rect::new(
+                area.x0 + self.chrome.gutter,
+                y,
+                area.x1 - self.chrome.gutter,
+                y + heading_h,
+            );
+            let color = paint.theme.text_dim;
+            line_in(
+                &mut paint, &author, &style, color, heading.x0, heading, width,
+            );
+            if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
+                let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
+                editor.layout(body, paint.theme, paint.text);
+                editor.draw(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    presence,
+                );
+            }
+            y += height;
+        }
+    }
+
     fn draw_empty_messages(&mut self, paint: PaintCtx<'_>, area: Rect) {
         let PaintCtx {
             scene,
@@ -2613,11 +2825,14 @@ impl ChatApp {
         let rect = self.composer_rect(tr, theme);
         // With no channel open a draft would have nowhere to go, so there is
         // no composer to type into.
-        if self.direct_agent.is_none() && self.channel(&self.active_channel).is_none() {
+        if self.direct_agent.is_none()
+            && self.direct_person.is_none()
+            && self.channel(&self.active_channel).is_none()
+        {
             self.composer_main.set_focus(false);
             return;
         }
-        if !self.can_participate() && self.direct_agent.is_none() {
+        if !self.can_participate() && self.direct_agent.is_none() && self.direct_person.is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
@@ -2665,7 +2880,7 @@ impl ChatApp {
             (
                 send_enabled,
                 focused,
-                self.direct_agent.is_none(),
+                self.direct_agent.is_none() && self.direct_person.is_none(),
                 interactive,
             ),
             Hit::FocusMain,
@@ -2679,7 +2894,7 @@ impl ChatApp {
         let key = ChatApp::draft_presence_key(&self.active_channel);
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
-        } else {
+        } else if self.direct_person.is_none() {
             Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
         }
     }

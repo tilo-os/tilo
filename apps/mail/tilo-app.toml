@@ -28,7 +28,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications"]
 
 [resources]
 kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]

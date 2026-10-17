@@ -300,6 +300,7 @@ pub(crate) enum Hit {
     CurrentContext,
     Channel(Id),
     Agent(Id),
+    DirectPerson(String),
     AgentWindow,
     AgentDragHandle,
     AgentIntent(AgentComposerIntent),
@@ -389,6 +390,7 @@ impl Hit {
             Self::Inbox => "chat.inbox".into(),
             Self::CurrentContext => "chat.current-context".into(),
             Self::Channel(id) => format!("chat.channel:{id}"),
+            Self::DirectPerson(key) => format!("chat.person:{key}"),
             Self::Agent(id) => format!("chat.agent:{id}"),
             Self::AgentWindow => "chat.agent-window".into(),
             Self::AgentDragHandle => "chat.agent-drag".into(),
@@ -742,6 +744,13 @@ pub struct ChatApp {
     capture_agent_presence: Option<PresenceCtx>,
     /// Agent navigation entry; the task client pins the conversation's exact run.
     pub(crate) direct_agent: Option<Id>,
+    pub(crate) direct_person: Option<String>,
+    pub(crate) person_subscription: Option<uuid::Uuid>,
+    pub(crate) person_workspace: Option<String>,
+    pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
+    pub(crate) person_messages: Vec<ui::person_chat::Message>,
+    pub(crate) person_error: Option<String>,
+    pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
     pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
     pub(crate) agent_tasks: AgentTaskClient,
     /// Retained direct-Agent conversations currently owned by the shared
@@ -1014,6 +1023,13 @@ impl ChatApp {
             room_agents: Vec::new(),
             capture_agent_presence: None,
             direct_agent: None,
+            direct_person: None,
+            person_subscription: None,
+            person_workspace: None,
+            person_contacts: Vec::new(),
+            person_messages: Vec::new(),
+            person_error: None,
+            person_body_views: HashMap::new(),
             agent_intents: ui::LocalState::new(HashMap::new()),
             agent_tasks: AgentTaskClient::new(),
             agent_surfaces: HashMap::new(),
@@ -1673,6 +1689,26 @@ impl ChatApp {
     fn conversation_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Role};
 
+        if let Some(peer) = &self.direct_person {
+            let rows = self
+                .person_messages
+                .iter()
+                .map(|message| {
+                    let author = if &message.author == peer {
+                        self.person_display_name(peer)
+                    } else {
+                        self.me.name.clone()
+                    };
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("{author}: {}", message.text))
+                        .with_hashed_key((&self.active_channel, &message.id, "private-message"))
+                })
+                .collect();
+            return AccessNode::new(Role::List)
+                .with_name(crate::i18n::t("chat-person-chat-private"))
+                .with_children(rows)
+                .with_hashed_key(("private-message-list", &self.active_channel));
+        }
         let conversation = self
             .messages
             .iter()
@@ -1723,6 +1759,7 @@ impl ChatApp {
     /// on offering a departed participant in the `@` picker and painting their
     /// colour behind a mention.
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
+        self.person_contacts = ui::person_chat::contacts();
         self.adopt_own_participant(presence);
         self.room_agents = presence
             .names
@@ -1810,6 +1847,7 @@ impl ChatApp {
         if !self.room_agents.iter().any(|known| known == agent) {
             return false;
         }
+        self.close_person_conversation();
         self.direct_agent = Some(agent.to_owned());
         self.active_channel =
             crate::record::agent_conversation_channel_id(&self.active_ws, agent).to_string();
@@ -1848,11 +1886,26 @@ impl ChatApp {
         view.former_ids.clone_from(&parent.former_ids);
         view.context_ws.clone_from(&parent.context_ws);
         view.active_ws.clone_from(&parent.active_ws);
-        view.direct_agent = Some(agent.to_owned());
-        view.active_channel =
-            crate::record::agent_conversation_channel_id(&parent.active_ws, agent).to_string();
+        view.direct_agent.clone_from(&parent.direct_agent);
+        view.person_subscription = parent.person_subscription;
+        view.direct_person = parent
+            .direct_person
+            .as_ref()
+            .filter(|peer| {
+                parent
+                    .person_subscription
+                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
+            })
+            .cloned();
+        view.person_workspace.clone_from(&parent.person_workspace);
+        view.person_contacts.clone_from(&parent.person_contacts);
+        view.person_messages.clone_from(&parent.person_messages);
+        view.person_error.clone_from(&parent.person_error);
+        view.active_channel.clone_from(&parent.active_channel);
         view.agent_intents = parent.agent_intents.clone();
-        view.agent_tasks.observe(&view.active_ws.clone(), agent);
+        if view.direct_agent.is_some() {
+            view.agent_tasks.observe(&view.active_ws.clone(), agent);
+        }
         view.conversation_surface = true;
         view.thread_open = None;
         view.left_flap.snap(false);
@@ -1865,10 +1918,19 @@ impl ChatApp {
     }
 
     pub(crate) fn float_agent_conversation(&mut self) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
+        let Some(agent) = self
+            .direct_agent
+            .clone()
+            .or_else(|| self.direct_person.clone())
+        else {
             return false;
         };
-        if !self.direct_agent_is_available() || self.rect.area() <= 0.0 {
+        let available = if self.direct_person.is_some() {
+            self.main_composer_can_edit()
+        } else {
+            self.direct_agent_is_available()
+        };
+        if !available || self.rect.area() <= 0.0 {
             return false;
         }
         let channel = self.active_channel.clone();
@@ -1896,7 +1958,7 @@ impl ChatApp {
         true
     }
 
-    fn leave_floated_agent_route(&mut self) {
+    pub(crate) fn leave_floated_agent_route(&mut self) {
         let fallback = self
             .channels
             .iter()
@@ -1909,6 +1971,7 @@ impl ChatApp {
             .min_by_key(|channel| channel.order)
             .map(|channel| channel.id.clone());
         self.direct_agent = None;
+        self.close_person_conversation();
         self.thread_open = None;
         if let Some(channel) = fallback {
             self.active_channel = channel;
@@ -1922,7 +1985,11 @@ impl ChatApp {
     }
 
     pub(crate) fn begin_agent_conversation_drag(&mut self, origin: Point) {
-        let Some(agent) = self.direct_agent.clone() else {
+        let Some(agent) = self
+            .direct_agent
+            .clone()
+            .or_else(|| self.direct_person.clone())
+        else {
             return;
         };
         self.agent_conversation_drag = Some(AgentConversationDrag {
@@ -1978,7 +2045,7 @@ impl ChatApp {
         }
     }
 
-    fn restore_attached_agent_surface(&mut self, channel: &str) {
+    pub(crate) fn restore_attached_agent_surface(&mut self, channel: &str) {
         let Some(mut surface) = self.agent_surfaces.remove(channel) else {
             return;
         };
@@ -1991,21 +2058,48 @@ impl ChatApp {
             surface.move_editor_to_parent(self);
             self.set_composer_focus();
         }
-        if !surface.is_closed() || !route_is_active {
+        // A returned person view is now owned by the parent. Do not retain an
+        // invisible attached copy (and its subscription) after navigating away.
+        let person_returned = attached
+            && route_is_active
+            && matches!(
+                surface.conversation,
+                crate::composer::ConversationKey::Person { .. }
+            );
+        if (!surface.is_closed() || !route_is_active) && !person_returned {
             self.agent_surfaces.insert(channel.to_owned(), surface);
         }
     }
 
     fn restore_retained_agent_route(&mut self, channel: &str) {
-        let Some(surface) = self.agent_surfaces.get(channel) else {
+        if !self.agent_surfaces.contains_key(channel) {
             return;
-        };
-        let Some(agent) = surface.view.direct_agent.clone() else {
+        }
+        self.close_person_conversation();
+        let Some(surface) = self.agent_surfaces.get(channel) else {
             return;
         };
         self.active_ws.clone_from(&surface.view.active_ws);
         channel.clone_into(&mut self.active_channel);
-        self.direct_agent = Some(agent);
+        self.direct_agent.clone_from(&surface.view.direct_agent);
+        self.person_subscription = surface.view.person_subscription;
+        self.direct_person = surface
+            .view
+            .direct_person
+            .as_ref()
+            .filter(|peer| {
+                surface
+                    .view
+                    .person_subscription
+                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
+            })
+            .cloned();
+        self.person_workspace
+            .clone_from(&surface.view.person_workspace);
+        self.person_contacts
+            .clone_from(&surface.view.person_contacts);
+        self.person_messages
+            .clone_from(&surface.view.person_messages);
         self.inbox_open = false;
         self.thread_open = None;
         self.focus = Focus::Main;
@@ -2142,6 +2236,13 @@ impl ChatApp {
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
+        if let Some(peer) = &self.direct_person {
+            return self
+                .person_contacts
+                .iter()
+                .any(|contact| &contact.public_key == peer)
+                && self.person_error.is_none();
+        }
         self.direct_agent.as_ref().map_or_else(
             || self.can_participate(),
             |_| {
@@ -2424,6 +2525,7 @@ impl ChatApp {
             || self.rename.is_some()
             || !self.can_participate()
             || self.direct_agent.is_some()
+            || self.direct_person.is_some()
         {
             return None;
         }
@@ -2503,6 +2605,7 @@ impl ChatApp {
         }
         // Keep the active channel valid (e.g. after a workspace switch).
         if self.direct_agent.is_none()
+            && self.direct_person.is_none()
             && self
                 .channel(&self.active_channel)
                 .map(|c| c.workspace.clone())
@@ -2568,8 +2671,11 @@ impl ChatApp {
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
-        // Point each composer at its surface's draft, the person's own.
-        if self.direct_agent.is_some() {
+        // Point each composer at its surface's draft; the editors read it on
+        // their next sync (`sync_composers`), keeping the caret while typing.
+        if self.direct_person.is_some() {
+            self.sync_person_draft();
+        } else if self.direct_agent.is_some() {
             self.sync_agent_route();
         } else {
             self.composer_main.set_key(&self.active_channel);
@@ -2592,6 +2698,10 @@ impl ChatApp {
             },
         );
         self.composer_main.set_placeholder(&placeholder);
+        if self.direct_person.is_some() {
+            self.composer_main
+                .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
+        }
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
@@ -2710,7 +2820,7 @@ impl ChatApp {
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&mut self, doc: &AutoCommit) {
-        if self.active_channel.is_empty() || !self.timeline_at_end {
+        if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
         let chat = crate::projection::read(doc);
@@ -3264,6 +3374,7 @@ impl ChatApp {
                             channel.id == self.active_channel,
                         )
                     }
+                    Hit::DirectPerson(key) => (self.person_display_name(key), Role::Button, false),
                     Hit::Agent(agent) => (
                         format!(
                             "{}, {}",
@@ -3782,6 +3893,7 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.canonical_dirty |= surface.view.agent_tasks.pump();
             surface.view.sync_agent_route();
             surface.view.settle_agent_drafts();
+            surface.view.refresh_person_conversation();
             if let Some(agent) = surface.view.direct_agent.clone() {
                 surface
                     .view
@@ -3853,6 +3965,7 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.canonical_dirty |= surface.view.agent_tasks.pump();
             surface.view.sync_agent_route();
             surface.view.settle_agent_drafts();
+            surface.view.refresh_person_conversation();
             if let Some(agent) = surface.view.direct_agent.clone() {
                 surface
                     .view
@@ -4166,6 +4279,7 @@ impl Widget for ChatApp {
         }
         self.settle_attachment_picker();
         self.settle_attachment_import();
+        self.refresh_person_conversation();
         self.canonical_dirty |= self.agent_tasks.pump();
         self.settle_agent_drafts();
         if let Some(agent) = self.direct_agent.clone() {
@@ -4547,6 +4661,15 @@ impl Widget for ChatApp {
         let mut children: Vec<AccessNode> = controls;
         children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
+        if let Some(peer) = &self.direct_person {
+            children.push(
+                AccessNode::new(Role::Heading { level: 1 })
+                    .with_name(self.person_display_name(peer))
+                    .with_description(crate::i18n::t("chat-person-chat-private"))
+                    .with_bounds(self.header_rect())
+                    .with_hashed_key(("person-conversation-heading", &self.active_channel)),
+            );
+        }
         if let Some(agent) = self.direct_agent.as_deref() {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(self.header_identity_text().name)
@@ -4700,6 +4823,9 @@ impl Widget for ChatApp {
         }
         if matches!(hit, Hit::AgentStop) {
             return self.stop_agent_task();
+        }
+        if matches!(hit, Hit::Send) && self.direct_person.is_some() {
+            return self.send_person_focused();
         }
         if matches!(hit, Hit::Send) && self.direct_agent.is_some() {
             return self.send_agent_focused(state);

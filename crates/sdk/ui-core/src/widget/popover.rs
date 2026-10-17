@@ -108,6 +108,8 @@ impl MenuMetrics {
 pub struct Popover<C: Widget = NoContent> {
     content: C,
     options: Option<Options>,
+    /// Controls paint their own surfaces; the anchor host adds no panel.
+    transparent: bool,
     /// Accessible name of an option menu (e.g. "Refresh interval").
     label: Option<String>,
     open: bool,
@@ -156,6 +158,7 @@ impl<C: Widget> Popover<C> {
         Self {
             content,
             options,
+            transparent: false,
             label: None,
             open: false,
             anchor: Rect::ZERO,
@@ -194,6 +197,15 @@ impl<C: Widget> Popover<C> {
     #[must_use]
     pub fn confined_to_viewport(mut self) -> Self {
         self.confine_to_viewport = true;
+        self
+    }
+
+    /// Present individually surfaced controls without a surrounding panel.
+    /// Placement, focus, accessibility and dismissal remain the ordinary
+    /// popover contract. Option menus always retain their panel material.
+    #[must_use]
+    pub fn transparent_content(mut self) -> Self {
+        self.transparent = self.options.is_none();
         self
     }
 
@@ -334,7 +346,9 @@ impl<C: Widget> Popover<C> {
     }
 
     fn padding(&self, theme: &Theme) -> f64 {
-        if self.options.is_some() {
+        if self.transparent {
+            0.0
+        } else if self.options.is_some() {
             MenuMetrics::of(theme).pad
         } else {
             f64::from(theme.tokens.spacing.s4)
@@ -1081,11 +1095,17 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
         let viewport = self.room(theme);
         self.place_in(viewport, text_renderer, theme);
-        floating_surface::paint(scene, transform, self.rect, theme);
+        if !self.transparent {
+            floating_surface::paint(scene, transform, self.rect, theme);
+        }
         if self.options.is_some() {
             self.paint_options(scene, transform, text_renderer, theme);
         } else {
-            let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+            let on_panel = if self.transparent {
+                theme.clone()
+            } else {
+                theme.on_ground(crate::chrome::panel_ground(theme))
+            };
             // A hosted content follows the panel on the host's next layout
             // pass; until then it is drawn where it belongs.
             let shift = self.content_target(theme) - self.content_origin;

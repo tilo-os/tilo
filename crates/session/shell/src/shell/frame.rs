@@ -1772,6 +1772,12 @@ impl FrameBuilder {
     fn palette_focus_target(&self) -> Option<NodeId> {
         // The anchored composer is a shared popover, and its editor owns
         // typing instead of the mode picker that precedes it in DFS.
+        if self.host.person_quick_composer_open() && !self.host.modal_sheet_owns_keyboard() {
+            return self.node_map.iter().find_map(|(&node, &widget)| {
+                // SAFETY: this map belongs to the current live tree.
+                (unsafe { (*widget).test_id() } == Some("person-quick-editor")).then_some(node)
+            });
+        }
         if self.host.agent_quick_composer_open() && !self.host.modal_sheet_owns_keyboard() {
             return self.node_map.iter().find_map(|(&node, &widget)| {
                 // SAFETY: this map belongs to the current live tree.
@@ -1851,6 +1857,7 @@ impl FrameBuilder {
         if !self.palette_focus_active
             || self.host.palette_visible()
             || self.host.agent_quick_composer_open()
+            || self.host.person_quick_composer_open()
         {
             return false;
         }
@@ -5541,6 +5548,7 @@ impl FrameBuilder {
             self.focus_first(focus);
         } else if self.host.palette_visible()
             || self.host.agent_quick_composer_open()
+            || self.host.person_quick_composer_open()
             || self.palette_focus_active
         {
             // Opening or closing an overlay must update the external seat
