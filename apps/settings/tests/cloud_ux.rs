@@ -657,15 +657,16 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
             .header("Content-Type", "application/json")
             .body(r#"{"emailAddress":"ada@example.org"}"#),
     ]);
+    // Both services share one registration, as required for one consent.
+    let mut clients = account_custody::ClientTable::default();
+    clients.google.client_id = "google-services-client".into();
+    clients.google.scopes.files = vec!["https://www.googleapis.com/auth/drive".into()];
+    clients.google.scopes.mail = vec!["https://mail.google.com/".into()];
     let custodian = profile
         .root
         .custodian()
+        .with_client_table(clients)
         .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
-        .with_provider(
-            account_custody::OAuthCloud::GoogleDrive,
-            auth.provider(),
-            "drive-client",
-        )
         .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()))
         .with_storage_config(
             account_custody::OAuthCloud::GoogleDrive,

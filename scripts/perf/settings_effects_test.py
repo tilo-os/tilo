@@ -5,7 +5,7 @@ from settings_effects import ALL_CATEGORIES, Z_CATEGORIES, validate_settings_typ
 
 class SettingsEffectsTests(unittest.TestCase):
     def fixture(self):
-        a=dict(app='dev.tilo.settings',search_id='settings.search',ready=True,
+        a=dict(app='so.tilo.settings',search_id='settings.search',ready=True,
           local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
           search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
           rendered_result_count=len(ALL_CATEGORIES),rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
@@ -24,22 +24,58 @@ class SettingsEffectsTests(unittest.TestCase):
         from pathlib import Path
         import re
         source=(Path(__file__).resolve().parents[2]/'apps/settings/src/categories.rs').read_text()
-        def method(name,next_name):
-            body=source.split('pub fn '+name+'(',1)[1].split('pub fn '+next_name+'(',1)[0]
-            return dict(re.findall(r'Category::(\w+)\s*=>\s*(?:\{\s*)?"([^"\n]*)"',body))
-        # Section::label appears first; restrict to the Category implementation.
         category_source=source.split('impl Category {',1)[1]
-        label_body=category_source.split('pub fn label(',1)[1].split('pub fn subtitle(',1)[0]
-        labels=dict(re.findall(r'Category::(\w+)\s*=>\s*"([^"\n]*)"',label_body))
-        subtitles=method('subtitle','icon')
-        slugs=dict(re.findall(r'Category::(\w+)\s*=>\s*"([^"\n]*)"',source.split('pub fn slug(',1)[1].split('#[cfg(test)]',1)[0]))
+        slugs=dict(re.findall(r'Category::(\w+)\s*=>\s*"([^"\n]*)"',category_source.split('pub fn slug(',1)[1].split('#[cfg(test)]',1)[0]))
         order=re.findall(r'Category::(\w+)',category_source.split('pub const ALL:',1)[1].split('];',1)[0])
-        constants={name:re.findall(r'"([^"\n]*)"',body) for name,body in re.findall(r'const (\w+_KEYWORDS):[^=]*=\s*&\[(.*?)\];',source,re.S)}
-        keyword_names=dict(re.findall(r'Category::(\w+)\s*=>\s*(\w+_KEYWORDS)',source))
-        expected=[slugs[name] for name in order if 'z' in labels[name].lower() or 'z' in subtitles[name].lower()
-                  or any('z' in key or key in 'z' for key in constants[keyword_names[name]])]
-        self.assertEqual(list(ALL_CATEGORIES),[slugs[name] for name in order])
+        store=Path(__file__).resolve().parents[2]/'crates/system/settings-store'
+        index=(store/'src/index.rs').read_text()
+        pages=re.findall(r'Page\s*\{\s*slug:\s*"([^"]+)"\s*,?\s*\}',index.split('pub const PAGES:',1)[1].split('];',1)[0])
+        settings=re.findall(r's\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\s*,?\s*\)',index.split('pub const SETTINGS:',1)[1].split('];',1)[0])
+        locale_paths=re.findall(r'include_str!\("([^"\n]+)"\)',index.split('pub const CATALOGUES:',1)[1].split('];',1)[0])
+        self.assertTrue(pages)
+        self.assertTrue(settings)
+        self.assertTrue(locale_paths)
+        self.assertEqual(len(pages),len(set(pages)))
+        self.assertEqual(pages,[slugs[name] for name in order])
+        catalogues=[dict(re.findall(r'^([^#\s][^=]*?) = (.*)$',(store/'src'/path).read_text(),re.M)) for path in locale_paths]
+        def key(value):return value.replace('_','-').replace('.','-')
+        def word_start(text):
+            text=text.lower()
+            return any(char=='z' and (at==0 or not text[at-1].isalnum()) for at,char in enumerate(text))
+        expected=[]
+        for page in pages:
+            title='settings-index-page-'+key(page)
+            keys=[title,title+'-words']
+            keys += ['settings-index-setting-'+key(identity)+suffix
+                     for identity,owner,_ in settings if owner==page for suffix in ('','-words')]
+            # NavList matches labels by substring, but search terms only at
+            # word starts. Terms include every language; subtitles use the
+            # default English locale of this benchmark's isolated launch.
+            terms=[catalogue[k] for catalogue in catalogues for k in keys]
+            terms.append(catalogues[0][title+'-subtitle'])
+            if 'z' in catalogues[0][title].lower() or any(word_start(term) for term in terms):
+                expected.append(page)
+        self.assertEqual(list(ALL_CATEGORIES),pages)
         self.assertEqual(list(Z_CATEGORIES),expected)
+
+    def test_observations_require_current_catalogue_identity_and_exact_results(self):
+        s,e,f=self.fixture()
+        self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
+        self.assertEqual(validate_settings_frame_states(s,self.lines(e,f)),3)
+        for ids in [list(Z_CATEGORIES)[::-1],list(Z_CATEGORIES)[:-1],
+                    list(Z_CATEGORIES)+['keyboard'],list(Z_CATEGORIES)+[Z_CATEGORIES[0]],
+                    ['keyboard','appearance','accessibility','time_date']]:
+            with self.subTest(ids=ids):
+                broken=copy.deepcopy(e)
+                broken[2]['before'].update(rendered_category_ids=ids,rendered_result_count=len(ids))
+                with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
+                frames=copy.deepcopy(f)
+                frames[1]['state'].update(rendered_category_ids=ids,rendered_result_count=len(ids))
+                with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,frames))
+        for app in ['dev.tilo.settings','other']:
+            broken=copy.deepcopy(e);broken[1]['after']['app']=app
+            with self.subTest(app=app),self.assertRaises(ValueError):
+                validate_settings_typing(s,self.lines(broken))
 
     def test_exact_and_coalesced_transitions_validate_through_postdraw(self):
         with self.subTest(phase='exact transition and postdraw'):

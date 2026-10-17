@@ -720,15 +720,12 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
         objects: &mut Vec<StagedObject>,
     ) -> Result<PathBuf, String> {
         cancelled(self.cancel)?;
-        valid_name(&entry.name).map_err(|error| format!("{}: {error}", entry.name))?;
+        valid_name(&entry.name)?;
         if entry.kind == ImportKind::Unsupported {
-            return Err(format!("{}: cloud entry cannot be exported", entry.name));
+            return Err("cloud entry cannot be exported".into());
         }
         if self.active.len() >= 128 || !self.active.insert(entry.id.clone()) {
-            return Err(format!(
-                "{}: cloud folder hierarchy is cyclic or too deep",
-                entry.name
-            ));
+            return Err("cloud folder hierarchy is cyclic or too deep".into());
         }
         let result = (|| {
             for index in 0..10_000 {
@@ -806,7 +803,7 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
             Err("too many local name collisions".into())
         })();
         self.active.remove(&entry.id);
-        result.map_err(|error| format!("{}: {error}", entry.name))
+        result
     }
 
     fn folder(
@@ -837,7 +834,8 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
                 return Err("unexpected cloud folder response".into());
             };
             for child in entries {
-                self.copy_entry(client, dir, &child, objects)?;
+                self.copy_entry(client, dir, &child, objects)
+                    .map_err(|error| format!("{}: {error}", child.name))?;
             }
             match next_offset {
                 None => return Ok(()),
