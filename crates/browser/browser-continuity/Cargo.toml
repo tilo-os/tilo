@@ -27,7 +27,6 @@ rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 cap-primitives = { version = "3.4.6", optional = true }
 cap-fs-ext = { version = "3.4.6", optional = true }
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
@@ -37,3 +36,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
