@@ -750,8 +750,9 @@ impl Room {
         &mut self,
         author: &str,
         now_ms: i64,
-        invoke: Invoke<ChatPart>,
+        invoke: impl Into<Invoke<ChatPart>>,
     ) -> Result<u64, DoorError> {
+        let invoke = invoke.into();
         let chain = self
             .parts
             .as_ref()
@@ -881,10 +882,11 @@ pub fn apply_part_doc(
     part: &mut AutoCommit,
     chat: &Chat,
     author: &str,
-    invoke: Invoke<ChatPart>,
+    invoke: impl Into<Invoke<ChatPart>>,
 ) -> Result<(), DoorError> {
     use automerge::ReadDoc as _;
     use ui::framework::Chained as _;
+    let invoke = invoke.into();
     if let Some(refusal) = invoke.refusal() {
         return Err(DoorError::InvalidArguments(refusal.to_owned()));
     }
