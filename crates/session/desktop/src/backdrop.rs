@@ -272,13 +272,31 @@ impl DesktopBackdrop {
         // covers the gradient entirely, so the gradient is not drawn under it.
         if let Some(image) = self.current_wallpaper() {
             self.drawn_wallpaper = Some(image.data.id());
+            let blur = theme.tokens.colors.surfaces.material_blur_px;
+            let mut pieces = Vec::new();
             for display in self.display_rects() {
                 draw_cover_image(out_scene, out_transform, &display, &image);
+                // What a docked tab strip frosts with: this display's
+                // picture blurred, made once per wallpaper and size.
+                if let Some(blurred) = ui::backdrop::desktop::blurred_cover(&image, display, blur) {
+                    pieces.push(ui::backdrop::desktop::image_piece(
+                        out_transform,
+                        display,
+                        blurred,
+                    ));
+                }
             }
+            ui::backdrop::desktop::publish(pieces);
             return;
         }
         self.drawn_wallpaper = None;
         let stops = ground_stops(theme);
+        // The gradient is already as smooth as its blur would be.
+        ui::backdrop::desktop::publish(vec![ui::backdrop::desktop::smooth_piece(
+            out_transform,
+            self.rect,
+            Brush::Gradient(self.gradient(stops)),
+        )]);
         // Bit-exact comparison, not "close enough": any change (even one
         // ULP, from a layout recompute) must invalidate the cached scene,
         // so a tolerant comparison would let a real resize slip through
@@ -312,8 +330,8 @@ impl DesktopBackdrop {
         self.cache_stops = Some(stops);
     }
 
-    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, stops: (Color, Color)) {
-        let gradient = Gradient::new_linear(
+    fn gradient(&self, stops: (Color, Color)) -> Gradient {
+        Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x1, self.rect.y1),
         )
@@ -329,7 +347,11 @@ impl DesktopBackdrop {
                     color: stops.1.into(),
                 },
             ][..],
-        );
+        )
+    }
+
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, stops: (Color, Color)) {
+        let gradient = self.gradient(stops);
         scene.fill(
             Fill::NonZero,
             transform,

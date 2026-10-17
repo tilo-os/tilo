@@ -828,7 +828,7 @@ impl TabBar {
             ..
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
-        let text_dim = theme.tokens.colors.text_dim;
+        let text_dim = self.idle_ink(theme);
         // The cursor-following copy suppresses hover, but carries the primary
         // label ink so an inactive source stays readable in motion.
         let text_color = if is_active || is_hover || pill.suppress_hover {
@@ -1245,7 +1245,7 @@ impl TabBar {
             ..
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
-        let text_dim = theme.tokens.colors.text_dim;
+        let text_dim = self.idle_ink(theme);
         let close_rect_target = self.close_rects.get(i).copied().unwrap_or(Rect::ZERO);
         let is_held = self.held_ids.contains_key(&t.id);
         if !(close_affordance_visible(look, is_pinned || is_held) && close_rect_target.area() > 0.0)
@@ -1334,7 +1334,7 @@ impl TabBar {
             return;
         }
         let chip_tint = chip_hover_tint(self.ground(theme), ACTION_HOVER_TINT_ALPHA);
-        let icon_idle = theme.tokens.colors.text_dim;
+        let icon_idle = self.idle_ink(theme);
         let icon_active = theme.tokens.colors.text_primary;
 
         let max_rect_target = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
@@ -1439,11 +1439,10 @@ impl TabBar {
         transform: Affine,
         c: &ClosingTab,
         tr: &mut TextRenderer,
-        (theme, ground): (&Theme, vello::peniko::Color),
+        (theme, ground, text_dim): (&Theme, vello::peniko::Color, vello::peniko::Color),
     ) {
         let r = c.pill_rect;
         let radius = f64::from(theme.tokens.radii.control);
-        let text_dim = theme.tokens.colors.text_dim;
         // Hovered tier, not inactive: active-id already shifted at close-start, and
         // an inactive pill is fully transparent, which would leave the title and ×
         // floating on the bar for the fade.
@@ -2620,6 +2619,26 @@ impl TabBar {
         }
     }
 
+    /// The ink of an idle tab's title and glyphs: the dim tier, unless the
+    /// bar stands on a frosted strip, whose ground is the desktop behind it
+    /// under the tint. There it is the ink that holds on the tint over black
+    /// and over white alike, so a bright wallpaper never washes it out.
+    fn idle_ink(&self, theme: &Theme) -> vello::peniko::Color {
+        let colors = &theme.tokens.colors;
+        if !(self.on_strip && crate::chrome::selector_finish(theme).translucent()) {
+            return colors.text_dim;
+        }
+        let grounds = crate::tokens::SelectorFinish::frosted_extremes(
+            self.ground(theme),
+            colors.surfaces.material_opacity,
+        );
+        colors.ink_on_any(
+            &grounds,
+            colors.text_dim,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
+    }
+
     /// The ground this bar's tabs stand on: the docked strip's, or the
     /// window's.
     fn ground(&self, theme: &Theme) -> vello::peniko::Color {
@@ -2725,7 +2744,7 @@ impl TabBar {
         } else if is_active {
             theme.tokens.colors.text_primary
         } else {
-            theme.tokens.colors.text_dim
+            self.idle_ink(theme)
         })
     }
 
@@ -2751,7 +2770,7 @@ impl TabBar {
         Some(if is_active {
             theme.tokens.colors.text_primary
         } else {
-            theme.tokens.colors.text_dim
+            self.idle_ink(theme)
         })
     }
 }
@@ -4007,6 +4026,7 @@ impl TabBar {
             return;
         }
         let ground = self.ground(theme);
+        let idle = self.idle_ink(theme);
         // `CLOSE_FADE_MS` is a small fixed positive animation-timing constant.
         #[allow(
             clippy::cast_possible_truncation,
@@ -4053,7 +4073,7 @@ impl TabBar {
                 ),
                 Affine::translate((-centre.x, -centre.y)),
             );
-            Self::draw_closing_pill(scene, close_transform, c, tr, (theme, ground));
+            Self::draw_closing_pill(scene, close_transform, c, tr, (theme, ground, idle));
             scene.pop_layer();
         }
     }
@@ -8724,5 +8744,36 @@ mod tests {
             !focused.contains(&you),
             "in primary ink: your colour is for keyboard focus rings, carets and selection"
         );
+    }
+
+    /// Idle tab titles on the frosted strip stay legible over any desktop:
+    /// over the brightest and the darkest backdrop the tint can sit on.
+    #[test]
+    fn idle_titles_on_the_frosted_strip_read_over_any_desktop() {
+        use crate::a11y::contrast_ratio;
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let mut bar = TabBar::new("g", vec![TabDescriptor::new(1, "A")], 1);
+            bar.set_on_strip(true);
+            let ink = bar.idle_ink(&theme);
+            if !crate::chrome::selector_finish(&theme).translucent() {
+                assert_eq!(
+                    ink, theme.tokens.colors.text_dim,
+                    "{}: a solid strip keeps the dim tier",
+                    theme.name
+                );
+                continue;
+            }
+            for ground in crate::tokens::SelectorFinish::frosted_extremes(
+                crate::chrome::strip_ground(&theme),
+                theme.tokens.colors.surfaces.material_opacity,
+            ) {
+                let ratio = contrast_ratio(ink, ground);
+                assert!(
+                    ratio >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    "{}: an idle title reads {ratio:.2}:1 on the frosted strip",
+                    theme.name
+                );
+            }
+        }
     }
 }

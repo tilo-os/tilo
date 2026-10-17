@@ -118,7 +118,7 @@ The document is `ThemeDocument`
   "motion": { "character": 1.0 },
   "material": {
     "blur": 24.0, "tint_opacity": 0.72,
-    "selector": { "strip": "opaque", "rim_span": 0.55, "rim_alpha": 0.22, "hover_alpha": 0.75 }
+    "selector": { "strip": "floating", "rim_span": 0.55, "rim_alpha": 0.22, "hover_alpha": 0.75 }
   }
 }
 ```
