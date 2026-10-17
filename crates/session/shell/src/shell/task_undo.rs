@@ -230,10 +230,13 @@ const MAX_KEPT: usize = 32;
 
 impl TaskUndos {
     /// Start undoing `task`'s run in `room` as the person at the screen,
-    /// reached through `door`.
+    /// through `broker`. Everything that waits, admitting the person's
+    /// session included, runs on the undo's own thread: the caller may hold
+    /// the workspace that admission reads.
     pub(crate) fn start(
         &self,
-        door: (Arc<dyn ActionHost + Send + Sync>, Caller),
+        broker: crate::shell::collab_broker::AppActionBroker,
+        room: String,
         invocation: uuid::Uuid,
         task: String,
         steps: Vec<(String, String)>,
@@ -262,11 +265,16 @@ impl TaskUndos {
         std::thread::Builder::new()
             .name("tilo-task-undo".into())
             .spawn(move || {
-                let (host, caller) = door;
-                let outcome = undo_task_run(host.as_ref(), &caller, &task, &steps, UNDO_TIMEOUT)
-                    .map(|undone| {
-                        tracing::info!(task, undone, "undid a task's run");
-                    });
+                let outcome = crate::shell::certified_action_session::CertifiedActionSession::open(
+                    broker, &room, None,
+                )
+                .and_then(|session| {
+                    let (host, caller) = session.door();
+                    undo_task_run(host.as_ref(), &caller, &task, &steps, UNDO_TIMEOUT)
+                })
+                .map(|undone| {
+                    tracing::info!(task, undone, "undid a task's run");
+                });
                 if let Ok(mut results) = results.lock() {
                     results.insert(invocation, Some(outcome));
                 }
