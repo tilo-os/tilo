@@ -980,6 +980,8 @@ each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-image-{arch}"
 run = "bash tools/ci/publish/os-image.sh build {arch} /target/publish/os/{arch}"
 inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "keys/**", "docs/developers/tasks/**", "scripts/**", "tools/apps/**", "tools/policy/**", "tools/protocols/**", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/font-catalog.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "tools/ci/measure.sh", "tools/ci/install-xwayland-satellite.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
+# The RPM set of this tree, which the build installs from while no snapshot of it is published.
+needs = ["image-rpms-{arch}"]
 outputs = ["/target/publish/os/{arch}/image.oci.tar", "/target/publish/os/{arch}/digest", "/target/publish/os/{arch}/revision"]
 # The image is labelled with its commit.
 git = true
