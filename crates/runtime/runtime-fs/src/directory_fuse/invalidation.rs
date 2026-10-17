@@ -1,6 +1,6 @@
 //! Kernel dentry eviction, never native pin eviction. Only actual FORGET lets
 //! the filesystem release lookup custody. Notifications run outside callbacks
-//! and table locks; the same managed worker's NamespaceOwner owns kernel stop.
+//! and table locks; the same managed worker's `NamespaceOwner` owns kernel stop.
 use super::{Node, ROOT, TRIM_AT, TRIM_TO, Table};
 use fuser::{INodeNo, Notifier};
 use std::{
@@ -22,7 +22,7 @@ pub struct InvalidationControl {
 }
 /// A stop request for the same FUSE process, not an observed kernel retirement.
 /// Drop never waits on a notifier syscall that could require FUSE dispatch.
-/// The canonical NamespaceOwner must still stop/reap the worker process.
+/// The canonical `NamespaceOwner` must still stop/reap the worker process.
 pub struct InvalidationWorker {
     stop: Arc<AtomicBool>,
     control: InvalidationControl,
