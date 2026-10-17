@@ -2910,3 +2910,46 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
         collab_types::Role::Editor
     );
 }
+
+/// The governor records when the room admitted a person, once: a role
+/// change keeps it, so the numbers namesakes are told apart by never shift,
+/// and removal forgets it.
+#[test]
+fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let (_, root) = add_editor(&mut peer, &authority_key, now);
+    let person = hex::encode(root);
+    let joined = |peer: &StatePeer| {
+        let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
+            panic!("unexpected fixture shape")
+        };
+        let doc = crate::room::candidate(None, &changes).unwrap();
+        crate::room::extract_governed_fields(&doc)
+            .1
+            .joined
+            .get(&person)
+            .copied()
+    };
+    let at_ms = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    assert_eq!(joined(&peer), Some(at_ms));
+
+    let later = now + Duration::from_secs(60);
+    assert!(
+        peer.governance_mut()
+            .set_member_role(root, crate::join::MemberRole::Viewer, &authority_key, later)
+            .unwrap()
+    );
+    assert_eq!(joined(&peer), Some(at_ms), "a role change keeps it");
+
+    assert!(
+        peer.governance_mut()
+            .remove_member(root, &authority_key, later)
+            .unwrap()
+    );
+    assert_eq!(joined(&peer), None);
+}
