@@ -138,6 +138,29 @@ pub(crate) fn service_socket_is_live(path: &std::path::Path) -> bool {
     path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
+/// The route the session's action door places offloadable actions through:
+/// the person's home relay that retains the session's rooms, over the
+/// document media the filesystem daemon keeps for them, reached as the
+/// desktop session through the invoking app's scope
+/// ([`tilo_runtime::offload::session_action_offload`]). `None` — every
+/// offloadable action runs through its app's own handler — when offload is
+/// off or no registered relay retains any of the rooms. Never blocks on the
+/// network or the daemon.
+pub(crate) fn session_action_offload(
+    membership: &crate::shell::state::WorkspaceTreeHandle,
+) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
+    let rooms: Vec<String> = membership
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| !workspace.room.is_nil())
+        .map(|workspace| workspace.room.to_string())
+        .collect();
+    let rooms: Vec<&str> = rooms.iter().map(String::as_str).collect();
+    tilo_runtime::offload::session_action_offload(&rooms, &launcher::services::blob_socket())
+}
+
 /// Why the session's broker did not come up, for the chrome to say.
 #[derive(Debug)]
 pub(crate) enum BrokerStartFailure {
@@ -199,8 +222,13 @@ fn bind_session_collab_broker(
     }
 
     let network = peer_sync.cloned();
-    let spawned =
-        crate::shell::collab_broker::spawn_native(capnp_path.clone(), &network, membership);
+    let action_offload = session_action_offload(&membership);
+    let spawned = crate::shell::collab_broker::spawn_native_offloading(
+        capnp_path.clone(),
+        &network,
+        membership,
+        action_offload,
+    );
     drop(network);
     match spawned {
         Ok(handle) => {
@@ -483,5 +511,116 @@ mod tests {
             drop(second);
             drop(first);
         }
+    }
+
+    /// The person's always-on relay at `address`, registered as retaining
+    /// `room`, at `path`, as enrollment writes it.
+    fn register_home_relay(
+        path: &std::path::Path,
+        user: [u8; 32],
+        room: &str,
+        address: iroh::EndpointAddr,
+    ) {
+        let relay_device = *address.id.as_bytes();
+        let registration = tilo_relay::HomePeerRegistration {
+            schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(relay_device),
+            relay_service_node_id: hex::encode(relay_device),
+            relay_endpoint: Some(address),
+            label: "home".into(),
+            user_public_key: hex::encode(user),
+            device_cert: None,
+            relay_workspace_ids: vec![tilo_relay_protocol::room_workspace_id(room).unwrap()],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&[registration]).unwrap()).unwrap();
+    }
+
+    /// The compositor's broker, as the desktop session starts it, holds the
+    /// offload route its person's home relay configures — over the media
+    /// the filesystem daemon keeps — and none when offload is off or no
+    /// relay retains the session's rooms.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each broker holds the session's socket for its whole phase on purpose"
+    )]
+    fn native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures() {
+        const TEST: &str = "compositor::session_bootstrap::tests::native_consent_the_desktop_broker_holds_the_route_its_home_relay_configures";
+        crate::shell::collab_broker_capnp::run_isolated_native_consent_test(TEST, || {
+            let config =
+                std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("config"));
+            let identity_root = std::path::PathBuf::from(
+                std::env::var_os("TILO_IDENTITY_ROOT").expect("identity root"),
+            );
+            crate::firstboot::ensure_collaboration_identity(
+                &config.join("tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(identity_root.clone()),
+            )
+            .expect("provision certified identity");
+            let chrome = FrameBuilder::new((800, 600)).chrome_handle();
+            let room = chrome.borrow().tree_handle().read().desktop.workspaces[0]
+                .room
+                .to_string();
+            let route = |chrome: &crate::shell::chrome_state::Chrome| {
+                let broker =
+                    spawn_session_collab_broker(chrome, None).expect("the session's broker binds");
+                let route = broker
+                    .app_action_broker()
+                    .expect("the native broker")
+                    .state()
+                    .action_offload()
+                    .cloned();
+                drop(broker);
+                route
+            };
+
+            // No home relay: every offloadable action runs through its
+            // app's handler, exactly as before.
+            assert!(route(&chrome).is_none(), "unconfigured: no route");
+
+            // The person's home relay retains the session's room. It never
+            // answers, so nothing can be placed elsewhere, and the route
+            // says so: the door runs the app's handler.
+            let (_, cert) = tilo_identity_host::broker::trusted_current_device(&room)
+                .expect("the session's certified device");
+            let unreachable =
+                iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+                    .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+            register_home_relay(
+                &tilo_relay::home_peer_registry_path(&identity_root),
+                cert.user_public_key,
+                &room,
+                unreachable,
+            );
+            let held = route(&chrome)
+                .expect("the configured home relay routes the session's offloadable actions");
+            let request = tilo_actions::offload::OffloadRequest {
+                room: room.clone(),
+                app_id: "so.tilo.photos".into(),
+                address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
+                offload: tilo_actions::Offload {
+                    app: "so.tilo.thumbnails".into(),
+                    entrypoint: "thumbnail-batch".into(),
+                    gpu: false,
+                    cpu_time_ms: 120_000,
+                    memory_bytes: 1024 * 1024 * 1024,
+                    output_bytes: 16 * 1024 * 1024,
+                },
+                inputs: vec![hex::encode([1; 32])],
+            };
+            let answer = tilo_rt::app().handle().block_on(held.offload(request));
+            let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+                panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+            };
+            assert!(reason.contains("offload route"), "{reason}");
+            drop(held);
+
+            // Turned off, the same configuration routes nothing.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(tilo_runtime::offload::OFFLOAD_ENV, "off");
+            assert!(route(&chrome).is_none(), "offload is off: no route");
+        });
     }
 }

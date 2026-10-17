@@ -1,6 +1,7 @@
 //! A device's route for offloadable actions, as its session starts it: from
 //! the person's home relay this device is registered with, over the
-//! session's own document media.
+//! session's own document media — in process, or the filesystem daemon's
+//! as the desktop session reaches it ([`crate::offload::RoomMedia`]).
 //!
 //! [`home_relay`] reads the configuration — the first of the person's
 //! registered home peers that retains a session room's relay workspace,
@@ -28,8 +29,6 @@ use std::future::Future;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
-use fs::document_media::DocumentMedia;
-use fs::store::ContentStore;
 use iroh_base::EndpointAddr;
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 use tilo_lock::RwLockRecover as _;
@@ -42,6 +41,7 @@ use crate::compute::{ComputePackageCatalogue, InstalledComputeCatalogue};
 use crate::compute_session::ComputeClient;
 use crate::mesh::DeviceKey;
 use crate::offload::{Offloader, OffloaderParts, WorkspaceContent};
+use crate::offload_media::RoomMedia;
 use crate::offload_placement::{ComputePlacement, PlacementAnswer, PlacementQuery, RelayPlacement};
 use crate::offload_route::OffloadRoute;
 use crate::transport::Envelope;
@@ -244,8 +244,8 @@ fn registered_relay(registration: &HomePeerRegistration, user: [u8; 32]) -> Opti
 
 /// Connect to `config.relay` as `config.identity` from `endpoint`, attach
 /// every room's workspace, and route offloadable invocations of those rooms
-/// through it over `store`, the content store the rooms' apps keep their
-/// media in. Packages resolve from `packages`.
+/// through it over `media`, where the rooms' apps keep their document
+/// media. Packages resolve from `packages`.
 ///
 /// # Errors
 ///
@@ -256,14 +256,14 @@ fn registered_relay(registration: &HomePeerRegistration, user: [u8; 32]) -> Opti
 pub async fn start_route(
     config: DeviceOffloadConfig,
     endpoint: iroh::Endpoint,
-    store: Arc<ContentStore>,
+    media: Arc<dyn RoomMedia>,
     packages: Arc<dyn ComputePackageCatalogue>,
 ) -> Result<OffloadRoute, String> {
     if config.rooms.is_empty() {
         return Err(NO_ROOM.into());
     }
     let revocations = config.trust().check()?;
-    let connecting = connect(config, revocations, endpoint, store, packages);
+    let connecting = connect(config, revocations, endpoint, media, packages);
     tokio::time::timeout(START_TIMEOUT, connecting)
         .await
         .map_err(|_| format!("the relay did not answer within {START_TIMEOUT:?}"))?
@@ -278,7 +278,7 @@ async fn connect(
     config: DeviceOffloadConfig,
     revocations: RevocationList,
     endpoint: iroh::Endpoint,
-    store: Arc<ContentStore>,
+    media: Arc<dyn RoomMedia>,
     packages: Arc<dyn ComputePackageCatalogue>,
 ) -> Result<OffloadRoute, String> {
     let DeviceOffloadConfig {
@@ -320,17 +320,13 @@ async fn connect(
     let offloader = Offloader::start(OffloaderParts {
         compute,
         workspaces,
-        content: WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current()),
+        content: WorkspaceContent::of_media(media, tokio::runtime::Handle::current()),
         placement: Arc::new(placement),
         packages,
     })
     .await
     .map_err(|error| format!("the relay refused compute: {error}"))?;
-    Ok(OffloadRoute::new(
-        Arc::new(offloader),
-        DocumentMedia::new(store),
-        rooms,
-    ))
+    Ok(OffloadRoute::new(Arc::new(offloader), rooms))
 }
 
 /// Subscribe `client` to every one of `workspaces` and wait for each to be
@@ -385,13 +381,13 @@ enum Phase {
 }
 
 impl DeviceOffload {
-    /// Start the route for `config` over `store` on `runtime` — from an
+    /// Start the route for `config` over `media` on `runtime` — from an
     /// endpoint of its own, resolving packages from this device's installed
     /// catalogue — and return it at once.
     #[must_use]
     pub fn start(
         config: DeviceOffloadConfig,
-        store: Arc<ContentStore>,
+        media: Arc<dyn RoomMedia>,
         runtime: &tokio::runtime::Handle,
     ) -> Arc<Self> {
         Self::spawn(
@@ -404,7 +400,7 @@ impl DeviceOffload {
                     .bind()
                     .await
                     .map_err(|error| format!("no endpoint to reach the relay from: {error}"))?;
-                start_route(config, endpoint, store, Arc::new(InstalledComputeCatalogue)).await
+                start_route(config, endpoint, media, Arc::new(InstalledComputeCatalogue)).await
             },
             runtime,
         )
@@ -760,7 +756,7 @@ mod tests {
             start_route(
                 config,
                 endpoint().await,
-                Arc::new(ContentStore::memory()),
+                fs::document_media::DocumentMedia::new(Arc::new(fs::store::ContentStore::memory())),
                 Arc::new(InstalledComputeCatalogue),
             ),
             &tokio::runtime::Handle::current(),
@@ -806,7 +802,7 @@ mod tests {
             let refused = start_route(
                 config.clone(),
                 endpoint().await,
-                Arc::new(ContentStore::memory()),
+                fs::document_media::DocumentMedia::new(Arc::new(fs::store::ContentStore::memory())),
                 Arc::new(InstalledComputeCatalogue),
             )
             .await;
@@ -819,7 +815,9 @@ mod tests {
                 start_route(
                     config,
                     endpoint().await,
-                    Arc::new(ContentStore::memory()),
+                    fs::document_media::DocumentMedia::new(Arc::new(
+                        fs::store::ContentStore::memory(),
+                    )),
                     Arc::new(InstalledComputeCatalogue),
                 ),
                 &tokio::runtime::Handle::current(),

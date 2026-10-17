@@ -18,10 +18,14 @@
 //! while the route is up tears it down.
 //!
 //! The route reads and keeps only the rooms' own document media, in the
-//! same content store the apps' blob socket serves ([`crate::profile::MediaHost::store`]),
-//! so the inputs it may send are exactly what the invoking room's apps
-//! could read, and the outputs are read back by the same `tilo.content`
-//! addresses a local run returns.
+//! same content store the apps' blob socket serves, through the invoking
+//! app's scope in its room, so the inputs it may send are exactly what the
+//! invoking room's apps could read, and the outputs are read back by the
+//! same `tilo.content` addresses a local run returns. A session that owns
+//! that store holds it in process ([`crate::profile::MediaHost::store`],
+//! [`action_offload`]); the desktop session's apps keep theirs in the
+//! filesystem daemon, which the route reaches over the daemon's
+//! document-media socket as the session ([`session_action_offload`]).
 
 use std::{
     io,
@@ -34,7 +38,8 @@ use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_lock::MutexRecover as _;
 use tilo_relay::HomePeerRegistration;
 use tilo_relay::offload::{
-    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, home_relay,
+    DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, RoomMedia,
+    SessionMedia, home_relay,
 };
 use tilo_user_identity::RevocationList;
 
@@ -58,6 +63,28 @@ pub fn action_offload(
     rooms: &[&str],
     store: Arc<tilo_fs::ContentStore>,
 ) -> Option<Arc<dyn ActionOffload>> {
+    action_offload_over(rooms, tilo_fs::document_media::DocumentMedia::new(store))
+}
+
+/// [`action_offload`] for the desktop session, whose apps keep their
+/// document media in the filesystem daemon at `blob_socket`: the route
+/// reads its inputs and keeps its outputs there, connected as the desktop
+/// session, through the invoking app's scope in its room — the same door
+/// and the same authority the session opens app content with. Never
+/// connects before an offloadable action is invoked.
+#[must_use]
+pub fn session_action_offload(
+    rooms: &[&str],
+    blob_socket: &Path,
+) -> Option<Arc<dyn ActionOffload>> {
+    action_offload_over(rooms, Arc::new(SessionMedia::new(blob_socket)))
+}
+
+/// The route for `rooms` over `media`, as [`action_offload`] describes.
+fn action_offload_over(
+    rooms: &[&str],
+    media: Arc<dyn RoomMedia>,
+) -> Option<Arc<dyn ActionOffload>> {
     if disabled(std::env::var(OFFLOAD_ENV).ok().as_deref()) {
         tracing::info!("offloadable actions run on this device: offload is turned off");
         return None;
@@ -76,7 +103,7 @@ pub fn action_offload(
             return None;
         }
     };
-    Some(DeviceOffload::start(config, store, &runtime))
+    Some(DeviceOffload::start(config, media, &runtime))
 }
 
 /// Whether `value` of [`OFFLOAD_ENV`] turns offload off.
