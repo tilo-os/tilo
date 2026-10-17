@@ -628,19 +628,16 @@ impl AttachedView {
         &mut self,
         record: &ui_core::record::RecordId,
     ) -> Option<DocumentMutation> {
-        match self.beside.get_mut(record) {
-            Some(frontier) => {
-                let (delta, heads) = self.records.replication_delta(record, frontier).ok()?;
-                frontier.advance(heads);
-                (!delta.is_empty()).then_some(DocumentMutation::Incremental(delta))
-            }
-            None => {
-                let (bytes, heads) = self.records.replication_snapshot(record).ok()?;
-                let mut frontier = DocumentFrontier::default();
-                frontier.advance(heads);
-                self.beside.insert(record.clone(), frontier);
-                Some(DocumentMutation::Snapshot(bytes))
-            }
+        if let Some(frontier) = self.beside.get_mut(record) {
+            let (delta, heads) = self.records.replication_delta(record, frontier).ok()?;
+            frontier.advance(heads);
+            (!delta.is_empty()).then_some(DocumentMutation::Incremental(delta))
+        } else {
+            let (bytes, heads) = self.records.replication_snapshot(record).ok()?;
+            let mut frontier = DocumentFrontier::default();
+            frontier.advance(heads);
+            self.beside.insert(record.clone(), frontier);
+            Some(DocumentMutation::Snapshot(bytes))
         }
     }
 

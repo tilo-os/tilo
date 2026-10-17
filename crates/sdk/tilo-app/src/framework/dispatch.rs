@@ -637,6 +637,7 @@ impl DispatchCore {
     }
 
     /// The last action refused here ([`Dispatcher::refused`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn last_refused(&self) -> Option<Refused> {
         self.refused.get()
     }
