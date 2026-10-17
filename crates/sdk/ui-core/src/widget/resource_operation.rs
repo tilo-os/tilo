@@ -71,8 +71,11 @@ impl OperationTarget {
         invocation: tilo_actions::InvocationId,
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<crate::invocation_scope::ExternalModerationFuture, String> {
-        if self.address.action != operation.action()
-            || self.address.resource.is_empty()
+        runtime_collab::external_moderation::validate_action_operation(
+            &self.address.action,
+            &operation,
+        )?;
+        if self.address.resource.is_empty()
             || self.route.record.as_deref().is_none_or(str::is_empty)
         {
             return Err("external moderation requires the exact dispatched resource".into());

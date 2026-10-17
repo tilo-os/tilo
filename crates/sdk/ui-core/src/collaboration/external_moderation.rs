@@ -157,7 +157,7 @@ mod tests {
         admit(first_route.channel_id(), &first).unwrap();
         admit(second_route.channel_id(), &second).unwrap();
         let operation = operation();
-        let address = tilo_actions::ActionAddress::new("registry", operation.action());
+        let address = tilo_actions::ActionAddress::new("registry", "submit-report");
         let target = OperationTarget::new(first_route, address.clone());
         let other = OperationTarget::new(second_route, address);
         let invocation = tilo_actions::InvocationId::new();
@@ -226,8 +226,15 @@ mod tests {
             PublishedInvocationRequest {
                 wire_id: 1980,
                 invocation,
-                address: tilo_actions::ActionAddress::new("fixture", operation.action()),
-                argument: Some(serde_json::to_string(&operation).unwrap()),
+                address: tilo_actions::ActionAddress::new("fixture", "submit-report"),
+                argument: Some(format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({
+                        "app": "org.example.app",
+                        "operation": serde_json::to_string(&operation).unwrap(),
+                    })
+                )),
                 actor: "original-caller".into(),
                 participant: None,
             },
@@ -245,6 +252,12 @@ mod tests {
             receive.try_recv().is_err(),
             "changed destination must never reach the host"
         );
+        let mut changed = operation.clone();
+        if let ModerationMutation::FileReport { summary, .. } = &mut changed.mutation {
+            summary.push('!');
+        }
+        assert!(scope.external_moderation(changed).is_err());
+        assert!(receive.try_recv().is_err());
         let pending = scope.external_moderation(operation.clone()).unwrap();
         let CollabRequest::ExternalModeration {
             command,
@@ -281,15 +294,24 @@ mod tests {
         assert!(admit(route.channel_id(), &Arc::new(Endpoint(duplicate))).is_err());
         let invocation = tilo_actions::InvocationId::new();
         let operation = operation();
-        let wrong = OperationTarget::new(
-            route.clone(),
-            tilo_actions::ActionAddress::new("registry", "registry.publisher_reply"),
-        );
-        assert!(
-            wrong
-                .external_moderation(invocation, operation.clone())
-                .is_err()
-        );
+        for action in [
+            "registry.publisher_reply",
+            operation.action(),
+            "appeal",
+            "report",
+        ] {
+            let wrong = OperationTarget::new(
+                route.clone(),
+                tilo_actions::ActionAddress::new("registry", action),
+            );
+            assert!(
+                wrong
+                    .external_moderation(invocation, operation.clone())
+                    .is_err(),
+                "{action}"
+            );
+            assert!(receive.try_recv().is_err());
+        }
         assert!(enqueue("foreign-record", invocation, operation.clone()).is_err());
         let mut invalid = operation.clone();
         invalid.destination.base_url = "file:///untrusted".into();

@@ -733,18 +733,18 @@ impl ResourceInvocationScope {
     ) -> Result<ExternalModerationFuture, String> {
         self.check()?;
         let request = &self.lease.request;
-        if request.address.action != operation.action()
-            || request
-                .argument
-                .as_deref()
-                .and_then(|json| {
-                    serde_json::from_str::<registry_types::ExternalModerationOperation>(json).ok()
-                })
-                .as_ref()
-                != Some(&operation)
-        {
-            return Err("external moderation differs from the original admitted action".into());
-        }
+        let argument = request
+            .argument
+            .as_deref()
+            .ok_or("external moderation requires admitted action arguments")?;
+        let argument = argument
+            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .unwrap_or(argument);
+        runtime_collab::external_moderation::validate_action(
+            &request.address.action,
+            argument,
+            &operation,
+        )?;
         #[cfg(feature = "broker-transport")]
         {
             let scope = self.effect_scope()?;
