@@ -273,6 +273,140 @@ impl HoverIntent {
     }
 }
 
+/// Reaching for something that waits at a display's edge (a desk widget's
+/// quiet form): the same transit-versus-aim reading as [`HoverIntent`],
+/// for targets that are not under the pointer yet.
+///
+/// A sample aims at a target when both hold:
+///
+/// - **it heads there**: it lies in the convex hull of a recent position and
+///   the target, so a pointer moving away or sideways past it does not;
+/// - **it is coming to rest there**: it is already slow inside the target,
+///   or it is decelerating so that, at constant deceleration, it stops inside
+///   the target.
+///
+/// A pointer thrown at the edge stops there without slowing first, and the
+/// display then sends no more motion: [`EdgeAim::rested_in`] reads that
+/// rest once the pointer has been still for [`SETTLE`] inside a target it
+/// arrived at from outside.
+///
+/// A pointer sweeping across or along a target at speed is in transit and
+/// aims at nothing, however close it passes; one predicted to run on past
+/// the display's edge is not coming to rest anywhere yet; and one that has
+/// not moved aims at nothing either, so a pointer resting near an edge never
+/// counts.
+///
+/// The state is pure: every method takes the instant it reasons about.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EdgeAim {
+    /// Newest last, at most [`APEX_SAMPLES`].
+    samples: Vec<(Point, Instant)>,
+}
+
+impl EdgeAim {
+    /// Forget the trajectory, e.g. when the pointer leaves the display or
+    /// jumps to another one.
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    /// A pointer sample at `p`. Returns the index of the target in `targets`
+    /// the pointer is aiming at, the first one when several qualify.
+    pub fn on_motion(&mut self, p: Point, now: Instant, targets: &[Rect]) -> Option<usize> {
+        let apex = self.samples.first().map(|(a, _)| *a);
+        if self.samples.len() >= APEX_SAMPLES {
+            self.samples.remove(0);
+        }
+        self.samples.push((p, now));
+        let from = apex.filter(|a| *a != p)?;
+        targets.iter().position(|target| {
+            in_aim_hull(p, from, *target) && comes_to_rest_in(&self.samples, *target)
+        })
+    }
+
+    /// The target the pointer has come to rest in at `now`: still for
+    /// [`SETTLE`] inside it, having arrived from outside it. A throw into a
+    /// corner ends this way, with no slow sample to read.
+    #[must_use]
+    pub fn rested_in(&self, now: Instant, targets: &[Rect]) -> Option<usize> {
+        let (p, at) = self.samples.last().copied()?;
+        let (from, _) = self.samples.first().copied()?;
+        if now.saturating_duration_since(at) < SETTLE || from == p {
+            return None;
+        }
+        targets
+            .iter()
+            .position(|target| target.contains(p) && !target.contains(from))
+    }
+
+    /// Whether the pointer is resting where it is: slow at its last sample,
+    /// or silent for [`SETTLE`] since. Without motion seen, it is.
+    #[must_use]
+    pub fn settled(&self, now: Instant) -> bool {
+        let Some((p, t)) = self.samples.last().copied() else {
+            return true;
+        };
+        if now.saturating_duration_since(t) >= SETTLE {
+            return true;
+        }
+        let Some((q, tq)) = self
+            .samples
+            .len()
+            .checked_sub(2)
+            .and_then(|i| self.samples.get(i))
+            .copied()
+        else {
+            return true;
+        };
+        let ms = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
+        ms > 0.0 && (p - q).hypot() / ms <= SETTLE_SPEED
+    }
+
+    /// When [`Self::settled`] next changes with no further input.
+    #[must_use]
+    pub fn deadline(&self, now: Instant) -> Option<Instant> {
+        if self.settled(now) {
+            return None;
+        }
+        self.samples.last().map(|(_, at)| *at + SETTLE)
+    }
+}
+
+/// Whether the trajectory in `samples` ends inside `target`: slow there
+/// already, or decelerating toward a stop inside it.
+fn comes_to_rest_in(samples: &[(Point, Instant)], target: Rect) -> bool {
+    let n = samples.len();
+    let Some((p, t)) = samples.last().copied() else {
+        return false;
+    };
+    let Some((q, tq)) = n.checked_sub(2).and_then(|i| samples.get(i)).copied() else {
+        return false;
+    };
+    let speed = |a: Point, ta: Instant, b: Point, tb: Instant| {
+        let ms = tb.saturating_duration_since(ta).as_secs_f64() * 1000.0;
+        if ms <= 0.0 {
+            f64::INFINITY
+        } else {
+            (b - a).hypot() / ms
+        }
+    };
+    let v = speed(q, tq, p, t);
+    if v <= SETTLE_SPEED {
+        return target.contains(p);
+    }
+    let Some((o, to)) = n.checked_sub(3).and_then(|i| samples.get(i)).copied() else {
+        return false;
+    };
+    let v0 = speed(o, to, q, tq);
+    let dt = t.saturating_duration_since(tq).as_secs_f64() * 1000.0;
+    if !(v < v0 && v0.is_finite() && dt > 0.0) {
+        return false;
+    }
+    let decel = (v0 - v) / dt;
+    let dir: Vec2 = (p - q) / (p - q).hypot();
+    target.contains(p + dir * (v * v / (2.0 * decel)))
+}
+
 /// Whether the newest sample shows the pointer settling: slow enough to be
 /// stopping where it is, or decelerating so hard that it will stop inside
 /// the `control` it is in.
@@ -608,5 +742,146 @@ mod tests {
         }
         h.settle(ms(t0, 60_000));
         assert_eq!(h.open(), Some(0), "the × under the pointer must not move");
+    }
+
+    /// A widget's reach zone in the bottom-right corner of a 1600 × 900
+    /// display and another along the middle of its right edge.
+    const CORNER: Rect = Rect::new(1340.0, 820.0, 1600.0, 900.0);
+    const RIGHT: Rect = Rect::new(1540.0, 350.0, 1600.0, 550.0);
+
+    /// Feed `path` 8 ms apart; the aimed target after each sample.
+    fn feed(aim: &mut EdgeAim, t0: Instant, path: &[(f64, f64)]) -> Vec<Option<usize>> {
+        path.iter()
+            .enumerate()
+            .map(|(k, (x, y))| {
+                let at = ms(t0, u64::try_from(k).unwrap() * 8);
+                aim.on_motion(Point::new(*x, *y), at, &[CORNER, RIGHT])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sweeping_along_an_edge_past_a_widget_is_transit_not_aim() {
+        // Down the right edge at a steady 2 px/ms, straight through the
+        // right widget's zone and on toward the bottom.
+        let path: Vec<(f64, f64)> = (0..40)
+            .map(|k| (1590.0, 100.0 + 16.0 * f64::from(k)))
+            .collect();
+        let mut aim = EdgeAim::default();
+        let aimed = feed(&mut aim, crate::time::now(), &path[..30]);
+        assert!(
+            aimed.iter().all(Option::is_none),
+            "passing over the right widget must not count as aim: {aimed:?}"
+        );
+    }
+
+    #[test]
+    fn crossing_the_screen_past_a_corner_zone_is_transit() {
+        // Diagonally across, fast and steady, ending far from both zones.
+        let path: Vec<(f64, f64)> = (0..12)
+            .map(|k| (1500.0 - 30.0 * f64::from(k), 860.0 - 10.0 * f64::from(k)))
+            .collect();
+        let mut aim = EdgeAim::default();
+        assert!(
+            feed(&mut aim, crate::time::now(), &path)
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn slowing_toward_a_corner_widget_is_aim_before_the_pointer_arrives() {
+        // From the middle toward the bottom-right corner, decelerating so the
+        // stop lands in the corner zone while the pointer is still outside.
+        let mut aim = EdgeAim::default();
+        let path = [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)];
+        let aimed = feed(&mut aim, crate::time::now(), &path);
+        assert_eq!(aimed.last(), Some(&Some(0)), "{aimed:?}");
+        assert!(!CORNER.contains(Point::new(1280.0, 728.0)));
+    }
+
+    #[test]
+    fn a_throw_into_the_corner_aims_once_it_stops_at_the_edge() {
+        let mut aim = EdgeAim::default();
+        // Steady and fast (no deceleration to read), then pinned at the
+        // display's corner where the pointer cannot go further.
+        let path = [
+            (1300.0, 700.0),
+            (1400.0, 760.0),
+            (1500.0, 820.0),
+            (1599.0, 899.0),
+            (1599.0, 899.0),
+        ];
+        let aimed = feed(&mut aim, crate::time::now(), &path);
+        assert_eq!(aimed[..3], [None, None, None], "{aimed:?}");
+        assert!(aimed[3..].contains(&Some(0)), "{aimed:?}");
+    }
+
+    #[test]
+    fn a_pointer_resting_near_an_edge_aims_at_nothing() {
+        let mut aim = EdgeAim::default();
+        let t0 = crate::time::now();
+        for k in 0..6 {
+            assert_eq!(
+                aim.on_motion(Point::new(1560.0, 450.0), ms(t0, k * 8), &[RIGHT]),
+                None
+            );
+        }
+        assert!(aim.settled(ms(t0, 100)));
+        assert_eq!(
+            aim.rested_in(ms(t0, 100), &[RIGHT]),
+            None,
+            "it never arrived"
+        );
+    }
+
+    #[test]
+    fn slowing_down_an_edge_toward_its_corner_is_not_yet_aim() {
+        // Down the right edge, easing off but still fast enough to run past
+        // the display's bottom: no stop is predicted inside the corner.
+        let mut aim = EdgeAim::default();
+        let path = [(1590.0, 400.0), (1590.0, 560.0), (1590.0, 700.0)];
+        assert!(
+            feed(&mut aim, crate::time::now(), &path)
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn a_pointer_stopped_by_the_corner_has_rested_there() {
+        let t0 = crate::time::now();
+        let mut aim = EdgeAim::default();
+        let path = [(1300.0, 700.0), (1450.0, 790.0), (1599.0, 899.0)];
+        assert!(
+            feed(&mut aim, t0, &path).iter().all(Option::is_none),
+            "still fast"
+        );
+        assert_eq!(
+            aim.rested_in(ms(t0, 20), &[CORNER, RIGHT]),
+            None,
+            "not still yet"
+        );
+        assert_eq!(
+            aim.rested_in(ms(t0, 16) + SETTLE, &[CORNER, RIGHT]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn heading_away_from_a_widget_while_slowing_is_not_aim() {
+        let mut aim = EdgeAim::default();
+        // Out of the corner zone toward the centre, decelerating.
+        let path = [
+            (1500.0, 860.0),
+            (1300.0, 740.0),
+            (1160.0, 656.0),
+            (1070.0, 602.0),
+        ];
+        assert!(
+            feed(&mut aim, crate::time::now(), &path)
+                .iter()
+                .all(Option::is_none)
+        );
     }
 }

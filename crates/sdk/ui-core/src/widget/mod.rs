@@ -3149,6 +3149,7 @@ pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 mod hover_intent;
+pub use hover_intent::EdgeAim;
 pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
