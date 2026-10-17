@@ -166,8 +166,9 @@ def run_seconds(run: Run) -> float:
     args = dict(zip(run.args[::2], run.args[1::2]))
     guests = float(args.get("--guests", "50")) / float(args.get("--ramp", "20"))
     spectators = float(args.get("--spectators", "0")) / 50.0
-    # The history is written first, at twenty posts a second at least.
-    history = float(args.get("--history", "0")) / 20.0
+    # The history is written first, at ten posts a second at least: every
+    # post waits for its commit, and a shared node runs it beside others.
+    history = float(args.get("--history", "0")) / 10.0
     return history + max(guests, spectators) + 60 + float(args.get("--join-timeout", "60")) + 300
 
 

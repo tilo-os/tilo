@@ -306,23 +306,33 @@ impl StatePeer {
     /// new writes are refused.
     #[must_use]
     pub fn sealed_records_to_compact(&self) -> Vec<(String, String)> {
-        // Every sealed write leaves exact admission evidence until a
-        // compaction folds it into its writer's mark. Many records each
-        // short of their own bound (the parts of a chained record) fill the
-        // room's index all the same: once it is half full, every record with
-        // a history worth folding is due.
-        let pressed = self.core.exact_admissions.pressed();
-        self.core
+        let mut due: Vec<(String, String)> = self
+            .core
             .documents
             .iter()
             .filter(|(_, document)| {
-                let bytes = document.sealed.bytes();
                 document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
-                    || bytes >= super::MAX_SEALED_BYTES / 4 * 3
-                    || (pressed && document.sealed.len() >= PRESSED_HISTORY)
+                    || document.sealed.bytes() >= super::MAX_SEALED_BYTES / 4 * 3
             })
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
-            .collect()
+            .collect();
+        // Every sealed write leaves exact admission evidence until a
+        // compaction folds it into its writer's mark. Many records each
+        // short of their own bound (the parts of a chained record) fill the
+        // room's index all the same: once it is half full, the longest
+        // history worth folding is due too, one at a time, so the work each
+        // write brings stays that of one record.
+        if due.is_empty() && self.core.exact_admissions.pressed() {
+            due.extend(
+                self.core
+                    .documents
+                    .iter()
+                    .filter(|(_, document)| document.sealed.len() >= PRESSED_HISTORY)
+                    .max_by_key(|(_, document)| document.sealed.len())
+                    .map(|(route, _)| (route.app.clone(), route.record.clone())),
+            );
+        }
+        due
     }
 
     /// This replica's own sealed writes (the compactions it minted) that
