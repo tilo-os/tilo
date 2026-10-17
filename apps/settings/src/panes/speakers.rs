@@ -45,7 +45,15 @@ use crate::widgets::{
     semantic_status_pill, setting_row, setting_row_described, slider_row, value_row,
 };
 
+/// How often a shown pane asks for the speaker sets again while something
+/// moves on its own: a setup flow is open, a calibration runs, or a device
+/// was asked to join and has not answered.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How often an idle pane asks. The compositor has no way to say the sets
+/// changed, so a device coming or going still shows within a minute; every
+/// change Settings makes asks again at once.
+const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What reaches the compositor's speaker sets.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -386,7 +394,10 @@ pub struct SpeakersModel {
     finished_rx: Receiver<Finished>,
     in_flight: usize,
     refreshing: bool,
-    next_refresh: Instant,
+    /// When the sets were last asked for.
+    last_refresh: Instant,
+    /// What a shown pane holds; a pane shown anew asks at once.
+    shown: std::rc::Weak<()>,
     arrangement_state: ui::LocalState<String>,
     name_state: ui::LocalState<String>,
     listening_state: ui::LocalState<String>,
@@ -411,7 +422,8 @@ impl SpeakersModel {
             finished_rx,
             in_flight: 0,
             refreshing: false,
-            next_refresh: ui::time::now(),
+            last_refresh: ui::time::now(),
+            shown: std::rc::Weak::new(),
             arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
             name_state: ui::LocalState::new(t("speakers-default-name")),
             listening_state: ui::LocalState::new(String::new()),
@@ -471,7 +483,38 @@ impl SpeakersModel {
             self.refreshing = true;
             self.call(Purpose::Refresh, SpeakerCommand::Snapshot);
         }
-        self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
+        self.last_refresh = ui::time::now();
+    }
+
+    /// When the sets are asked for again: soon while something moves on
+    /// its own, else after [`IDLE_REFRESH_INTERVAL`].
+    fn next_refresh(&self) -> Instant {
+        self.last_refresh
+            + if self.settling() {
+                REFRESH_INTERVAL
+            } else {
+                IDLE_REFRESH_INTERVAL
+            }
+    }
+
+    /// Whether the sets change without anyone here acting: a setup flow is
+    /// open (devices come and go from its choices), a calibration measures,
+    /// or a device was asked to join and has not answered.
+    fn settling(&self) -> bool {
+        use ui::collaboration::{CalibrationPhaseInfo, SpeakerMemberStatus};
+        let snapshot = self.setup.snapshot();
+        *self.setup.step() != Step::Overview
+            || snapshot.calibrations.iter().any(|run| {
+                matches!(
+                    run.phase,
+                    CalibrationPhaseInfo::WaitingForMicrophones | CalibrationPhaseInfo::Measuring
+                )
+            })
+            || snapshot
+                .groups
+                .iter()
+                .flat_map(|group| &group.members)
+                .any(|member| member.status == SpeakerMemberStatus::AwaitingConsent)
     }
 
     /// Ask the compositor for `effect`; `reply` is told how it ends.
@@ -1448,7 +1491,7 @@ impl PaneModel for SpeakersModel {
         self.poll_finished();
         self.read_controls();
         self.sync_bound_states();
-        if ui::time::now() >= self.next_refresh {
+        if ui::time::now() >= self.next_refresh() {
             self.refresh();
         }
         std::mem::take(&mut self.changed)
@@ -1463,7 +1506,17 @@ impl PaneModel for SpeakersModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        Some(self.next_refresh)
+        Some(self.next_refresh())
+    }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        let anew = self.shown.upgrade().is_none();
+        let shown = crate::watch::shared(&mut self.shown, || ());
+        if anew {
+            // What an idle model last asked for may be a minute old.
+            self.refresh();
+        }
+        Some(shown)
     }
 }
 
@@ -1878,6 +1931,51 @@ mod tests {
             model.start(job, None);
         }
         settle(model);
+    }
+
+    /// An idle pane asks for the speaker sets once a minute, not every two
+    /// seconds; it asks at once when shown anew, and every two seconds only
+    /// while something moves on its own (here a device asked to join).
+    #[test]
+    fn an_idle_pane_asks_rarely_and_a_settling_one_often() {
+        let service = fake();
+        let mut pane = model(service.clone());
+        settle(&mut pane);
+        let asked = || {
+            service
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| matches!(command, SpeakerCommand::Snapshot))
+                .count()
+        };
+        let first = asked();
+        assert!(
+            pane.next_wake().unwrap() >= ui::time::now() + Duration::from_secs(30),
+            "an idle pane looks again in a minute"
+        );
+        for _ in 0..3 {
+            let _ = pane.poll();
+        }
+        assert_eq!(asked(), first, "and asks nothing meanwhile");
+
+        let shown = pane.follow();
+        settle(&mut pane);
+        assert_eq!(asked(), first + 1, "a pane shown anew asks at once");
+        let also = pane.follow();
+        settle(&mut pane);
+        assert_eq!(asked(), first + 1, "a second pane shares the first's ask");
+        drop((shown, also));
+
+        service.snapshot.lock().unwrap().groups[0].members[0].status =
+            SpeakerMemberStatus::AwaitingConsent;
+        let _shown = pane.follow();
+        settle(&mut pane);
+        assert!(
+            pane.next_wake().unwrap() <= ui::time::now() + REFRESH_INTERVAL,
+            "a device yet to answer is looked at every two seconds"
+        );
     }
 
     #[test]

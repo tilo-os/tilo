@@ -1353,8 +1353,9 @@ fn inspect_input_sources(
         "catalogue_error": area.catalog_error(), "add_picker": add_picker}))
 }
 
-/// How often the attached-device snapshot is read again, so plugging a
-/// mouse in shows its section without reopening Settings.
+/// How often the attached-device snapshot is read again when it cannot be
+/// watched, so plugging a mouse in still shows its section without
+/// reopening Settings.
 const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What the input area keeps for the window: the installed input sources,
@@ -1363,6 +1364,8 @@ pub struct InputArea {
     catalog: SourceCatalog,
     live: std::cell::Cell<bool>,
     devices: std::rc::Rc<RefCell<(Option<ui::time::Instant>, Option<InputHardwareSnapshot>)>>,
+    /// The watch on the compositor's input snapshot, while a pane holds it.
+    following: RefCell<std::rc::Weak<crate::watch::Watched>>,
     editor: ui::LocalState<keyboard_editor::EditorState>,
     osk_always: bool,
     document: ui::storage::SettingsDocument,
@@ -1384,6 +1387,7 @@ impl InputArea {
                 None,
                 cx.scene().and_then(|scene| scene.input_hardware.clone()),
             ))),
+            following: RefCell::new(std::rc::Weak::new()),
             editor: ui::LocalState::new(keyboard_editor::EditorState {
                 view: if cx.scene().is_some() {
                     keyboard_editor::SourceView::Configured
@@ -1423,6 +1427,22 @@ impl InputArea {
     /// them, waits for it rather than parsing the layout rules itself.
     pub(crate) fn catalog_pending(&self) -> bool {
         self.catalog.pending()
+    }
+
+    /// The watch on the compositor's input snapshot for a pane that shows
+    /// the attached devices, shared by every such pane; `None` for a
+    /// capture's sample devices.
+    fn follow(&self) -> Option<std::rc::Rc<crate::watch::Watched>> {
+        if !self.live.get() {
+            return None;
+        }
+        let snapshot: Vec<std::path::PathBuf> = settings_store::hardware::input_snapshot_path()
+            .into_iter()
+            .collect();
+        Some(crate::watch::shared(
+            &mut self.following.borrow_mut(),
+            || crate::watch::Watched::files(&snapshot),
+        ))
     }
 
     /// The attached devices, read again at most once per
@@ -1622,7 +1642,11 @@ pub struct MouseKeyboardPane {
     composed_locale_revision: u64,
     map_cache: KeyboardPreviewCacheHandle,
     osk_always: bool,
+    /// When the attached devices are read again if their snapshot is not
+    /// watched.
     next_device_poll: Option<ui::time::Instant>,
+    /// The watch that says when the attached devices changed.
+    devices_watch: Option<std::rc::Rc<crate::watch::Watched>>,
     hardware_live: bool,
     hardware: std::rc::Rc<RefCell<(Option<ui::time::Instant>, Option<InputHardwareSnapshot>)>>,
     map_input: ui::KeyboardMapInput,
@@ -1662,6 +1686,7 @@ impl MouseKeyboardPane {
             map_cache: std::rc::Rc::default(),
             osk_always: area.osk_always,
             next_device_poll: None,
+            devices_watch: area.follow(),
             hardware_live: area.live.get(),
             hardware: area.devices.clone(),
             map_input: ui::KeyboardMapInput::default(),
@@ -1766,6 +1791,24 @@ impl MouseKeyboardPane {
                 crate::widgets::cards(cards)
             }
         }
+    }
+
+    /// Whether to read the attached devices again: on the first sync, when
+    /// their watch says the compositor's snapshot changed, or, when it
+    /// cannot be watched, once per [`DEVICE_POLL_INTERVAL`].
+    fn devices_due(&mut self) -> bool {
+        let now = ui::time::now();
+        let first = self.next_device_poll.is_none();
+        let changed = match &self.devices_watch {
+            Some(watch) if watch.is_complete() => watch.take(),
+            _ => self
+                .next_device_poll
+                .is_some_and(|deadline| now >= deadline),
+        };
+        if first || changed {
+            self.next_device_poll = Some(now + DEVICE_POLL_INTERVAL);
+        }
+        first || changed
     }
 
     /// Take in which devices are attached; rebuild when that changes what
@@ -2511,12 +2554,7 @@ impl Widget for MouseKeyboardPane {
     ui::forward_to_composed!(composed);
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.hardware_live
-            && self
-                .next_device_poll
-                .is_none_or(|deadline| ui::time::now() >= deadline)
-        {
-            self.next_device_poll = Some(ui::time::now() + DEVICE_POLL_INTERVAL);
+        if self.hardware_live && self.devices_due() {
             let snapshot = InputHardwareSnapshot::load();
             self.hardware.borrow_mut().1.clone_from(&snapshot);
             self.observe_devices(snapshot.as_ref());
@@ -2606,7 +2644,10 @@ impl Widget for MouseKeyboardPane {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.next_device_poll
+        match &self.devices_watch {
+            Some(watch) if watch.is_complete() => None,
+            _ => self.next_device_poll,
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -2894,6 +2935,7 @@ mod tests {
             catalog: SourceCatalog::ready(catalog, None),
             live: std::cell::Cell::new(false),
             devices: std::rc::Rc::new(RefCell::new((None, None))),
+            following: RefCell::new(std::rc::Weak::new()),
             editor: ui::LocalState::new(keyboard_editor::EditorState {
                 view: if cx.scene().is_some() {
                     keyboard_editor::SourceView::Configured
@@ -2906,6 +2948,69 @@ mod tests {
             document: cx.storage().settings_document().clone(),
         };
         MouseKeyboardPane::new(cx, &area)
+    }
+
+    /// A shown pane reads the attached devices when the compositor's
+    /// snapshot changes, never on a timer; only a snapshot that cannot be
+    /// watched is read once a second.
+    #[test]
+    fn attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer() {
+        let long_ago = || {
+            ui::time::now()
+                .checked_sub(std::time::Duration::from_secs(5))
+                .unwrap()
+        };
+        let mut pane = pane_with(&InputPrefs::default(), catalog());
+        pane.hardware_live = true;
+        let watch = std::rc::Rc::new(crate::watch::Watched::by_hand());
+        pane.devices_watch = Some(std::rc::Rc::clone(&watch));
+        assert!(pane.devices_due(), "the first sync reads them");
+        assert!(!pane.devices_due());
+        pane.next_device_poll = Some(long_ago());
+        assert!(!pane.devices_due(), "an idle pane reads nothing on a timer");
+        assert_eq!(pane.next_wake_deadline(), None, "nor sets a deadline");
+        watch.touch();
+        assert!(pane.devices_due(), "a changed snapshot is read");
+        assert!(!pane.devices_due(), "once");
+
+        let root = tempfile::tempdir().unwrap();
+        pane.devices_watch = Some(std::rc::Rc::new(crate::watch::Watched::files(&[root
+            .path()
+            .join("absent")
+            .join("input-state.json")])));
+        assert!(pane.next_wake_deadline().is_some());
+        pane.next_device_poll = Some(long_ago());
+        assert!(
+            pane.devices_due(),
+            "an unwatchable snapshot is read each second"
+        );
+    }
+
+    /// The area watches the file the compositor publishes the attached
+    /// devices in, and every pane showing them shares that one watch.
+    #[test]
+    fn the_input_area_watches_the_compositors_input_snapshot() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let snapshot = settings_store::hardware::input_snapshot_path().unwrap();
+        std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        let pane = pane_with(&InputPrefs::default(), catalog());
+        let area = InputArea {
+            catalog: SourceCatalog::ready(catalog(), None),
+            live: std::cell::Cell::new(true),
+            devices: std::rc::Rc::new(RefCell::new((None, None))),
+            following: RefCell::new(std::rc::Weak::new()),
+            editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
+            osk_always: false,
+            document: pane.cx.storage().settings_document().clone(),
+        };
+        let watch = area.follow().expect("a live area follows its devices");
+        assert!(watch.is_complete());
+        assert!(std::rc::Rc::ptr_eq(&watch, &area.follow().unwrap()));
+        assert!(watch.take(), "the first look reads the snapshot");
+        InputHardwareSnapshot::default().save().unwrap();
+        tilo_test_env::wait_until("a published snapshot to be flagged", || watch.take());
     }
 
     fn catalog() -> Vec<CatalogEntry> {
