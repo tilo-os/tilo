@@ -28,8 +28,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use settings_store::magnifier::MagnifierStep;
 use taffy::{
-    Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
-    TaffyTree,
+    Dimension, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree,
 };
 use tilo_clock::unix_now_ms;
 use vello::Scene;
@@ -61,6 +60,7 @@ mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
 mod strip_indicators;
+mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
 mod top_bar_reveal;
@@ -152,7 +152,6 @@ use tilo_desktop::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
     NotificationStack,
 };
-use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
@@ -550,9 +549,12 @@ pub struct ShellOverlayHost {
     /// separate because relayout can consume its edge before the next input
     /// dispatch clears the compositor's cached widget node.
     onboarding_focus_reset: bool,
-    /// Floating sidebar wheel. Optional so tests can build a bare host
-    /// without one; production always provides it.
-    sidebar: Option<Box<dyn Widget>>,
+    /// The strip ribbon grown into a list on intent; see [`strip_switcher`].
+    strip_switcher: strip_switcher::StripSwitcher,
+    /// Chrome revision the switcher's model was built from.
+    strip_switcher_revision: Option<u64>,
+    /// The switcher took the press, so it takes the matching release.
+    strip_switcher_owns_release: bool,
     /// Displays the compositor is painting across, pushed by `FrameBuilder`
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
@@ -628,7 +630,6 @@ pub struct ShellOverlayHost {
     palette_layout_host: Option<(Rect, Rect)>,
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
-    sidebar_node: Option<NodeId>,
     /// Shared chrome state; drives whether overview / quick-settings /
     /// ws-settings draw on top of the content.
     chrome: Option<Chrome>,
@@ -806,10 +807,10 @@ pub struct ShellOverlayHost {
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
-    /// Vertical inset at which the floating sidebar wheel starts.
-    /// Defaults to [`SIDEBAR_TOP_OFFSET_PX`]; `with_sidebar_top`
-    /// overrides it so the shell's padded topbar doesn't overlap.
-    sidebar_top_y: f32,
+    /// Top of the band below the top bar that sheets, the permission prompt
+    /// and the notification stack lay out under. Defaults to
+    /// [`CHROME_TOP_OFFSET_PX`]; `with_chrome_top` overrides it.
+    chrome_top_y: f32,
     /// Live permission-prompt widget, populated by
     /// `pump_permission_prompt` from the front of
     /// `chrome.pending_grants`. `None` when the queue is empty.
@@ -1085,8 +1086,7 @@ pub struct ShellSceneSections {
 /// while the strips are drawn in canvas coordinates
 /// ([`ui::retained_present::unbake_scroll`]). Each strip draws over its own
 /// destination, so two strips whose drawings meet (each draws its shadows
-/// past its row) can pan apart; the docked wheel, which rides the top strip
-/// over the strips below it, is drawn on its own above them.
+/// past its row) can pan apart.
 #[derive(Default)]
 pub struct PannedSections {
     /// Every strip with a row on screen, top to bottom, each drawn on its
@@ -1098,23 +1098,9 @@ pub struct PannedSections {
     /// group's drawing changed. `None` for a strip whose parts were not
     /// well nested.
     pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    /// The docked wheel, drawn on its own.
-    pub wheel: Option<PannedWheel>,
     /// A strip's floating surfaces drew something. On screen they are drawn
-    /// above the docked wheel, which the panned strips cannot express.
+    /// above every strip, which the panned strips cannot express.
     pub floating_drawn: bool,
-}
-
-/// The docked wheel drawn on its own while the strips are drawn in canvas
-/// coordinates.
-pub struct PannedWheel {
-    /// The wheel, at its canvas position when it rides a strip.
-    pub scene: Scene,
-    /// Everything `scene` can paint, in its coordinates.
-    pub bounds: Rect,
-    /// The strip whose pan carries the wheel; `None` when it stays where it
-    /// is (summoned, or a promoted group drawn unpanned).
-    pub rides: Option<StripId>,
 }
 
 /// Backdrop layers ([`ui::backdrop::layer_scene`]) of the sections
@@ -1334,8 +1320,7 @@ fn instant_capture(
 // are `usize`. Every value that flows through these conversions is a
 // screen-space pixel, row count, or millisecond duration — nowhere near
 // the magnitude where the narrowing would actually lose a representable
-// value. Same convention as `sidebar_wheel_disc.rs`'s lossy-cast
-// helpers: name the conversion, scope the `#[allow]` to it alone, and
+// value. Convention: name the conversion, scope the `#[allow]` to it alone, and
 // use the named function everywhere instead of a bare `as`.
 
 /// Same rationale as [`f64_of_usize`], for the millisecond
@@ -1355,60 +1340,23 @@ const OVERVIEW_TRANSITION_MS: u64 = 400;
 /// many paints on its own.
 const TRANSITION_PAINT_RUN: u32 = 8;
 
-/// Vertical inset below the top bar where the floating sidebar wheel
-/// starts, and the top of the band the room-activity sheet, the
-/// permission prompt and the notification stack lay out under. The
-/// production builder (`build_tilo_overlay_host_with_options`) passes
-/// `TOPBAR_HEIGHT_PX` through `with_sidebar_top`; this default is what a
-/// bare `ShellOverlayHost::new` gets, and it is the same value so a
-/// fixture observes the geometry the desktop paints. (It was a stale 40
-/// beside a 48 px bar until 2026-09-17, which put every bare-host
-/// fixture's wheel and prompts 8 px under the bar.)
-const SIDEBAR_TOP_OFFSET_PX: f32 = crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
+/// The top of the band the room-activity sheet, the permission prompt and
+/// the notification stack lay out under. The production builder passes
+/// `TOPBAR_HEIGHT_PX` through `with_chrome_top`; this default is what a bare
+/// `ShellOverlayHost::new` gets, and it is the same value so a fixture
+/// observes the geometry the desktop paints.
+const CHROME_TOP_OFFSET_PX: f32 = crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
-/// Clamp range for the viewport-driven sidebar width, so the disc's
-/// `apply_layout` keeps the visible-arc curvature identical across
-/// widths. `SIDEBAR_WIDTH_MAX_PX` also caps the extra left padding the
-/// content column reserves (`sidebar_wheel_disc::SIDEBAR_RESERVE_PX`).
-const SIDEBAR_WIDTH_MIN_PX: f32 = 220.0;
-const SIDEBAR_WIDTH_MAX_PX: f32 = 320.0;
-const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
+/// Wallpaper gutter at both ends of a strip: without it a full-width group's
+/// border, corners and shadow fall off screen at the bezel. A window casts
+/// `e2` (blur 8 → visible falloff ≈ 10 px plus a 2 px offset), so `s8` (32)
+/// holds the whole shadow with room to spare, and it is the pointer floor
+/// the strip ribbon's band on the trailing edge needs. The leading one is
+/// part of the strip's canvas and pans away with it.
+pub const STRIP_EDGE_GUTTER_PX: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 
-/// Sidebar width for a given viewport height: `0.26 * h`, clamped to
-/// [220, 320]. First-frame callers pass `0.0` and get the lower bound,
-/// which reflows once `ShellOverlayHost::rect` is known.
-fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
-    (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION).clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
-}
-
-/// Wallpaper gutter between the wheel disc's right edge and the first
-/// window, so the radial switcher reads as separated chrome rather than
-/// butting into content. `spacing.s8` (32): the disc's rim shadow reaches
-/// `sidebar_wheel_disc::RIM_SHADOW_REACH` (26 px) past its footprint, so
-/// the next step down, `s6` (24), would lay that shadow over the first
-/// window's edge; 32 clears it and is also the pointer floor
-/// (`metrics.min_pointer_target`) every bar control already sits on. Was
-/// 28, off the 4/8/12/16/24/32 scale, until 2026-09-17 (S1-21).
-const WHEEL_TO_STRIP_GAP_PX: f64 = ui::tokens::Spacing::BASE.s8 as f64;
-const _: () = assert!(
-    WHEEL_TO_STRIP_GAP_PX > tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
-    "the wheel gutter must hold the disc's rim shadow with wallpaper to spare"
-);
-
-/// Left edge at which full-size workspace content clears both the floating
-/// rail and the wallpaper/shadow gutter that separates it from app content.
-/// Widgets that paint against the full desktop rect use this instead of
-/// duplicating a rail width.
-pub fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
-    f64::from(sidebar_width_for_viewport(f32_of_f64(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
-}
-
-/// Wallpaper gutter at the far edge of a display, matching
-/// [`WHEEL_TO_STRIP_GAP_PX`] — without it a full-width group's border,
-/// corners and shadow fall off screen at the bezel. A window casts `e2`
-/// (blur 8 → visible falloff ≈ 10 px plus a 2 px offset), so `s8` holds
-/// the whole shadow with room to spare.
-const STRIP_TRAILING_GUTTER_PX: f64 = WHEEL_TO_STRIP_GAP_PX;
+/// The trailing gutter, where the strip ribbon sits.
+const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;
 
 /// One display the shell lays out across, in the logical desktop. A window
 /// group's width is resolved against its own display, not the combined
@@ -1786,10 +1734,7 @@ impl ShellOverlayHost {
                 room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
                 content: self.content.needs_animation_frame(),
-                sidebar: self
-                    .sidebar
-                    .as_ref()
-                    .is_some_and(|sidebar| sidebar.needs_animation_frame()),
+                strip_switcher: self.strip_switcher.needs_animation_frame(now),
                 capture_mirror: self
                     .capture_mirrors
                     .iter()
@@ -1906,7 +1851,6 @@ impl ShellOverlayHost {
                 theme,
                 presence,
             );
-            panned.wheel = self.draw_panned_wheel(transform, text_renderer, theme, presence);
             self.draw_desktop_notices(
                 workspace_overlays,
                 transform,
@@ -1983,6 +1927,7 @@ impl ShellOverlayHost {
         self.draw_strip_chrome(
             quick_settings,
             transform,
+            text_renderer,
             theme,
             flags,
             quick_settings_transition_visible,
@@ -2468,7 +2413,9 @@ impl ShellOverlayHost {
             onboarding_node: None,
             onboarding_released: false,
             onboarding_focus_reset: false,
-            sidebar: None,
+            strip_switcher: strip_switcher::StripSwitcher::default(),
+            strip_switcher_revision: None,
+            strip_switcher_owns_release: false,
             outputs: Vec::new(),
             keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             palette,
@@ -2496,7 +2443,6 @@ impl ShellOverlayHost {
             palette_layout_host: None,
             content_node: None,
             palette_node: None,
-            sidebar_node: None,
             chrome: None,
             last_cursor: None,
             overview_t: 0.0,
@@ -2552,7 +2498,7 @@ impl ShellOverlayHost {
             last_noted_focus: None,
             axis_gather_pending: None,
             add_workspace_rect: Rect::ZERO,
-            sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
+            chrome_top_y: CHROME_TOP_OFFSET_PX,
             permission_prompt: None,
             permission_prompt_id: None,
             permission_prompt_app: None,
@@ -4508,21 +4454,11 @@ impl ShellOverlayHost {
         consumed
     }
 
-    /// Register the floating sidebar wheel as an absolutely-positioned
-    /// overlay, so it hovers over the wallpaper rather than occupying a
-    /// column.
+    /// Override where the band under the top bar begins
+    /// ([`CHROME_TOP_OFFSET_PX`] by default).
     #[must_use]
-    pub fn with_sidebar(mut self, sidebar: Box<dyn Widget>) -> Self {
-        self.sidebar = Some(sidebar);
-        self
-    }
-
-    /// Override the sidebar's top y-offset. The 40px default assumes an
-    /// unpadded topbar; without this on the shell's padded topbar,
-    /// the sidebar overlaps it and swallows overview-toggle clicks.
-    #[must_use]
-    pub fn with_sidebar_top(mut self, y: f32) -> Self {
-        self.sidebar_top_y = y;
+    pub fn with_chrome_top(mut self, y: f32) -> Self {
+        self.chrome_top_y = y;
         self
     }
 
@@ -4651,8 +4587,7 @@ impl ShellOverlayHost {
     }
 
     /// Per-display strip widths: full extent plus width actually
-    /// available to window groups, with the leftmost display giving up
-    /// the wheel-disc slot and its gutter. Falls back to the host's own
+    /// available to window groups, less the strip's edge gutters. Falls back to the host's own
     /// rect when the compositor hasn't pushed geometry yet (`--mode
     /// hosted`).
     fn strip_output_spans(&self) -> Vec<OutputSpan> {
@@ -4677,13 +4612,8 @@ impl ShellOverlayHost {
             .iter()
             .filter(|o| o.width > 0.0)
             .map(|o| {
-                let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
-                let leading = if hosts_chrome && self.sidebar.is_some() {
-                    f64::from(sidebar_width_for_viewport(f32_of_f64(o.height)))
-                        + WHEEL_TO_STRIP_GAP_PX
-                } else {
-                    0.0
-                };
+                let leads = strip_left >= o.x && strip_left < o.x + o.width;
+                let leading = if leads { STRIP_EDGE_GUTTER_PX } else { 0.0 };
                 OutputSpan {
                     x: o.x,
                     width: o.width,
@@ -5653,9 +5583,9 @@ impl ShellOverlayHost {
                 .any(|&p| unsafe { (*p).group_ids().contains(&gid) })
         });
         // Publish the presentation edge before `take_structure_dirty` can
-        // rebuild the top bar and sidebar. Restore is especially sensitive:
-        // rebuilding while this still says `true` leaves the sidebar node at
-        // `display:none`, with no later structural edge to rebuild it again.
+        // rebuild the top bar. Restore is especially sensitive: rebuilding
+        // while this still says `true` leaves the chrome hidden, with no
+        // later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
         // On a desktop spread across displays a fullscreen covers its own
         // display only: the rows of other strips step aside there and stay
@@ -5672,8 +5602,7 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and `&mut self` gives us
             // unaliased access for the duration of this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
-            // Neither keeps a gutter: a maximize tucks the wheel away
-            // (see `maximized_wheel_tucked`) rather than stopping beside it.
+            // Neither keeps a gutter: an expanded window fills the display.
             row.set_promotion_keeps_gutter(false);
             row.set_promotion_keeps_controls(!client_fullscreen);
             match fs_group {
@@ -5716,23 +5645,6 @@ impl ShellOverlayHost {
         Some(crate::shell::chrome_state::FullscreenDisplay { output, primary })
     }
 
-    /// Whether a client's fullscreen group is represented by a live retained
-    /// row, so it covers the output and the wheel with it. A maximize does
-    /// not: the wheel says where you are.
-    fn client_fullscreen_is_owned(&self) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let group = chrome.borrow().fullscreen_group();
-        group.is_some_and(|group| {
-            self.group_row_ptrs.values().any(|&row| {
-                // SAFETY: same retained-row ownership contract as
-                // `sync_fullscreen_from_chrome`; this is read-only.
-                unsafe { (*row).group_ids().contains(&group) }
-            })
-        })
-    }
-
     /// A full-display surface — Capture Studio, the screenshot markup
     /// editor — covers the focused display: its bars sit along that
     /// display's top and bottom edges and "Screen" is that display.
@@ -5761,25 +5673,6 @@ impl ShellOverlayHost {
             height: Dimension::length(f32_of_f64(area.height())),
         };
         let _ = taffy.set_style(node, style);
-    }
-
-    /// An expanded (maximized) window owns the left edge: the workspace
-    /// switcher disc is tucked away rather than drawn over it. The top bar
-    /// stays, and a wheel summon (edge gesture) shows the disc again.
-    fn maximized_wheel_tucked(&self) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        {
-            let st = chrome.borrow();
-            if st.fullscreen_group().is_some()
-                || st.maximized_group().is_none()
-                || st.wheel_summon().is_some()
-            {
-                return false;
-            }
-        }
-        self.fullscreen_group_is_owned()
     }
 
     /// Whether the requested fullscreen/maximized group is represented by a
@@ -7171,7 +7064,7 @@ impl ShellOverlayHost {
     /// [`PROMPT_MIN_WIDTH`] wide and kept on that window's display; when the
     /// app has no window on screen, across the top of the display in use.
     fn permission_prompt_surface(&self) -> Rect {
-        let inset = f64::from(self.sidebar_top_y);
+        let inset = f64::from(self.chrome_top_y);
         let asking = self.permission_prompt_app.as_deref().and_then(|app| {
             let group = {
                 let st = self.chrome.as_ref()?.borrow();
@@ -7379,13 +7272,6 @@ impl ShellOverlayHost {
         self.harvest_pending_group_reorder();
     }
 
-    /// Test-only accessor for the sidebar wheel's laid-out rect. `None` means
-    /// no sidebar; zero-area means suppressed by a fullscreen window.
-    #[cfg(any(test, debug_assertions))]
-    pub fn sidebar_rect_for_tests(&self) -> Option<vello::kurbo::Rect> {
-        self.sidebar.as_ref().map(|s| s.get_rect())
-    }
-
     /// Test-only: runs the per-frame intra-group tab reorder writeback outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
@@ -7415,16 +7301,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_scroll_active_into_view_for_tests(&mut self) {
         self.scroll_active_group_into_view();
-    }
-
-    /// The sidebar wheel disc, downcast from the `Box<dyn Widget>`. For the
-    /// screenshot harness to hold the settle animation at a chosen point —
-    /// a still frame can't show motion, and offscreen rendering outruns it.
-    pub fn sidebar_wheel_mut_for_tests(&mut self) -> Option<&mut SidebarWheelDisc> {
-        self.sidebar
-            .as_mut()?
-            .as_any_mut()?
-            .downcast_mut::<SidebarWheelDisc>()
     }
 
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
@@ -10531,6 +10407,9 @@ impl ShellOverlayHost {
         {
             chrome.borrow_mut().bump();
         }
+        // The strip switcher reads the path toward the ribbon over the
+        // windows it crosses, as the top-edge reveals do.
+        self.strip_switcher_pointer_moved(p);
         // The maximized window's bar reads the pointer's path even while the
         // client under it takes the motion (`top_edge_reveal`).
         self.with_maximized_group(|group| {
@@ -10551,13 +10430,21 @@ impl ShellOverlayHost {
         self.touch_gestures.cancel_all();
     }
 
-    /// Whether the workspace wheel is summoned. Read alongside
-    /// [`Self::palette_visible`] so Escape is taken from the focused
-    /// client only when the shell has something up to dismiss with it.
-    pub fn wheel_summoned(&self) -> bool {
-        self.chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().wheel_summon().is_some())
+    /// Whether the strip switcher takes the keyboard: opened by Super+S, or
+    /// a strip name is being typed. Read alongside [`Self::palette_visible`]
+    /// so keys are taken from the focused client only while the shell has
+    /// something up that uses them.
+    pub fn strip_switcher_takes_keys(&self) -> bool {
+        self.strip_switcher.takes_keys()
+    }
+
+    /// Whether the pointer is on the open strip switcher's card: its
+    /// presses and motion are the shell's, not the window's beneath it.
+    pub fn strip_switcher_captures_pointer(&self) -> bool {
+        self.strip_switcher.is_open()
+            && self
+                .last_cursor
+                .is_some_and(|p| self.strip_switcher.layout().card.contains(p))
     }
 
     /// Whether the last draw found the layout it was handed isn't what
@@ -10596,41 +10483,6 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// The strip the docked wheel rides: the topmost strip of the active
-    /// workspace.
-    fn docked_strip(&self) -> Option<StripId> {
-        let top_strip = self.chrome.as_ref().and_then(|chrome| {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop
-                .active_workspace()
-                .and_then(|workspace| workspace.strips.first().map(|strip| strip.id))
-        });
-        top_strip
-            .filter(|id| self.group_row_ptrs.contains_key(id))
-            .or_else(|| self.group_row_ptrs.keys().next().copied())
-    }
-
-    /// A summoned wheel places itself around the pointer in screen space,
-    /// and a promoted group is drawn unpanned: the wheel then does not ride
-    /// the strip.
-    fn docked_wheel_pinned(&self) -> bool {
-        self.chrome.as_ref().is_some_and(|chrome| {
-            let state = chrome.borrow();
-            state.wheel_summon().is_some() || state.presentation_covers_primary()
-        })
-    }
-
-    /// [`GroupRow::canvas_shift`] of the strip the docked wheel rides.
-    fn docked_strip_canvas_shift(&self) -> f64 {
-        self.docked_strip()
-            .and_then(|id| self.group_row_ptrs.get(&id).copied())
-            // SAFETY: same contract as every other `group_row_ptrs` accessor:
-            // the pointer is captured from a `Box<GroupRow>` owned through the
-            // content tree, and the host outlives it.
-            .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
-    }
-
     /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.
     pub fn strip_canvas_pad(&self, strip: StripId) -> f64 {
         self.group_row_ptrs.get(&strip).map_or(0.0, |&ptr| {
@@ -10641,8 +10493,7 @@ impl ShellOverlayHost {
     }
 
     /// Where on screen `strip` pans when it is drawn in canvas coordinates:
-    /// its row with the shadows drawn past it. The docked wheel riding it is
-    /// drawn apart ([`PannedWheel`]).
+    /// its row with the shadows drawn past it.
     pub fn strip_pan_rect(&self, strip: StripId) -> Option<vello::kurbo::Rect> {
         Some(GroupRow::drawn_bounds(self.strip_row_rect(strip)?))
     }
@@ -10665,56 +10516,6 @@ impl ShellOverlayHost {
         rows.into_iter()
             .map(|(_, strip, row)| (strip, row))
             .collect()
-    }
-
-    /// The docked wheel drawn on its own while the strips are drawn in
-    /// canvas coordinates, with what it can paint: its footprint and the rim
-    /// shadow past its right edge (the disc clips its paint group to that),
-    /// at the canvas position of the strip it rides. The presenter rounds
-    /// the bounds out to whole pixels.
-    fn draw_panned_wheel(
-        &mut self,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> Option<PannedWheel> {
-        let rect = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())?;
-        if self.overlay_flags().overview || rect.area() <= 0.0 {
-            return None;
-        }
-        let rides = if self.docked_wheel_pinned() {
-            None
-        } else {
-            self.docked_strip()
-        };
-        let shift = if rides.is_some() {
-            self.docked_strip_canvas_shift()
-        } else {
-            0.0
-        };
-        // A strip pulled past its start rides the wheel in from the screen
-        // edge, and the disc's body continues left of its slot to fill the
-        // gap it leaves. The sprite is drawn once and moved with the pan, so
-        // it has to hold as much of that body as the rubber band can expose;
-        // cut at the slot, the disc ended in a hard edge mid-screen.
-        let exposed_left = rides
-            .and_then(|id| self.group_row_ptrs.get(&id).copied())
-            // SAFETY: same contract as every other `group_row_ptrs` accessor.
-            .map_or(0.0, |ptr| unsafe { &*ptr }.overpull_reach());
-        let mut scene = Scene::new();
-        self.draw_docked_wheel(&mut scene, transform, text_renderer, theme, presence);
-        let painted = Rect::new(
-            rect.x0 + shift - exposed_left,
-            rect.y0,
-            rect.x1 + shift + tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
-            rect.y1,
-        );
-        Some(PannedWheel {
-            scene,
-            bounds: transform.transform_rect_bbox(painted),
-            rides,
-        })
     }
 
     /// Every strip's horizontal pan, keyed by strip id, paired with its
@@ -13468,6 +13269,7 @@ impl ShellOverlayHost {
         // the shared desk forgets it: `last_cursor` still hit-tests.
         if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.desk_pointer_left(Instant::now());
+            self.strip_switcher_pointer_left();
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(None);
             }
@@ -13505,6 +13307,7 @@ impl ShellOverlayHost {
             }
             self.desk_pointer(p, Instant::now());
             self.focus_display_at(p);
+            self.strip_switcher_pointer_moved(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
             let hover = if self.overlay_flags().overview {
@@ -14450,11 +14253,12 @@ impl ShellOverlayHost {
             self.shortcut_rebind_message = None;
         }
         self.shortcut_guide_focus = None;
+        self.strip_switcher.close();
         let Some(chrome) = self.chrome.as_ref() else {
             return;
         };
         let mut state = chrome.borrow_mut();
-        state.set_wheel_summon(None);
+        state.set_strip_switcher_open(false);
         state.overlays.shortcut_help = false;
         state.overlays.desktop_tour = false;
         state.overlays.overview = false;
@@ -14555,6 +14359,16 @@ impl ShellOverlayHost {
                 .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
             self.workspace_rename_submit_held |= rename_submit;
+            return true;
+        }
+        // The strip switcher, opened for the keyboard or naming a strip, takes
+        // every key but the Super+S that closes it, ahead of the shell's
+        // chords for the same reason as the workspace name above.
+        let closes_switcher =
+            super_down && matches!(logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s"));
+        if !self.palette_visible && self.strip_switcher.takes_keys() && !closes_switcher {
+            self.strip_switcher_key(logical_key, mstate);
+            *handled = true;
             return true;
         }
         if self.status_editing {
@@ -15900,33 +15714,15 @@ impl ShellOverlayHost {
                     false
                 }
             }
-            // Calls the workspace wheel to the pointer —
-            // it's docked at the strip's left edge and
-            // pans with it, so it can be off screen from
-            // the right end. Super specifically, not
-            // `is_mod`: Ctrl+S is save in nearly every app.
+            // Opens the strip switcher for the keyboard, or closes it.
+            // Super specifically, not `is_mod`: Ctrl+S is save in nearly
+            // every app.
             "s" | "S" if super_down => {
-                if repeat {
-                    *handled = true;
-                    return true;
+                if !repeat {
+                    self.toggle_strip_switcher_from_keyboard();
                 }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    let next = match st.wheel_summon() {
-                        Some(_) => None,
-                        // A session with no pointer yet (headless, first
-                        // frame, a VM that has not moved the cursor) still
-                        // has to put the wheel somewhere a shot and
-                        // state-dump can see. The host rect is the
-                        // display; its centre is on screen.
-                        None => Some(self.last_cursor.unwrap_or_else(|| self.rect.center())),
-                    };
-                    st.set_wheel_summon(next);
-                    *handled = true;
-                    true
-                } else {
-                    false
-                }
+                *handled = true;
+                true
             }
             _ => false,
         }
@@ -15994,16 +15790,17 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Most transient thing on screen, so goes first.
+        if self.strip_switcher.is_open() {
+            self.strip_switcher.close();
+            self.publish_strip_switcher_open();
+            *handled = true;
+            return true;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let mut st = chrome.borrow_mut();
-        // Most transient thing on screen, so goes first.
-        if st.wheel_summon().is_some() {
-            st.set_wheel_summon(None);
-            *handled = true;
-            return true;
-        }
         if st.editing_workspace_name.is_some() {
             st.editing_workspace_name = None;
             st.bump();
@@ -16188,6 +15985,10 @@ impl ShellOverlayHost {
                 }
                 return true;
             }
+        }
+        if !self.palette_visible && self.strip_switcher.commit_text(text) {
+            self.bump_chrome();
+            return true;
         }
         if self.status_editing {
             if commit(text, &mut self.status_draft, &mut self.status_selection) == Edit::Changed {
@@ -18899,7 +18700,7 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Palette-owned input, ahead of the sidebar/content dispatch: kind
+    /// Palette-owned input, ahead of the switcher/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
     fn route_palette_event(
@@ -19018,7 +18819,7 @@ impl ShellOverlayHost {
         false
     }
 
-    /// The tail of `handle_event`: sidebar forwarding, click-to-focus,
+    /// The tail of `handle_event`: the strip switcher, click-to-focus,
     /// horizontal strip navigation, then content dispatch. A horizontal
     /// gesture steps focus along the strip (the same step Super+Left/Right
     /// takes); 0.5 rejects trackpad noise.
@@ -19028,25 +18829,10 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
     ) {
-        // First dibs so wheel-content precedes the desktop underneath.
-        // Gated on the sidebar's rect for pointer events — otherwise it can
-        // overlap the topbar band and swallow the overview-toggle click.
-        if let (Some(sidebar), Some(&sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
-            let sidebar_rect = sidebar.get_rect();
-            let forward_pointer_to_sidebar = match event {
-                WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. }
-                | WindowEvent::CursorMoved { .. } => {
-                    self.last_cursor.is_some_and(|p| sidebar_rect.contains(p))
-                }
-                _ => true,
-            };
-            if forward_pointer_to_sidebar {
-                sidebar.handle_event(event, &mut ctx.reborrow(ctx.path, sidebar_child));
-                if *ctx.handled {
-                    return;
-                }
-            }
+        // First dibs: the open strip switcher floats over the windows.
+        if self.route_strip_switcher_pointer(event) {
+            *ctx.handled = true;
+            return;
         }
         // Click-anywhere-in-a-group focuses that group: hit-test before
         // forwarding and stamp `tree.active_strip`/`active_group`, or
@@ -19828,9 +19614,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
-        if let Some(sidebar) = self.sidebar.as_mut() {
-            sidebar.sync(s, p);
-        }
         self.palette.sync(s, p);
         self.agent_quick_composer.sync(s, p);
         self.person_quick_composer.sync(s, p);
@@ -20021,8 +19804,8 @@ impl Widget for ShellOverlayHost {
             .iter_mut()
             .map(|(_, mirror)| mirror.update(doc, path))
             .fold(false, |dirty, next| dirty || next);
-        let sidebar_dirty = self.sidebar.as_mut().is_some_and(|w| w.update(doc, path));
-        steps.mark("palette-mirrors-sidebar");
+        let switcher_dirty = self.refresh_strip_switcher_model();
+        steps.mark("palette-mirrors-switcher");
         // The harvesters run after `content.update` so this frame's
         // gestures are visible to them, mirroring one-shot widget-side
         // changes into the persisted tree so they survive a restart and
@@ -20113,7 +19896,7 @@ impl Widget for ShellOverlayHost {
             || pairing_dirty
             || close_dirty
             || palette_dirty
-            || sidebar_dirty
+            || switcher_dirty
             || notifications_dropped
             || launch_dirty
             || session_action_dirty
@@ -20292,63 +20075,7 @@ impl Widget for ShellOverlayHost {
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
 
-        // Override the sidebar's own leaf style with absolute positioning
-        // so it hovers above the content pane instead of displacing it.
-        let primary = self.primary_output().filter(|_| self.is_partitioned());
-        let sidebar_width = self.sidebar_width();
-        let covers_wheel = (self.client_fullscreen_is_owned()
-            && self
-                .chrome
-                .as_ref()
-                .is_some_and(|chrome| chrome.borrow().presentation_covers_primary()))
-            || self.maximized_wheel_tucked();
-        let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
-            let node = sidebar.build_layout(taffy, theme, node_map);
-            // See the palette override above: failure here is not
-            // reachable for a node this function just created, but the
-            // override is skippable rather than fatal.
-            if let Ok(style) = taffy.style(node) {
-                let mut style = style.clone();
-                style.position = Position::Absolute;
-                // The wheel lives on the primary display: on a partitioned
-                // desktop that is its own left edge and height.
-                let (left, top, bottom) = match primary {
-                    Some(p) => (
-                        f32_of_f64(p.x - self.rect.x0),
-                        f32_of_f64(p.y - self.rect.y0) + self.sidebar_top_y,
-                        f32_of_f64((self.rect.y1 - (p.y + p.height)).max(0.0)),
-                    ),
-                    None => (0.0, self.sidebar_top_y, 0.0),
-                };
-                style.inset = TaffyRect {
-                    left: LengthPercentageAuto::length(left),
-                    right: LengthPercentageAuto::auto(),
-                    top: LengthPercentageAuto::length(top),
-                    bottom: LengthPercentageAuto::length(bottom),
-                };
-                style.size = Size {
-                    width: Dimension::length(sidebar_width),
-                    height: Dimension::auto(),
-                };
-                style.flex_grow = 0.0;
-                style.flex_shrink = 0.0;
-                // A fullscreen surface covers the whole output, so the
-                // wheel is suppressed alongside the top bar. An expanded
-                // group tucks it away too, but keeps the bar; a summon
-                // brings it back.
-                if covers_wheel {
-                    style.display = Display::None;
-                }
-                let _ = taffy.set_style(node, style);
-            }
-            node
-        });
-        self.sidebar_node = sidebar_node;
-
-        let mut children: Vec<NodeId> = match sidebar_node {
-            Some(s) => vec![content_node, palette_node, s, capture_node],
-            None => vec![content_node, palette_node, capture_node],
-        };
+        let mut children: Vec<NodeId> = vec![content_node, palette_node, capture_node];
         children.extend(self.agent_quick_composer_node);
         children.extend(self.person_quick_composer_node);
         children.extend(
@@ -20453,10 +20180,6 @@ impl Widget for ShellOverlayHost {
         if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
             self.palette_layout_dirty = true;
         }
-        // Wheel-disc slot width plus a gap, reserved so the strip leaves
-        // room for the wheel and a wallpaper gutter beside it. No sidebar
-        // means no gutter to reserve.
-        let wheel_w = self.wheel_clearance();
         // Re-derive strip widths now the host's rect is known: frame 1's
         // `build_layout` had no viewport yet. A no-op once the
         // compositor has pushed real output geometry.
@@ -20469,7 +20192,7 @@ impl Widget for ShellOverlayHost {
             unsafe {
                 let row = &mut *ptr;
                 row.set_scroll_quantum(self.strip_pan_quantum);
-                row.set_leading_inset(wheel_w);
+                row.set_leading_inset(STRIP_EDGE_GUTTER_PX);
                 row.set_output_spans(&settled_spans);
                 // App-owned call/navigation surfaces cross into this same
                 // combined-output coordinate space. Push the real boundary
@@ -20488,52 +20211,6 @@ impl Widget for ShellOverlayHost {
         if let Some(&palette_child) = children.get(1) {
             self.palette
                 .apply_layout(taffy, palette_child, Point::new(self.rect.x0, self.rect.y0));
-        }
-        if let (Some(sidebar), Some(sidebar_child)) = (self.sidebar.as_mut(), children.get(2)) {
-            // The wheel disc lives in the overlay layer, not as a sibling
-            // of GroupRow, so it pans in lock-step by shifting its origin
-            // with the active strip's `scroll_x`. `group_row_ptrs` is a
-            // HashMap, so take the topmost strip in tree order rather
-            // than whatever "first" iterates to.
-            let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
-                let st = c.borrow();
-                let tree = st.tree();
-                tree.desktop
-                    .active_workspace()
-                    .and_then(|ws| ws.strips.first().map(|s| s.id))
-            });
-            let scroll_of = |id: Option<StripId>| -> Option<f64> {
-                let ptr = {
-                    let id = id?;
-                    self.group_row_ptrs.get(&id)?
-                };
-                // SAFETY: same contract as the other group_row_ptrs
-                // accessors — pointer captured from a `Box<GroupRow>`
-                // we own through the content tree, host outlives
-                // content, &mut self → unaliased read.
-                Some(unsafe { (&**ptr).drawn_scroll_x() })
-            };
-            let active_scroll_x: f64 = scroll_of(top_strip)
-                .or_else(|| {
-                    self.group_row_ptrs
-                        .values()
-                        .next()
-                        .map(|&ptr| unsafe { (&*ptr).drawn_scroll_x() })
-                })
-                .unwrap_or(0.0);
-            // A summoned wheel places itself around the pointer in screen
-            // space; the strip's pan would shift it out from under the cursor.
-            // A promoted group is drawn unpanned, so the wheel beside it is too.
-            let pinned = self.chrome.as_ref().is_some_and(|c| {
-                let st = c.borrow();
-                st.wheel_summon().is_some() || st.presentation_covers_primary()
-            });
-            let anchor_x = if pinned {
-                self.rect.x0
-            } else {
-                self.rect.x0 - active_scroll_x
-            };
-            sidebar.apply_layout(taffy, *sidebar_child, Point::new(anchor_x, self.rect.y0));
         }
         if let Some(capture_node) = self.capture_node {
             self.capture_studio.apply_layout(
@@ -21740,6 +21417,8 @@ impl Widget for ShellOverlayHost {
         }
         self.append_modal_sheet_accessibility(&mut root);
         root.children.extend(self.live_status_accessibility());
+        // Last, so the overlay indices above keep their paths.
+        root.children.extend(self.strip_switcher_accessibility());
         Some(root)
     }
 
@@ -21760,6 +21439,12 @@ impl Widget for ShellOverlayHost {
             return self
                 .person_markers
                 .semantic_action(target, action, state, path);
+        }
+        if target.starts_with(strip_switcher::TARGET_PREFIX)
+            && matches!(action, ui::a11y::Action::Activate)
+            && let Some(handled) = self.activate_strip_switcher_target(target)
+        {
+            return handled;
         }
         if target.starts_with(agent_markers::TARGET_PREFIX) {
             if self.accessible_agent_marker_request_is_inert(target) {
@@ -21963,9 +21648,8 @@ impl Widget for ShellOverlayHost {
         }
     }
 
-    /// Expose content + palette + sidebar as direct children so trait
-    /// walkers can recurse into the live tree, in `build_layout`'s
-    /// child-node order (sidebar last so it paints over the chrome).
+    /// Expose content + palette as direct children so trait walkers can
+    /// recurse into the live tree, in `build_layout`'s child-node order.
     /// The open palette is published once, by [`Self::accessibility`] under the
     /// command-palette layer with the host's filter band inside it; its widget
     /// (the [`Self::children`] entry after the content) is not exported again.
@@ -21987,6 +21671,7 @@ impl Widget for ShellOverlayHost {
         }
         if self.onboarding.is_none() {
             targets.extend(self.desk_test_rects());
+            targets.extend(self.strip_switcher_test_rects());
         }
         targets
     }
@@ -22000,9 +21685,6 @@ impl Widget for ShellOverlayHost {
         out.push(self.content.as_ref());
         if self.palette_visible {
             out.push(&self.palette);
-        }
-        if let Some(s) = self.sidebar.as_ref() {
-            out.push(s.as_ref());
         }
         out.push(&self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_ref() {
@@ -22042,9 +21724,6 @@ impl Widget for ShellOverlayHost {
         out.push(self.content.as_mut());
         if self.palette_visible {
             out.push(&mut self.palette);
-        }
-        if let Some(s) = self.sidebar.as_mut() {
-            out.push(s.as_mut());
         }
         out.push(&mut self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_mut() {
@@ -22104,8 +21783,7 @@ impl Widget for ShellOverlayHost {
                 .any(|(_, mirror)| mirror.wants_pointer_capture())
     }
 
-    /// Bubbles structural-dirty flags up from the content tree (and
-    /// sidebar) so the post-event rebuild picks up new nodes (e.g. a
+    /// Bubbles structural-dirty flags up from the content tree so the post-event rebuild picks up new nodes (e.g. a
     /// spliced `WindowGroup`). Without this the default `false` would
     /// shadow every child signal, leaving it at `Rect::ZERO`. Uses `|`,
     /// not `||`, so both children clear their own flags this tick.
@@ -22124,15 +21802,10 @@ impl Widget for ShellOverlayHost {
         let resynced = self.resync_strips_from_tree() | ws_swapped;
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
-        let sidebar = self
-            .sidebar
-            .as_mut()
-            .is_some_and(|s| s.take_structure_dirty());
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
         let pairing = self.pairing.take_structure_dirty();
         content
-            | sidebar
             | palette
             | capture_mirrors
             | resynced
@@ -22201,12 +21874,7 @@ impl ShellOverlayHost {
                 }),
             ),
             ("content", self.content.next_wake_deadline()),
-            (
-                "sidebar",
-                self.sidebar
-                    .as_ref()
-                    .and_then(|sidebar| sidebar.next_wake_deadline()),
-            ),
+            ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (
                 "notification",
                 self.chrome.as_ref().and_then(|chrome| {
@@ -22383,10 +22051,7 @@ impl ShellOverlayHost {
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
             || self.display_identify.needs_frame(now);
-        let sidebar_frame = self
-            .sidebar
-            .as_ref()
-            .is_some_and(|s| s.needs_animation_frame());
+        let switcher_frame = self.strip_switcher.needs_animation_frame(now);
         let mirror_frame = self
             .capture_mirrors
             .iter()
@@ -22425,7 +22090,7 @@ impl ShellOverlayHost {
             // bounded worker-response frame pump in this signal.
             || projection_needs_frame
             || self.content.needs_animation_frame()
-            || sidebar_frame
+            || switcher_frame
             || mirror_frame
             || markup_frame
             || notification_frame
@@ -22741,7 +22406,7 @@ struct OverviewPanelCache {
 
 impl ShellOverlayHost {
     /// Base desktop layer: window content, remote-peer presence, the
-    /// sidebar wheel, the permission prompt bar, the toast stack and the
+    /// permission prompt bar, the toast stack and the
     /// visual-alert edge. First of four passes split out of `draw`, which
     /// was one 372-line function.
     /// The desktop below the top bar: backdrop, windows and the extras over
@@ -22750,8 +22415,7 @@ impl ShellOverlayHost {
     /// [`Self::draw_scene_sections`] records: there all of this lands in
     /// the workspace section, which composes under the top bar's. Drawing
     /// the bar first and these over it is not only a different z-order
-    /// where they overlap: a clipped layer here (the docked wheel's group
-    /// clip starts at the bar's bottom edge) rounds what is under it to
+    /// where they overlap: a clipped layer here rounds what is under it to
     /// eight bits in the tiles its edge crosses, and the bar's antialiased
     /// edges in those tiles then blend over rounded instead of exact
     /// colour.
@@ -22785,67 +22449,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
-        self.draw_docked_wheel(scene, transform, text_renderer, theme, presence);
         self.draw_desktop_notices(scene, transform, text_renderer, theme, presence);
-    }
-
-    /// The sidebar wheel docked beside the strips.
-    fn draw_docked_wheel(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        // Sidebar wheel: above desktop content, below every overlay
-        // (including scrims) — it's part of the desktop, so it dims with it.
-        // The wheel and overview are two ways to navigate the same workspace
-        // set. Showing both under one modal creates competing destinations;
-        // the wheel returns as soon as the overview closes.
-        // Layout parks the docked wheel at `x - scroll` so it rides the
-        // strip. A strip drawn in canvas coordinates is panned by the
-        // presenter, so the wheel is drawn at the same canvas x, or the scene
-        // would change with every pan.
-        let shift = if self.docked_wheel_pinned() {
-            0.0
-        } else {
-            self.docked_strip_canvas_shift()
-        };
-        if !self.overlay_flags().overview
-            && let Some(sidebar) = self.sidebar.as_mut()
-        {
-            fn wheel(
-                sidebar: &mut Box<dyn Widget>,
-            ) -> Option<&mut tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc> {
-                sidebar.as_any_mut().and_then(|value| {
-                    value.downcast_mut::<tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc>()
-                })
-            }
-            let hits_before = wheel(sidebar).map(|wheel| {
-                wheel.rect.x0 += shift;
-                wheel.rect.x1 += shift;
-                (wheel.plus_rect, wheel.spoke_hit_rects.clone())
-            });
-            sidebar.draw(scene, transform, text_renderer, theme, presence);
-            // Hit rects the draw recomputed are in canvas coordinates too.
-            if let Some(wheel) = wheel(sidebar) {
-                wheel.rect.x0 -= shift;
-                wheel.rect.x1 -= shift;
-                if let Some((plus_before, spokes_before)) = hits_before {
-                    if wheel.plus_rect != plus_before {
-                        wheel.plus_rect.x0 -= shift;
-                        wheel.plus_rect.x1 -= shift;
-                    }
-                    if wheel.spoke_hit_rects != spokes_before {
-                        for spoke in &mut wheel.spoke_hit_rects {
-                            spoke.x0 -= shift;
-                            spoke.x1 -= shift;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// What the desktop shows over its windows where it is on screen: the
@@ -22905,7 +22509,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
-                area.y0 + f64::from(self.sidebar_top_y),
+                area.y0 + f64::from(self.chrome_top_y),
                 area.x1,
                 area.y1,
             );
@@ -23328,8 +22932,11 @@ impl ShellOverlayHost {
             // like an inexplicable scrollbar beneath Quick Settings. Hide it
             // throughout the close transition as well as while open.
             if !flags.quick_settings && !self.qs_transition.is_visible(now) {
+                self.settle_strip_switcher(now);
+                self.draw_strip_switcher_card(scene, transform, text_renderer, theme, now);
                 let ribbon = self.strip_ribbon();
-                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, indicators);
+                let alpha = self.strip_ribbon_alpha(now, theme.reduce_motion);
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, alpha);
             }
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, indicators);
@@ -23387,11 +22994,13 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Ribbon and rail sit below Quick Settings and every popover.
+    /// Ribbon, the strip switcher's card and the rail sit below Quick
+    /// Settings and every popover.
     fn draw_strip_chrome(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
         quick_settings_transition_visible: bool,
@@ -23407,12 +23016,33 @@ impl ShellOverlayHost {
         // Keep the retained section recording identical to the dense
         // composition: Quick Settings visually replaces the ribbon for its
         // complete open/close transition, while the rail remains.
+        let hidden_by_qs = flags.quick_settings || quick_settings_transition_visible;
+        let now = Instant::now();
+        if !hidden_by_qs {
+            self.settle_strip_switcher(now);
+        }
+        overlay_part(scene, "shell.strip-switcher", desktop, |scene| {
+            if hidden_by_qs || !self.strip_switcher.is_open() {
+                return None;
+            }
+            self.draw_strip_switcher_card(scene, transform, text_renderer, theme, now);
+            Some(vec![
+                transform.transform_rect_bbox(self.strip_switcher_bounds()),
+            ])
+        });
+        let ribbon_alpha = self.strip_ribbon_alpha(now, theme.reduce_motion);
         overlay_part(scene, "shell.strip-ribbon", desktop, |scene| {
-            if flags.quick_settings || quick_settings_transition_visible || indicators <= 0.0 {
+            if hidden_by_qs || ribbon_alpha <= 0.0 {
                 return None;
             }
             let ribbon = self.strip_ribbon();
-            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, indicators);
+            ribbon.draw(
+                scene,
+                transform,
+                theme,
+                self.strip_ribbon_hover,
+                ribbon_alpha,
+            );
             self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
                 .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
         });
@@ -23440,6 +23070,12 @@ impl ShellOverlayHost {
         }
         self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
             .into_iter()
+            .chain(
+                (self.strip_switcher.is_open()
+                    && !flags.quick_settings
+                    && !quick_settings_transition_visible)
+                    .then(|| self.strip_switcher_bounds()),
+            )
             .chain(self.strip_rail_bounds())
             .reduce(|current, rect| current.union(rect))
     }
@@ -24818,7 +24454,7 @@ impl ShellOverlayHost {
             None
         });
 
-        // Above every other overlay, including the sidebar wheel — it's
+        // Above every other overlay, including the strip switcher — it's
         // genuinely modal (an app in another process is blocked on the
         // answer, and `handle_event` absorbs every event), and drawn by
         // the compositor rather than the requesting app so it can't be

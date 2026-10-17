@@ -39,7 +39,7 @@ Most of the rest follows from that:
 
 | Path | What |
 |---|---|
-| `crates/session/shell/` | Wayland compositor: scrollable strips, wheel-disc workspace switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` and the offscreen `shots` runner. |
+| `crates/session/shell/` | Wayland compositor: scrollable strips, right-edge strip switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` and the offscreen `shots` runner. |
 | `crates/sdk/` | Public application facade and its retained-mode CRDT-native UI implementation. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. |
 | `crates/system/fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
 | `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |

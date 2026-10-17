@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces and strips are switched from the strip switcher at the right screen edge. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -57,7 +57,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 - Smithay-based Wayland **server**. Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
 - One session, on the backend selected at boot: `--backend drm` on bare hardware, `--backend winit` (default) in a window inside an existing desktop for development, `--backend headless` for CI.
 - Backends are a trait (`compositor::backend::Backend`); current implementations are `winit` and `drm` (libseat + libinput + udev + GBM).
-- Per-frame paint uses `vello` over `wgpu`. Shell chrome (top bar, wheel disc, command palette, modals) and foreign-surface buffers compose in the same `vello::Scene`.
+- Per-frame paint uses `vello` over `wgpu`. Shell chrome (top bar, strip switcher, command palette, modals) and foreign-surface buffers compose in the same `vello::Scene`.
 - See `docs/architecture/compositor.md`.
 
 ### 3. Collaboration + Sandbox Layer
@@ -196,7 +196,7 @@ Everything lives in this one repository — see `AGENTS.md` for the monorepo wor
 
 ## Key spatial concepts
 
-- **Wheel disc**: the left-edge radial switcher; each workspace is a spoke, dragged/rotated to switch the active workspace.
+- **Strip switcher**: the right-edge strip ribbon, which expands on hover intent (or Super+S) into a card listing the workspace's strips and the workspaces, to switch, add or rename them.
 - **Workspace**: a stack of strips that can be shared with peers; the unit of sandboxing, capability grants, and CRDT replication.
 - **Strip**: a horizontal lane within a workspace, containing one or more window-groups.
 - **WindowGroup**: a tabbed container holding one or more tabs (formerly "deck"). Tracks `maximized` and `width`.

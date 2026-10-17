@@ -977,7 +977,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
                 &out_dir.join("e2e-06-quick-settings-pre.png"),
             );
 
-            // With the sidebar click-guard narrowed, the click reaches TopBarChrome.
+            // The click reaches TopBarChrome.
             let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
             h.click(hit.x, hit.y);
             assert!(

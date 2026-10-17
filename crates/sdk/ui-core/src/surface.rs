@@ -5,8 +5,8 @@
 //! it and equally dense the whole way round.
 //!
 //! [`soft_shadow`] is a baked-sprite falloff 9-sliced around the rect,
-//! kept only for effects with no outline to follow (the wheel disc's
-//! bloom, a dragged card's accent glow) — anything with a corner radius
+//! kept only for effects with no outline to follow (a dragged card's
+//! accent glow) — anything with a corner radius
 //! should use [`shadow`] instead, since the sprite's corner term is a
 //! square-corner SDF that reads as a box with the corners rubbed out.
 //! Sprites are baked once per tint and cached.

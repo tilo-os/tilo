@@ -235,32 +235,19 @@ def overview(ctx, res):
     ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after overview.toggle")
 
 
-@check("W13", AREA, "Super+S summons and dismisses the workspace wheel")
-def wheel(ctx, res):
+@check("W13", AREA, "Super+S opens and Escape closes the strip switcher")
+def strip_switcher(ctx, res):
     ctx.reset()
-    d0 = core.display_rects(ctx.state())[0]
-    px, py = int(d0[0] + d0[2] / 2), int(d0[1] + d0[3] / 2)
-    ctx.vm.input("move", str(px), str(py))
-    ctx.settle(0.5)
-    before_disc = core.target_map(ctx.vm.targets()).get("wheel_disc")
     ctx.vm.key("super+s")
-    st = ctx.wait_state(lambda s: s["chrome"].get("wheel_summon"), 5,
-                        "chrome.wheel_summon after Super+S")
-    summoned = st["chrome"]["wheel_summon"]
-    after_disc = core.target_map(ctx.vm.targets()).get("wheel_disc")
-    expect(after_disc, "summoned wheel stays addressable as wheel_disc")
-    # A chrome flag without a moved disc is the same lie the previous
-    # check was blind to: the target name never changes, only the rect.
-    moved = (before_disc is None
-             or abs(after_disc[0] - before_disc[0]) > 20
-             or abs((after_disc[0] + after_disc[2]) - px) < 40)
-    expect(moved, f"wheel_disc stayed at {before_disc} after summon to {px},{py} (now {after_disc})")
-    res.metrics.update(pointer=[px, py], wheel_summon=summoned,
-                       wheel_disc_before=before_disc, wheel_disc_after=after_disc)
-    ctx.shot("W13-wheel")
+    ctx.wait_state(lambda s: s["chrome"].get("strip_switcher_open") is True, 5,
+                   "chrome.strip_switcher_open after Super+S")
+    card = core.target_map(ctx.vm.targets()).get("strip_switcher")
+    expect(card, "open strip switcher is addressable as strip_switcher")
+    res.metrics.update(strip_switcher=card)
+    ctx.shot("W13-strip-switcher")
     ctx.vm.key("Escape")
-    ctx.wait_state(lambda s: not s["chrome"].get("wheel_summon"), 5,
-                   "chrome.wheel_summon cleared after Escape")
+    ctx.wait_state(lambda s: not s["chrome"].get("strip_switcher_open"), 5,
+                   "chrome.strip_switcher_open cleared after Escape")
 
 
 @check("W14", AREA, "Touch: a tap on a window focuses it; a horizontal swipe pans the strip")

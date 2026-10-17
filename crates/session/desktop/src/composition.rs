@@ -48,6 +48,8 @@ pub struct SurfaceChrome {
     /// Drawn above the desktop along the edges of the displays other than
     /// the primary (their compact top bars). It takes no room in layout.
     pub display_chrome: Option<Box<dyn Widget>>,
+    /// The leading edge gutter: how far each strip's first window sits
+    /// in from the display's leading edge.
     pub leading_inset: f64,
     /// Schedule a host frame when a retained application changes asynchronously.
     pub notify: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -1142,8 +1144,8 @@ impl DesktopSurface {
     }
     /// The backdrop and the window content: everything [`Self::draw_bar`]
     /// paints over. A host drawing the desktop in one scene draws what sits
-    /// between the windows and the top bar (the docked wheel, notices,
-    /// floating surfaces) after this and before [`Self::draw_bar`], the
+    /// between the windows and the top bar (notices, floating
+    /// surfaces) after this and before [`Self::draw_bar`], the
     /// order [`Self::draw_sections`] composes the same layers in.
     pub fn draw_below_bar(
         &mut self,

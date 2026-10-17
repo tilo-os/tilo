@@ -230,36 +230,17 @@ pub struct FrameLayers {
     /// window group, so a presenter rasterises only where a group's drawing
     /// changed. `None` for a strip drawn without well-nested parts.
     pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    /// The docked wheel, drawn on its own above the strips.
-    pub wheel: Option<WheelSprite>,
     /// Everything above: notices over the desktop, the top bar, quick
     /// settings and every overlay above them.
     pub chrome: Scene,
 }
 
-/// The docked wheel as a layer of its own size, above the strips. It rides
-/// the top strip, over the strips below it: drawn apart, a pan moves it
-/// without drawing it or the strips under it again.
-#[derive(Clone)]
-pub struct WheelSprite {
-    /// The wheel with the top-left corner of everything it paints at the
-    /// origin, in scene pixels.
-    pub scene: Scene,
-    pub width: u32,
-    pub height: u32,
-    /// Where that corner is on screen this frame, in scene pixels: off
-    /// screen to the left once the strip it rides has panned it away.
-    pub x: i32,
-    pub y: i32,
-}
-
-/// The strips and the docked wheel the host drew apart for a frame drawn as
-/// layers, in scene pixels ([`FrameBuilder::panned_pieces`]).
+/// The strips the host drew apart for a frame drawn as layers, in scene
+/// pixels ([`FrameBuilder::panned_pieces`]).
 struct PannedPieces {
     strips: Vec<Scene>,
     /// Each strip's damage parts, in the same order.
     parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    wheel: Option<WheelSprite>,
 }
 
 /// Widest workspace layer, in scene pixels. Past this the strips keep their
@@ -410,7 +391,6 @@ impl FramePaint {
                     workspace,
                     strips,
                     strip_parts: _,
-                    wheel,
                     chrome,
                 },
         }) = cache
@@ -419,9 +399,6 @@ impl FramePaint {
             pins.add_scene(workspace);
             for strip in strips {
                 pins.add_scene(strip);
-            }
-            if let Some(wheel) = wheel {
-                pins.add_scene(&wheel.scene);
             }
             pins.add_scene(chrome);
         }
@@ -2592,13 +2569,7 @@ impl FrameBuilder {
             .as_ref()
             .filter(|_| unbake)
             .and_then(|plan| Self::panned_pieces(plan, panned))
-            .filter(|pieces| {
-                pieces.strips.iter().all(separable_layer)
-                    && pieces
-                        .wheel
-                        .as_ref()
-                        .is_none_or(|wheel| separable_layer(&wheel.scene))
-            });
+            .filter(|pieces| pieces.strips.iter().all(separable_layer));
         if unbake
             && (!backdrop_surfaces.is_empty()
                 || !hdr_layers.is_empty()
@@ -2721,7 +2692,6 @@ impl FrameBuilder {
                     },
                     strips: pieces.strips,
                     strip_parts: pieces.parts,
-                    wheel: pieces.wheel,
                     chrome: self.to_scene(chrome),
                 },
             }
@@ -3272,10 +3242,8 @@ impl FrameBuilder {
     /// a layout pixel at 100 %, half of one at 200 %, two thirds at 150 %,
     /// four fifths at 125 %. A pan then moves the strip by whole device
     /// pixels, which a copy reproduces exactly, and as finely as the panel
-    /// can show. What rides the strip moves with it by exactly the pan (the
-    /// docked wheel replays its cached drawing under the exact change of its
-    /// place), so the panned strips are what the desktop drawn without layers
-    /// shows, and nothing twitches when a pan ends. Layout and input see the
+    /// can show. What rides the strip moves with it by exactly the pan, so
+    /// the panned strips are what the desktop drawn without layers shows, and nothing twitches when a pan ends. Layout and input see the
     /// same drawn pan, so what is under the pointer is what is drawn there.
     /// A CPU presenter keeps whole layout pixels.
     fn align_strip_pans(&mut self) {
@@ -3446,10 +3414,10 @@ impl FrameBuilder {
         Some(plan)
     }
 
-    /// The strips and the docked wheel the host drew apart for `plan`, in
-    /// scene pixels; `None` when they do not match it, or a strip's floating
-    /// surfaces drew (on screen they are drawn above the wheel): the frame
-    /// is then drawn in screen space.
+    /// The strips the host drew apart for `plan`, in scene pixels; `None`
+    /// when they do not match it, or a strip's floating surfaces drew (on
+    /// screen they are drawn above every strip): the frame is then drawn in
+    /// screen space.
     fn panned_pieces(
         plan: &StripPlan,
         panned: crate::shell::overlay_host::PannedSections,
@@ -3457,7 +3425,6 @@ impl FrameBuilder {
         let crate::shell::overlay_host::PannedSections {
             strips,
             strip_parts,
-            wheel,
             floating_drawn,
         } = panned;
         if floating_drawn
@@ -3475,49 +3442,7 @@ impl FrameBuilder {
             .zip(strip_parts)
             .map(|((_, scene), parts)| magnified_with_parts(scene, parts, plan.to_scene))
             .unzip();
-        let wheel = match wheel {
-            Some(wheel) => Some(Self::wheel_sprite(plan, &wheel)?),
-            None => None,
-        };
-        Some(PannedPieces {
-            strips,
-            parts,
-            wheel,
-        })
-    }
-
-    /// The docked wheel as a sprite: everything it paints, rounded out to
-    /// whole scene pixels, placed where the pan of the strip it rides shows
-    /// it.
-    fn wheel_sprite(
-        plan: &StripPlan,
-        wheel: &crate::shell::overlay_host::PannedWheel,
-    ) -> Option<WheelSprite> {
-        let scroll_x = match wheel.rides {
-            Some(strip) => {
-                let index = plan.ids.iter().position(|id| *id == strip)?;
-                plan.strips.get(index)?.scroll_x
-            }
-            None => 0,
-        };
-        let bounds = plan.to_scene.transform_rect_bbox(wheel.bounds);
-        let (x0, y0) = (bounds.x0.floor(), bounds.y0.floor());
-        let (x1, y1) = (bounds.x1.ceil(), bounds.y1.ceil());
-        let mut scene = Scene::new();
-        scene.append(
-            &wheel.scene,
-            Some(
-                plan.to_scene
-                    .then_translate(vello::kurbo::Vec2::new(-x0, -y0)),
-            ),
-        );
-        Some(WheelSprite {
-            scene,
-            width: scene_px(x1 - x0).max(1),
-            height: scene_px(y1 - y0).max(1),
-            x: scene_i32(x0 - f64::from(scroll_x))?,
-            y: scene_i32(y0)?,
-        })
+        Some(PannedPieces { strips, parts })
     }
 
     #[cfg(test)]
@@ -7254,7 +7179,7 @@ mod tests {
         let frame = fb.paint_with_damage();
         let candidate = frame
             .scanout_candidate()
-            .expect("alone on top: no bar, wheel or strip chrome over it");
+            .expect("alone on top: no bar or strip chrome over it");
         assert_eq!(candidate.origin, (0, 0));
         assert!(candidate.covers((0, 0), SIZE), "it fills the output");
         assert_eq!(
@@ -7457,56 +7382,6 @@ mod tests {
                 "{scale}x: the card {card:?} is on the display {area:?}"
             );
         }
-    }
-
-    #[test]
-    fn super_s_moves_the_wheel_disc_to_the_pointer() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        let before = *fb
-            .widget_registry()
-            .get("wheel_disc")
-            .expect("the docked wheel is addressable");
-        let at = Point::new(1180.0, 450.0);
-        fb.host_mut().note_pointer(at);
-        let chord = Modifiers::from(ModifiersState::SUPER);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut focus = None;
-        assert!(
-            fb.dispatch_event(
-                &key_press(Key::Character("s".into())),
-                &chord,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &root,
-                &mut focus
-            ),
-            "Super+S is handled by the shell"
-        );
-        let summoned = fb
-            .chrome()
-            .wheel_summon()
-            .expect("Super+S writes chrome.wheel_summon");
-        assert!(
-            (summoned.x - at.x).abs() < 1.0 && (summoned.y - at.y).abs() < 1.0,
-            "summon follows the pointer, got {summoned:?}"
-        );
-        let _ = fb.paint_settled();
-        let after = *fb
-            .widget_registry()
-            .get("wheel_disc")
-            .expect("the summoned wheel stays addressable");
-        assert!(
-            (after.x1 - at.x).abs() < 2.0,
-            "the rim's right edge sits on the pointer so a shot at that point sees the wheel; \
-             got x1={} for pointer x={}",
-            after.x1,
-            at.x
-        );
-        assert!(
-            (after.x0 - before.x0).abs() > 50.0,
-            "the disc actually moved: docked {before:?} summoned {after:?}"
-        );
     }
 
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
@@ -7883,7 +7758,7 @@ mod tests {
 
     /// On a desktop spread across two displays a fullscreen covers its own
     /// display only. The other display keeps its windows where they were
-    /// and its own chrome: the wheel and the full top bar on the primary,
+    /// and its own chrome: the full top bar on the primary,
     /// the compact bar on the second.
     #[test]
     fn a_fullscreen_covers_its_own_display_and_leaves_the_other_alone() {
@@ -7948,11 +7823,6 @@ mod tests {
                 "{label}: the other strip steps aside on the fullscreen's display"
             );
             let registry = fb.widget_registry();
-            assert_eq!(
-                rect_named(&registry, "SidebarWheelDisc").width() > 1.0,
-                !on_primary,
-                "{label}: the wheel steps aside only for a fullscreen on the primary"
-            );
             assert_eq!(
                 rect_named(&registry, "TopBarChrome").height() > 10.0,
                 !on_primary,
@@ -9596,43 +9466,32 @@ mod tests {
             );
         }
 
-        /// Expand keeps the top bar but tucks the workspace switcher disc
-        /// away instead of drawing it over the window's left edge.
-        fn an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar() {
+        /// Expand keeps the top bar.
+        fn an_expanded_window_keeps_the_top_bar() {
             let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
             let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             first.maximized = true;
             let group = first.id;
             let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
             let _ = fb.paint_settled();
-            let before = fb.widget_registry();
-            assert!(
-                rect_named(&before, "SidebarWheelDisc").width() > 1.0,
-                "the disc is there while nothing is expanded"
-            );
             fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
             let _ = fb.paint_settled();
-            let during = fb.widget_registry();
             assert!(
-                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
-                "the disc is tucked while a window is expanded"
-            );
-            assert!(
-                rect_named(&during, "TopBarChrome").height() > 10.0,
+                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
                 "Expand keeps the top bar"
             );
             fb.with_chrome(|chrome| chrome.set_maximized_group(None));
             let _ = fb.paint_settled();
             assert!(
-                rect_named(&fb.widget_registry(), "SidebarWheelDisc").width() > 1.0,
-                "restoring brings the disc back"
+                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
+                "restoring keeps the top bar"
             );
         }
 
-        /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
-        /// clients; chrome fullscreen still wins so W07 sees
-        /// `fullscreen_group`. Maximize stays beside the wheel.
-        fn super_f_on_a_tilo_group_covers_the_wheel() {
+        /// Super+F on a Tilo window covers the whole output. Hosted apps
+        /// are xdg clients; chrome fullscreen still wins so W07 sees
+        /// `fullscreen_group`.
+        fn super_f_on_a_tilo_group_covers_the_output() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
@@ -9649,17 +9508,13 @@ mod tests {
             let row = rect_named(&during, "GroupRow");
             assert!(
                 row.width() >= fb.viewport().0 - 1.0,
-                "Super+F must cover the wheel; row width {} vs output {}",
+                "Super+F must cover the output; row width {} vs output {}",
                 row.width(),
                 fb.viewport().0,
             );
             assert!(
                 rect_named(&during, "TopBarChrome").height() <= 0.5,
                 "Super+F hides the top bar"
-            );
-            assert!(
-                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
-                "the workspace switcher does not show in fullscreen"
             );
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
             let _ = fb.paint_settled();
@@ -9735,8 +9590,8 @@ mod tests {
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
-        super_f_on_a_tilo_group_covers_the_wheel();
-        an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar();
+        super_f_on_a_tilo_group_covers_the_output();
+        an_expanded_window_keeps_the_top_bar();
         super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
     }
 
@@ -10381,23 +10236,6 @@ fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> 
         })
         .map(|(_, region)| *region)
         .collect()
-}
-
-/// A whole scene coordinate, possibly negative (off screen to the left or
-/// above), rounded to the nearest pixel; `None` when not finite.
-fn scene_i32(value: f64) -> Option<i32> {
-    if !value.is_finite() {
-        return None;
-    }
-    let value = value
-        .round()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX));
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the value is rounded, finite and clamped to i32"
-    )]
-    let whole = value as i32;
-    Some(whole)
 }
 
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into

@@ -405,8 +405,8 @@ pub static FIXED_SHORTCUTS: &[FixedShortcut] = &[
         &[key(&["Super"], "enter")],
     ),
     fixed(
-        "fixed-workspace-wheel",
-        "shortcut-workspace-wheel",
+        "fixed-strip-switcher",
+        "shortcut-strip-switcher",
         ShortcutCategory::Navigation,
         &[key(&["Super"], "s")],
     ),

@@ -71,6 +71,79 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     Ok(())
 }
 
+const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "1 to 48 characters without control characters. Omit to use the localized default name.",
+)];
+
+const STRIP_RENAME_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "name",
+        ParamType::Text,
+        "The new name: 1 to 48 characters without control characters. Omit to open the \
+         strip switcher's name field on the focused strip for a person to type it.",
+    ),
+    ActionParam::optional(
+        "strip",
+        ParamType::Integer,
+        "Which strip of the active workspace, counting from 1. Defaults to the focused strip.",
+    ),
+];
+
+/// Longest strip name a person or an agent may give, in characters: what the
+/// strip switcher's row shows without eliding most of it.
+pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
+
+/// A strip name as given, trimmed, or `None` when it is empty, too long or
+/// holds control characters.
+pub(crate) fn valid_strip_name(supplied: &str) -> Option<&str> {
+    let name = supplied.trim();
+    (!name.is_empty()
+        && name.chars().count() <= STRIP_NAME_MAX_CHARS
+        && !supplied.chars().any(char::is_control))
+    .then_some(name)
+}
+
+fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let default_name = t("search-action-strip-create-default-name");
+    let supplied = args.text("name").unwrap_or(&default_name);
+    let name = valid_strip_name(supplied)
+        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
+    state
+        .create_strip(name)
+        .map(|_| ())
+        .map_err(ActionError::Refused)
+}
+
+fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let Some(supplied) = args.text("name") else {
+        if args.integer("strip").is_some() {
+            return Err(ActionError::Refused(t("search-action-strip-invalid-name")));
+        }
+        state.request_strip_rename();
+        return Ok(());
+    };
+    let name = valid_strip_name(supplied)
+        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
+    let strip = match args.integer("strip") {
+        None => state.focused_strip_id(),
+        Some(index) => usize::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| {
+                let tree = state.tree();
+                let id = tree.desktop.active_workspace()?.strips.get(index)?.id;
+                drop(tree);
+                Some(id)
+            }),
+    }
+    .ok_or_else(|| ActionError::Refused(t("search-action-strip-rename-missing")))?;
+    state
+        .rename_strip(strip, name)
+        .map_err(ActionError::Refused)
+}
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -272,7 +345,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" => contract = workspace_create_contract(),
+        "workspace.create" | "strip.create" | "strip.rename" => {
+            contract = workspace_create_contract();
+        }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
@@ -357,7 +432,9 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         }
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" => tilo_actions::OperationKind::Document,
+        | "workspace.create" | "strip.create" | "strip.rename" => {
+            tilo_actions::OperationKind::Document
+        }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -2176,6 +2253,20 @@ impl Action {
             "search-action-strip-focus-next-subtitle",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
+        Action {
+            id: "strip.create",
+            label: "search-action-strip-create",
+            subtitle: "search-action-strip-create-subtitle",
+            params: STRIP_CREATE_PARAMS,
+            apply: create_strip,
+        },
+        Action {
+            id: "strip.rename",
+            label: "search-action-strip-rename",
+            subtitle: "search-action-strip-rename-subtitle",
+            params: STRIP_RENAME_PARAMS,
+            apply: rename_strip,
+        },
         Action {
             id: "workspace.create",
             label: "search-action-workspace-create",

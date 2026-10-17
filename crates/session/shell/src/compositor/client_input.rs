@@ -1819,7 +1819,7 @@ fn route_mouse_wheel(
                     sync_keyboard_focus(state, fb);
                 }
             } else {
-                // Positive detents rotate DOWN the workspace wheel; `switch_workspace` stops at the wheel's end.
+                // Positive detents step DOWN the workspace list; `switch_workspace` stops at the last workspace.
                 let dir = steps.signum();
                 fb.with_chrome(|chrome| {
                     for _ in 0..steps.unsigned_abs().min(4) {
@@ -1902,7 +1902,7 @@ fn route_keyboard_input(
     // can absorb edge-triggered actions (close/open/toggle) without running
     // them again.
     if key.repeat {
-        let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+        let overlay_open = fb.host().palette_visible() || fb.host().strip_switcher_takes_keys();
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || fb.host().banner_owns_key(&key.logical_key)
@@ -1925,8 +1925,8 @@ fn route_keyboard_input(
         // The client already has this release (`deliver_held_key_release`).
         return true;
     }
-    // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
-    let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+    // Anything the shell has up that Escape would dismiss — the open strip switcher counts, since its keys (Escape, arrows, Enter) must reach the shell, not a focused client.
+    let overlay_open = fb.host().palette_visible() || fb.host().strip_switcher_takes_keys();
     // Static safety chords and user-edited shortcuts share the same
     // client-first boundary. Without the host-side check, a valid binding
     // such as Alt+G is shown and saved by Settings but disappears whenever a

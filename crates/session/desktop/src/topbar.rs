@@ -747,7 +747,7 @@ pub struct TopBarChrome {
     editor_pointer_release: Option<winit::event::MouseButton>,
     widget_edit_drag: DragController<TopBarWidget>,
     widget_edit_pressed: Option<usize>,
-    /// Matches the sidebar-wheel's scroll contract. `f64` so pixel-delta
+    /// Accumulated scroll for the center band. `f64` so pixel-delta
     /// scroll events (`f64` in `winit`) accumulate without a truncating
     /// `f64 -> f32` cast.
     center_scroll_accum: f64,
@@ -1471,8 +1471,8 @@ impl TopBarChrome {
         self.collaborator_colors.clear();
         self.collaborator_agents.clear();
         let now = tilo_clock::unix_now();
-        // Shared helper so the overflow chip and the wheel-disc's
-        // active-card dot count agree.
+        // Counted with the same `present` filter as the avatars, so the
+        // overflow chip agrees with the row.
         let peer_count = roster.iter().filter(present).count();
         // Settled over the whole room, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.

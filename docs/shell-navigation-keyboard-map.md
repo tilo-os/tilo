@@ -31,7 +31,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
-| Previous/next workspace | Super+Page Up/Page Down | Workspace arrows/wheel |
+| Previous/next workspace | Super+Page Up/Page Down | Strip switcher, Workspaces section |
 | Maximize/restore the focused window | Super+Up/Down (Super+M toggles) | Double-click the tab bar |
 | Strip above/below | Ctrl+Super+Up/Down | Strip navigation, three-finger vertical swipe |
 | Go to strip N, counting from the top (the Lounge strip is 1) | Super+1 … Super+9 | Strip navigation |
@@ -39,7 +39,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Focus the Nth window of the strip | Ctrl+Super+1 … Ctrl+Super+9 | Select group/tab |
-| Summon/dismiss workspace wheel | Super+S | — |
+| Open/close the strip switcher (strips, people on them, workspaces) | Super+S, then Up/Down, Enter, F2 to rename | Rest the pointer on the right-edge strip ribbon |
 | Quick Settings | Super+Q | Top bar |
 | Keyboard guide | F1, Super+Shift+/ | — |
 | Capture Studio (choose what to capture) | Print | Capture action |
@@ -191,7 +191,7 @@ granted to an app through the GlobalShortcuts portal.
 | Add tab here | Super+T |
 | Duplicate tab | Super+D |
 | Open terminal | Super+Enter |
-| Workspace wheel | Super+S |
+| Strip switcher | Super+S |
 | Display layout | Super+P |
 | Capture screenshot | Super+Shift+S |
 | Picture in picture | Super+Shift+P |

@@ -1366,7 +1366,7 @@ adapter, cached native NTFS fixtures and a private audio endpoint. CI's test
 jobs call it too. The visual goldens run separately on an idle renderer:
 
 ```bash
-golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
+golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($golden)"
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
 ```

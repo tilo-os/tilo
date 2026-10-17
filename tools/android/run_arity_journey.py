@@ -190,9 +190,7 @@ class Journey:
         self.launch()
         self.result("reopened", "123+456", "579")
         self.close()
-        wheel = next(t for t in self.request("list_targets")["targets"] if t["name"] == "wheel_disc")
-        x, y, _, h = wheel["rect"]
-        require_ok(self.request("click_at", x=x + 24, y=y + h - 34))
+        self.invoke("actions", "workspace.create")
         second = wait_for(lambda: self.workspace() if self.workspace()["id"] != first["id"] else None,
                           "new workspace")
         self.launch()

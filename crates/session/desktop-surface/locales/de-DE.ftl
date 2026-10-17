@@ -1031,11 +1031,6 @@ window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, z
 window-switcher-untitled = Unbenanntes Fenster
 window-switcher-caption-paged = { $position } von { $count }
 
-# Workspace wheel
-a11y-shell-wheel = Arbeitsbereichsrad
-a11y-shell-wheel-switch = Zu { $workspace } wechseln
-a11y-shell-wheel-add = Arbeitsbereich hinzufügen
-
 # Workspace overview
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel

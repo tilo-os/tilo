@@ -191,7 +191,7 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
         ShortcutAction::EmojiPicker.id(),
         ShortcutAction::WorkspaceOverview.id(),
         ShortcutAction::QuickSettings.id(),
-        "fixed-workspace-wheel",
+        "fixed-strip-switcher",
         ShortcutAction::Lock.id(),
         "fixed-screenshot",
         "fixed-display-layout",

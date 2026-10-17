@@ -306,7 +306,7 @@ Error codes:
 ### Widget registry — how `click_named` finds things
 
 Every widget in the tree exposes a name through either:
-- `Widget::test_id()` (opt-in) — currently registered: `command_palette_input`, `wheel_disc`, more landing per the ui plan
+- `Widget::test_id()` (opt-in) — currently registered: `command_palette_input`, `strip_switcher`, more landing per the ui plan
 - Path-based fallback: `Parent/Child[index]` — e.g. `OverlayHost/TopBarChrome/Button[0]`
 
 `list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.

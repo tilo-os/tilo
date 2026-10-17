@@ -1143,7 +1143,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Overview:Super+Tab",
             "Lock screen:Super+L",
             "Quick Settings:Super+Q",
-            "Workspace wheel:Super+S",
+            "Strip switcher:Super+S",
             "Display layout:Super+P",
             "Capture screenshot:Super+Shift+S",
             "Picture in picture:Super+Shift+P",

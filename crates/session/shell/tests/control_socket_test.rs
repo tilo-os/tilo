@@ -215,17 +215,16 @@ fn control_socket_lists_targets_and_answers_clicks_and_bad_commands() {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    // Phase `click_named_known_target_grows_workspace_registry`.
-    // Uses `wheel_disc` (a stable `test_id`) so the test doesn't depend on
+    // Phase `click_named_known_target_round_trips`.
+    // Uses `ShellOverlayHost`, the host root's bare name, which every
+    // bootstrap tree registers, so the test doesn't depend on deeper
     // path-key strings that may shift.
     {
         let (mut child, socket_path, _control_dir) = spawn_with_control();
 
         let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
-        // Snapshot the registry before the click — the wheel disc's plus
-        // slot adds a workspace, which surfaces additional spoke widgets
-        // in the next `list_targets` walk.
+        // Snapshot the registry before the click.
         let before = round_trip(&mut stream, r#"{"op":"list_targets"}"#);
         let before_count = before
             .get("targets")
@@ -233,10 +232,24 @@ fn control_socket_lists_targets_and_answers_clicks_and_bad_commands() {
             .map_or(0, std::vec::Vec::len);
         assert!(before_count > 0, "bootstrap layout should expose widgets");
 
-        // press+release with no movement no-ops on the drag-rotation path, so
-        // this is a clean smoke for "Ok came back"; the workspace-grow assertion
-        // follows up via raw coordinates in the plus slot's band.
-        let resp = round_trip(&mut stream, r#"{"op":"click_named","name":"wheel_disc"}"#);
+        let names: Vec<&str> = before
+            .get("targets")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"ShellOverlayHost"),
+            "the host root is registered by its bare name; got {names:?}"
+        );
+
+        // A press+release at the host's centre lands on the desktop, so
+        // this is a clean smoke for "Ok came back".
+        let resp = round_trip(
+            &mut stream,
+            r#"{"op":"click_named","name":"ShellOverlayHost"}"#,
+        );
         assert!(
             resp.get("ok").is_some(),
             "click_named on a known target should respond `ok`; got {resp:?}"

@@ -5089,6 +5089,73 @@ impl WorkspaceTree {
         true
     }
 
+    /// Whether this machine may rename `strip`: it is in this device's id
+    /// namespace (the single writer that projects it to the room), or in no
+    /// namespace at all (nothing projects it, so the name stays local). A
+    /// peer's strip is theirs to rename; the owner's admission
+    /// ([`tilo_desktop_model::commands::check_owned`]) refuses it the same way.
+    pub fn may_rename_strip(&self, strip: StripId) -> bool {
+        let salt = tilo_desktop_model::ids::peer_salt_of(strip.raw());
+        salt == 0 || salt == self.local_salt()
+    }
+
+    /// Create or rename a strip of the active workspace, as a person at this
+    /// machine does it: the model's own
+    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip)
+    /// and `RenameStrip` reductions on the cache, then the room document and
+    /// the restart snapshot. A created strip takes focus. Returns the strip
+    /// the command named or made.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when there is no active workspace, the name is
+    /// empty, too long or holds control characters, the strip is gone, or it
+    /// belongs to another topology owner.
+    pub fn commit_strip_command(
+        &mut self,
+        command: &tilo_desktop_model::commands::DesktopCommand,
+    ) -> Result<StripId, String> {
+        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
+        let renamed = match command {
+            DesktopCommand::CreateStrip { .. } => None,
+            DesktopCommand::RenameStrip { strip, .. } => {
+                let strip = StripId(*strip);
+                if !self.may_rename_strip(strip) {
+                    return Err("target belongs to another topology owner".into());
+                }
+                Some(strip)
+            }
+            _ => return Err("not a strip command".into()),
+        };
+        let ws_id = self.desktop.active;
+        let workspace = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == ws_id)
+            .ok_or("there is no active workspace")?;
+        let room = workspace.room;
+        let before = workspace.strips.len();
+        apply_command(workspace, command, &mut || Ok(next_id()), &mut |_, _| {
+            Err("a strip command creates no record".into())
+        })?;
+        let strip = if let Some(strip) = renamed {
+            strip
+        } else {
+            let made = workspace
+                .strips
+                .get(before)
+                .map(|strip| strip.id)
+                .ok_or("the strip was not created")?;
+            self.desktop.active_strip.insert(ws_id, made);
+            made
+        };
+        self.sync_room_doc(room);
+        self.seed_doc_from_cache();
+        self.queue_save();
+        Ok(strip)
+    }
+
     /// Commit `command` as this device's topology owner: the shared
     /// [`tilo_desktop_model::commands::apply_command`] reduction on the
     /// cache, mirrored into the room document so peer sync ships it, and
@@ -9921,3 +9988,78 @@ mod workspace_tree_lifecycle_tests {
 
 #[path = "state/native_manual_tasks.rs"]
 pub(crate) mod native_manual_tasks;
+
+#[cfg(test)]
+mod strip_command_tests {
+    use super::*;
+    use tilo_desktop_model::commands::DesktopCommand;
+
+    /// Creating and renaming a strip run the model's own reductions: a
+    /// created strip is named, appended and focused, a bad name is refused
+    /// with the tree untouched, and another device's strip is theirs to name.
+    #[test]
+    fn strips_are_created_and_renamed_through_the_model_commands() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let ws = tree.desktop.active;
+        let made = tree
+            .commit_strip_command(&DesktopCommand::CreateStrip {
+                name: "  Research ".into(),
+            })
+            .expect("created");
+        let workspace = tree.desktop.active_workspace().unwrap();
+        assert_eq!(
+            workspace.strips.last().map(|s| (s.id, s.name.as_str())),
+            Some((made, "Research"))
+        );
+        assert_eq!(tree.desktop.active_strip.get(&ws), Some(&made));
+
+        let first = workspace.strips[0].id;
+        tree.commit_strip_command(&DesktopCommand::RenameStrip {
+            strip: first.raw(),
+            name: "Lounge".into(),
+        })
+        .expect("renamed");
+        assert_eq!(
+            tree.desktop.active_workspace().unwrap().strips[0].name,
+            "Lounge"
+        );
+
+        let names = |tree: &WorkspaceTree| -> Vec<(StripId, String)> {
+            tree.desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .map(|s| (s.id, s.name.clone()))
+                .collect()
+        };
+        let before = names(&tree);
+        assert!(
+            tree.commit_strip_command(&DesktopCommand::CreateStrip { name: " ".into() })
+                .is_err()
+        );
+        assert!(
+            tree.commit_strip_command(&DesktopCommand::RenameStrip {
+                strip: first.raw(),
+                name: "a\u{7}b".into(),
+            })
+            .is_err()
+        );
+        assert_eq!(names(&tree), before);
+
+        let other_salt = tree.local_salt().wrapping_add(1).max(1);
+        let theirs = StripId(compose_id(other_salt, 42));
+        assert!(!tree.may_rename_strip(theirs));
+        tree.desktop.workspaces[0]
+            .strips
+            .push(Strip::new(theirs, "Theirs"));
+        assert!(
+            tree.commit_strip_command(&DesktopCommand::RenameStrip {
+                strip: theirs.raw(),
+                name: "Mine".into(),
+            })
+            .is_err(),
+            "a peer's strip is renamed by its owner"
+        );
+    }
+}

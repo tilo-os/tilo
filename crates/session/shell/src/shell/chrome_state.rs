@@ -668,8 +668,7 @@ impl std::fmt::Debug for RecordsWake {
 pub struct FullscreenDisplay {
     /// The compositor's id for the display.
     pub output: u32,
-    /// Whether it is the primary display, which carries the full top bar
-    /// and the wheel.
+    /// Whether it is the primary display, which carries the full top bar.
     pub primary: bool,
 }
 
@@ -842,7 +841,7 @@ pub struct ChromeState {
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there is wiped before
     /// state-dump can observe it. Unlike [`Self::maximized_group`], this
-    /// covers the output, including the wheel.
+    /// covers the output, including the top bar.
     user_fullscreen_group: Option<u64>,
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
@@ -935,10 +934,14 @@ pub struct ChromeState {
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
     input_source_request: Option<usize>,
-    /// Docked at the strip's left edge by default; `Some(point)`
-    /// detaches the wheel to the pointer. Cleared on Escape or
-    /// picking a workspace.
-    wheel_summon: Option<vello::kurbo::Point>,
+    /// The strip switcher is open: its card, the workspace's strips and
+    /// its workspaces, beside the strip ribbon. The overlay host opens it on
+    /// pointer intent or Super+S and mirrors it here, so a state dump and
+    /// input routing read one fact.
+    strip_switcher_open: bool,
+    /// Someone asked to rename the focused strip without saying the name:
+    /// the overlay host opens the switcher's name field for it.
+    strip_rename_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<tilo_desktop_model::commands::StripViewport>,
@@ -1096,7 +1099,8 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
-            wheel_summon: None,
+            strip_switcher_open: false,
+            strip_rename_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
             next_record_request_id: 1,
@@ -1131,16 +1135,28 @@ impl ChromeState {
         }))
     }
 
-    /// Summon the wheel to `at`, or send it back to its dock with `None`.
-    pub fn set_wheel_summon(&mut self, at: Option<vello::kurbo::Point>) {
-        if self.wheel_summon != at {
-            self.wheel_summon = at;
+    /// Record whether the strip switcher's card is open.
+    pub fn set_strip_switcher_open(&mut self, open: bool) {
+        if self.strip_switcher_open != open {
+            self.strip_switcher_open = open;
             self.bump();
         }
     }
 
-    pub fn wheel_summon(&self) -> Option<vello::kurbo::Point> {
-        self.wheel_summon
+    /// Whether the strip switcher's card is open.
+    pub fn strip_switcher_open(&self) -> bool {
+        self.strip_switcher_open
+    }
+
+    /// Ask for the focused strip's name field in the strip switcher.
+    pub fn request_strip_rename(&mut self) {
+        self.strip_rename_requested = true;
+        self.bump();
+    }
+
+    /// Take the request [`Self::request_strip_rename`] left.
+    pub fn take_strip_rename_request(&mut self) -> bool {
+        std::mem::take(&mut self.strip_rename_requested)
     }
 
     /// Called once per layout pass by the overlay host, so the
@@ -1369,8 +1385,7 @@ impl ChromeState {
     }
 
     /// Either a client-requested fullscreen or a group the user
-    /// expanded with the tab's Expand chip — both suppress the top bar
-    /// and sidebar wheel.
+    /// expanded with the tab's Expand chip — both suppress the top bar.
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_presentation
     }
@@ -1392,8 +1407,8 @@ impl ChromeState {
     }
 
     /// Whether what [`Self::is_fullscreen`] presents covers the primary
-    /// display, where the full top bar and the wheel live. A fullscreen on
-    /// another display leaves both in place.
+    /// display, where the full top bar lives. A fullscreen on another
+    /// display leaves it in place.
     pub fn presentation_covers_primary(&self) -> bool {
         self.fullscreen_presentation
             && self
@@ -2605,6 +2620,57 @@ impl ChromeState {
                 .and_then(|ws| ws.strips.iter().position(|s| s.id == strip))
         };
         index.is_some_and(|index| self.focus_strip_index(index))
+    }
+
+    /// Add a strip named `name` to the active workspace and move to it.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal: no active workspace, or a name that is empty, too
+    /// long or holds control characters.
+    pub fn create_strip(&mut self, name: &str) -> Result<crate::shell::state::StripId, String> {
+        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: name.to_owned(),
+        };
+        let strip = self.tree_mut().commit_strip_command(&command)?;
+        self.bump();
+        Ok(strip)
+    }
+
+    /// Rename `strip` of the active workspace.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal: the strip is gone or another device's, or the
+    /// name is empty, too long or holds control characters.
+    pub fn rename_strip(
+        &mut self,
+        strip: crate::shell::state::StripId,
+        name: &str,
+    ) -> Result<(), String> {
+        let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
+            strip: strip.raw(),
+            name: name.to_owned(),
+        };
+        self.tree_mut().commit_strip_command(&command)?;
+        self.bump();
+        Ok(())
+    }
+
+    /// The strip with focus in the active workspace: the stamped one, else
+    /// the first.
+    pub fn focused_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id));
+        drop(tree);
+        strip
     }
 
     /// The strip an agent works in: `current` while it is still in the active
@@ -3887,35 +3953,6 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
-
-/// The workspace wheel's view of the shell: its summon flag lives in the
-/// chrome state, and a switch or a new workspace lands in the tree with a
-/// bump so the rest of the shell re-syncs on the next frame.
-pub struct ChromeWheel(pub Chrome);
-
-impl tilo_desktop::sidebar_wheel_disc::WheelHost for ChromeWheel {
-    fn summon(&self) -> Option<vello::kurbo::Point> {
-        self.0.borrow().wheel_summon()
-    }
-
-    fn dismiss_summon(&self) {
-        self.0.borrow_mut().set_wheel_summon(None);
-    }
-
-    fn active_workspace(&self) -> Option<crate::shell::state::WorkspaceId> {
-        Some(self.0.borrow().tree().desktop.active)
-    }
-
-    fn select_workspace(&self, workspace: crate::shell::state::WorkspaceId) {
-        let mut state = self.0.borrow_mut();
-        state.tree_mut().set_active(workspace);
-        state.bump();
-    }
-
-    fn add_workspace(&self) {
-        self.0.borrow_mut().add_workspace("Untitled");
-    }
-}
 
 #[cfg(test)]
 mod panel_exclusion_tests {

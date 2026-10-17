@@ -431,7 +431,7 @@ impl BrowserShell {
             tilo_menu = tilo_menu.with_feedback();
         }
         let empty = Rc::new(Cell::new(workspace_is_empty(&tree)));
-        let launchpad = CollaborationLaunchpad::new(|_| 0.0).with_copy(welcome_copy(offers.mac));
+        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
         let area = Stack::new()
             .push(Box::new(EmptyWorkspace {
                 launchpad,

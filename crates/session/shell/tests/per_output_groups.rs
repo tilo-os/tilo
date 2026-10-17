@@ -9,9 +9,8 @@
 //! until it comes back. Groups belong to the physical monitor, so outputs
 //! renumbered by a restart or a port swap bring each back to its own. Every
 //! display stacks all of the workspace's strips, and a group dragged onto
-//! another display moves there. The primary display carries the wheel disc
-//! and the full top bar; every other display a compact bar along its own
-//! top edge.
+//! another display moves there. The primary display carries the full top
+//! bar; every other display a compact bar along its own top edge.
 //!
 //! Each case lays the production `FrameBuilder` out across a named headless
 //! fixture (`TILO_HEADLESS_OUTPUTS`) and drives it through the same entry
@@ -688,8 +687,8 @@ fn unplugging_hands_groups_on_and_replugging_takes_them_back() {
 }
 
 /// The backend lists the primary chosen in Settings first, whatever its
-/// output number; the wheel disc, the full top bar and the partition's
-/// primary follow it there.
+/// output number; the full top bar and the partition's primary follow it
+/// there.
 #[test]
 fn the_primary_is_the_one_settings_chose() {
     let mut outputs = with_monitors(output_fixture("docked-laptop").expect("fixture"));
@@ -700,7 +699,6 @@ fn the_primary_is_the_one_settings_chose() {
         "the monitor is the chosen primary"
     );
     let desk = Desk::with_tree(tree(), outputs);
-    let monitor = desk.display(1);
     assert_eq!(
         desk.fb.chrome().tree().desktop.outputs.primary(),
         Some(1),
@@ -715,56 +713,6 @@ fn the_primary_is_the_one_settings_chose() {
     );
     let compact: Vec<u32> = bars.iter().filter(|b| !b.2).map(|b| b.0).collect();
     assert_eq!(compact, vec![0], "{bars:?}");
-    let wheel = desk
-        .fb
-        .host()
-        .sidebar_rect_for_tests()
-        .expect("the desktop has a wheel disc");
-    assert!(
-        monitor.contains(Point::new(
-            f64::midpoint(wheel.x0, wheel.x1),
-            f64::midpoint(wheel.y0, wheel.y1)
-        )),
-        "the wheel disc {wheel:?} is on the chosen primary {monitor:?}"
-    );
-}
-
-#[test]
-fn the_wheel_disc_sits_on_the_primary_display() {
-    // The primary (listed first) is the right-hand monitor here, so the
-    // disc is not simply wherever x = 0 happens to be.
-    let outputs = parse_output_spec("1920x1080@1+1280+0,2560x1600@2+0+0").expect("spec");
-    let mut desk = Desk::across(outputs);
-    let primary = desk.display(0);
-    assert!(primary.x0 > 0.0, "the primary is the right-hand display");
-    let wheel = desk
-        .fb
-        .host()
-        .sidebar_rect_for_tests()
-        .expect("the desktop has a wheel disc");
-    assert!(wheel.width() > 0.0 && wheel.height() > 0.0, "{wheel:?}");
-    // The disc rides along with the primary's own pan.
-    let pan = desk.pan_of(0);
-    assert!(
-        wheel.x0 >= primary.x0 - pan - 0.5 && wheel.x1 <= primary.x1 + 0.5,
-        "the wheel disc {wheel:?} is on the primary {primary:?}"
-    );
-    assert!(
-        wheel.y1 <= primary.y1 + 0.5,
-        "{wheel:?} fits the primary's height"
-    );
-    // The primary's first window clears the disc; the other display's
-    // first window starts at its own left edge.
-    let first = desk.rect_of(ON_PRIMARY[0]);
-    assert!(
-        first.x0 >= wheel.x1 - 0.5,
-        "{first:?} clears the disc {wheel:?}"
-    );
-    let other_first = desk.rect_of(ON_SECOND[0]);
-    assert!(
-        (other_first.x0 - desk.display(1).x0).abs() < 0.5,
-        "{other_first:?}"
-    );
 }
 
 #[test]
