@@ -374,6 +374,7 @@ impl CapnpChannelHandle {
         let action = match &command {
             Command::Publish { cut: false, .. }
             | Command::Capture { .. }
+            | Command::CaptureNamed { .. }
             | Command::Release { .. } => "copy-selection",
             Command::Publish { cut: true, .. } => "cut-selection",
             Command::Undo { .. } => "undo",
