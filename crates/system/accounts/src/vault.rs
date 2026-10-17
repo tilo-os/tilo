@@ -859,6 +859,9 @@ mod tests {
         let blob = directory.join("vault.enc");
         let key = directory.join("vault.key");
         let ciphertext = std::fs::read(&blob).unwrap();
+        // The writable setup leaves its advisory lock behind. Remove it so
+        // read-only recovery must prove it never recreates a writer's lock.
+        std::fs::remove_file(directory.join("vault.lock")).unwrap();
         std::fs::remove_file(&key).unwrap();
         assert!(
             SecretVault::open_read_only_in(&root)
@@ -879,6 +882,8 @@ mod tests {
         );
         assert_eq!(std::fs::read(&key).unwrap(), b"malformed");
         assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        assert!(!directory.join("vault.lock").exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
