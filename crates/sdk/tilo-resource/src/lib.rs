@@ -278,9 +278,15 @@ pub mod __private {
         pub kind: ActionKind,
         pub field: Option<&'static str>,
         pub destructive: bool,
+        /// A change about the record rather than to it
+        /// (`#[action(housekeeping)]`).
+        pub housekeeping: bool,
         pub answer: VerbAnswer,
         /// It records a message someone received (`#[action(incoming_message)]`).
         pub incoming_message: bool,
+        /// Its outside consequence is undone by a compensating verb
+        /// (`#[action(undo = ...)]`).
+        pub compensated: bool,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -424,9 +430,16 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        if verb.housekeeping {
+            decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
+        }
         if verb.incoming_message {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
+        }
+        if verb.compensated {
+            decl.tags
+                .push(tilo_actions::COMPENSATED_UNDO_TAG.to_owned());
         }
         match verb.answer {
             VerbAnswer::Created => {}

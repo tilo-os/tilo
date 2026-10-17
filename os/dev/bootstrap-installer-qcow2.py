@@ -8,12 +8,12 @@ import argparse
 from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
 import stat
+import struct
 import subprocess
 import tempfile
 import time
@@ -21,13 +21,10 @@ import time
 SCHEMA = 'tilo.installer-code-bootstrap.v1'
 FILES = ('tilo-installer-code-bootstrap.py', 'tilo-installer-code-refresh.py',
          'tilo-installer-code-protocol.py', 'tilo-installer-code-target-probe.py', 'tilo-vm-install-proof.py')
-# Where the checkout keeps each seeded file. The bootstrap, the probe and the
-# Python proof emitter only ever run from the seed on old media, so they live
-# with the host tooling; the refresh daemon and its protocol also ship in the
-# installer image.
-SOURCES = {name: ('os/dev/installer-code-bootstrap/' if name in (
-    'tilo-installer-code-bootstrap.py', 'tilo-installer-code-target-probe.py',
-    'tilo-vm-install-proof.py') else 'os/usr/libexec/') + name for name in FILES}
+# Where the checkout keeps each seeded file. Every one only ever runs from the
+# seed on old media (new media carry the compiled refresh daemon and proof
+# emitter), so they live with the host tooling.
+SOURCES = {name: 'os/dev/installer-code-bootstrap/' + name for name in FILES}
 UNIT = '[Unit]\nDescription=Local development installer bootstrap (VM only)\nConditionVirtualization=vm\nConditionKernelCommandLine=tilo.install\nWants=systemd-udev-settle.service\nRequires=tilo-installer-setup.service\nAfter=local-fs.target systemd-udev-settle.service tilo-installer-setup.service\nBefore=greetd.service\n[Service]\nType=notify\nNotifyAccess=main\nTimeoutStartSec=60\nUMask=0077\nExecStart=/usr/bin/python3 /etc/tilo/installer-code-bootstrap/tilo-installer-code-bootstrap.py\nPrivateMounts=no\nNoNewPrivileges=no\n[Install]\nWantedBy=multi-user.target\n'
 NAME = 'tilo-installer-code-bootstrap.service'
 
@@ -60,6 +57,20 @@ def contents(path, limit=512 * 1024):
     return data
 
 
+def sealed_cmdline(data):
+    """The UKI's .cmdline file offset and size (the smaller of raw and virtual)."""
+    pe = struct.unpack_from('<I', data, 0x3C)[0]
+    require(data[pe:pe + 4] == b'PE\0\0', 'CI UKI is not a PE image')
+    count = struct.unpack_from('<H', data, pe + 6)[0]
+    base = pe + 24 + struct.unpack_from('<H', data, pe + 20)[0]
+    for index in range(count):
+        header = base + index * 40
+        if data[header:header + 8].rstrip(b'\0') == b'.cmdline':
+            size, _address, raw_size, offset = struct.unpack_from('<IIII', data, header + 8)
+            return offset, min(size, raw_size)
+    raise ValueError('CI UKI has no .cmdline section')
+
+
 def selected_deployment(esp):
     entries = trusted(esp, 'loader/entries')
     names = list(entries.glob('*.conf'))
@@ -71,10 +82,8 @@ def selected_deployment(esp):
     require(match is not None, 'CI boot entry is not a composefs UKI')
     path = trusted(esp, values[0].lstrip('/'))
     require(path.is_file() and path.stat().st_size <= 256 * 1024 * 1024, 'invalid CI UKI')
-    spec = importlib.util.spec_from_file_location('bootstrap_uki', Path(__file__).with_name('uki-cmdline.py'))
-    uki = importlib.util.module_from_spec(spec); spec.loader.exec_module(uki)
     data = path.read_bytes()
-    offset, length = uki.find_cmdline(data)
+    offset, length = sealed_cmdline(data)
     tokens = data[offset:offset + length].rstrip(b'\0').decode('utf-8').split()
     require('tilo.install' in tokens and 'composefs=' + match[1] in tokens,
             'bootstrap requires the exact installer UKI deployment')

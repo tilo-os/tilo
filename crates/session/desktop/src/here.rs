@@ -284,6 +284,7 @@ impl HereState {
         } else {
             label.to_owned()
         };
+        let label = self.labels().label(&line.device, &label);
         let rgb = member
             .and_then(|member| member.color.as_deref())
             .and_then(parse_rgb)
@@ -398,7 +399,54 @@ impl HereState {
             });
         }
         people.sort_by_key(|person| person.agent);
+        let labels = self.labels();
+        for person in people.iter_mut().filter(|person| !person.agent) {
+            person.label = labels.label(&person.id, &person.label);
+        }
         people
+    }
+
+    /// This page's own name as everyone here is shown it: numbered when
+    /// someone else here goes by the same name.
+    pub fn own_shown(&self) -> Option<String> {
+        let own = self.own_label()?;
+        let id = self.own_id()?;
+        Some(self.labels().label(id, own))
+    }
+
+    /// The numbers the people here are told apart by, this page's own
+    /// person included: the live layer's people, else the host's lines.
+    /// Keyed by live publisher, which every page in the room names alike.
+    fn labels(&self) -> ui::presence::ParticipantLabels {
+        let line_label = |device: &str| {
+            self.lines
+                .iter()
+                .find(|line| line.device == device)
+                .map(|line| line.label.trim())
+                .filter(|label| !label.is_empty())
+        };
+        let mut named: Vec<(&str, String)> = Vec::new();
+        if let Some(members) = &self.members {
+            for member in members.iter().chain(self.own.as_ref()) {
+                if member.kind == "agent" {
+                    continue;
+                }
+                let label = Some(member.label.trim())
+                    .filter(|label| !label.is_empty())
+                    .or_else(|| line_label(&member.publisher))
+                    .map_or_else(guest_label, str::to_owned);
+                named.push((member.publisher.as_str(), label));
+            }
+        } else {
+            for line in &self.lines {
+                let label = line_label(&line.device).map_or_else(guest_label, str::to_owned);
+                named.push((line.device.as_str(), label));
+            }
+            if let Some(own) = &self.own {
+                named.push((own.publisher.as_str(), own.label.trim().to_owned()));
+            }
+        }
+        ui::presence::ParticipantLabels::new(named.iter().map(|(id, name)| (*id, name.as_str())))
     }
 
     /// Show `people` on the windows they are in: each one's colour, name and
@@ -666,6 +714,49 @@ mod tests {
             "an agent's line is its own activity"
         );
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
+    }
+
+    /// Two pages going by one name are numbered, this page included, by
+    /// their publishers — the same numbers on every page in the room.
+    #[test]
+    fn people_sharing_a_name_are_numbered_alike_on_every_page() {
+        let tree = DesktopTree::default();
+        let everyone = vec![
+            member("pub-b", "person", "Ada"),
+            member("pub-a", "person", "ada "),
+            member("pub-c", "person", "Ben"),
+            member("bot", "agent", "Ada"),
+        ];
+        let mut mine = HereState::default();
+        mine.set_members(
+            Some(member("pub-b", "person", "Ada")),
+            Some(everyone.clone()),
+        );
+        let labels: Vec<String> = mine
+            .people(&tree, &[], &|_| None, 0)
+            .into_iter()
+            .map(|person| person.label)
+            .collect();
+        assert_eq!(labels, ["ada (1)", "Ben", "Ada"]);
+        assert_eq!(mine.own_shown().as_deref(), Some("Ada (2)"));
+
+        let mut theirs = HereState::default();
+        let mut reordered = everyone;
+        reordered.reverse();
+        theirs.set_members(Some(member("pub-a", "person", "ada ")), Some(reordered));
+        assert_eq!(theirs.own_shown().as_deref(), Some("ada (1)"));
+        assert!(
+            theirs
+                .people(&tree, &[], &|_| None, 0)
+                .iter()
+                .any(|person| person.label == "Ada (2)")
+        );
+
+        mine.set_members(
+            Some(member("pub-b", "person", "Ada")),
+            Some(vec![member("pub-c", "person", "Ben")]),
+        );
+        assert_eq!(mine.own_shown().as_deref(), Some("Ada"), "alone, no number");
     }
 
     #[test]

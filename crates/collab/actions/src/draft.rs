@@ -154,6 +154,12 @@ pub struct Draft {
     #[serde(default)]
     pub layout: DraftLayout,
     pub fields: Vec<DraftField>,
+    /// Whether the action, once taken, can be undone
+    /// ([`ActionContract::can_be_undone`](crate::ActionContract::can_be_undone)):
+    /// a reviewer is told whether it sends something away or changes their
+    /// own work.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undoable: bool,
 }
 
 /// One change a person made to a draft's field.
@@ -233,6 +239,7 @@ impl Draft {
                 DraftLayout::Fields
             },
             fields,
+            undoable: descriptor.contract.can_be_undone(),
         }
     }
 

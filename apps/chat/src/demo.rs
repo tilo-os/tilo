@@ -353,7 +353,7 @@ impl Demo {
 pub fn demo(me: &str) -> Chat {
     let mut chat = Chat::default();
     for (id, name, initials, color, status) in [
-        (me, "You", "QD", 0u32, Presence::Online),
+        (me, crate::identity::DEMO_NAME, "QD", 0u32, Presence::Online),
         ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
         ("u_milo", "Milo Park", "MP", 2, Presence::Idle),
         ("u_sora", "Sora Vega", "SV", 3, Presence::Online),
@@ -508,9 +508,6 @@ pub fn edits(chat: &Chat) -> Vec<Edit<Chat>> {
     if !chat.read.is_empty() {
         edits.push(paths.read.set(chat.read.clone()));
     }
-    if !chat.drafts.is_empty() {
-        edits.push(paths.drafts.set(chat.drafts.clone()));
-    }
     edits
 }
 
@@ -656,32 +653,6 @@ pub fn say(
         .unwrap_or_default())
 }
 
-/// Replace the draft `key` with `text`, starting it first, as `author`.
-///
-/// # Errors
-/// As [`apply_as`].
-pub fn set_draft(
-    doc: &mut AutoCommit,
-    author: &str,
-    key: &str,
-    text: &str,
-) -> Result<(), DoorError> {
-    apply_as(
-        doc,
-        author,
-        Chat::START_DRAFT.with(chat::StartDraft { key: key.into() }),
-    )?;
-    let replace = Chat::paths()
-        .drafts
-        .key(key)
-        .perform(&tilo_document::RichTextAction::ReplaceBody {
-            markdown: text.into(),
-        })
-        .and_then(|edit| Invoke::edit(&edit))
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    apply_as(doc, author, replace)
-}
-
 /// Start the chat in `doc` in the workspace `workspace` named `label` a
 /// host admitted it for, as `me` named `name`.
 ///
@@ -757,13 +728,5 @@ pub fn insert_channel(
         .insert_as(&Id::from_raw(id), at, &channel);
     let insert =
         Invoke::edit(&insert).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    apply_as(doc, author, insert)?;
-    if kind == ChannelKind::Text {
-        apply_as(
-            doc,
-            author,
-            Chat::START_DRAFT.with(chat::StartDraft { key: id.into() }),
-        )?;
-    }
-    Ok(())
+    apply_as(doc, author, insert)
 }

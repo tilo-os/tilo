@@ -87,7 +87,7 @@ class BuildOrder(unittest.TestCase):
             def fixed_module(path, name):
                 return SimpleNamespace(prepare=prepare_browser, stage=Mock(return_value='RUN true\n')) if name == 'capture_browser' else SimpleNamespace(assemble=assemble)
 
-            qualifier = SimpleNamespace(source_assets=Mock(), BINDINGS={}, PLATFORM_SCRIPTS={},
+            qualifier = SimpleNamespace(source_assets=Mock(), BINDINGS={},
                 admit_cohort=Mock(return_value={'roles': {'host': {'path': str(output / 'mock-host'), 'sha256': 'a' * 64}}}),
                 bound_file=Mock(), fixed_module=fixed_module)
 
@@ -174,7 +174,7 @@ class MediumLayer(unittest.TestCase):
             for name in ('imager', 'tilo-installer', 'fs'):
                 (binaries / name).write_bytes(name.encode())
             calls = []
-            qualifier = SimpleNamespace(BINDINGS={'fs': '/usr/bin/fs', 'installer': '/usr/bin/tilo-installer'}, PLATFORM_SCRIPTS={}, bound_file=Mock(),
+            qualifier = SimpleNamespace(BINDINGS={'fs': '/usr/bin/fs', 'installer': '/usr/bin/tilo-installer'}, bound_file=Mock(),
                 admit_cohort=Mock(return_value={'roles': {
                     'fs': {'path': str(binaries / 'fs'), 'sha256': 'f' * 64},
                     'installer': {'path': str(binaries / 'tilo-installer'), 'sha256': 'a' * 64}}}),
@@ -238,7 +238,7 @@ class NativePlatformArchive(unittest.TestCase):
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
                 'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
-                'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract'}, PLATFORM_SCRIPTS={},
+                'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract'},
                 bound_file=Mock(), admit_cohort=Mock(return_value={'roles': roles}))
 
             def gate(command, env):

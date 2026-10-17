@@ -32,9 +32,13 @@ pub(crate) fn say(doc: &mut AutoCommit, author: &str, channel: &str, text: &str)
     crate::demo::say(doc, author, channel, text).unwrap()
 }
 
-/// Replace the draft `key` with `text`, starting it first.
-pub(crate) fn set_draft(doc: &mut AutoCommit, key: &str, text: &str) {
-    crate::demo::set_draft(doc, crate::model::ME, key, text).unwrap();
+/// Write `text` in `app`'s main composer, as its person typing it: the
+/// draft is theirs, never in `doc`.
+pub(crate) fn write_draft(app: &mut crate::app::ChatApp, doc: &mut AutoCommit, text: &str) {
+    app.reload(doc);
+    app.composer_main.ensure_draft(doc);
+    app.composer_main
+        .insert_text(&mut ui::widget::Edits::lend(doc), text);
 }
 
 /// The messages of `channel`, oldest first.

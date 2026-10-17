@@ -63,8 +63,6 @@ fi
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
-   && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
-   && python3 -B "$repo_root/os/tests/test_installer_target_boot_digest.py" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
@@ -316,7 +314,7 @@ if [ -x "$preflight" ] \
         /usr/libexec/tilo-verified-boot-install-preflight \
    && grep -Fq '"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
    && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
-   && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
+   && grep -Fq '"$crypto_bin" verify-pcr-prediction "$pub" "$prediction" "$generation"' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
 else
   bad "TPM PIN preflight does not bind the exact target UKI and PCR11 policy"

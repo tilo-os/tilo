@@ -1,0 +1,12 @@
+// NTFS drives open only through the consent-gated NTFS mount service, whose
+// prompt the shell draws. UDisks would otherwise mount one with the kernel
+// driver for any process of the active user, with no prompt and with the
+// driver loaded by the mount itself. Administrators running UDisks as root
+// are not asked by polkit and are unaffected.
+polkit.addRule(function (action, subject) {
+    if (action.id.indexOf("org.freedesktop.udisks2.filesystem-mount") == 0 &&
+        action.lookup("id.type") == "ntfs") {
+        return polkit.Result.NO;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

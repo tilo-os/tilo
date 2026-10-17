@@ -593,6 +593,9 @@ pub struct ChatApp {
     /// The message composers: the SDK rich-text editor over each surface's
     /// shared draft. Enter sends, Shift+Enter breaks the line.
     pub(crate) composer_main: crate::composer::DraftComposer,
+    /// Why the last message was not sent, while its text waits in the
+    /// composer to be sent again.
+    pub(crate) not_sent: Option<String>,
     pub(crate) composer_thread: crate::composer::DraftComposer,
 
     // Per-peer view state.
@@ -727,6 +730,11 @@ pub struct ChatApp {
     // presence (see `adopt_room`). A peer never writes its own name into
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
+    /// The numbers people who share a name are told apart by, as the room
+    /// resolves them, so every screen in it numbers the same people alike.
+    pub(crate) room_labels: ui::presence::ParticipantLabels,
+    /// What the room calls this window's person, numbered like anyone else.
+    pub(crate) own_label: Option<String>,
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated room roster.
     pub(crate) room_agents: Vec<Id>,
@@ -769,7 +777,7 @@ pub struct ChatApp {
 
     // Other spellings of this window's person the room uses. See
     // `adopt_own_participant`: what was said under one of these is still
-    // this person, so their lines go on reading "You".
+    // this person, so their lines go on reading as theirs.
     pub(crate) former_ids: Vec<Id>,
 
     // The OS permission gate: routes channel participation + file-embed
@@ -933,6 +941,7 @@ impl ChatApp {
             draft_main: String::new(),
             draft_thread: String::new(),
             composer_main: crate::composer::DraftComposer::shared(),
+            not_sent: None,
             composer_thread: crate::composer::DraftComposer::shared(),
             active_ws: "ws_acme".into(),
             context_ws: "ws_acme".into(),
@@ -999,6 +1008,8 @@ impl ChatApp {
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
+            room_labels: ui::presence::ParticipantLabels::default(),
+            own_label: None,
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
             capture_agent_presence: None,
@@ -1113,6 +1124,24 @@ impl ChatApp {
         }
     }
 
+    /// [`Self::apply_now`], saying why when the record refused it.
+    pub(crate) fn try_apply_now(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<crate::resource::Chat>,
+    ) -> Result<(), String> {
+        let invoke = self
+            .dispatched(submit)
+            .ok_or_else(|| "the message could not be put together".to_owned())?;
+        let dispatch = self
+            .dispatch
+            .as_ref()
+            .ok_or_else(|| "this window is not connected to the chat".to_owned())?;
+        dispatch
+            .submit_now(doc, invoke)
+            .map_err(|error| error.to_string())
+    }
+
     /// applied after this pass: from a pass that only reads the document (a
     /// frame's sync, a worker's answer). A refusal is reported by the
     /// dispatcher.
@@ -1140,20 +1169,6 @@ impl ChatApp {
             self.dispatched.borrow_mut().push(action.operation);
         }
         Some(invoke)
-    }
-
-    /// Make the draft `key` before its composer writes in it: a thread's
-    /// the first time someone answers in it.
-    pub(crate) fn ensure_composer_draft(&self, doc: &mut ui::widget::Edits<'_>, key: &str) {
-        if key.is_empty() || crate::projection::has_draft(doc, key) {
-            return;
-        }
-        self.apply_now(
-            doc,
-            crate::resource::Chat::START_DRAFT.with(crate::record::chat::StartDraft {
-                key: key.to_owned(),
-            }),
-        );
     }
 
     /// The last action an on-screen affordance applied.
@@ -1194,9 +1209,21 @@ impl ChatApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
-        self.composer_main.attach(dispatcher.clone());
-        self.composer_thread.attach(dispatcher.clone());
         self.dispatch = Some(dispatcher);
+    }
+
+    /// Keep the composers' drafts in the person's own `record`: theirs
+    /// alone, on each of their devices, never in the room.
+    #[must_use]
+    pub(crate) fn with_drafts(
+        mut self,
+        record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
+    ) -> Self {
+        if let Some(record) = record {
+            self.composer_main.attach_drafts(record.clone());
+            self.composer_thread.attach_drafts(record);
+        }
+        self
     }
 
     /// Follow this person's preferences from now on.
@@ -1309,6 +1336,28 @@ impl ChatApp {
                 self.call = CallState::default();
             }
             "people" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
+            "namesakes" => {
+                // Two people in the room go by one name: everyone sees them
+                // numbered alike, in the timeline and the people list.
+                let mut presence = PresenceCtx::empty();
+                presence.set_self_participant(
+                    ui::permissions::UserId(self.me.id.clone()),
+                    self.me.name.clone(),
+                );
+                for (id, name) in [
+                    ("u_aria", "Aria Chen"),
+                    ("u_sora", "aria chen"),
+                    ("u_milo", "Milo Park"),
+                    ("u_devon", "Devon Reyes"),
+                    ("u_iris", "Iris Wolfe"),
+                ] {
+                    presence.set_display_name(ui::permissions::UserId(id.into()), name);
+                }
+                self.capture_agent_presence = Some(presence);
                 self.thread_open = None;
                 self.right_flap.snap(true);
                 self.call = CallState::default();
@@ -1723,8 +1772,11 @@ impl ChatApp {
     /// This window signs what it writes with the id its host gave it, the
     /// author every action of its person carries. A room that spells the
     /// same participant differently names them too: lines recorded under
-    /// that spelling are still this person's, so "You" stays beside them.
+    /// that spelling are still this person's, so their name stays beside
+    /// them.
     fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
+        self.room_labels.clone_from(presence.labels());
+        self.own_label = presence.self_label();
         if let Some(room_id) = presence.self_id()
             && room_id.0 != self.me.id
             && !self.former_ids.contains(&room_id.0)
@@ -1786,6 +1838,8 @@ impl ChatApp {
         view.me = parent.me.clone();
         view.perms = parent.perms.clone();
         view.room_names.clone_from(&parent.room_names);
+        view.room_labels.clone_from(&parent.room_labels);
+        view.own_label.clone_from(&parent.own_label);
         view.room_colors.clone_from(&parent.room_colors);
         view.room_agents.clone_from(&parent.room_agents);
         view.capture_agent_presence
@@ -2103,6 +2157,8 @@ impl ChatApp {
 
     /// What to call `id`: the room's answer first, the document's stored name
     /// as an offline fallback, and the raw id last so a label is never blank.
+    /// People who share a name carry the number the room tells them apart
+    /// by ("Ada (2)"), this window's own person included.
     ///
     /// The precedence is the point. A client that could name itself would be
     /// telling every other peer what to call it, and two peers disagreeing
@@ -2114,13 +2170,19 @@ impl ChatApp {
         {
             return self.agent_display_name(agent);
         }
+        if self.is_me(id)
+            && let Some(own) = &self.own_label
+        {
+            return own.clone();
+        }
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
+            let n = self.room_labels.label(id, n);
             return if self.is_me(id) {
-                n.clone()
+                n
             } else {
-                crate::identity::shared_name_label(id, n)
+                crate::identity::shared_name_label(id, &n)
             };
         }
         if let Some(agent) = self.agent_authors.get(id) {
@@ -2129,10 +2191,11 @@ impl ChatApp {
         if let Some(u) = self.users.iter().find(|u| u.id == id)
             && !u.name.trim().is_empty()
         {
+            let name = self.room_labels.label(id, &u.name);
             return if self.is_me(id) {
-                u.name.clone()
+                name
             } else {
-                crate::identity::shared_name_label(id, &u.name)
+                crate::identity::shared_name_label(id, &name)
             };
         }
         // Your own name, which this had no way to reach until the room named
@@ -2145,9 +2208,9 @@ impl ChatApp {
         id.to_string()
     }
 
-    /// What to call `id` on screen, with "You" for this session's own
-    /// participant and an honest placeholder for someone the room has not
-    /// named yet — nobody is ever shown their raw routing id.
+    /// What to call `id` on screen: this session's own participant by their
+    /// name like anyone else, and an honest placeholder for someone the room
+    /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &str) -> String {
         if self
             .native_voice
@@ -2163,7 +2226,11 @@ impl ChatApp {
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
-            return "You".to_string();
+            let own = self.display_name(id);
+            if own != id && !own.trim().is_empty() {
+                return own;
+            }
+            return crate::identity::unnamed_label(id);
         }
         if let Some(agent) = id.strip_prefix("agent:")
             && self.room_agents.iter().any(|known| known == agent)
@@ -2335,9 +2402,8 @@ impl ChatApp {
         );
     }
 
-    /// Presence scope of a shared composer draft (`drafts[draft_key]`), so
-    /// collaborators' carets/selections in the same draft are drawn where
-    /// they type. Offsets are UTF-8 byte offsets into the draft text.
+    /// Presence scope of the composer of a channel or thread, so the others
+    /// there see who is writing. The draft itself is each writer's own.
     pub(crate) fn draft_presence_key(draft_key: &str) -> ui::presence::PresenceKey {
         ui::presence::PresenceKey::Widget {
             path: vec![
@@ -2347,8 +2413,9 @@ impl ChatApp {
         }
     }
 
-    /// The focused composer's draft scope and caret/selection, when the
-    /// person is typing in a composer (not an inline edit or rename).
+    /// The focused composer's scope while the person is writing something
+    /// in it (not an inline edit or rename): that they are, never what or
+    /// where in it.
     pub(crate) fn composer_presence(
         &self,
     ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
@@ -2364,17 +2431,13 @@ impl ChatApp {
             Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
             Focus::Main => (&self.composer_main, self.active_channel.clone()),
         };
-        if key.is_empty() {
+        if key.is_empty() || composer.value().trim().is_empty() {
             return None;
         }
-        let payload = match composer.selection() {
-            (anchor, caret) if anchor != caret => ui::PresencePayload::Selection {
-                start: anchor.min(caret),
-                end: anchor.max(caret),
-            },
-            (_, caret) => ui::PresencePayload::Caret { pos: caret },
-        };
-        Some((Self::draft_presence_key(&key), payload))
+        Some((
+            Self::draft_presence_key(&key),
+            ui::PresencePayload::Caret { pos: 0 },
+        ))
     }
 
     /// A text field's focus, value and selection (anchor, caret), for the
@@ -2505,13 +2568,13 @@ impl ChatApp {
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
-        // Point each composer at its surface's draft; the editors read it on
-        // their next sync (`sync_composers`), keeping the caret while typing.
+        // Point each composer at its surface's draft, the person's own.
         if self.direct_agent.is_some() {
             self.sync_agent_route();
         } else {
             self.composer_main.set_key(&self.active_channel);
-            self.draft_main = crate::projection::draft_text(doc, &self.active_channel);
+            self.composer_main.sync(doc);
+            self.draft_main = self.composer_main.value();
         }
         let placeholder = self.direct_agent.as_ref().map_or_else(
             || {
@@ -2533,10 +2596,11 @@ impl ChatApp {
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
+        self.composer_thread.sync(doc);
         self.draft_thread = if thread_key.is_empty() {
             String::new()
         } else {
-            crate::projection::draft_text(doc, &thread_key)
+            self.composer_thread.value()
         };
         self.composer_thread.set_placeholder("Reply in thread");
         self.composer_thread
@@ -3710,6 +3774,8 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_labels.clone_from(&self.room_labels);
+            surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
@@ -3779,6 +3845,8 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.perms = self.perms.clone();
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_labels.clone_from(&self.room_labels);
+            surface.view.own_label.clone_from(&self.own_label);
             surface.view.room_colors.clone_from(&self.room_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
@@ -4765,11 +4833,7 @@ impl ChatApp {
             Action::SetValue(_) | Action::SetSelection { .. } => match hit {
                 Hit::FocusMain => {
                     self.focus = Focus::Main;
-                    if self.direct_agent.is_none() {
-                        let channel = self.active_channel.clone();
-                        self.ensure_composer_draft(state, &channel);
-                    }
-                    self.composer_main.sync(state);
+                    self.composer_main.ensure_draft(state);
                     if !self.composer_main.perform_action(action, state, path) {
                         return false;
                     }
@@ -4811,12 +4875,11 @@ impl ChatApp {
         state: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
-        let Some(key) = self.thread_draft_key() else {
+        if self.thread_draft_key().is_none() {
             return false;
-        };
+        }
         self.focus = Focus::Thread;
-        self.ensure_composer_draft(state, &key);
-        self.composer_thread.sync(state);
+        self.composer_thread.ensure_draft(state);
         if !self.composer_thread.perform_action(action, state, path) {
             return false;
         }
@@ -5142,7 +5205,7 @@ mod identity_on_screen {
             shown.contains("2154"),
             "ambiguous names must distinguish the actual participant"
         );
-        assert_eq!(app.user_name(&app.me.id), "You");
+        assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
         assert_eq!(
             crate::testing::users(&state.doc)[0].name,
             "You",
@@ -5151,7 +5214,7 @@ mod identity_on_screen {
     }
 
     #[test]
-    fn people_on_screen_are_named_honestly_and_you_are_you() {
+    fn people_on_screen_are_named_honestly_and_you_by_your_name() {
         // Phase: roster_vocabulary_never_calls_an_agent_a_person.
         {
             let mut app = ChatApp::new_ephemeral();
@@ -5198,11 +5261,40 @@ mod identity_on_screen {
             );
         }
 
-        // Phase: the_person_reading_the_screen_is_you.
+        // Phase: the_person_reading_the_screen_is_shown_their_name.
         {
             let app = ChatApp::new_ephemeral();
             let me = app.me.id.clone();
-            assert_eq!(app.user_name(&me), "You");
+            assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
+        }
+
+        // Phase: people_sharing_a_name_are_numbered_as_the_room_numbers_them.
+        {
+            use ui::permissions::UserId;
+            let mut app = ChatApp::new_ephemeral();
+            let me = app.me.id.clone();
+            let mut presence = PresenceCtx::default();
+            presence.set_self_participant(UserId(me.clone()), "Sam");
+            presence.set_display_name(UserId("a-peer".into()), "sam");
+            presence.set_display_name(UserId("z-peer".into()), "Kim");
+            app.adopt_room(&presence);
+            assert_eq!(app.user_name("a-peer"), "sam (1)");
+            assert_eq!(app.user_name(&me), "Sam (2)");
+            assert_eq!(app.user_name("z-peer"), "Kim");
+            let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
+            assert!(
+                offered.contains(&"sam (1)".to_owned()),
+                "the @ picker offers the numbered name, got {offered:?}"
+            );
+
+            presence.set_display_name(UserId("a-peer".into()), "Alex");
+            app.adopt_room(&presence);
+            assert_eq!(app.user_name("a-peer"), "Alex");
+            assert_eq!(
+                app.user_name(&me),
+                "Sam",
+                "the number goes once nobody shares it"
+            );
         }
     }
 }
@@ -5212,7 +5304,6 @@ mod live_draft_presence {
     use super::*;
     use ui::PresencePayload;
     use ui::permissions::UserId;
-    use ui::presence::SelectionRange;
 
     fn focused_app(text: &str) -> ChatApp {
         let mut app = ChatApp::new_ephemeral();
@@ -5231,79 +5322,66 @@ mod live_draft_presence {
         }];
         app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
         let mut doc = AutoCommit::new();
-        crate::testing::set_draft(&mut doc, &app.active_channel, text);
         app.composer_main.set_key(&app.active_channel);
+        app.composer_main.ensure_draft(&doc);
+        app.composer_main
+            .insert_text(&mut ui::widget::Edits::lend(&mut doc), text);
         app.composer_main.sync(&doc);
         Widget::set_focus(&mut app, true);
         app
     }
 
-    fn composer_paths(app: &mut ChatApp, presence: &PresenceCtx) -> usize {
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let mut hits = Vec::new();
-        app.draw_composer(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            presence,
-            &mut hits,
-        );
-        scene.encoding().path_tags.len()
-    }
-
-    /// The composer publishes its caret/selection in the shared draft's scope,
-    /// and only while the person is typing there.
+    /// The composer tells the room that its person is writing there, while
+    /// they are, and never what or where in their draft.
     #[test]
-    fn focused_composer_publishes_caret_and_selection_in_the_draft_scope() {
+    fn focused_composer_publishes_only_that_its_person_is_writing() {
         let mut app = focused_app("hello team");
         let key = ChatApp::draft_presence_key(&app.active_channel);
         app.composer_main.select(5, 5);
         assert_eq!(
             ui::presence::capability::presence_payload(&app),
-            Some((key.clone(), PresencePayload::Caret { pos: 5 }))
+            Some((key.clone(), PresencePayload::Caret { pos: 0 }))
         );
         app.composer_main.select(0, 5);
         assert_eq!(
             ui::presence::capability::presence_payload(&app),
-            Some((key, PresencePayload::Selection { start: 0, end: 5 }))
+            Some((key, PresencePayload::Caret { pos: 0 })),
+            "a selection in the draft is not the room's either"
         );
         Widget::set_focus(&mut app, false);
         assert_eq!(ui::presence::capability::presence_payload(&app), None);
+        let mut idle = focused_app("");
+        assert_eq!(
+            ui::presence::capability::presence_payload(&idle),
+            None,
+            "an empty composer is not someone writing"
+        );
+        Widget::set_focus(&mut idle, false);
     }
 
-    /// A collaborator's caret and selection in the same draft are drawn in
-    /// the composer; one in another channel's draft is not.
+    /// Someone writing in the same channel shows under the composer; someone
+    /// writing in another channel does not.
     #[test]
-    fn remote_caret_and_selection_are_drawn_in_the_shared_draft() {
-        let mut app = focused_app("hello team");
-        let empty = composer_paths(&mut app, &PresenceCtx::empty());
+    fn someone_writing_here_shows_as_typing() {
+        let app = focused_app("hello team");
         let key = ChatApp::draft_presence_key(&app.active_channel);
+        assert_eq!(
+            crate::render_chat::typing_line(&PresenceCtx::empty(), &key),
+            None
+        );
         let mut presence = PresenceCtx::empty();
         presence.set_display_name(UserId("ada".into()), "Ada");
-        presence.set_caret(&key, UserId("ada".into()), 4);
-        let caret = composer_paths(&mut app, &presence);
-        assert!(caret > empty, "remote caret drawn ({empty} -> {caret})");
-        presence.set_selection(
-            &key,
-            UserId("ada".into()),
-            SelectionRange { start: 0, end: 4 },
-        );
-        assert!(
-            composer_paths(&mut app, &presence) > caret,
-            "remote selection drawn"
+        presence.set_caret(&key, UserId("ada".into()), 0);
+        assert_eq!(
+            crate::render_chat::typing_line(&presence, &key).as_deref(),
+            Some("Ada is typing…")
         );
         let mut elsewhere = PresenceCtx::empty();
         elsewhere.set_caret(
             &ChatApp::draft_presence_key("other"),
             UserId("ada".into()),
-            4,
+            0,
         );
-        assert_eq!(composer_paths(&mut app, &elsewhere), empty);
-        // An offset past the local draft (not converged yet) is clamped.
-        let mut ahead = PresenceCtx::empty();
-        ahead.set_caret(&key, UserId("ada".into()), 400);
-        assert!(composer_paths(&mut app, &ahead) > empty);
+        assert_eq!(crate::render_chat::typing_line(&elsewhere, &key), None);
     }
 }

@@ -4297,6 +4297,14 @@ fn submit_accessory_and_span_highlighting() {
 #[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
+    // The authenticated host it installs is process-wide: every field
+    // checking spelling on another thread would read its personal words.
+    if !crate::testing::in_own_process(&crate::testing::test_path(
+        module_path!(),
+        "shared_personal_words_protect_autocorrection_and_clear_stale_spelling",
+    )) {
+        return;
+    }
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -5085,4 +5093,35 @@ fn every_kind_and_override_reaches_the_input_method_as_its_purpose_and_hints() {
     let mut sentences = crate::ime::InputContent::TEXT;
     sentences.hints.capitalization = crate::ime::Capitalization::Sentences;
     assert_eq!(sentences.wayland(), (AUTO_CAPITALIZATION, NORMAL));
+}
+
+#[test]
+fn an_open_text_menu_owns_the_keyboard() {
+    let mut ti = TextInput::local()
+        .with_spellcheck(false)
+        .with_text_action("translate", "Translate")
+        .with_initial_value("hello world");
+    ti.set_focus(true);
+    ti.core.set_selection(0, 5);
+    ti.open_context_menu([10.0, 10.0]);
+    let named = |key| crate::synthetic_input::named_key(key);
+    // Arrows move through the menu, not the caret or the selection.
+    assert!(dispatch(&mut ti, &named(NamedKey::ArrowDown)));
+    assert!(dispatch(&mut ti, &crate::synthetic_input::char_key("x")));
+    assert_eq!(ti.value(), "hello world", "typing does not reach the text");
+    assert_eq!(ti.selection_range(), Some((0, 5)));
+    // Enter runs the highlighted row, the registered action.
+    assert!(dispatch(&mut ti, &named(NamedKey::Enter)));
+    assert!(!ti.context_menu.is_open());
+    assert_eq!(ti.value(), "hello world", "Enter inserts no line");
+    assert_eq!(
+        ti.take_text_action_request().map(|request| request.id),
+        Some("translate".to_owned())
+    );
+
+    // Escape closes the menu and leaves the field as it was.
+    ti.open_context_menu([10.0, 10.0]);
+    assert!(dispatch(&mut ti, &named(NamedKey::Escape)));
+    assert!(!ti.context_menu.is_open());
+    assert_eq!(ti.selection_range(), Some((0, 5)));
 }

@@ -4,6 +4,8 @@
 //! indented continuation lines, and a refusal for a repeated section or
 //! option or a line that is none of these.
 
+use std::fmt::Write as _;
+
 use crate::{Error, Result};
 
 const DEFAULT: &str = "DEFAULT";
@@ -195,6 +197,45 @@ impl Ini {
             })
             .ok_or_else(|| Error::new(format!("No option '{key}' in section: '{section}'")))
     }
+
+    /// `set(section, option, value)`: replaces the option's value in place,
+    /// or adds the option at the end of the section.
+    ///
+    /// # Errors
+    /// No such section.
+    pub fn set(&mut self, section: &str, option: &str, value: &str) -> Result<()> {
+        let Some(found) = self.sections.iter_mut().find(|s| s.name == section) else {
+            return Err(Error::new(format!("No section: '{section}'")));
+        };
+        let key = option.to_lowercase();
+        let lines = vec![value.to_owned()];
+        match found.options.iter_mut().find(|(name, _)| *name == key) {
+            Some((_, existing)) => *existing = lines,
+            None => found.options.push((key, lines)),
+        }
+        Ok(())
+    }
+
+    /// The text `write()` writes: each section as `[name]`, its options as
+    /// `key = value` (continuation lines indented by a tab), then a blank
+    /// line; `DEFAULT` first when it has options.
+    #[must_use]
+    pub fn write(&self) -> String {
+        let mut out = String::new();
+        let defaults = (!self.defaults.options.is_empty()).then_some(&self.defaults);
+        for section in defaults.into_iter().chain(&self.sections) {
+            let _ = writeln!(out, "[{}]", section.name);
+            for (key, lines) in &section.options {
+                let value = lines.join("\n");
+                let value = value
+                    .trim_end_matches(crate::py::is_space)
+                    .replace('\n', "\n\t");
+                let _ = writeln!(out, "{key} = {value}");
+            }
+            out.push('\n');
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +267,20 @@ mod tests {
         assert!(Ini::parse("x=1\n").is_err());
         assert!(Ini::parse("[a]\njunk\n").is_err());
         assert!(Ini::parse("[a]\n=1\n").is_err());
+    }
+
+    #[test]
+    fn writes_what_configparser_wrote() {
+        let mut ini = Ini::parse(
+            "[origin]\ncontainer-image-reference=x\n  continued\n[boot]\nboot_type=bls\ndigest=d\n",
+        )
+        .unwrap();
+        ini.set("boot", "boot_type", "uki").unwrap();
+        assert!(ini.set("missing", "x", "y").is_err());
+        assert_eq!(
+            ini.write(),
+            "[origin]\ncontainer-image-reference = x\n\tcontinued\n\n[boot]\nboot_type = uki\ndigest = d\n\n"
+        );
     }
 
     #[test]

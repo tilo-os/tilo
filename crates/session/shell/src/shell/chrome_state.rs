@@ -729,6 +729,9 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    /// A paused action the person asked to see from its notification: the
+    /// composer following that run shows it, else Task Center does.
+    task_draft_request: Option<String>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -1017,6 +1020,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            task_draft_request: None,
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
@@ -1868,6 +1872,11 @@ impl ChromeState {
 
     pub fn take_activity_focus_request(&mut self) -> Option<ActivityFocus> {
         self.activity_focus_request.take()
+    }
+
+    /// The task whose paused action the person asked to see, once.
+    pub fn take_task_draft_request(&mut self) -> Option<String> {
+        self.task_draft_request.take()
     }
 
     /// Open Activity and run a selected-row history action (`history.compare`,
@@ -2829,10 +2838,10 @@ impl ChromeState {
         }
         if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
             self.record_history(removed);
-            self.open_room_activity(Some(ActivityFocus {
-                task_id: Some(task_id),
-                ..ActivityFocus::default()
-            }));
+            // Shown where the person asked for the work when that composer
+            // follows the run, else on its card in Task Center.
+            self.task_draft_request = Some(task_id);
+            self.bump();
             return true;
         }
         if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {
@@ -4329,5 +4338,33 @@ mod provisioned_identity_tests {
             chrome.borrow_mut().adopt_provisioned_identity("tester"),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod task_confirmation_toast_tests {
+    use super::*;
+
+    /// Activating the notice of a run paused for the person asks for that
+    /// task's paused action to be shown, once: the overlay shows it in the
+    /// composer following the run, else on its card in Task Center.
+    #[test]
+    fn activating_a_paused_runs_notice_asks_to_show_its_draft() {
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::default());
+        let mut state = chrome.borrow_mut();
+        let id = state.push_task_confirmation(&tilo_desktop::activity::ConfirmationNotice {
+            room: "room".into(),
+            task_id: "task:rename".into(),
+            task_title: "Rename files".into(),
+            agent: "scribe".into(),
+            action: "Rename an entry here".into(),
+            gist: None,
+        });
+        assert!(state.activate_notification(id));
+        assert_eq!(
+            state.take_task_draft_request().as_deref(),
+            Some("task:rename")
+        );
+        assert_eq!(state.take_task_draft_request(), None);
     }
 }

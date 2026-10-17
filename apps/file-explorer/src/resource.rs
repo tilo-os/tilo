@@ -1156,6 +1156,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                 | FilesEffect::OpenAccount { .. }
                 | FilesEffect::AccountDetails { .. }
                 | FilesEffect::Reauthenticate { .. }
+                | FilesEffect::OpenDrive { .. }
         ) && !ui::bound_dispatch::host_person_invocation_permitted()
         {
             return Err("Only the host's person may access their private cloud accounts".into());
@@ -1772,6 +1773,38 @@ mod tests {
             )
             .unwrap();
         app.settle();
+    }
+
+    /// A rename, a move or a trash queued here reaches the disk, so grants
+    /// treat it as an outside effect, yet its undo queues the revert: the
+    /// contract says it can be taken back, bound to a folder or not, so a
+    /// reviewer is not told it sends anything away.
+    #[test]
+    fn queued_file_changes_declare_that_they_can_be_undone() {
+        use ui::tilo_actions::{ActionKind, COMPENSATED_UNDO_TAG};
+        use ui::tilo_resource::Resource as _;
+        let declarations = FileExplorer::declarations();
+        let tagged = |id: &str| {
+            declarations
+                .iter()
+                .find(|decl| decl.id == id)
+                .unwrap()
+                .tags
+                .iter()
+                .any(|tag| tag == COMPENSATED_UNDO_TAG)
+        };
+        for id in ["rename", "move", "trash", "new-folder", "copy-into"] {
+            assert!(tagged(id), "{id} is undone by its compensation");
+        }
+        assert!(!tagged("add-bookmark"), "a document edit needs no tag");
+        let bound = FileExplorer::RENAME
+            .bind(file_explorer::Rename::paths().device, "device".to_owned())
+            .and(file_explorer::Rename::paths().folder, "/tmp".to_owned())
+            .declaration("rename-here", "Rename an entry here")
+            .unwrap();
+        assert_eq!(bound.kind, ActionKind::Outside);
+        let spec = ui::tilo_resource::declaration_spec(&*bound);
+        assert!(spec.contract.can_be_undone());
     }
 
     /// Creating, renaming and moving files are document actions: queued in

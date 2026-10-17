@@ -451,6 +451,54 @@ pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     deny_list_program(rules)
 }
 
+/// Syscalls that address another process by number: with one shared uid,
+/// two confined drivers could otherwise signal each other.
+#[cfg(target_os = "linux")]
+const SIGNAL_TARGET_SYSCALLS: &[libc::c_long] = &[
+    libc::SYS_kill,
+    libc::SYS_tkill,
+    libc::SYS_tgkill,
+    libc::SYS_rt_sigqueueinfo,
+    libc::SYS_rt_tgsigqueueinfo,
+];
+
+/// The policy for a foreign file-system driver (such as `ntfs-3g`) that runs
+/// over hostile on-disk data in process `own_pid`: the
+/// [`SeccompProfile::TiloDefault`] baseline, no socket of any kind, no
+/// pidfds, and signals only to itself.
+///
+/// Unlike [`parser_program`], `execve` stays allowed: the filter is installed
+/// before the driver's program is executed. Installing it is what makes that
+/// program run confined; what it may then reach is decided by Landlock and
+/// the namespaces it was started in.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn driver_program(own_pid: u32) -> Result<BpfProgram, SeccompError> {
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault)?;
+    for nr in PARSER_DENIES {
+        if !matches!(*nr, libc::SYS_execve | libc::SYS_execveat) {
+            rules.insert(*nr, Vec::new());
+        }
+    }
+    rules.insert(libc::SYS_pidfd_open, Vec::new());
+    rules.insert(libc::SYS_pidfd_send_signal, Vec::new());
+    for nr in SIGNAL_TARGET_SYSCALLS {
+        rules.insert(
+            *nr,
+            vec![SeccompRule::new(vec![SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Ne,
+                u64::from(own_pid),
+            )?])?],
+        );
+    }
+    deny_list_program(rules)
+}
+
 /// Which filter a CI job runs under (`tilo-sandbox`'s `job` module).
 ///
 /// A job runs a whole toolchain — compilers, linkers, test binaries, build
@@ -1156,6 +1204,62 @@ mod tests {
                 libc::WEXITSTATUS(status),
                 0,
                 "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
+            );
+        }
+    }
+
+    /// A foreign driver may signal only itself and create no socket.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn driver_program_signals_only_itself_and_opens_no_socket() {
+        {
+            // SAFETY: the child compiles and installs a filter, invokes
+            // syscalls with inert arguments, and exits without returning into
+            // the test harness.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                // SAFETY: getpid/getppid cannot fail.
+                let (own, parent) = unsafe { (libc::getpid(), libc::getppid()) };
+                let installed = u32::try_from(own)
+                    .ok()
+                    .and_then(|own| driver_program(own).ok())
+                    .is_some_and(|program| seccompiler::apply_filter(&program).is_ok());
+                if !installed {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(12) };
+                }
+                // SAFETY: socket(2) with constant arguments.
+                let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+                if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(10) };
+                }
+                // SAFETY: signal 0 only probes; the filter decides first.
+                let other = unsafe { libc::kill(parent, 0) };
+                if other != -1
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(11) };
+                }
+                // SAFETY: as above, aimed at this process.
+                if unsafe { libc::kill(own, 0) } != 0 {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(13) };
+                }
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(0) };
+            }
+            let mut status = 0;
+            // SAFETY: waiting on our own child.
+            unsafe { libc::waitpid(pid, &raw mut status, 0) };
+            assert!(libc::WIFEXITED(status));
+            assert_eq!(
+                libc::WEXITSTATUS(status),
+                0,
+                "10 = a socket was created, 11 = another process was signalled, \
+                 12 = the filter would not install, 13 = it could not signal itself"
             );
         }
     }

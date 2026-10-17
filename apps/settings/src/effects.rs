@@ -118,6 +118,7 @@ settings_effects! {
     Power(crate::panes::power::PowerEffect) => crate::panes::power::answer,
     Updates(crate::panes::updates::UpdatesEffect) => crate::panes::updates::answer,
     DiskUnlock(crate::panes::disk_unlock::DiskUnlockEffect) => crate::panes::disk_unlock::answer,
+    Drives(crate::panes::drives::DrivesEffect) => crate::panes::drives::answer,
     Storage(crate::panes::storage::StorageEffect) => crate::panes::storage::answer,
     About(crate::panes::about::AboutEffect) => crate::panes::about::answer,
     Permissions(crate::panes::permissions::PermissionsEffect) => crate::panes::permissions::answer,
@@ -293,6 +294,14 @@ pub(crate) const LIVE_AREAS: &[LiveArea] = &[
         pane: Category::Permissions,
         is_open: |_| true,
         rows: |app| app.disk_unlock().rows(),
+        background: None,
+    },
+    // Remembered drives' rows show only what the Storage pane has read.
+    LiveArea {
+        name: "settings.rows.drives",
+        pane: Category::Storage,
+        is_open: |_| true,
+        rows: |app| app.drives().rows(),
         background: None,
     },
 ];

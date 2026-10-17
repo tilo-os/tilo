@@ -32,6 +32,8 @@ pub(super) enum SearchRequest {
     Toggle,
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
+    /// Window `GroupId`'s search control: search what its shown tab holds.
+    Window(StripId, GroupId),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -55,6 +57,10 @@ pub struct HostAction {
     /// offer it.
     #[serde(default)]
     pub source: Option<HostActionSource>,
+    /// What a menu listing it calls it, when that differs from `title`
+    /// (the workspace menu lists "Lounge", search says "Open Lounge").
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// The part of the system a host action belongs to, in the desktop's
@@ -66,6 +72,10 @@ pub enum HostActionSource {
     Identity,
     /// The person's other devices: pairing one.
     Devices,
+    /// Another of the person's workspaces, to go to.
+    Workspaces,
+    /// Workspaces themselves: joining one, leaving this one, a new one.
+    Workspace,
 }
 
 impl HostActionSource {
@@ -73,6 +83,7 @@ impl HostActionSource {
         crate::i18n::t(match self {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
+            Self::Workspaces | Self::Workspace => "host-action-source-workspace",
         })
     }
 }
@@ -149,6 +160,11 @@ impl DesktopHandle {
             .collect();
         shared.host_actions = actions;
         withdrawn
+    }
+
+    /// The host actions offered now, in the host's order.
+    pub fn host_actions(&self) -> Vec<HostAction> {
+        self.shared.borrow().host_actions.clone()
     }
 
     /// Whether the host offers the action `id` (see [`Self::set_host_actions`]).
@@ -338,6 +354,33 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
+    /// Open search over what window `group` shows: its shown tab's
+    /// resources and search providers, the in-app search its search control
+    /// offers. Opens over everything when the window is gone.
+    fn open_window_search(&mut self, doc: &AutoCommit, strip: StripId, group: GroupId) {
+        let host = self
+            .rows
+            .get(&strip)
+            .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
+            .and_then(|window| window.active_host());
+        let Some(host) = host else {
+            self.open_search(doc, None);
+            return;
+        };
+        let data = SearchData {
+            resources: ui::widget::published_resources(host, doc),
+            providers: ui::widget::published_search_providers(host),
+            ..SearchData::default()
+        };
+        self.search.open(data);
+        self.search
+            .palette_mut()
+            .set_platform_conventions(self.platform);
+        self.search.set_query("");
+        self.new_tab_into = None;
+        self.structure_dirty = true;
+    }
+
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
@@ -347,6 +390,7 @@ impl DesktopSurface {
             Some(SearchRequest::Toggle) => self.open_search(doc, None),
             Some(SearchRequest::Open(query)) => self.open_search(doc, query),
             Some(SearchRequest::NewTab(strip, group)) => self.open_new_tab_search(strip, group),
+            Some(SearchRequest::Window(strip, group)) => self.open_window_search(doc, strip, group),
             None => {}
         }
         self.follow_search();

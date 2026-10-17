@@ -7,7 +7,6 @@ The release catalog/signatures authenticate the packaged media independently.
 
 import argparse
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 import re
@@ -31,12 +30,14 @@ from pathlib import Path
 sys.path.insert(0, '/run/tilo-media-validation')
 from hardware_profile import read_profile, read_definition, trusted_path, PROFILE_PATH, DEFINITION_PATH
 profile = read_profile(Path('/'))
-exporter = Path('/usr/libexec/tilo-data-consumer-catalog-facts')
-# Legacy images may lack this capability; an installed exporter must succeed.
+exporter = Path('/usr/libexec/tilo-prepared-setup')
+# Images without the prepared setup helper carry no consumer facts; an
+# installed helper's catalog export must succeed.
 facts = None
 if os.path.lexists(exporter):
     trusted_path(Path('/'), exporter.relative_to('/'), regular=True)
-    result = subprocess.run([str(exporter)], check=True, capture_output=True, timeout=140,
+    result = subprocess.run([str(exporter), '--data-consumer-catalog-facts'], check=True,
+                            capture_output=True, timeout=140,
                             env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
     if len(result.stdout) > 16384 or len(result.stderr) > 4096:
         raise ValueError('installed consumer facts exceed bound')
@@ -49,16 +50,34 @@ print(json.dumps({
 """
 
 
+# The closed receipts the prepared setup helper's consumer checks export
+# (crates/platform/imager-backend/src/installed_consumers/data.rs).
+HOME_KEYS = {"schema", "archive_protocol", "seed_protocol", "firstboot_user_sha256",
+             "seed_helper_sha256", "prepared_helper_sha256", "tar_sha256"}
+APPS_KEYS = {"schema", "subset_protocol", "prepared_helper_sha256",
+             "qualification_script_sha256", "native_qualification_sha256"}
+
+
+def consumer_shape(value, keys, protocols):
+    if type(value) is not dict or set(value) != keys:
+        raise ValueError("unknown or missing consumer fields")
+    for key, expected in protocols.items():
+        if type(value[key]) is not int or value[key] != expected:
+            raise ValueError("unsupported consumer protocol")
+    for key in keys:
+        if key.endswith("_sha256") and not (type(value[key]) is str
+                                            and re.fullmatch("[0-9a-f]{64}", value[key])):
+            raise ValueError("invalid consumer digest")
+    return value
+
+
 def validate_consumers(value):
-    spec = importlib.util.spec_from_file_location('installed_consumers', REPO / 'os/scripts/installed-data-consumer.py')
-    consumer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(consumer)
     if not isinstance(value, dict) or set(value) not in ({'home_archive'}, {'home_archive', 'applications', 'original_source'}):
         raise ValueError('unknown or incomplete installed consumer facts')
-    consumer.shape(value['home_archive'], consumer.HOME_KEYS,
+    consumer_shape(value['home_archive'], HOME_KEYS,
                    {'schema': 1, 'archive_protocol': 2, 'seed_protocol': 1})
     if 'applications' in value:
-        consumer.shape(value['applications'], consumer.APPS_KEYS, {'schema': 1, 'subset_protocol': 2})
+        consumer_shape(value['applications'], APPS_KEYS, {'schema': 1, 'subset_protocol': 2})
         original = value['original_source']
         if not isinstance(original, dict) or type(original.get('original_source_protocol')) is not int or original['original_source_protocol'] != 6:
             raise ValueError('application facts lack the qualified source6 consumer')

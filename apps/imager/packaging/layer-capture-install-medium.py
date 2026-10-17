@@ -54,13 +54,6 @@ def layer(settings, base, output, env):
             shutil.copyfile(subject['path'], target)
             target.chmod(0o755)
             qualifier.bound_file(target, subject['sha256'])
-        for source, destination in qualifier.PLATFORM_SCRIPTS.items():
-            qualifier.bound_file(release.ROOT / source, cohort['source_inputs'][source])
-            target = root / destination.lstrip('/')
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(release.ROOT / source, target)
-            target.chmod(0o755)
-            qualifier.bound_file(target, cohort['source_inputs'][source])
         browser = qualifier.fixed_module(HERE / 'prepare-capture-browser.py', 'capture_browser')
         if disposable:
             trust = root / 'etc/tilo/runtime-bundle-trusted-publishers.txt'

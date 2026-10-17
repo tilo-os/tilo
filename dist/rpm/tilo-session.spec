@@ -95,7 +95,6 @@ Requires:       xdg-dbus-proxy
 # manager and classic D-Bus activation, so host services such as GCR's prompt
 # helper cannot retain the previous desktop's routing state.
 Requires:       fuse3
-Requires:       python3
 Requires:       dbus-tools
 # The wrapper owns graphical-session.target while Tilo is logged in. This makes
 # standard session services available and stops them before another desktop
@@ -204,7 +203,6 @@ install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
 install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
 install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
-install -Dpm 0755 libexec/tilo-files-workspace %{buildroot}%{_libexecdir}/tilo-files-workspace
 install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
 install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
@@ -346,7 +344,6 @@ done
 %{_bindir}/fs
 %{_bindir}/tilo-relay-admin
 %{_bindir}/tilo-enroll
-%{_libexecdir}/tilo-files-workspace
 %{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_bindir}/tilo-import-folders

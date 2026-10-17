@@ -40,9 +40,29 @@ pub(super) struct StripSwitcher {
 
 /// The strip name being typed.
 struct Naming {
+    /// What the name is for.
+    purpose: Purpose,
     text: String,
     selection: Selection,
     input: Option<TextInput>,
+}
+
+/// What a name being typed in the bar is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Purpose {
+    /// A new desk (strip).
+    NewDesk,
+    /// The workspace's own name.
+    RenameWorkspace,
+}
+
+impl Purpose {
+    fn placeholder(self) -> String {
+        t(match self {
+            Self::NewDesk => "topbar-strip-name-placeholder",
+            Self::RenameWorkspace => "topbar-workspace-name-placeholder",
+        })
+    }
 }
 
 /// Everything about the strips that changes what the bar paints.
@@ -96,6 +116,29 @@ impl TopBarChrome {
     /// Who is on which strip, when the host shows strips as places.
     pub(super) fn strip_places(&self) -> Option<StripPlaces> {
         self.chrome.as_ref()?.snapshot().strip_places
+    }
+
+    /// The places the bar shows as desks: with the workspace menu, only
+    /// when there is more than one desk to be on (or one is being named),
+    /// and adding one is in that menu.
+    fn shown_places(&self) -> Option<StripPlaces> {
+        let mut places = self.strip_places()?;
+        if self.has_workspace_menu() {
+            if self.strips.strips.len() <= 1 && self.strips.naming.is_none() {
+                return None;
+            }
+            places.can_add = false;
+        }
+        Some(places)
+    }
+
+    /// Start naming a new desk, as the workspace menu's New desk asks;
+    /// false when the host does not let this person add one.
+    pub fn begin_new_desk(&mut self) -> bool {
+        let started = self.begin_strip_naming();
+        self.cache_fp = super::CacheFingerprint::default();
+        self.responsive.dirty = true;
+        started
     }
 
     pub(super) fn sync_strips(&mut self, tree: &DesktopTree) {
@@ -194,7 +237,7 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> f64 {
-        let Some(places) = self.strip_places() else {
+        let Some(places) = self.shown_places() else {
             return 0.0;
         };
         if self.strips.naming.is_some() {
@@ -227,7 +270,7 @@ impl TopBarChrome {
         self.strips.more = None;
         self.strips.add_rect = Rect::ZERO;
         self.strips.field_rect = Rect::ZERO;
-        let Some(places) = self.strip_places() else {
+        let Some(places) = self.shown_places() else {
             return;
         };
         let (x0, x1) = span;
@@ -395,7 +438,7 @@ impl TopBarChrome {
         let Some(naming) = self.strips.naming.as_mut() else {
             return;
         };
-        let placeholder = t("topbar-strip-name-placeholder");
+        let placeholder = naming.purpose.placeholder();
         let face = FieldFace::new(field, &naming.text)
             .placeholder(&placeholder)
             .text_role(TextRole::Caption)
@@ -455,11 +498,30 @@ impl TopBarChrome {
             return false;
         }
         self.strips.naming = Some(Naming {
+            purpose: Purpose::NewDesk,
             text: String::new(),
             selection: Selection::collapsed(0),
             input: None,
         });
         true
+    }
+
+    /// Start renaming the workspace in place, from its current name, as the
+    /// workspace menu's Rename asks.
+    pub fn begin_workspace_rename(&mut self) {
+        let text = self.workspace_name.clone();
+        let end = text.len();
+        self.strips.naming = Some(Naming {
+            purpose: Purpose::RenameWorkspace,
+            text,
+            selection: Selection {
+                anchor: 0,
+                cursor: end,
+            },
+            input: None,
+        });
+        self.cache_fp = super::CacheFingerprint::default();
+        self.responsive.dirty = true;
     }
 
     pub(super) fn cancel_strip_naming(&mut self) -> bool {
@@ -475,7 +537,10 @@ impl TopBarChrome {
             return;
         }
         if let Some(chrome) = self.chrome.as_ref() {
-            chrome.intent(ChromeIntent::AddStrip { name });
+            chrome.intent(match naming.purpose {
+                Purpose::NewDesk => ChromeIntent::AddStrip { name },
+                Purpose::RenameWorkspace => ChromeIntent::RenameWorkspace { name },
+            });
         }
     }
 
@@ -619,7 +684,7 @@ impl TopBarChrome {
     /// Accessibility nodes for the strips as painted.
     pub(super) fn strip_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let Some(places) = self.strip_places() else {
+        let Some(places) = self.shown_places() else {
             return Vec::new();
         };
         let mut nodes: Vec<AccessNode> = self
@@ -680,7 +745,7 @@ impl TopBarChrome {
             nodes.push(
                 AccessNode::new(Role::TextInput)
                     .with_hashed_key("topbar-strip-name")
-                    .with_name(t("topbar-strip-name-placeholder"))
+                    .with_name(naming.purpose.placeholder())
                     .with_value(naming.text.clone())
                     .with_bounds(self.strips.field_rect)
                     .with_state(AccessState {
@@ -697,7 +762,7 @@ impl TopBarChrome {
     /// who is there; the add control last.
     pub(super) fn strip_responsive_specs(&self) -> Vec<super::responsive::Spec> {
         use super::responsive::{Command, Spec};
-        let Some(places) = self.strip_places() else {
+        let Some(places) = self.shown_places() else {
             return Vec::new();
         };
         let mut specs: Vec<Spec> = self
@@ -904,6 +969,78 @@ mod tests {
         );
         let audit = Framed::harness(&frame).native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    /// With the workspace menu, one desk is no choice to show, adding one is
+    /// in that menu, and both a new desk and the workspace's new name are
+    /// typed in place in the bar.
+    #[test]
+    fn with_the_workspace_menu_desks_show_when_several_and_are_named_in_place() {
+        let mut one = tree();
+        one.workspaces[0].strips.truncate(1);
+        let chrome = Rc::new(Host {
+            tree: RefCell::new(one.clone()),
+            reported: Some(StripPlaces::in_active_workspace(&one, &[])),
+            intents: RefCell::default(),
+        });
+        let bar = TopBarChrome::from_tree_with_local_user(&one, "me".into())
+            .with_chrome(chrome.clone())
+            .with_workspace_menu();
+        let mut frame = Framed::new(ui::State::new(), bar, (1440, 480), Theme::dark());
+        assert!(frame.strips.chips.is_empty(), "one desk is no choice");
+        assert!(
+            frame.strips.add_rect.is_zero_area(),
+            "New desk is in the menu"
+        );
+
+        assert!(frame.begin_new_desk());
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(!frame.strips.field_rect.is_zero_area());
+        let field = frame.strips.field_rect.center();
+        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
+        Framed::harness_mut(&mut frame).type_text("Games");
+        Framed::harness_mut(&mut frame).key("Enter");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(
+            chrome.intents.borrow().last(),
+            Some(&ChromeIntent::AddStrip {
+                name: "Games".into()
+            })
+        );
+
+        frame.begin_workspace_rename();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(!frame.strips.field_rect.is_zero_area());
+        // The current name is selected: typing replaces it.
+        let field = frame.strips.field_rect.center();
+        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
+        Framed::harness_mut(&mut frame).type_text("Lounge");
+        Framed::harness_mut(&mut frame).key("Enter");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(
+            chrome.intents.borrow().last(),
+            Some(&ChromeIntent::RenameWorkspace {
+                name: "Lounge".into()
+            })
+        );
+
+        let (several, _) = {
+            let tree = tree();
+            let chrome = Rc::new(Host {
+                tree: RefCell::new(tree.clone()),
+                reported: Some(places()),
+                intents: RefCell::default(),
+            });
+            let bar = TopBarChrome::from_tree_with_local_user(&tree, "me".into())
+                .with_chrome(chrome.clone())
+                .with_workspace_menu();
+            (
+                Framed::new(ui::State::new(), bar, (1600, 480), Theme::dark()),
+                chrome,
+            )
+        };
+        assert_eq!(several.strips.chips.len(), 3, "several desks are shown");
+        assert!(several.strips.add_rect.is_zero_area());
     }
 
     #[test]

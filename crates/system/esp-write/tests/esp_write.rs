@@ -231,7 +231,11 @@ cmd_entries
         };
         let root_source =
             source.map_or_else(|| format!("composefs:{}", "a".repeat(128)), str::to_owned);
-        let uki_cmdline = repo().join("os/dev/uki-cmdline.py");
+        // The UKI editor is this binary under its installed link name.
+        let uki_cmdline = self.root.join("tilo-uki-cmdline");
+        if !uki_cmdline.exists() {
+            std::os::unix::fs::symlink(HELPER, &uki_cmdline).unwrap();
+        }
         let plan_dir = self.plan_dir.display().to_string();
         let flavour = self.root.join("image-flavour").display().to_string();
         self.command(

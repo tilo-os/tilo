@@ -1,5 +1,6 @@
 counter = Value: { $count }
 tab-modified = Unsaved changes
+tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 standalone-search-title = Search
 standalone-history-title = History
@@ -100,7 +101,10 @@ history-mode-live-updates = Live content has updates
 history-mode-page = Page
 history-mode-previous-page = Previous page
 history-mode-next-page = Next page
-history-mode-pending = Pending #{ $id } from { $owner }: { $action } arguments { $arguments }
+history-mode-pending = “{ $action }” waits until you leave History
+history-mode-pending-unnamed = An action waits until you leave History
+history-mode-pending-held = “{ $action }” was held while History was open
+history-mode-pending-held-unnamed = An action was held while History was open
 history-mode-continue = Continue
 history-mode-confirm = Confirm
 history-mode-cancel = Cancel
@@ -375,6 +379,9 @@ participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
 participant-app = { $name } · App
 participant-bot = { $name } · Bot
+# Two or more people in a room go by the same name: each is numbered, the
+# same numbers for everyone in it.
+participant-numbered = { $name } ({ $number })
 # An agent, a Shortcut or an app acting for a person.
 participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent

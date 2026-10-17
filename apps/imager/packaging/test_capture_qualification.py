@@ -40,7 +40,6 @@ class StagedSourceClosure(unittest.TestCase):
                      'tilo-staging-handoff', 'tilo-install-handoff-copy.py', 'tilo-firstboot-files'):
             self.assertNotIn('os/usr/libexec/' + name, files)
             self.assertNotIn('os/usr/libexec/' + name, prerequisites.ASSETS)
-        self.assertLessEqual(set(qualifier.PLATFORM_SCRIPTS), files)
 
     def test_production_stage_copies_and_binds_whole_closure(self):
         sources = {name: qualifier.facts(qualifier.ROOT / name)['sha256']

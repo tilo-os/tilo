@@ -119,8 +119,9 @@ initialize storage, enroll a device, or grant Files access. The image's system
 The standard host cache is `$XDG_STATE_HOME/tilo/files`, normally
 `~/.local/state/tilo/files`. Its saved `namespace.bin` and signed
 `workspace-authority.bin` must already exist. Before mounting, the entry point
-checks the existing certified person/device, signed revocations, matching
-namespace authority, and an explicit read/write Files path capability. A room
+`fs serve-primary` checks the existing certified person/device, signed
+revocations, matching namespace authority, and an explicit read/write Files
+path capability. A room
 administration grant is insufficient. Failed readiness exits without making
 an empty mount. The service suppresses the daemon's ticket-bearing stdout.
 

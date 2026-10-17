@@ -84,7 +84,6 @@ cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
 tilo-crypto = { path = "../tilo-crypto", default-features = false, features = ["srp"], optional = true }
 base64 = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
@@ -99,3 +98,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

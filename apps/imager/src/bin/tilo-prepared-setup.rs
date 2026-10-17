@@ -69,8 +69,34 @@ fn bootstrap() -> Option<std::process::ExitCode> {
     None
 }
 
+/// Installed consumer capability producers and checks keep their own closed
+/// diagnostics, which the image build and release packaging report.
+#[cfg(target_os = "linux")]
+fn installed_consumers() -> Option<std::process::ExitCode> {
+    use std::io::Write;
+    let mode = std::env::args_os().nth(1)?.into_string().ok()?;
+    if !imager_backend::installed_consumers::MODES.contains(&mode.as_str()) {
+        return None;
+    }
+    Some(
+        match imager_backend::installed_consumers::run(&mode, std::env::args_os().skip(2)) {
+            Ok(output) if std::io::stdout().lock().write_all(&output).is_ok() => {
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(_) => std::process::ExitCode::FAILURE,
+            Err(diagnostic) => {
+                eprintln!("{diagnostic}");
+                std::process::ExitCode::FAILURE
+            }
+        },
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
+    if let Some(status) = installed_consumers() {
+        return status;
+    }
     if let Some(status) = bootstrap() {
         return status;
     }

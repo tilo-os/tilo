@@ -20,6 +20,7 @@ pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
+mod output_link;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
@@ -144,6 +145,12 @@ impl DrmBackend {
     fn submit_inline(&mut self, frame: ScanoutFrame<'_>) {
         let present_gate = self.inner.dispatch.present_gate.clone();
         let _quiesced = quiesce_presentations(present_gate.as_ref());
+        service_links(
+            &mut self.inner.scanouts,
+            !self.paused,
+            &self.inner.dispatch.kms_link_busy,
+            self.signal_reports.as_ref(),
+        );
         // While blanked the CRTCs are disabled — painting/presenting would be wasted or re-light the
         // panel out from under idle/lock logic; skip until `set_dpms(true)`. `paused` is the other reason: the CRTCs belong to another session until it switches back.
         if self.blanked || self.paused {
@@ -232,6 +239,9 @@ pub struct DrmPresenter {
     frame_owes: bool,
     /// Owed flips retired since the pipe last asked ([`Presenter::retire_owed`]).
     owed_retired: Vec<crate::shell::present::OwedRetirement>,
+    /// Shared with the loop thread: some output's link is still changing
+    /// ([`service_links`]).
+    link_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Env var that, set to `0`, keeps every frame waiting for its own page flip
@@ -290,6 +300,7 @@ struct PresenterParts {
     profile_phases: bool,
     signal_reports: Option<Sender<SignalReport>>,
     client_planes: client_scanout::ClientPlanes,
+    link_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DrmPresenter {
@@ -309,6 +320,7 @@ impl DrmPresenter {
             profile_phases,
             signal_reports,
             client_planes,
+            link_busy,
         } = parts;
         Self {
             scanouts,
@@ -337,6 +349,7 @@ impl DrmPresenter {
             owed: None,
             frame_owes: false,
             owed_retired: Vec::new(),
+            link_busy,
         }
     }
 
@@ -443,11 +456,11 @@ impl DrmPresenter {
         !self.blanked
             && !self.paused
             && self.cpu.is_none()
-            && self.scanouts.iter().any(|entry| !entry.powered_off)
+            && self.scanouts.iter().any(|entry| !entry.dark())
             && self
                 .scanouts
                 .iter()
-                .filter(|entry| !entry.powered_off)
+                .filter(|entry| !entry.dark())
                 .all(|entry| entry.direct_targets.is_some() && !entry.present_by_readback)
     }
 
@@ -470,7 +483,7 @@ impl DrmPresenter {
                 self.scanouts.iter().any(|entry| {
                     entry.device_id == flip.device_id
                         && entry.scanout.crtc() == flip.crtc
-                        && !entry.powered_off
+                        && !entry.dark()
                         && paces(refresh_of(&self.outputs, entry.id), fastest)
                 })
             })
@@ -571,7 +584,7 @@ fn refresh_of(outputs: &[Output], id: OutputId) -> Option<u32> {
 fn fastest_direct_refresh(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Option<u32> {
     scanouts
         .iter()
-        .filter(|entry| !entry.powered_off && entry.direct_targets.is_some())
+        .filter(|entry| !entry.dark() && entry.direct_targets.is_some())
         .filter_map(|entry| refresh_of(outputs, entry.id))
         .max()
 }
@@ -1170,6 +1183,7 @@ impl DrmPresenter {
         let present_gate = self.present_gate.clone();
         let _quiesced = quiesce_presentations(present_gate.as_ref());
         self.drain_commands();
+        self.service_links();
         let overlap = !self.blanked && !self.paused && self.overlap_eligible();
         if self.owed.is_some() && (!overlap || frame.scanout.is_some()) {
             // Leaving the overlapped mode, or a client buffer may take the CRTC (nothing
@@ -1467,7 +1481,7 @@ impl DrmPresenter {
         });
         let completed: Vec<_> = completions
             .iter()
-            .map(|event| (device_id, event.crtc))
+            .map(|event| (device_id, event.crtc, event.frame))
             .collect();
         route_flip_completions(&mut self.scanouts, &completed);
         (retirement, proof)
@@ -1578,6 +1592,17 @@ impl DrmPresenter {
     }
 
     /// Apply every reconfiguration the loop thread has queued.
+    /// Move every output's link along ([`service_links`]).
+    fn service_links(&mut self) {
+        let completions = service_links(
+            &mut self.scanouts,
+            !self.paused,
+            &self.link_busy,
+            self.signal_reports.as_ref(),
+        );
+        self.phase_window.record_flip_completions(completions);
+    }
+
     fn drain_commands(&mut self) {
         let Some(rx) = self.commands.as_ref() else {
             return;
@@ -1628,6 +1653,13 @@ fn apply_scanout_command(
             // an unplugged display. No per-device page-flip source to register/withdraw: every scanout on
             // a card dups one open file description, so all crtcs' completions arrive on one event stream
             // that `paint_scanouts` drains once and routes by crtc; a removed output takes its pending completion with it.
+            // A new output's first modeset is committed here, before the
+            // outputs it replaces drop their framebuffers: on a re-moded
+            // connector it takes the CRTC over from the old scanout's.
+            let mut add = add;
+            for entry in &mut add {
+                entry.service_link();
+            }
             scanouts.retain(|e| !remove.contains(&e.id));
             scanouts.extend(add);
             // Positions come from the loop thread's re-layout: survivors move too, since the set was re-packed to close the hole an unplugged display left.
@@ -1668,7 +1700,7 @@ fn apply_scanout_command(
         ScanoutCommand::Resume { dpms_on } => {
             for e in scanouts.iter_mut() {
                 e.scanout.restore();
-                e.scanout.set_dpms(dpms_on && !e.powered_off);
+                e.set_power(dpms_on && !e.powered_off);
                 e.direct_targets = None;
             }
             *blanked = !dpms_on;
@@ -1705,23 +1737,39 @@ fn apply_scanout_command(
             }
         }
         ScanoutCommand::SetOutputPower { output, on } => {
+            // While the session is blanked every panel is already off; the
+            // wake restores this one only if it is still wanted.
+            let commit = !*blanked && !*paused;
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
-                entry.powered_off = !on;
-                if entry.direct_targets.is_some() {
-                    // KMS may still scan out a target: the dumb front takes the
-                    // CRTC back before the targets are released.
-                    entry.scanout.restore_legacy_front();
-                    entry.direct_targets = None;
-                }
-                // While the session is blanked every panel is already off;
-                // the wake restores this one only if it is still wanted.
-                if !*blanked && !*paused {
-                    entry.scanout.set_dpms(on);
-                }
-                tracing::info!(output = output.0, on, "DRM present: output power changed");
+                set_output_power(entry, on, commit);
             }
         }
     }
+}
+
+/// Switch one panel off or back on for an output-power client; `commit`:
+/// the session is neither blanked nor paused, so KMS is told now.
+fn set_output_power(entry: &mut ScanoutEntry, on: bool, commit: bool) {
+    entry.powered_off = !on;
+    if entry.scanout.atomic_link() {
+        // One nonblocking commit; the targets go after it, and the next
+        // wake lights the dumb front.
+        if commit {
+            entry.set_power(on);
+        }
+        entry.direct_targets = None;
+    } else {
+        if entry.direct_targets.is_some() {
+            // KMS may still scan out a target: the dumb front takes the CRTC
+            // back before the targets are released.
+            entry.scanout.restore_legacy_front();
+            entry.direct_targets = None;
+        }
+        if commit {
+            entry.set_power(on);
+        }
+    }
+    tracing::info!(output = entry.id.0, on, "DRM present: output power changed");
 }
 
 /// One composed frame on its way to the scanouts: the scene, what changed
@@ -1877,7 +1925,7 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
 /// presented through the combined readback last frame, or cannot render direct.
 fn expects_readback(scanouts: &[ScanoutEntry]) -> bool {
     scanouts.iter().any(|entry| {
-        !entry.powered_off && (entry.present_by_readback || entry.direct_ineligible.is_some())
+        !entry.dark() && (entry.present_by_readback || entry.direct_ineligible.is_some())
     })
 }
 
@@ -1954,7 +2002,7 @@ fn paint_scanouts_with(
         hdr_layers,
         ..
     } = frame;
-    if scanouts.iter().all(|entry| entry.powered_off) {
+    if scanouts.iter().all(ScanoutEntry::dark) {
         return PaintScanoutSample::default();
     }
     let combined = combined_geometry(outputs);
@@ -1975,7 +2023,7 @@ fn paint_scanouts_with(
     }
     let sharing = TargetSharing::of(
         readback_expected,
-        scanouts.iter().filter(|entry| !entry.powered_off).count(),
+        scanouts.iter().filter(|entry| !entry.dark()).count(),
     );
     if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
@@ -2062,7 +2110,7 @@ fn paint_scanouts_with(
         let renderer = RendererIdentity::of(bridge);
         let mut render_totals = DirectFrame::default();
         for entry in scanouts.iter_mut() {
-            if entry.powered_off {
+            if entry.dark() {
                 entry.present_by_readback = false;
                 entry.readback_current = false;
                 continue;
@@ -2110,7 +2158,7 @@ fn paint_scanouts_with(
         // Only outputs on the direct path keep a retained surface.
         let live: Vec<OutputId> = scanouts
             .iter()
-            .filter(|entry| !entry.powered_off && entry.direct_targets.is_some())
+            .filter(|entry| !entry.dark() && entry.direct_targets.is_some())
             .map(|entry| entry.id)
             .collect();
         bridge.retain_output_views(&live);
@@ -2868,7 +2916,7 @@ fn paint_scanouts_cpu(
 
     if single
         && let Some(entry) = scanouts.first_mut()
-        && !entry.powered_off
+        && !entry.dark()
         && !entry.sync_hdr_readback()
     {
         match entry.scanout.wait_cpu_flip(CPU_FLIP_TIMEOUT) {
@@ -2889,13 +2937,13 @@ fn paint_scanouts_cpu(
     }
 
     drain_page_flip_completions(scanouts);
-    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+    for entry in scanouts.iter_mut().filter(|entry| !entry.dark()) {
         entry.sync_hdr_readback();
     }
     let started = Instant::now();
     let rgba = renderer.screen_rgba();
     let size = (target_size.0 as usize, target_size.1 as usize);
-    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+    for entry in scanouts.iter_mut().filter(|entry| !entry.dark()) {
         // The CPU renderer has no readback; its own profile covers this copy.
         paint_one_scanout(entry, outputs, rgba, size, pointer, None, None);
     }
@@ -3272,6 +3320,47 @@ fn output_local_clip(
 /// Drain one page-flip event stream per KMS device and route each completion
 /// only to scanouts on that device. Extracted so the selection policy can be
 /// tested without opening DRM hardware. Returns how many completions arrived.
+/// Move each output's link along without waiting for it: read the cards'
+/// page-flip events while a link is changing (a modeset or its vblank proof
+/// completes only through one), commit what a link owes, report a link
+/// that failed to the loop thread, and tell it whether any link is still
+/// changing (`busy`), so that its card watch asks for a frame on the next
+/// event. Returns how many completions were read. `master`: the session
+/// holds the CRTCs, so commits may be made.
+fn service_links(
+    scanouts: &mut [ScanoutEntry],
+    master: bool,
+    busy: &std::sync::atomic::AtomicBool,
+    reports: Option<&Sender<SignalReport>>,
+) -> usize {
+    let changing = scanouts.iter().any(|entry| entry.scanout.link_busy());
+    // An output overlapping its flip leaves that flip's event to the
+    // presenter, which reads its vblank from it; a lone overlapping output is
+    // proven up, so no link of its own is changing then.
+    let overlapping = scanouts.iter().any(|entry| {
+        entry
+            .direct_targets
+            .as_ref()
+            .is_some_and(scanout::DirectScanoutTargets::overlaps)
+    });
+    let completions = if changing && !overlapping {
+        drain_page_flip_completions(scanouts)
+    } else {
+        0
+    };
+    if master {
+        for entry in scanouts.iter_mut() {
+            entry.service_link();
+        }
+    }
+    busy.store(
+        scanouts.iter().any(|entry| entry.scanout.link_busy()),
+        std::sync::atomic::Ordering::Release,
+    );
+    report_signal_status(scanouts, reports);
+    completions
+}
+
 fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
     let representatives = page_flip_representatives(scanouts.iter().map(|entry| entry.device_id));
     let mut completed = Vec::new();
@@ -3284,27 +3373,40 @@ fn drain_page_flip_completions(scanouts: &mut [ScanoutEntry]) -> usize {
                 .scanout
                 .poll_flip_completions()
                 .into_iter()
-                .map(|crtc| (device_id, crtc)),
+                .map(|(crtc, frame)| (device_id, crtc, frame)),
         );
     }
     route_flip_completions(scanouts, &completed);
     completed.len()
 }
 
-/// Hand each `(device, crtc)` completion to the scanout it belongs to: the
-/// direct targets' ring when the output renders direct, the dumb pair otherwise.
+/// Hand each `(device, crtc, vblank)` completion to the scanout it belongs
+/// to: its link when it completes the link's own commit (a modeset or its
+/// vblank proof), else the direct targets' ring when the output renders
+/// direct, the dumb pair otherwise.
 fn route_flip_completions(
     scanouts: &mut [ScanoutEntry],
-    completed: &[(u64, smithay::reexports::drm::control::crtc::Handle)],
+    completed: &[(u64, smithay::reexports::drm::control::crtc::Handle, u32)],
 ) {
     let topology: Vec<_> = scanouts
         .iter()
         .map(|entry| (entry.device_id, entry.scanout.crtc()))
         .collect();
-    for (index, crtc) in page_flip_completion_recipients(&topology, completed) {
+    let recipients: Vec<_> = completed
+        .iter()
+        .flat_map(|&(device_id, crtc, frame)| {
+            page_flip_completion_recipients(&topology, &[(device_id, crtc)])
+                .into_iter()
+                .map(move |(index, crtc)| (index, crtc, frame))
+        })
+        .collect();
+    for (index, crtc, frame) in recipients {
         let Some(entry) = scanouts.get_mut(index) else {
             continue;
         };
+        if entry.scanout.complete_link_event(frame) {
+            continue;
+        }
         if let Some(targets) = entry.direct_targets.as_mut() {
             entry.scanout.mark_direct_flip_complete(targets, crtc);
         } else {
@@ -3593,9 +3695,10 @@ impl Presenter for DrmPresenter {
         self.collect_owed(DIRECT_RETIREMENT_TIMEOUT);
         self.blanked = !on;
         for e in &mut self.scanouts {
-            e.scanout.set_dpms(on && !e.powered_off);
+            e.set_power(on && !e.powered_off);
             e.direct_targets = None;
         }
+        self.service_links();
     }
 
     /// While the desktop rests, a lone output on the direct path brings the
@@ -3612,7 +3715,7 @@ impl Presenter for DrmPresenter {
         let [entry] = self.scanouts.as_slice() else {
             return;
         };
-        if entry.powered_off || entry.present_by_readback || entry.direct_targets.is_none() {
+        if entry.dark() || entry.present_by_readback || entry.direct_targets.is_none() {
             return;
         }
         let view = output_view(entry, &self.outputs);
@@ -3769,6 +3872,7 @@ impl Backend for DrmBackend {
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
             signal_reports: self.signal_reports.take(),
             client_planes: self.inner.dispatch.client_planes.clone(),
+            link_busy: self.inner.dispatch.kms_link_busy.clone(),
         })))
     }
 
@@ -3782,9 +3886,15 @@ impl Backend for DrmBackend {
             s.set_dpms(on);
         }
         for e in &mut self.inner.scanouts {
-            e.scanout.set_dpms(on && !e.powered_off);
+            e.set_power(on && !e.powered_off);
             e.direct_targets = None;
         }
+        service_links(
+            &mut self.inner.scanouts,
+            !self.paused,
+            &self.inner.dispatch.kms_link_busy,
+            self.signal_reports.as_ref(),
+        );
     }
 
     fn reset_display(&mut self) {
@@ -4106,6 +4216,7 @@ mod tests {
             profile_phases: false,
             signal_reports: None,
             client_planes: client_scanout::ClientPlanes::default(),
+            link_busy: Arc::default(),
         });
         assert!(
             presenter.paint.is_none(),
@@ -4138,6 +4249,7 @@ mod tests {
                 profile_phases: false,
                 signal_reports: None,
                 client_planes: client_scanout::ClientPlanes::default(),
+                link_busy: Arc::default(),
             });
             assert!(!presenter.vblank_paced());
             let proof =
@@ -4190,6 +4302,7 @@ mod tests {
                 profile_phases: false,
                 signal_reports: None,
                 client_planes: client_scanout::ClientPlanes::default(),
+                link_busy: Arc::default(),
             });
             commands
                 .send(ScanoutCommand::Pause)

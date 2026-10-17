@@ -237,6 +237,18 @@ export function overlayKeyboardRoute(widget,...args) {
   return widget==='ActionPalette'||widget==='SystemSearch'?keyboardRoute(...args):semanticKeyboardRoute(...args);
 }
 /** Statuses omit the semantics tree when it is unchanged or throttled; the retained tree stays authoritative until a status carries a new one. */
+/** Tell the browser what the focused field holds (the toolkit's
+ * `InputContent::html`), so a phone keyboard shows the dial pad for a phone
+ * field and autofill offers only what fits. A status without hints leaves
+ * the editor as it is. */
+export function applyEditorHints(editor,hints){
+  if(!hints)return;
+  editor.inputMode=hints.inputmode;
+  editor.enterKeyHint=hints.enterkeyhint;
+  editor.autocapitalize=hints.autocapitalize;
+  editor.autocomplete=hints.autocomplete;
+  editor.spellcheck=hints.spellcheck;
+}
 export function retainStatus(previous,next){return {...previous,...next};}
 export function retainedWidget(state){return state?.semantics?.root?.widget;}
 

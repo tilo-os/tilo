@@ -115,8 +115,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 
 # The kernel the UKI embeds, split out of the same root (os/Containerfile's
 # `kernel` stage). The board image keeps its own split-out pair as well: it is a
-# development target, whose kernel tilo-installer-dev-target-uki.py checks
-# against the UKI.
+# development target, whose kernel `tilo-installer-offline-target
+# dev-target-uki` checks against the UKI.
 FROM board-root AS kernel
 RUN mkdir -p /kernel && test -z "$(ls -A /kernel)" && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 

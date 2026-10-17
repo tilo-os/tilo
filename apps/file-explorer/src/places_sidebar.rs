@@ -22,6 +22,8 @@ use ui::widget::{NavAction, NavDrop, NavItem, NavList, NavSection, RowStatus};
 const FAVORITES_SECTION: &str = "favorites";
 /// The section holding the fixed locations.
 const LOCATIONS_SECTION: &str = "locations";
+/// The section holding NTFS drives (a Windows partition, external drives).
+const DRIVES_SECTION: &str = "drives";
 /// Row action: unpin a favourite.
 const REMOVE_ACTION: &str = "remove";
 
@@ -62,12 +64,26 @@ fn account_id(id: &str) -> String {
 
 /// The prefix of a row id naming an account rather than a folder.
 const ACCOUNT_PREFIX: &str = "account:";
+/// The prefix of a row id naming a drive: choosing it asks the shell to
+/// open the drive, which asks the person first.
+const DRIVE_PREFIX: &str = "drive:";
 
 /// The folder a row id names, if it is one of ours.
 fn path_of_id(id: &str) -> Option<PathBuf> {
     id.strip_prefix("fav:")
         .or_else(|| id.strip_prefix("loc:"))
         .map(PathBuf::from)
+}
+
+/// What choosing the row `id` asks of the window.
+fn choose(sink: &CommandSink, id: &str) {
+    if let Some(account) = id.strip_prefix(ACCOUNT_PREFIX) {
+        push(sink, FileCommand::ShowRemoteAccount(account.to_owned()));
+    } else if let Some(drive) = id.strip_prefix(DRIVE_PREFIX) {
+        push(sink, FileCommand::OpenDrive(drive.to_owned()));
+    } else if let Some(path) = path_of_id(id) {
+        push(sink, FileCommand::Navigate(path));
+    }
 }
 
 /// One fixed location: a place that is not the person's to reorder.
@@ -94,10 +110,25 @@ pub struct AccountPlace {
     pub status: Option<String>,
 }
 
+/// An NTFS drive as the places list shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrivePlace {
+    /// The shell's id for the drive while it stays attached.
+    pub id: String,
+    pub label: String,
+    /// Built into this computer, as opposed to external.
+    pub internal: bool,
+    /// Where it is open, when it is.
+    pub open_at: Option<PathBuf>,
+    /// Its second line: its size, or that it is open.
+    pub detail: String,
+}
+
 /// What the places list shows for the current folder.
 pub struct Places {
     favorites: Vec<Favorite>,
     locations: Vec<Location>,
+    drives: Vec<DrivePlace>,
     active: PathBuf,
     active_account: Option<String>,
 }
@@ -135,6 +166,7 @@ impl Places {
         Self {
             favorites: favs.borrow().favorites.clone(),
             locations,
+            drives: Vec::new(),
             active,
             active_account: None,
         }
@@ -191,6 +223,14 @@ impl Places {
         self
     }
 
+    /// Surface NTFS drives in their own section after the locations. A
+    /// drive is never opened by being listed; choosing it asks the shell.
+    #[must_use]
+    pub fn with_drives(mut self, drives: Vec<DrivePlace>) -> Self {
+        self.drives = drives;
+        self
+    }
+
     /// Select an unmounted account's browser instead of the last local folder.
     #[must_use]
     pub fn with_active_account(mut self, account: Option<String>) -> Self {
@@ -217,6 +257,12 @@ impl Places {
                     .iter()
                     .find(|place| place.account.is_none() && place.path == self.active)
                     .map(|place| location_id(&place.path))
+            })
+            .or_else(|| {
+                self.drives
+                    .iter()
+                    .find(|drive| drive.open_at.as_deref() == Some(self.active.as_path()))
+                    .map(|drive| format!("{DRIVE_PREFIX}{}", drive.id))
             })
     }
 
@@ -275,6 +321,33 @@ impl Places {
             t("files-place-system"),
             items,
         ));
+        if !self.drives.is_empty() {
+            let items = self
+                .drives
+                .iter()
+                .map(|drive| {
+                    let item =
+                        NavItem::new(format!("{DRIVE_PREFIX}{}", drive.id), drive.label.clone())
+                            .icon(if drive.internal {
+                                Icon::HardDrive
+                            } else {
+                                Icon::Usb
+                            })
+                            .secondary(drive.detail.clone())
+                            .without_actions();
+                    if drive.open_at.is_some() {
+                        item.status(RowStatus::Active)
+                    } else {
+                        item
+                    }
+                })
+                .collect();
+            sections.push(NavSection::new(
+                DRIVES_SECTION,
+                t("files-place-drives"),
+                items,
+            ));
+        }
         sections
     }
 
@@ -321,11 +394,7 @@ impl Places {
                 let sink = sink.clone();
                 let chosen = Rc::clone(chosen);
                 move |id| {
-                    if let Some(account) = id.strip_prefix(ACCOUNT_PREFIX) {
-                        push(&sink, FileCommand::ShowRemoteAccount(account.to_owned()));
-                    } else if let Some(path) = path_of_id(&id) {
-                        push(&sink, FileCommand::Navigate(path));
-                    }
+                    choose(&sink, &id);
                     *chosen.borrow_mut() = Some(id);
                 }
             })
@@ -650,6 +719,66 @@ mod tests {
             Some(PathBuf::from("/"))
         );
         assert_eq!(path_of_id("other:/a"), None);
+    }
+
+    fn drive(id: &str, internal: bool, open_at: Option<&str>) -> DrivePlace {
+        DrivePlace {
+            id: id.into(),
+            label: if internal { "Windows" } else { "Stick" }.into(),
+            internal,
+            open_at: open_at.map(PathBuf::from),
+            detail: "64 GB".into(),
+        }
+    }
+
+    /// Drives are their own section after the locations: internal ones with
+    /// a disk icon, external ones with a USB icon, an open one with a dot and
+    /// selected while its folder is shown.
+    #[test]
+    fn drives_are_a_section_and_an_open_one_is_chosen_while_shown() {
+        let none = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
+        assert!(
+            none.sections()
+                .iter()
+                .all(|section| section.id != DRIVES_SECTION)
+        );
+
+        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/run/media/u/Stick"))
+            .with_drives(vec![
+                drive("nvme0n1p3:1", true, None),
+                drive("sdb1:7", false, Some("/run/media/u/Stick")),
+            ]);
+        let sections = places.sections();
+        let drives = sections.last().unwrap();
+        assert_eq!(drives.id, DRIVES_SECTION);
+        assert_eq!(ids(drives), ["drive:nvme0n1p3:1", "drive:sdb1:7"]);
+        assert_eq!(drives.items[0].icon, Some(Icon::HardDrive));
+        assert_eq!(drives.items[1].icon, Some(Icon::Usb));
+        assert!(drives.items[0].status.is_none());
+        assert_eq!(
+            drives.items[1].status.as_ref().map(|s| s.row_status()),
+            Some(RowStatus::Active)
+        );
+        assert_eq!(places.selected_id().as_deref(), Some("drive:sdb1:7"));
+        assert!(
+            path_of_id("drive:sdb1:7").is_none(),
+            "a drive is not a folder row"
+        );
+    }
+
+    /// Choosing a drive asks to open it; it never navigates by itself.
+    #[test]
+    fn choosing_a_drive_asks_to_open_it() {
+        let sink = new_sink();
+        let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
+            .with_drives(vec![drive("nvme0n1p3:1", true, None)]);
+        let id = ids(places.sections().last().unwrap())[0].clone();
+        choose(&sink, &id);
+        let commands = sink.borrow();
+        assert!(
+            matches!(commands.as_slice(), [FileCommand::OpenDrive(id)] if id == "nvme0n1p3:1"),
+            "{commands:?}"
+        );
     }
 
     /// The list built from the places carries the chosen row and its name.

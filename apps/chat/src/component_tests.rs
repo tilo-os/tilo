@@ -658,9 +658,16 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
     records
         .read(&checkout.id, |doc| {
             assert_eq!(crate::testing::top_level(doc, "c_general"), before + 1);
-            assert_eq!(crate::testing::draft_text(doc, "c_general"), "line\n");
+            assert!(
+                !crate::projection::has_draft(doc, "c_general"),
+                "the draft is the writer's own, never the room's"
+            );
         })
         .unwrap();
+    assert_eq!(
+        semantic_value(&frame.inspection().root, "chat.composer").as_deref(),
+        Some("line\n")
+    );
     frame
         .perform_semantic_named(
             &owner,
@@ -773,13 +780,8 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
         frame.click_at(composer.x, composer.y);
         frame.type_text(text);
         assert_eq!(
-            records
-                .read(&checkout.id, |doc| crate::testing::draft_text(
-                    doc,
-                    "c_general"
-                ))
-                .unwrap(),
-            text,
+            semantic_value(&frame.inspection().root, "chat.composer").as_deref(),
+            Some(text),
             "typing {n} lands in the draft"
         );
         frame.click_at(send.x, send.y);

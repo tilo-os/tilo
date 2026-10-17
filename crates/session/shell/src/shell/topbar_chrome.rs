@@ -233,6 +233,7 @@ impl DesktopChromeSource for NativeChrome {
             // The strip ribbon already places strips on this desktop.
             strip_places: None,
             top_bar: state.top_bar_presence(),
+            own: None,
         }
     }
 
@@ -301,7 +302,11 @@ impl DesktopChromeSource for NativeChrome {
             // Strips are added from the ribbon and workspace settings here,
             // and the native bar carries no Tilo mark: its About is in
             // Settings.
-            ChromeIntent::AddStrip { .. } | ChromeIntent::ToggleTiloMenu => return false,
+            ChromeIntent::AddStrip { .. }
+            | ChromeIntent::RenameWorkspace { .. }
+            | ChromeIntent::ToggleTiloMenu
+            | ChromeIntent::ToggleWorkspaceMenu
+            | ChromeIntent::ToggleProfile => return false,
             ChromeIntent::SetTopBarWidgets(widgets) => {
                 let widgets = widgets.normalised();
                 save_widgets(&widgets);

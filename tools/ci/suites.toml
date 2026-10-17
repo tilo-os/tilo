@@ -88,9 +88,11 @@ suites = ["os/tests/test_container_signature_policy.py"]
 name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
-# to the helper's own early return.
+# to the helper's own early return. test_service_candidate_bridge.py holds the
+# fixture's receiving closure to the installed producer's list.
 inputs = [
   "os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs",
+  "crates/platform/imager-backend/src/account_admission.rs",
   "crates/system/install-helpers/src/staging_handoff.rs",
   "crates/system/install-helpers/src/staging_handoff/",
   "crates/system/install-helpers/tests/fixtures/",
@@ -183,7 +185,6 @@ suites = [
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
-  "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
   "os/tests/test_kernel_checkpoint_restore.py",
@@ -211,9 +212,7 @@ suites = [
   "os/scripts/installer-receive-fixture/test_delivery.py",
   "os/scripts/installer-source-fixture/test_bounded_native.py",
   "os/scripts/installer-source-fixture/test_source.py",
-  "os/tests/data_consumer_capability_test.py",
   "os/tests/test_install_purpose.py",
-  "os/tests/test_optional_service_consumer.py",
   "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",
@@ -756,9 +755,21 @@ readers = [
 [[cargo]]
 package = "tilo-esp-write"
 # The ESP writer's tests run tilo-deployment's boot-counter pass, which reads
-# its UKIs with the shipped command-line parser, against the built helper.
-inputs = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
-readers = ["crates/system/esp-write/tests/esp_write.rs"]
+# its UKIs with the built helper as tilo-uki-cmdline. The editor's own tests
+# run the installer suites that drive it through the Containerfile's and
+# tilo-install's command lines.
+inputs = [
+  "os/usr/libexec/tilo-deployment",
+  "os/tests/test_installer_target_cmdline.py",
+  "os/tests/test_installer_target_boot_digest.py",
+  "os/Containerfile.installer",
+  "os/usr/libexec/tilo-install",
+  "os/usr/lib/bootc/kargs.d/",
+]
+readers = [
+  "crates/system/esp-write/tests/esp_write.rs",
+  "crates/system/esp-write/tests/uki_cmdline.rs",
+]
 
 [[cargo]]
 package = "tilo-extension"
@@ -879,6 +890,8 @@ inputs = [
   "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
   "crates/session/installer/src/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
+  "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
+  "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
 readers = [
   "crates/system/install-helpers/tests/native_python.rs",
@@ -889,6 +902,8 @@ readers = [
   "crates/system/install-helpers/tests/offline_target.rs",
   "crates/system/install-helpers/tests/staging_handoff.rs",
   "crates/system/install-helpers/tests/install_proof.rs",
+  "crates/system/install-helpers/tests/code_refresh.rs",
+  "crates/system/install-helpers/tests/dev_target_uki.rs",
 ]
 
 [[cargo]]
@@ -1072,10 +1087,15 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  # The provider admin pane's tests run the shared provider settings fake
+  # backend and mounted tests against Settings' own mount.
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
 ]
 readers = [
   "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings/tests/cloud_ux.rs",
+  "apps/settings/src/panes/agent_models/admin_tests.rs",
 ]
 
 [[cargo]]
@@ -1085,7 +1105,8 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/empty.svg",
-  "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
+  "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "dist/session/tilo-files-workspace.service",
+  "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
@@ -1156,12 +1177,11 @@ readers = [
 [[cargo]]
 package = "imager-backend"
 inputs = [
-  "os/scripts/", "os/usr/libexec/tilo-firstboot-user",
+  "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
 ]
 readers = [
-  "crates/platform/imager-backend/src/account_admission.rs",
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
 ]
@@ -1360,11 +1380,11 @@ by = "os/tests/imager_release_invariants.sh"
 
 [[covered]]
 suite = "os/tests/test_installer_target_boot_digest.py"
-by = "os/tests/installer_target_invariants.sh"
+by = "crates/system/esp-write/tests/uki_cmdline.rs"
 
 [[covered]]
 suite = "os/tests/test_installer_target_cmdline.py"
-by = "os/tests/installer_target_invariants.sh"
+by = "crates/system/esp-write/tests/uki_cmdline.rs"
 
 [[covered]]
 suite = "os/tests/test_installer_selinux_bridge.py"
@@ -1821,10 +1841,6 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "os/tests/probe_installer_code_refresh_mounts.py"
-reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"
 
 [[cargo]]
 package = "runtime-bundle"

@@ -1,9 +1,9 @@
 //! Native runs are recoverable from the canonical approved task, not a queue grant.
 pub(super) use super::native_task_launch::NativeLaunch;
 use super::{
-    AdmissionProvenance, BrokerActor, CapnpBrokerState, DurableContext, InvocationInputs,
-    InvocationJob, InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope,
-    WorkspaceTaskStatus, durable_local_invocation,
+    AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationJob,
+    InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope, WorkspaceTaskStatus,
+    durable_local_invocation,
 };
 use crate::services::NativeTaskBinding;
 use std::sync::Arc;
@@ -337,7 +337,16 @@ impl CapnpBrokerState {
         let Some(record) = record else {
             return self.native_host_observation(run, target, caller, invocation);
         };
-        let requirement = caller.authorize_retained_task(self, &record)?;
+        let requirement = caller.authorize_retained_task(
+            self,
+            (
+                &record,
+                &run.native
+                    .as_ref()
+                    .ok_or("native binding absent")?
+                    .actor()?,
+            ),
+        )?;
         self.native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?
             .authorize_action(&run.cluster_id, &run.agent_id, &requirement)?;
@@ -433,7 +442,11 @@ impl CapnpBrokerState {
             return Err("task target changed workspace".into());
         }
         let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
-        let actor = BrokerActor::agent(format!("agent:{}", run.agent_id));
+        let actor = run
+            .native
+            .as_ref()
+            .ok_or("native binding absent")?
+            .actor()?;
         // Admission checked the person's answer for this exact invocation;
         // the token carries it to the dispatch, bound to these arguments.
         let token = confirmed
@@ -559,6 +572,10 @@ impl CapnpBrokerState {
                 agent_id: run.agent_id.clone(),
                 epoch: run.epoch,
                 revision: 0,
+                starter: run
+                    .approval
+                    .as_ref()
+                    .map(|approval| approval.person.clone()),
             },
             TaskRunEnvelope {
                 paused: paused_step(control, run.epoch),
@@ -802,9 +819,16 @@ impl CapnpBrokerState {
                     .get(&run.task_id)
                     .is_some_and(|control| control.run_epoch == binding.epoch)
             {
+                self.note_ended_task_run(&run, "cancelled");
                 return Ok(());
             }
         }
+        let ended = match &update {
+            runtime_collab::TaskRunUpdate::Succeeded { .. } => Some("completed"),
+            runtime_collab::TaskRunUpdate::Failed { .. } => Some("stopped"),
+            runtime_collab::TaskRunUpdate::Cancelled { .. } => Some("cancelled"),
+            _ => None,
+        };
         let task_id = run.task_id.clone();
         if matches!(
             update,
@@ -873,10 +897,41 @@ impl CapnpBrokerState {
                 }
             }
         };
-        let receipt = service.report(&run.cluster_id, binding, command).await?;
-        if receipt.binding.room != run.cluster_id {
+        let receipt = service.report(&run.cluster_id, binding, command).await;
+        // What the run changed is in the documents whether or not its
+        // report was acknowledged: it is recorded for undo either way.
+        if let Some(outcome) = ended {
+            self.note_ended_task_run(&run, outcome);
+        }
+        if receipt?.binding.room != run.cluster_id {
             return Err("native task report receipt room differs".into());
         }
         Ok(())
+    }
+
+    /// Hand the run that ended to history, which records what it changed as
+    /// one run of the agent's, attributed to it and undoable as a unit.
+    fn note_ended_task_run(&self, run: &PendingTaskRun, outcome: &str) {
+        let Some(service) = self.native_tasks(&run.cluster_id) else {
+            return;
+        };
+        let Ok(snapshot) = service.snapshot(&run.cluster_id) else {
+            return;
+        };
+        let Some(task) = snapshot.tasks.iter().find(|task| task.id == run.task_id) else {
+            return;
+        };
+        self.ended_runs.tasks.push(crate::task_runs::EndedTaskRun {
+            room: run.cluster_id.clone(),
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            agent: format!("agent:{}", run.agent_id),
+            person: task.created_by.clone(),
+            instruction: snapshot
+                .controls
+                .get(&task.id)
+                .and_then(|control| control.instruction.clone()),
+            outcome: outcome.to_owned(),
+        });
     }
 }

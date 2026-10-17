@@ -53,7 +53,7 @@ pub use blocks::{
 pub use composer::{ComposerFrame, RichTextComposer};
 pub use convert::{clip_block, clip_of_content, content_of, content_of_clip, document_mark};
 pub use draft::Draft;
-pub use source::{Hosted, RichTextField, RichTextSource};
+pub use source::{Hosted, PersonField, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
 pub use view::RichTextView;
 

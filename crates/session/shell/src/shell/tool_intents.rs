@@ -262,6 +262,15 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
         tracing::warn!(%error, "cannot configure blocking service connection");
         return;
     }
+    // The app on the other end, for the one request whose answer depends on
+    // it: only Files, which asks when the person clicks a drive, opens a
+    // remembered drive without the person being asked again.
+    #[cfg(target_os = "linux")]
+    let caller = crate::compositor::native::wayland_peer_credentials(&stream)
+        .and_then(|credentials| u32::try_from(credentials.pid).ok())
+        .and_then(crate::shell::launcher::verified_package_for_descendant);
+    #[cfg(not(target_os = "linux"))]
+    let caller: Option<String> = None;
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();
@@ -279,28 +288,37 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
             ToolReply {
                 accepted: false,
                 message: "tool request is too large".into(),
+                ..ToolReply::default()
             }
         } else {
             match serde_json::from_str::<ToolRequest>(&line) {
                 Ok(request) if request.protocol == TOOL_PROTOCOL_VERSION => {
-                    match handler(request) {
-                        Ok(()) => ToolReply {
-                            accepted: true,
-                            message: "opened".into(),
-                        },
-                        Err(message) => ToolReply {
-                            accepted: false,
-                            message,
-                        },
+                    if let Some(reply) = drive_reply(&request, caller.as_deref()) {
+                        reply
+                    } else {
+                        match handler(request) {
+                            Ok(()) => ToolReply {
+                                accepted: true,
+                                message: "opened".into(),
+                                ..ToolReply::default()
+                            },
+                            Err(message) => ToolReply {
+                                accepted: false,
+                                message,
+                                ..ToolReply::default()
+                            },
+                        }
                     }
                 }
                 Ok(_) => ToolReply {
                     accepted: false,
                     message: "unsupported tool protocol".into(),
+                    ..ToolReply::default()
                 },
                 Err(_) => ToolReply {
                     accepted: false,
                     message: "invalid tool request".into(),
+                    ..ToolReply::default()
                 },
             }
         };
@@ -312,6 +330,54 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
             return;
         }
     }
+}
+
+/// The NTFS drive requests, answered from the session's drive worker
+/// ([`crate::shell::drives`]); `None` for every other intent.
+fn drive_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply> {
+    let answer = match &request.intent {
+        ToolIntent::Drives => Ok(drive_list()),
+        ToolIntent::OpenDrive { drive } => request
+            .intent
+            .validate()
+            .and_then(|()| open_drive(drive, caller))
+            .map(|()| Vec::new()),
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(drives) => ToolReply {
+            accepted: true,
+            message: "opened".into(),
+            drives,
+        },
+        Err(message) => ToolReply {
+            accepted: false,
+            message,
+            ..ToolReply::default()
+        },
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn drive_list() -> Vec<os_actions::DriveEntry> {
+    crate::shell::drives::listed()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drive_list() -> Vec<os_actions::DriveEntry> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn open_drive(drive: &str, caller: Option<&str>) -> Result<(), String> {
+    let from_files =
+        caller == Some(crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER);
+    crate::shell::drives::request_open(drive, from_files)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_drive(_drive: &str, _caller: Option<&str>) -> Result<(), String> {
+    Err("drives are not available here".into())
 }
 
 #[cfg(test)]

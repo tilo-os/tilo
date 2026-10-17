@@ -436,10 +436,22 @@ pub struct DisplayOutput {
     pub vrr: bool,
     pub sink_vrr: bool,
     pub vrr_unavailable_reason: Option<settings_store::hardware::AdaptiveSyncUnavailable>,
+    /// Why this connected display is dark although it is on, as the
+    /// compositor reported it.
+    pub unavailable_reason: Option<settings_store::hardware::OutputUnavailable>,
     pub color_profiles: Vec<String>,
     pub color_profile_labels: BTreeMap<String, String>,
     /// EDID identity; decides which saved arrangement applies.
     pub monitor: Option<MonitorIdentity>,
+}
+
+/// The Fluent key explaining why a connected display stays dark.
+fn output_unavailable_key(reason: settings_store::hardware::OutputUnavailable) -> &'static str {
+    use settings_store::hardware::OutputUnavailable;
+    match reason {
+        OutputUnavailable::LinkDown => "display-link-down",
+        OutputUnavailable::DriverRejected => "display-output-driver-rejected",
+    }
 }
 
 /// The Fluent key explaining why HDR cannot be used.
@@ -578,6 +590,7 @@ fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutpu
                 vrr: snapshot.descriptor.vrr,
                 sink_vrr: snapshot.sink_vrr,
                 vrr_unavailable_reason: snapshot.vrr_unavailable_reason,
+                unavailable_reason: snapshot.unavailable_reason,
                 color_profiles: snapshot.descriptor.color_profiles,
                 color_profile_labels: snapshot.color_profile_labels,
                 monitor: snapshot.descriptor.monitor,
@@ -1012,6 +1025,7 @@ impl DisplayModel {
             vrr: false,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,
@@ -2414,6 +2428,12 @@ impl DisplayModel {
         config: &OutputConfig,
     ) -> Vec<Item> {
         let mut out_rows = Vec::new();
+        if let Some(reason) = output.unavailable_reason {
+            out_rows.push(value_row(
+                &t("display-status"),
+                &t(output_unavailable_key(reason)),
+            ));
+        }
         if output.modes.is_empty() {
             out_rows.push(value_row(
                 "Resolution & refresh rate",
@@ -3319,6 +3339,7 @@ mod tests {
                 hdr_unavailable_reason: None,
                 sink_vrr: false,
                 vrr_unavailable_reason: None,
+                unavailable_reason: None,
                 color_profile_labels: BTreeMap::new(),
             }],
             ..DisplayHardwareSnapshot::default()
@@ -3374,6 +3395,7 @@ mod tests {
             vrr: false,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,
@@ -3818,6 +3840,7 @@ mod tests {
             vrr: false,
             sink_vrr: false,
             vrr_unavailable_reason: None,
+            unavailable_reason: None,
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,

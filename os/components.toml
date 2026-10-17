@@ -404,13 +404,14 @@ bins = ["tilo-account-credential"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
-  { from = "@manifest/scripts/verify-account-consumer-capability.py", to = "/usr/libexec/tilo-verify-account-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/service-consumer-capability.py", to = "/usr/libexec/tilo-service-consumer-capability.py", mode = "0755" },
 ]
 
 # Installed target-user setup consumer. First use and the retained launcher
 # authenticate this root-owned helper; elevated operations keep their existing
 # parent/descriptor admission rather than gaining a new installation grant.
+# Its --verify-{account,home,applications}-consumer-capability and
+# --data-consumer-catalog-facts modes produce and check the installed consumer
+# receipts (os/docs/data-consumer-capabilities.md).
 [[component]]
 name = "prepared-setup"
 kind = "userspace"
@@ -421,10 +422,6 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
   { from = "tilo-installer-prepared-setup-extract", to = "/usr/libexec/tilo-installer-prepared-setup-extract", mode = "0755" },
-  { from = "@manifest/scripts/verify-home-consumer-capability.py", to = "/usr/libexec/tilo-verify-home-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/verify-applications-consumer-capability.py", to = "/usr/libexec/tilo-verify-applications-consumer-capability", mode = "0755" },
-  { from = "@manifest/scripts/installed-data-consumer.py", to = "/usr/libexec/tilo-installed-data-consumer.py", mode = "0755" },
-  { from = "@manifest/scripts/data-consumer-catalog-facts.py", to = "/usr/libexec/tilo-data-consumer-catalog-facts", mode = "0755" },
 ]
 
 [[component]]
@@ -539,9 +536,26 @@ files = [
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
 ]
 
+# Consent-gated NTFS access: the root service the shell asks to open a drive
+# after the person agreed, and the library its confined userspace driver is
+# started with. Socket-activated, so a swap takes effect at its next start.
+[[component]]
+name = "ntfs-mount"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-ntfs-mount"]
+bins = ["tilo-ntfs-mount"]
+units = ["tilo-ntfs-mount.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-ntfs-mount", to = "/usr/libexec/tilo-ntfs-mount", mode = "0755" },
+  { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755" },
+]
+
 # The one writer of the read-only ESP, started on demand as
 # tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
-# boot and on the way down; a swap takes effect at its next start.
+# boot and on the way down; a swap takes effect at its next start. Also
+# /usr/libexec/tilo-uki-cmdline, which edits a UKI's sealed command line.
 [[component]]
 name = "esp-write"
 kind = "userspace"
@@ -551,6 +565,9 @@ bins = ["tilo-esp-write"]
 layer = "recovery-files"
 files = [
   { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
+  # Run under this name it is the in-place UKI command-line and .osrel editor
+  # the repair entry, the installer and the image build use.
+  { link = "tilo-esp-write", to = "/usr/libexec/tilo-uki-cmdline" },
 ]
 
 # First-boot account files: tilo-firstboot-user runs the copy beside it, this

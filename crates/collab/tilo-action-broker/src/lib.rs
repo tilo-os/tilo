@@ -16,6 +16,7 @@ pub mod published_authorization;
 pub mod record_content;
 pub mod route;
 pub mod services;
+pub mod task_runs;
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]

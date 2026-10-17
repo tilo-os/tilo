@@ -130,7 +130,7 @@ RUN chmod 0755 /usr/bin/tilo-rollback /usr/libexec/tilo-rollback-common \
         /usr/libexec/tilo-rollback-confirm /usr/libexec/tilo-rollback-harden \
         /usr/libexec/tilo-rollback-boot-check /usr/libexec/tilo-recovery-boot-check \
         /usr/libexec/tilo-deployment /usr/libexec/tilo-boot-health \
-        /usr/libexec/tilo-repair /usr/libexec/tilo-uki-cmdline \
+        /usr/libexec/tilo-repair /usr/libexec/tilo-esp-write \
         /usr/lib/systemd/system-generators/tilo-boot-mode-generator \
     && printf 'd /var/lib/tilo 0755 root root -\n' \
         > /usr/lib/tmpfiles.d/tilo-rollback.conf \

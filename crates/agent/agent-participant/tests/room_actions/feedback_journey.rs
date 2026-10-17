@@ -239,6 +239,140 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     restored.relay.shutdown().await;
 }
 
+/// A commenter files a report through the owner's submit action: it runs
+/// there under their own standing and answers only once the owner's durable
+/// store holds it. Filing again keeps one report; a Write action such as
+/// triage stays refused to them, as does anything outside `comments`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commenter_files_through_the_owner_and_cannot_triage() {
+    use super::resource_support::{admit_person, open_admitted_peer};
+    use tilo_peer_state::join::MemberRole;
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Feedback host", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Feedback guest", 1);
+    let host = enrol(
+        &owner,
+        "feedback-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
+    let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&owner, &host, state.path()).await;
+    let room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Commenter feedback")
+        .await
+        .unwrap();
+    hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .prepare_application(
+            &room.room,
+            &host.cert,
+            &common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
+        .await
+        .unwrap();
+    let mut owner_browser = Browser::open_room(&hosted, &owner_device, &host, &room.room).await;
+    let route = create_feedback_record(&mut owner_browser).await;
+    owner_browser
+        .peer
+        .barrier()
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    admit_person(
+        &hosted,
+        &host,
+        &room.room,
+        &guest_device,
+        MemberRole::Commenter,
+    )
+    .await;
+    let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &room.room).await;
+    let submission = approved(&route);
+    let submit = || {
+        request(
+            &submission.destination.provider,
+            ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
+            InvokeArgument::Json(
+                serde_json::json!({"submission": submission})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+    };
+    let filed = filed_once(&mut visitor, submit()).await;
+    assert!(
+        matches!(filed, ReceiptStatus::Completed { .. }),
+        "the owner files a commenter's report: {filed:?}"
+    );
+    // Answered only after the owner's durable store holds it: the signed
+    // receipt is there at once, not after a wait.
+    let guest_person = hex::encode(guest_device.cert.user_public_key);
+    let answer = owner_feedback(&mut visitor, &submission, true)
+        .await
+        .unwrap();
+    assert!(answer.receipt.is_some(), "a filed report has its receipt");
+    assert!(matches!(
+        visitor.invoke(submit()).await.status,
+        ReceiptStatus::Completed { .. }
+    ));
+    assert_one_report(&mut owner_browser, &route, &submission, &guest_person).await;
+    let triage = visitor
+        .invoke(request(
+            &submission.destination.provider,
+            ActionAddress::new(
+                chat::projection::item_id("feedback", &submission.id),
+                "triage",
+            ),
+            InvokeArgument::Json(
+                serde_json::json!({"update":{"status":"resolved"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        ))
+        .await;
+    assert!(
+        !matches!(triage.status, ReceiptStatus::Completed { .. }),
+        "triage needs Write, which a commenter does not have: {triage:?}"
+    );
+    visitor.peer.close();
+    owner_browser.peer.close();
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
+/// File a report, waiting out an owner still joining the room.
+async fn filed_once(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatus {
+    let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
+    loop {
+        let mut attempt = request.clone();
+        attempt.invocation = tilo_actions::InvocationId::new();
+        let receipt = browser.invoke(attempt).await;
+        match receipt.status {
+            ReceiptStatus::Rejected {
+                error: ActionHostError::Unavailable { .. },
+            } if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            status => return status,
+        }
+    }
+}
+
 async fn retained_receipt(
     browser: &mut Browser,
     provider: &str,

@@ -227,8 +227,9 @@ pub fn qualify_applications(
     {
         return Err(invalid());
     }
-    const SCRIPT: &str = "/usr/libexec/tilo-verify-applications-consumer-capability";
-    let script = ProtectedFile::open(Path::new(SCRIPT))?;
+    // The producer entry point is this helper's own
+    // --verify-applications-consumer-capability mode, so it binds the helper.
+    let script = ProtectedFile::open(Path::new(HELPER))?;
     require_executable(&script)?;
     let script_sha = actual_hash(&script)?;
     let (before, held) = ActualFacts::observe()?;

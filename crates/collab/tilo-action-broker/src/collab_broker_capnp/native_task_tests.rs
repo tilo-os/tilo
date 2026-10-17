@@ -340,8 +340,8 @@ impl Fixture {
                 caller: native.certificate.clone(),
                 command: WorkspaceMembershipCommand::AddAgent {
                     agent: "scribe".into(),
-                    // Reading only: the agent may use a tool when the
-                    // room grants it, never because its run was approved.
+                    // Reading only, as a fresh session admits an agent:
+                    // what its runs may do comes from their starter.
                     preset: AgentPreset::Observer,
                 },
             },
@@ -1058,17 +1058,63 @@ async fn native_failure_preserves_pending_decisions_on_restart_and_old_run_canno
         .await;
 }
 
+/// The fixture's agent was admitted reading only, as a fresh session admits
+/// one. The run its person started still takes the change that person may
+/// take, attributed to the agent, until the person's answer for the agent
+/// denies it; a deleted target fails closed.
 #[tokio::test(flavor = "current_thread")]
-async fn native_approval_grants_no_tool_permission_and_deleted_targets_fail_closed() {
+async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            let (_target, stream) = notes_target(&f).await;
+            let (target, stream) = notes_target(&f).await;
+            let id = uuid::Uuid::from_u128(800);
+            let first = invoke(&agent, &run, id).await.unwrap();
+            assert!(matches!(
+                first.1,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            let delivered_request = stream.read_request().send().promise.await.unwrap();
+            let wire = delivered_request.get().unwrap();
+            assert_eq!(wire.get_actor().unwrap().to_str().unwrap(), "agent:scribe");
+            let terminal = tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId(id),
+                output: tilo_actions::ActionOutput::default(),
+            };
+            let mut update = target.update_invocation_request();
+            update.get().set_id(first.0);
+            update
+                .get()
+                .set_update_json(serde_json::to_string(&terminal).unwrap());
+            update.send().promise.await.unwrap();
+            // Observing the retained effect after a reconnect is held to the
+            // starter too, not to the agent's admission.
+            f.state.remove_connection(100);
+            let agent = f.channel(101, true);
+            let run = delivered(&agent).await;
+            assert_eq!(invoke(&agent, &run, id).await.unwrap().1, terminal);
+
+            // The person tells the agent it may not change Notes.
+            let answer = |answer| {
+                tilo_action_policy::agent_answers::grant(
+                    &room().to_string(),
+                    "scribe",
+                    (
+                        &tilo_action_policy::agent_answers::AnswerScope::app("so.tilo.notes"),
+                        tilo_action_policy::ActionKind::Undoable,
+                    ),
+                    answer,
+                    tilo_action_policy::Subject::person(hex::encode(
+                        f.native.certificate.user_public_key,
+                    )),
+                )
+            };
+            put_grant(&f, answer(tilo_action_policy::Answer::Deny));
             assert!(
-                invoke(&agent, &run, uuid::Uuid::from_u128(800))
+                invoke(&agent, &run, uuid::Uuid::from_u128(801))
                     .await
                     .unwrap_err()
                     .to_string()
@@ -1082,19 +1128,15 @@ async fn native_approval_grants_no_tool_permission_and_deleted_targets_fail_clos
                 .await
                 .is_err()
             );
-            grant_notes(&f);
+            put_grant(&f, answer(tilo_action_policy::Answer::Allow));
             f.state.remove_connection(200);
             assert!(
-                invoke(&agent, &run, uuid::Uuid::from_u128(801))
+                invoke(&agent, &run, uuid::Uuid::from_u128(802))
                     .await
                     .is_err()
             );
             let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
             assert_eq!(snapshot.tasks[0].status, WorkspaceTaskStatus::InProgress);
-            assert!(
-                snapshot.controls[&f.task].execution.is_none(),
-                "approval is not acceptance"
-            );
             drop(f);
         })
         .await;
@@ -1200,6 +1242,7 @@ async fn progress_sent_right_after_acceptance_applies_in_order() {
                     &run,
                     runtime_collab::TaskRunUpdate::Progress {
                         message: "Reviewing the catalogue".into(),
+                        presentation: None,
                     },
                 ),
             );

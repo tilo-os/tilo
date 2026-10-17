@@ -26,7 +26,10 @@
 //!   accepted at once and runs on the service's own thread; `Observe`
 //!   reports where it stands, and `Cancel` stops one that has not started.
 //!
-//! Document invocations serve only the host user's own devices. Exact local
+//! Document invocations serve the host user's own devices. Anyone else the
+//! room admits may only comment through them (actions on a `comments`
+//! field), run under their own current standing so the action's door
+//! decides: a commenter cannot publish document changes directly. Exact local
 //! View discovery also serves currently certified room readers, through the
 //! host's canonical Read policy; that grants no document invocation authority.
 //! Agents use their own mounts.
@@ -71,6 +74,10 @@ use tilo_browser_peer::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::RevocationList;
+
+/// How long a comment the host files for someone may take to be saved
+/// before the action reports that it was not.
+const COMMIT_WAIT: Duration = Duration::from_secs(10);
 
 /// Records whose rows a catalogue naming no provider lists.
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
@@ -328,6 +335,20 @@ impl RoomActions {
         matches!(caller.principal(), CallerPrincipal::Person(person) if *person == owner)
     }
 
+    /// Whether `caller` may ask the host to run `request` at all. Anyone the
+    /// room admits may ask for a resource's link: it reads where the resource
+    /// is shown and grants nothing, and the governed view lookup behind it
+    /// applies their own grant. Other people may comment on a record through
+    /// the host: the worker runs it under their own current standing, so the
+    /// action's door decides, and refuses anything else.
+    fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
+        let on_record = record_of(&request.target.provider, "").is_some();
+        let link_request =
+            request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
+        let member_request = on_record && matches!(caller.principal(), CallerPrincipal::Person(_));
+        link_request || member_request || self.authorized(caller)
+    }
+
     /// Whether `caller` started invocation `id` here.
     #[must_use]
     pub fn owns(&self, caller: &Caller, id: &InvocationId) -> bool {
@@ -400,13 +421,7 @@ impl RoomActions {
                         status,
                     }))
                 };
-                // Anyone the room admits may ask for a resource's link: it
-                // reads where the resource is shown and grants nothing, and
-                // the governed view lookup behind it applies their own grant.
-                let link_request = request.target.address.action
-                    == ui::tilo_resource::share::SHARE_LINK
-                    && record_of(&request.target.provider, "").is_some();
-                if !link_request && !self.authorized(caller) {
+                if !self.admits(caller, &request) {
                     return Some(receipt(ReceiptStatus::Rejected {
                         error: ActionHostError::UnknownAction,
                     }));
@@ -1419,8 +1434,9 @@ impl Worker {
         }
         let room = state.room.clone();
         let target = &request.target;
+        let owner = self.serves_as_owner(caller);
         if let Some(room) = workspace_provider_room(&target.provider) {
-            if tilo_relay_protocol::room_workspace_id(room).ok() != Some(workspace_id) {
+            if !owner || tilo_relay_protocol::room_workspace_id(room).ok() != Some(workspace_id) {
                 return Err(Outcome::Rejected(ActionHostError::UnknownAction));
             }
             let app = target
@@ -1437,15 +1453,7 @@ impl Worker {
         let route = record_of(&target.provider, &room)
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let arguments = match &request.argument {
-            InvokeArgument::None => serde_json::Map::new(),
-            InvokeArgument::Text(text) => {
-                let mut arguments = serde_json::Map::new();
-                arguments.insert(PROMPTED_PARAM.into(), text.clone().into());
-                arguments
-            }
-            InvokeArgument::Json(arguments) => arguments.clone(),
-        };
+        let arguments = invoke_arguments(&request.argument);
         let mounted = self
             .mount(&route, &state)
             .map_err(|_| Outcome::Rejected(ActionHostError::UnknownAction))?;
@@ -1458,13 +1466,23 @@ impl Worker {
             .find(|descriptor| descriptor.address == target.address)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
         let arguments = descriptor.bind_prompt_text(arguments);
-        let confirmed = match (&descriptor.contract.confirmation, &request.confirmation) {
-            (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
-                phrase == given
+        let confirmed = confirms(
+            &descriptor.contract.confirmation,
+            request.confirmation.as_ref(),
+        );
+        if !owner {
+            if appearance.is_some() {
+                return Err(Outcome::Rejected(ActionHostError::UnknownAction));
             }
-            (ConfirmationPolicy::Phrase { .. }, _) => false,
-            (_, confirmation) => confirmation.is_some(),
-        };
+            let contract = descriptor.contract.clone();
+            let address = target.address.clone();
+            return self.comment_as_member(
+                workspace_id,
+                caller,
+                (&route, &state, &contract),
+                (&address, &arguments, confirmed),
+            );
+        }
         let output = mounted
             .app
             .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
@@ -1479,6 +1497,99 @@ impl Worker {
         })?;
         if let Some(mutation) = mutation {
             self.commit(workspace_id, &route, &mutation)
+                .map_err(|reason| {
+                    Outcome::Failed(ActionFailure {
+                        code: "commit_failed".into(),
+                        message: reason,
+                        details: None,
+                        retryable: true,
+                    })
+                })?;
+        }
+        Ok(output)
+    }
+
+    /// Whether `caller` is the host's own person, whom the service acts for.
+    fn serves_as_owner(&self, caller: &Caller) -> bool {
+        matches!(caller.principal(), CallerPrincipal::Person(person) if *person == self.participant)
+    }
+
+    /// A comment `caller` makes on `route` through the host: run in a worker
+    /// of its own as `caller`, with the standing the room's policy gives them
+    /// now, so the action's door decides what they may write. The host then
+    /// publishes the change like its own, keeps its held copy current and
+    /// answers only once the change is saved: the caller cannot retry it
+    /// themselves.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn comment_as_member(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        (route, state, contract): (&DocumentRoute, &RoomState, &tilo_actions::ActionContract),
+        (address, arguments, confirmed): (
+            &tilo_actions::door::ActionAddress,
+            &serde_json::Map<String, serde_json::Value>,
+            bool,
+        ),
+    ) -> Result<ActionOutput, Outcome> {
+        let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
+        let comment = contract.kind == ui::permissions::policy::ActionKind::Undoable
+            && contract.field.as_deref() == Some(ui::permissions::policy::roles::COMMENTS_FIELD);
+        if !comment {
+            return Err(refused());
+        }
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err(refused());
+        };
+        let policy = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| {
+                link.view_read_policy(workspace_id, caller, &route.app_id, &route.record)
+            })
+            .filter(|policy| policy.room == route.cluster_id && policy.standing.person == *person)
+            .ok_or_else(refused)?;
+        let changes = state.records.get(route).ok_or_else(refused)?;
+        let unavailable =
+            |reason: String| Outcome::Rejected(ActionHostError::Unavailable { reason });
+        let replica = ConfinedReplica::open(
+            &self.catalogue,
+            &route.app_id,
+            &route.cluster_id,
+            person,
+            &crate::ReplicaActor::Member {
+                standing: policy.standing,
+                sandbox: policy.sandbox,
+                unix_time: policy.unix_time,
+            },
+            Seed::Existing {
+                record: reads::record_id(&route.record).map_err(unavailable)?,
+                changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+            },
+        )
+        .map_err(|error| unavailable(error.to_string()))?;
+        let output = replica
+            .invoke(address, arguments, confirmed)
+            .map_err(|error| door_outcome(&error))?;
+        let mutation = replica.take_mutation().map_err(|error| {
+            Outcome::Failed(ActionFailure {
+                code: "commit_failed".into(),
+                message: error.to_string(),
+                details: None,
+                retryable: false,
+            })
+        })?;
+        if let Some(mutation) = mutation {
+            if let Some(mounted) = self.mounted.get(route)
+                && let Err(error) = mounted.app.apply(&mutation)
+            {
+                tracing::warn!(%error, "room actions: a member's change did not merge here");
+            }
+            self.commit_durably(workspace_id, route, &mutation)
                 .map_err(|reason| {
                     Outcome::Failed(ActionFailure {
                         code: "commit_failed".into(),
@@ -1644,6 +1755,29 @@ impl Worker {
         }
         Ok(())
     }
+
+    /// [`Self::commit`], done only once the host holds the change durably
+    /// (the session's barrier): handing it to the session, possibly to wait
+    /// for keys, is not a save.
+    fn commit_durably(
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+        mutation: &DocumentMutation,
+    ) -> Result<(), String> {
+        self.commit(workspace_id, route, mutation)?;
+        let saved = self
+            .rooms
+            .get(&workspace_id)
+            .ok_or("the room was not joined")?
+            .peer
+            .barrier()?;
+        match saved.recv_timeout(COMMIT_WAIT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(reason)) => Err(format!("the host did not save the change: {reason}")),
+            Err(_) => Err("the host has not acknowledged saving the change".into()),
+        }
+    }
 }
 
 impl Worker {
@@ -1726,6 +1860,30 @@ impl Worker {
             value: Some(serde_json::json!({ "url": url })),
             resources: Vec::new(),
         })
+    }
+}
+
+/// The arguments an invocation carries, as the door binds them.
+fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_json::Value> {
+    match argument {
+        InvokeArgument::None => serde_json::Map::new(),
+        InvokeArgument::Text(text) => {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(PROMPTED_PARAM.into(), text.clone().into());
+            arguments
+        }
+        InvokeArgument::Json(arguments) => arguments.clone(),
+    }
+}
+
+/// Whether `given` is the confirmation `policy` asks for.
+fn confirms(policy: &ConfirmationPolicy, given: Option<&Confirmation>) -> bool {
+    match (policy, given) {
+        (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
+            phrase == given
+        }
+        (ConfirmationPolicy::Phrase { .. }, _) => false,
+        (_, confirmation) => confirmation.is_some(),
     }
 }
 

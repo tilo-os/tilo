@@ -176,10 +176,12 @@ def trusted_path(root, relative, *, regular):
     return current
 
 
-# tilo-board-successor reads the installed profile with a compiled copy of
-# read_profile, development_origin, validate_target_imgref and trusted_path
-# (crates/system/board-successor/src/profile.rs). Change what they accept in
-# both places; crates/system/board-successor/tests/profile.rs pins the copy.
+# tilo-board-successor reads the installed profile, and the installer's
+# development target UKI resolves its pinned DTB, with a compiled copy of
+# read_profile, development_origin, validate_target_imgref, trusted_path and
+# resolve_profile (crates/system/board-successor/src/profile.rs). Change what
+# they accept in both places; crates/system/board-successor/tests/profile.rs
+# pins the copy.
 def read_profile(root):
     candidate = root / PROFILE_PATH
     if not candidate.exists() and not candidate.is_symlink():

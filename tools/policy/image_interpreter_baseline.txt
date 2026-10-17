@@ -7,6 +7,3 @@
 # exception made in review, with the reason after `#`.
 #
 # path  # what it does, and so what porting it touches
-os/usr/libexec/tilo-installer-code-protocol.py  # installer, dev VMs only: named-file protocol for helper refresh
-os/usr/libexec/tilo-installer-code-refresh.py  # installer, dev VMs only: refreshes allowlisted helpers
-os/usr/libexec/tilo-installer-dev-target-uki.py  # installer, CI development targets only: unsigned target UKI

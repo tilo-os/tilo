@@ -1545,7 +1545,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
             );
             let value = crate::i18n::I18nManager::format(key, args);
             assert!(
-                !value.contains('{') || *key == "history-mode-pending",
+                !value.contains('{'),
                 "{locale} {key} left a placeable unresolved: {value}"
             );
         }

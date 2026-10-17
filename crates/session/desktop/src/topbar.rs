@@ -62,6 +62,15 @@ mod responsive;
 use responsive::ResponsiveBar;
 mod strips;
 
+/// What the bar leads with: the overview, workspace switches and settings
+/// controls, or the workspace's name as one menu that holds them, with the
+/// person's own avatar at the other end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarLead {
+    Navigation,
+    WorkspaceMenu,
+}
+
 /// Where a layout stood the bar: in the column above the windows, or over
 /// it, hidden by the person and shown while reached for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +113,10 @@ pub fn topbar_height(theme: &Theme) -> f32 {
 }
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
+
+/// Below this width the bar with the workspace menu narrows its centre lane
+/// to the time alone.
+const NARROW_MENU_BAR_PX: f64 = 720.0;
 
 /// Low enough that the sparkline reads as backdrop, not a fourth element
 /// competing with the three metric labels.
@@ -333,6 +346,8 @@ struct CacheFingerprint {
     strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     host_label: Option<String>,
+    workspace_menu: bool,
+    own: Option<crate::chrome::OwnChip>,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -671,6 +686,10 @@ pub struct TopBarChrome {
     /// Where the shown workspace is hosted, as a quiet pill before its name;
     /// `None` on the person's own desktop.
     host_label: Option<String>,
+    /// What the bar leads with ([`TopBarChrome::with_workspace_menu`]).
+    lead: BarLead,
+    /// The person's own avatar, as last painted.
+    own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
     tilo_mark_rect: Rect,
     overview_btn_rect: Rect,
@@ -933,6 +952,11 @@ impl TopBarChrome {
     /// three position dots at the large-text setting.
     fn center_band_width(&self, theme: &Theme) -> f64 {
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
+        if self.has_workspace_menu() && self.rect.width() < NARROW_MENU_BAR_PX {
+            // A phone-wide bar keeps the time and gives the rest of the
+            // lane to the workspace name and the people beside it.
+            return 64.0 + text_headroom;
+        }
         let min_width = (220.0 + text_headroom).min(260.0);
         (self.rect.width() - 580.0).clamp(min_width, 360.0)
     }
@@ -1058,6 +1082,8 @@ impl TopBarChrome {
             synced_revision: 0,
             tilo_mark: None,
             host_label: None,
+            lead: BarLead::Navigation,
+            own_avatar_rect: Rect::ZERO,
             tilo_mark_rect: Rect::ZERO,
             overview_btn_rect: Rect::ZERO,
             up_btn_rect: Rect::ZERO,
@@ -1166,6 +1192,8 @@ impl TopBarChrome {
             strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             host_label: self.host_label.clone(),
+            workspace_menu: self.has_workspace_menu(),
+            own: self.own_chip(),
         }
     }
 
@@ -1252,6 +1280,14 @@ impl TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - layout.tray_w
             - f64::from(theme.tokens.spacing.s4);
+        let stack_right_x = self.draw_own_avatar(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         let stack_right_x = self.draw_app_tray(
             scene,
             transform,
@@ -1395,6 +1431,48 @@ impl TopBarChrome {
         self.host_label = host.filter(|host| !host.trim().is_empty());
     }
 
+    /// Lead with the workspace's name as one menu, which asks for
+    /// [`ChromeIntent::ToggleWorkspaceMenu`] (the workspaces, where it is
+    /// hosted, joining and leaving, renaming, the overview, a new desk),
+    /// show desks only when there is more than one, and end with the
+    /// person's own avatar, which asks for [`ChromeIntent::ToggleProfile`].
+    /// The host shows both.
+    #[must_use]
+    pub fn with_workspace_menu(mut self) -> Self {
+        self.lead = BarLead::WorkspaceMenu;
+        self
+    }
+
+    /// Whether the bar leads with the workspace menu.
+    fn has_workspace_menu(&self) -> bool {
+        self.lead == BarLead::WorkspaceMenu
+    }
+
+    /// Where the workspace name was last drawn, for anchoring its menu.
+    pub fn workspace_menu_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
+    }
+
+    /// Where the person's own avatar was last drawn, for anchoring their
+    /// profile card; zero when it is not shown.
+    pub fn own_avatar_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_PROFILE)
+    }
+
+    /// What the own avatar is called to assistive technology.
+    fn profile_control_name(&self) -> String {
+        let name = self.own_chip().map(|own| own.name).unwrap_or_default();
+        t_args("topbar-profile", &[("name", name.into())])
+    }
+
+    /// The person's own avatar, when the bar shows it.
+    fn own_chip(&self) -> Option<crate::chrome::OwnChip> {
+        if !self.has_workspace_menu() || self.is_compact() {
+            return None;
+        }
+        self.chrome.as_ref()?.snapshot().own
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;
@@ -1514,6 +1592,17 @@ impl TopBarChrome {
     const CONTROL_WORKSPACE_UP: &'static str = "topbar:workspace-up";
     const CONTROL_WORKSPACE_DOWN: &'static str = "topbar:workspace-down";
     const WORKSPACE_SETTINGS_ICON: ui::icons::Icon = ui::icons::Icon::Pencil;
+    const WORKSPACE_MENU_ICON: ui::icons::Icon = ui::icons::Icon::ChevronDown;
+
+    /// The glyph closing the workspace pill: what pressing it opens.
+    fn workspace_pill_icon(&self) -> ui::icons::Icon {
+        if self.has_workspace_menu() {
+            Self::WORKSPACE_MENU_ICON
+        } else {
+            Self::WORKSPACE_SETTINGS_ICON
+        }
+    }
+    const CONTROL_PROFILE: &'static str = "topbar:profile";
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     const CONTROL_CENTER_CLOCK: &'static str = "topbar:center:clock";
     const CONTROL_CENTER_MONITOR: &'static str = "topbar:center:system-monitor";
@@ -1824,12 +1913,14 @@ impl TopBarChrome {
         if self.tilo_mark.is_some() {
             controls.push(Self::CONTROL_TILO_MARK);
         }
-        controls.extend([
-            Self::CONTROL_OVERVIEW,
-            Self::CONTROL_WORKSPACE_UP,
-            Self::CONTROL_WORKSPACE_DOWN,
-            Self::CONTROL_WORKSPACE_SETTINGS,
-        ]);
+        if !self.has_workspace_menu() {
+            controls.extend([
+                Self::CONTROL_OVERVIEW,
+                Self::CONTROL_WORKSPACE_UP,
+                Self::CONTROL_WORKSPACE_DOWN,
+            ]);
+        }
+        controls.push(Self::CONTROL_WORKSPACE_SETTINGS);
         controls.extend(
             self.widget_config
                 .widgets
@@ -1847,6 +1938,9 @@ impl TopBarChrome {
         }
         if self.collaborators_visible() || self.invite_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
+        }
+        if self.own_chip().is_some() {
+            controls.push(Self::CONTROL_PROFILE);
         }
         if !self.media_indicator_rect.is_zero_area() {
             controls.push(Self::CONTROL_MEDIA);
@@ -1886,6 +1980,7 @@ impl TopBarChrome {
             | Self::CONTROL_CENTER_CALENDAR
             | Self::CONTROL_EDIT_WIDGETS => self.center_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
+            Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_COLLABORATORS => {
                 if self.avatar_stack_rect.is_zero_area() {
                     self.sharing_indicator_rect
@@ -1930,6 +2025,11 @@ impl TopBarChrome {
             Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
             Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
             Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
+            Self::CONTROL_WORKSPACE_SETTINGS if self.has_workspace_menu() => t_args(
+                "topbar-workspace-menu",
+                &[("workspace", self.workspace_name.as_str().into())],
+            ),
+            Self::CONTROL_PROFILE => self.profile_control_name(),
             Self::CONTROL_WORKSPACE_SETTINGS => t_args(
                 "topbar-workspace-settings",
                 &[("workspace", self.workspace_name.as_str().into())],
@@ -2261,6 +2361,15 @@ impl TopBarChrome {
         let control = BAR_CONTROL_PX;
 
         let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
+        if self.has_workspace_menu() {
+            // The overview and the other workspaces are in the workspace's
+            // own menu: the name, then, is the next thing on the bar, its
+            // capsule's `s2` leading pad past the mark's own gap.
+            self.overview_btn_rect = Rect::ZERO;
+            self.up_btn_rect = Rect::ZERO;
+            self.down_btn_rect = Rect::ZERO;
+            return x + f64::from(tokens.spacing.s2);
+        }
         // The switches are square targets of the shared control height.
         let switch_w = BAR_CONTROL_PX;
         self.overview_btn_rect = Rect::new(
@@ -2441,7 +2550,12 @@ impl TopBarChrome {
         center_y: f64,
         x: f64,
     ) -> f64 {
-        let Some(host) = self.host_label.as_deref() else {
+        // With the workspace menu, where it is hosted is said in the menu.
+        let Some(host) = self
+            .host_label
+            .as_deref()
+            .filter(|_| !self.has_workspace_menu())
+        else {
             return x;
         };
         let tokens = &theme.tokens;
@@ -2483,8 +2597,9 @@ impl TopBarChrome {
         ws_text_style: &TextStyle,
         label_budget: f32,
     ) -> String {
-        // Workspace identity has priority over a redundant single-workspace count.
-        let position_suffix = if self.workspace_total <= 1 {
+        // Workspace identity has priority over a redundant single-workspace
+        // count; the workspace menu lists the others instead.
+        let position_suffix = if self.workspace_total <= 1 || self.has_workspace_menu() {
             String::new()
         } else {
             format!(
@@ -2642,7 +2757,7 @@ impl TopBarChrome {
             scene,
             transform,
             gear_rect,
-            Self::WORKSPACE_SETTINGS_ICON,
+            self.workspace_pill_icon(),
             if workspace_lens_open {
                 colors.intent.inverted
             } else {
@@ -4071,21 +4186,54 @@ impl TopBarChrome {
                 &style.with_weight(TextWeight::Semibold),
             );
         } else {
-            self.media_indicator_rect = Rect::new(
-                rx - indicator_h,
-                center_y - indicator_h / 2.0,
-                rx,
-                center_y + indicator_h / 2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
+            self.media_indicator_rect = Self::draw_media_glyphs(
+                scene,
                 transform,
                 media_color,
-                None,
-                &vello::kurbo::Circle::new(self.media_indicator_rect.center(), 4.5),
+                (has_mic, has_camera),
+                (rx, center_y),
             );
         }
         self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+    }
+
+    /// The settled media indicator ending at `rx`: what is in use as its
+    /// glyph, a microphone or a camera, since a bare dot never said what is
+    /// live. Returns where it was drawn.
+    fn draw_media_glyphs(
+        scene: &mut Scene,
+        transform: Affine,
+        color: Color,
+        (mic, camera): (bool, bool),
+        (rx, center_y): (f64, f64),
+    ) -> Rect {
+        let icons: Vec<ui::icons::Icon> = [
+            mic.then_some(ui::icons::Icon::Mic),
+            camera.then_some(ui::icons::Icon::Camera),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let width = (small_count_to_f64(icons.len()) * 15.0 + 5.0).max(BAR_CONTROL_PX);
+        let rect = Rect::new(
+            rx - width,
+            center_y - BAR_CONTROL_PX / 2.0,
+            rx,
+            center_y + BAR_CONTROL_PX / 2.0,
+        );
+        let mut ix = rect.center().x - (small_count_to_f64(icons.len()) * 15.0 - 3.0) / 2.0;
+        for icon in icons {
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(ix, center_y - 6.0, ix + 12.0, center_y + 6.0),
+                icon,
+                color,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            ix += 15.0;
+        }
+        rect
     }
 
     /// Up to 3 collaborator chips in reading order, then the overflow "+N"
@@ -4182,6 +4330,41 @@ impl TopBarChrome {
         }
 
         slots
+    }
+
+    /// The person's own avatar, ending at `right_x`, in their colour with
+    /// their initials; returns where the controls before it end. It opens
+    /// their profile card, so it is set apart from the others' stack.
+    fn draw_own_avatar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> f64 {
+        let Some(own) = self.own_chip() else {
+            self.own_avatar_rect = Rect::ZERO;
+            return right_x;
+        };
+        let side = BAR_CONTROL_PX;
+        let chip = Rect::new(
+            right_x - side,
+            center_y - side / 2.0,
+            right_x,
+            center_y + side / 2.0,
+        );
+        let (r, g, b) = own.rgb;
+        ui::widget::AvatarFace::new(&own.name, "")
+            .presence(Color::from_rgb8(r, g, b))
+            .ringed_on(theme.tokens.colors.surfaces.overlay)
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                chip,
+            );
+        self.own_avatar_rect = chip;
+        chip.x0 - f64::from(theme.tokens.spacing.s3)
     }
 
     /// Paint an explicit, persistent disclosure beside the roster. An eye
@@ -4422,7 +4605,13 @@ impl TopBarChrome {
         } else if self.down_btn_rect.contains(p) {
             ChromeIntent::SwitchWorkspace(1)
         } else if self.ws_pill_rect.contains(p) {
-            ChromeIntent::ToggleWorkspaceSettings
+            if self.has_workspace_menu() {
+                ChromeIntent::ToggleWorkspaceMenu
+            } else {
+                ChromeIntent::ToggleWorkspaceSettings
+            }
+        } else if self.own_avatar_rect.contains(p) {
+            ChromeIntent::ToggleProfile
         } else if self.tray_hit_rect.contains(p) {
             ChromeIntent::ToggleQuickSettings
         } else if self.media_hit_rect().contains(p) {
@@ -4768,6 +4957,7 @@ impl TopBarChrome {
             | Self::CONTROL_WORKSPACE_UP
             | Self::CONTROL_WORKSPACE_DOWN
             | Self::CONTROL_WORKSPACE_SETTINGS
+            | Self::CONTROL_PROFILE
             | Self::CONTROL_QUICK_SETTINGS
             | Self::CONTROL_COLLABORATORS
             | Self::CONTROL_MEDIA => {
@@ -4781,7 +4971,11 @@ impl TopBarChrome {
                     Self::CONTROL_OVERVIEW => ChromeIntent::ToggleOverview,
                     Self::CONTROL_WORKSPACE_UP => ChromeIntent::SwitchWorkspace(-1),
                     Self::CONTROL_WORKSPACE_DOWN => ChromeIntent::SwitchWorkspace(1),
+                    Self::CONTROL_WORKSPACE_SETTINGS if self.has_workspace_menu() => {
+                        ChromeIntent::ToggleWorkspaceMenu
+                    }
                     Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceSettings,
+                    Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
                     Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => {
                         ChromeIntent::ToggleQuickSettings
                     }
@@ -6117,6 +6311,10 @@ impl Widget for TopBarChrome {
             (
                 "topbar_workspace_pill".to_string(),
                 self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS),
+            ),
+            (
+                "topbar_profile".to_string(),
+                self.control_rect(Self::CONTROL_PROFILE),
             ),
             (
                 "topbar_tray_pill".to_string(),
@@ -7525,6 +7723,96 @@ mod tests {
             .filter(|intent| matches!(intent, ChromeIntent::ToggleTiloMenu))
             .count();
         assert_eq!(asked, 2, "a click and Enter each ask once");
+    }
+
+    /// The bar a browser shows a room with: the mark, the workspace's name
+    /// as one menu, desks only when there are several, and the person's own
+    /// avatar opening their profile card.
+    #[test]
+    fn the_workspace_menu_bar_leads_with_one_menu_and_ends_with_you() {
+        let tree = two_workspace_tree();
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
+            name: "Kim Lee".into(),
+            rgb: (200, 120, 90),
+        });
+        chrome.borrow_mut().strip_places =
+            Some(crate::chrome::StripPlaces::in_active_workspace(&tree, &[]));
+        let mut bar = TopBarChrome::from_tree(&tree)
+            .with_chrome(chrome.clone())
+            .with_tilo_mark()
+            .with_workspace_menu();
+        bar.set_host_label(Some("tilo.coffee".into()));
+        lay_out_and_draw(&mut bar, 1280.0);
+
+        let targets = bar.control_targets();
+        for gone in [
+            TopBarChrome::CONTROL_OVERVIEW,
+            TopBarChrome::CONTROL_WORKSPACE_UP,
+            TopBarChrome::CONTROL_WORKSPACE_DOWN,
+        ] {
+            assert!(!targets.contains(&gone), "{gone} is in the workspace menu");
+        }
+        assert_eq!(
+            &targets[..2],
+            &[
+                TopBarChrome::CONTROL_TILO_MARK,
+                TopBarChrome::CONTROL_WORKSPACE_SETTINGS
+            ]
+        );
+        assert!(targets.contains(&TopBarChrome::CONTROL_PROFILE));
+        let mark = bar.tilo_mark_rect();
+        let menu = bar.workspace_menu_rect();
+        let own = bar.own_avatar_rect();
+        assert!(mark.x1 < menu.x0, "the workspace follows the mark");
+        assert!(
+            menu.x0 - mark.x1 <= f64::from(ui::tokens::Spacing::BASE.s3),
+            "with no host chip or switches between them"
+        );
+        assert!(own.x1 < bar.tray_hit_rect.x0, "you, then quick settings");
+        assert!(own.x0 > bar.center_rect.x1, "on the right");
+        assert_eq!(bar.ws_gear_rect.width(), SMALL_GLYPH_PX);
+        let style = Theme::default().tokens.typography.style(TextRole::Caption);
+        assert_eq!(
+            bar.workspace_label(&mut TextRenderer::new(), &style, 400.0),
+            "A",
+            "no position count: the menu lists the others"
+        );
+
+        let node = bar.accessibility().expect("topbar semantics");
+        let named = |target: &str| {
+            node.children
+                .iter()
+                .find(|child| child.action_target.as_deref() == Some(target))
+                .and_then(|child| child.name.clone())
+        };
+        assert_eq!(
+            named(TopBarChrome::CONTROL_PROFILE).as_deref(),
+            Some("Kim Lee: your profile")
+        );
+        assert!(
+            named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
+                .is_some_and(|name| name.starts_with("A:"))
+        );
+
+        for at in [menu.center(), own.center()] {
+            bar.last_cursor = Some(at);
+            let mut handled = false;
+            bar.handle_left_click(&mut handled);
+            assert!(handled);
+        }
+        bar.set_focus(true);
+        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS.to_string());
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+        let intents = chrome.borrow().intents.clone();
+        assert_eq!(
+            intents,
+            [
+                ChromeIntent::ToggleWorkspaceMenu,
+                ChromeIntent::ToggleProfile,
+                ChromeIntent::ToggleWorkspaceMenu
+            ]
+        );
     }
 
     #[test]
@@ -9103,6 +9391,8 @@ mod fixture {
         pub watching: u32,
         pub intents: Vec<ChromeIntent>,
         pub top_bar: TopBarPresence,
+        pub own: Option<OwnChip>,
+        pub strip_places: Option<StripPlaces>,
     }
     impl State {
         pub fn tree(&self) -> &DesktopTree {
@@ -9140,6 +9430,8 @@ mod fixture {
                 watching: 0,
                 intents: Vec::new(),
                 top_bar: TopBarPresence::Docked,
+                own: None,
+                strip_places: None,
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -9166,6 +9458,8 @@ mod fixture {
                 active_exposures: state.active_exposures.clone(),
                 watching: state.watching,
                 top_bar: state.top_bar,
+                own: state.own.clone(),
+                strip_places: state.strip_places.clone(),
                 ..Default::default()
             }
         }

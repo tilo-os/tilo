@@ -3186,6 +3186,23 @@ fn validate_directory_query_input(
             "invalid action directory query cursor".into(),
         ));
     }
+    validate_directory_text(
+        &query.resource_name,
+        "query resource name",
+        DIRECTORY_MAX_LABEL_BYTES,
+        false,
+    )?;
+    // A name lookup is one whole answer about the top level: it neither
+    // continues a page nor narrows another filter.
+    if !query.resource_name.is_empty()
+        && (!query.cursor.is_empty()
+            || !query.needle.is_empty()
+            || !query.parent_resource.is_empty())
+    {
+        return Err(capnp::Error::failed(
+            "a resource name lookup takes no cursor, needle or parent".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -3451,8 +3468,9 @@ pub struct CapnpBrokerState {
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
-    /// Shortcut runs the door finished, until history records them.
-    shortcut_runs: crate::automation::ShortcutRuns,
+    /// Shortcut runs the door finished and agent runs of workspace tasks
+    /// that ended, until history records them.
+    ended_runs: crate::task_runs::EndedRuns,
     /// What each application declared it may do on the action door under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
@@ -4272,7 +4290,7 @@ impl CapnpBrokerState {
                 pending_invocations: Mutex::new(HashMap::new()),
                 approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
-                shortcut_runs: crate::automation::ShortcutRuns::default(),
+                ended_runs: crate::task_runs::EndedRuns::default(),
                 app_action_access: RwLock::new(
                     services
                         .app_action_access
@@ -4767,6 +4785,7 @@ impl CapnpBrokerState {
             wire.set_max_bytes(max_bytes);
             wire.set_max_work(max_work);
             wire.set_max_depth(max_depth);
+            wire.set_resource_name(&query.resource_name);
         }
         let reply = request
             .send()
@@ -4800,6 +4819,10 @@ impl CapnpBrokerState {
             max_results,
         )
         .map_err(|error| error.to_string())?;
+        if !query.resource_name.is_empty() {
+            // A name lookup is answered whole; no cursor continues it.
+            page.next_cursor.clear();
+        }
         registered
             .pagination
             .shield(actor, &query.needle, &query.parent_resource, &mut page);
@@ -10382,6 +10405,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(value) => value.to_owned(),
             Err(error) => return Promise::err(error),
         };
+        let resource_name = match request.get_resource_name().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(error),
+        };
         let cursor = match request.get_cursor() {
             Ok(cursor) => cursor.to_vec(),
             Err(error) => return Promise::err(error),
@@ -10392,6 +10423,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             cursor: cursor.clone(),
             needle: needle.clone(),
             parent_resource: parent_resource.clone(),
+            resource_name: resource_name.clone(),
             // Input validation is independent of numeric page budgets; these
             // placeholders avoid delaying it until after a capability lookup.
             max_results: 1,
@@ -10448,6 +10480,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 query.set_max_bytes(max_bytes);
                 query.set_max_work(max_work);
                 query.set_max_depth(max_depth);
+                query.set_resource_name(&resource_name);
             }
             let response = forward.send().promise.await?;
             HostWorkerReadGuard::check(host_guard.as_ref())?;
@@ -10468,6 +10501,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 page,
                 max_results,
             )?;
+            if !resource_name.is_empty() {
+                page.next_cursor.clear();
+            }
             registered
                 .pagination
                 .shield(&actor, &needle, &parent_resource, &mut page);
@@ -15984,6 +16020,7 @@ pub mod tests {
             max_bytes: 1,
             max_work: 1,
             max_depth: 1,
+            resource_name: String::new(),
         };
         assert!(matches!(
             queue.try_query(

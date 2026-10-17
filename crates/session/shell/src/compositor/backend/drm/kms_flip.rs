@@ -23,8 +23,10 @@
 //! rest of its life, retrying that frame legacy: a driver that misbehaves
 //! degrades to the flips Tilo used before, without a rebuild.
 //!
-//! Modesets, HDR binding, DPMS, adaptive sync and the cursor plane stay on
-//! their legacy ioctls (`scanout.rs`, `output_signal.rs`).
+//! An output with atomic flips also lights and blanks through nonblocking
+//! atomic modesets ([`super::output_link`]). HDR binding, adaptive sync and
+//! the cursor plane stay on their legacy ioctls (`scanout.rs`,
+//! `output_signal.rs`).
 
 use std::io;
 use std::sync::OnceLock;
@@ -138,19 +140,39 @@ impl FlipDevice for Card {
         let planes = self
             .plane_handles()
             .map_err(|error| format!("list planes: {error}"))?;
-        for handle in planes {
-            let Ok(info) = self.get_plane(handle) else {
-                continue;
-            };
-            if info.crtc() != Some(crtc) {
-                continue;
-            }
-            let Some((_, kind, _)) = find_property(self, handle, "type") else {
-                continue;
-            };
-            if kind != PLANE_TYPE_PRIMARY {
-                continue;
-            }
+        let resources = self
+            .resource_handles()
+            .map_err(|error| format!("list CRTCs: {error}"))?;
+        // The primary plane already showing `crtc`; else, for a CRTC an
+        // atomic modeset lights from nothing, its own primary: drivers
+        // create one primary plane per CRTC, in CRTC order, and two outputs
+        // lit at once must not both pick the first free one.
+        let primaries: Vec<_> = planes
+            .into_iter()
+            .filter_map(|handle| Some((handle, self.get_plane(handle).ok()?)))
+            .filter(|(handle, _)| {
+                find_property(self, *handle, "type")
+                    .is_some_and(|(_, kind, _)| kind == PLANE_TYPE_PRIMARY)
+            })
+            .collect();
+        let crtc_index = resources.crtcs().iter().position(|&handle| handle == crtc);
+        let can_show = |info: &plane::Info| {
+            info.crtc().is_none()
+                && resources
+                    .filter_crtcs(info.possible_crtcs())
+                    .contains(&crtc)
+        };
+        let chosen = primaries
+            .iter()
+            .find(|(_, info)| info.crtc() == Some(crtc))
+            .or_else(|| {
+                crtc_index
+                    .and_then(|index| primaries.get(index))
+                    .filter(|(_, info)| can_show(info))
+            })
+            .or_else(|| primaries.iter().find(|(_, info)| can_show(info)));
+        if let Some((handle, info)) = chosen {
+            let handle = *handle;
             let prop = |name: &str| {
                 find_property(self, handle, name)
                     .map(|(prop, _, _)| prop)
@@ -181,7 +203,7 @@ impl FlipDevice for Card {
                 formats,
             });
         }
-        Err("no primary plane shows this CRTC".to_owned())
+        Err("no primary plane can show this CRTC".to_owned())
     }
 
     fn commit_plane(
@@ -212,7 +234,7 @@ fn fixed_16_16(value: u32) -> u64 {
 /// plane, the plane on the CRTC, covering the whole mode from the
 /// framebuffer's origin — the state the legacy modeset and flips leave it
 /// in, so only the framebuffer (and with it, possibly, the format) changes.
-fn plane_request(plane: &PrimaryPlane, commit: PlaneCommit) -> AtomicModeReq {
+pub(super) fn plane_request(plane: &PrimaryPlane, commit: PlaneCommit) -> AtomicModeReq {
     use property::Value;
     let PlaneCommit {
         target: FlipTarget {
@@ -729,6 +751,9 @@ mod tests {
         sources(&root, &mut files);
         assert!(files.len() > 100, "the shell's sources were found");
         let this = root.join("compositor/backend/drm/kms_flip.rs");
+        // Lighting and blanking an output are atomic commits too, but
+        // modesets, not flips: their one home is the output's link.
+        let modesets = root.join("compositor/backend/drm/output_link.rs");
         let mut found_this = false;
         for file in files {
             let text = std::fs::read_to_string(&file).expect("readable source");
@@ -749,6 +774,16 @@ mod tests {
                     calls(production),
                     (1, 1),
                     "one of each, in FlipDevice for Card"
+                );
+            } else if file == modesets {
+                let production = text
+                    .split("#[cfg(test)]\nmod tests")
+                    .next()
+                    .unwrap_or_default();
+                assert_eq!(
+                    calls(production),
+                    (0, 2),
+                    "the modeset commit and its test commit, in LinkTarget and AtomicLink"
                 );
             } else {
                 assert_eq!(

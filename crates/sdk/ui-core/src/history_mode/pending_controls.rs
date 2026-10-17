@@ -36,6 +36,9 @@ pub struct PendingControlReview {
     pub status: PendingControlStatus,
     pub confirmation: Result<tilo_actions::ConfirmationPolicy, String>,
     pub owner: String,
+    /// The action's name as its declaration gives it, when the control
+    /// still resolves to one.
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +110,8 @@ struct PendingControl {
     status: PendingControlStatus,
     outstanding_nonce: Option<Uuid>,
     control_domain: Option<crate::control_custody::WeakControlDomain>,
+    /// The action's name as its declaration gives it, for people.
+    label: Option<String>,
 }
 
 #[derive(Clone)]
@@ -202,6 +207,7 @@ impl SuspendedLocalControls {
             status: PendingControlStatus::Suspended,
             outstanding_nonce: None,
             control_domain: None,
+            label: None,
         });
     }
 
@@ -215,6 +221,33 @@ impl SuspendedLocalControls {
             item.control_domain = Some(control.domain);
         }
     }
+    /// Read each newly held control's declaration: name it as declared,
+    /// and drop it when it is housekeeping. Only what a person asked for is
+    /// held for their review; housekeeping the app does on its own, and it
+    /// does it again once the person is back.
+    pub(crate) fn admit_declared(
+        &mut self,
+        mut declared: impl FnMut(
+            &PendingControlOrigin,
+            &ControlInvocation,
+        ) -> Option<crate::bound_dispatch::ControlDeclaration>,
+    ) {
+        let before = self.items.len();
+        self.items.retain_mut(|item| {
+            if item.label.is_some() {
+                return true;
+            }
+            let Some(declaration) = declared(&item.origin, &item.invocation) else {
+                return true;
+            };
+            item.label = declaration.label;
+            !declaration.housekeeping
+        });
+        if self.items.len() != before {
+            self.advance_generation();
+        }
+    }
+
     pub(crate) fn return_to_live(&mut self) -> bool {
         if !self.suspended {
             return false;
@@ -253,6 +286,13 @@ impl SuspendedLocalControls {
                     .map(|witness| witness.confirmation().clone())
                     .map_err(Clone::clone),
                 owner: item.origin.description(),
+                label: item.label.clone().or_else(|| {
+                    item.witness
+                        .as_ref()
+                        .ok()
+                        .map(|witness| witness.label().to_owned())
+                        .filter(|label| !label.trim().is_empty())
+                }),
             })
             .collect()
     }

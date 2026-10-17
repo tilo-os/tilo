@@ -1,0 +1,43 @@
+# Records which disks are attached when the computer starts. A remembered
+# "Open" for an internal NTFS drive applies only to a disk in this record
+# (and at the recorded place): a disk hot-added later is treated as new.
+[Unit]
+Description=Record the disks attached at start-up
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=multi-user.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-ntfs-mount record-boot-disks
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/tilo-ntfs-mount
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @network-io @privileged @resources
+
+[Install]
+WantedBy=multi-user.target

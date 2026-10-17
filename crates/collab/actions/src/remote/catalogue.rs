@@ -85,6 +85,11 @@ pub struct CatalogueQuery {
     /// (case-insensitive).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub needle: String,
+    /// Only top-level resources this names: their kind, or their label
+    /// ignoring ASCII case. A host answers it whole, wherever the resource
+    /// would fall in a paged listing; it takes no cursor, needle or parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
     /// Only this exact action, re-resolved against the provider now: the
     /// check to make immediately before invoking a row from an older page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +118,7 @@ impl Default for CatalogueQuery {
             view_resource: None,
             parent_resource: None,
             needle: String::new(),
+            resource_name: None,
             target: None,
             revision: None,
             cursor: Vec::new(),
@@ -162,6 +168,15 @@ pub struct CatalogueResource {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation: Option<ResourcePresentation>,
+}
+
+impl CatalogueResource {
+    /// Whether `name` names this resource: its kind, or its label ignoring
+    /// ASCII case.
+    #[must_use]
+    pub fn is_named(&self, name: &str) -> bool {
+        self.kind == name || self.label.eq_ignore_ascii_case(name)
+    }
 }
 
 /// One row: an action on a resource, or a resource that contains more.
@@ -318,6 +333,10 @@ impl CataloguePage {
                             .is_some_and(|action| action.kind == crate::OperationKind::View)
                 })
                 && row.matches(&query.needle)
+                && query
+                    .resource_name
+                    .as_deref()
+                    .is_none_or(|name| row.resource.is_named(name))
                 && query.target.as_ref().is_none_or(|target| {
                     row.action
                         .as_ref()
@@ -431,6 +450,23 @@ mod tests {
             },
         );
         assert!(stale.stale_cursor && stale.rows.is_empty());
+
+        let named = |name: &str| {
+            CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    resource_name: Some(name.into()),
+                    max_results: 4,
+                    ..CatalogueQuery::default()
+                },
+            )
+        };
+        let by_label = named("NOTE:4");
+        assert_eq!(by_label.rows.len(), 1, "a label past the first page");
+        assert_eq!(by_label.rows[0].resource.id, "note:4");
+        assert!(named("note:a1").rows.is_empty(), "only the top level");
+        assert_eq!(named("notes.note").rows.len(), 4, "a kind names each");
 
         let children = CataloguePage::from_rows(
             "r1".into(),
