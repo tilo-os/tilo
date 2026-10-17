@@ -21,7 +21,8 @@ const HUGE_ENTRY_COUNT: usize = 20_000;
 
 /// Polling for sources with no change signal of their own: the workspace
 /// record catalogue's generation, and the trusted-identity projection when
-/// its directory cannot be watched.
+/// neither its directory nor, while that is missing, the nearest ancestor it
+/// will appear in can be watched for every change.
 pub(crate) const BACKGROUND_INTERVAL: Duration = MEDIUM_INTERVAL;
 
 /// After a change was reported, the shortest time between two reads of a

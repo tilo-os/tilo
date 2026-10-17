@@ -977,6 +977,9 @@ mod command_path_tests {
         use ui::theme::Theme;
         use vello::kurbo::Point;
 
+        // As on the desktop smoke's runner: no identity projection directory.
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = absent_identity_projection(&mut env);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
         let mut widget = FileExplorerWidget::new();
@@ -1030,14 +1033,7 @@ mod command_path_tests {
         // that bit. A model/structure/animation change is a real present.
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
-        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
-        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
-        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
-        assert!(
-            !updated && !structure && !needs_animation,
-            "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
-        );
+        assert_idle_turn_is_clean(&mut widget, &state, "idle scheduled sync");
 
         // Nearby Send used to ask every 2s; now only on an announced change.
         assert!(
@@ -1072,13 +1068,40 @@ mod command_path_tests {
                 }),
             },
         );
-        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
-        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
-        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
+        assert_idle_turn_is_clean(&mut widget, &state, "idle Nearby snapshot");
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+    }
+
+    /// The host's turn on a due deadline (update, then sync) found nothing to
+    /// present: no model, structure or animation change.
+    #[cfg(unix)]
+    fn assert_idle_turn_is_clean(widget: &mut FileExplorerWidget, state: &ui::State, what: &str) {
+        let updated = ui::widget::Widget::update(widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(widget, &state.doc, &state.root);
+        let structure = ui::widget::Widget::take_structure_dirty(widget);
+        let needs_animation = ui::widget::Widget::needs_animation_frame(widget);
         assert!(
             !updated && !structure && !needs_animation,
-            "idle Nearby snapshot still dirty: updated={updated} structure={structure} anim={needs_animation}"
+            "{what} still dirty: updated={updated} structure={structure} anim={needs_animation}"
+        );
+    }
+
+    /// Once the forced polls are done, a window whose directory and identity
+    /// projection are watched asks the host for no wake at all.
+    #[cfg(unix)]
+    fn assert_watched_idle_window_needs_no_wake(widget: &mut FileExplorerWidget) {
+        widget.next_metadata_refresh = None;
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        assert_eq!(
+            widget.next_wake_deadline(),
+            widget.next_metadata_refresh,
+            "nothing but a metadata poll may schedule an idle window"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_wake_deadline(),
+            None,
+            "a fully watched idle Files window never wakes the host"
         );
     }
 
@@ -1093,6 +1116,77 @@ mod command_path_tests {
         );
         env.set("TILO_WORKSPACE_ROOTS", "");
         identities
+    }
+
+    /// Point the identity projection at a directory that does not exist, as
+    /// on a host or sandbox without one, and the workspace roots at nothing.
+    #[cfg(unix)]
+    fn absent_identity_projection(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
+        let identities = tempfile::tempdir().unwrap();
+        env.set(
+            crate::identity_directory::TRUSTED_IDENTITIES_ENV,
+            identities
+                .path()
+                .join("identity-projection/trusted-identities.json"),
+        );
+        env.set("TILO_WORKSPACE_ROOTS", "");
+        identities
+    }
+
+    /// A missing identity projection is not polled: its creation is awaited
+    /// on the nearest directory that exists. A projection that appears later
+    /// is still read, without any poll falling due.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_identity_projection_is_awaited_not_polled() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let identities = absent_identity_projection(&mut env);
+        let dir = tempfile::tempdir().unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let now = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(now);
+        assert!(widget.trusted_humans.humans().is_empty());
+        assert!(!widget.identity_watch.watches_target());
+        assert_ne!(
+            widget.identity_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the projection's creation is watched for"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            widget.next_metadata_refresh, None,
+            "a missing projection on a local filesystem is never polled"
+        );
+
+        let projection = identities.path().join("identity-projection");
+        std::fs::create_dir(&projection).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32])
+            .verifying_key()
+            .to_bytes();
+        std::fs::write(
+            projection.join("trusted-identities.json"),
+            serde_json::to_vec(&tilo_user_identity::TrustedIdentityProjectionV1 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV1 {
+                    root_public_key: root,
+                    display_name: "Ada".into(),
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        // The same `now` every turn: no poll can fall due, so only the
+        // watch can bring the projection in.
+        tilo_test_env::wait_until("the new identity projection is read", || {
+            let _ = widget.refresh_metadata_if_due(now);
+            !widget.trusted_humans.humans().is_empty()
+        });
+        assert_eq!(widget.trusted_humans.humans()[0].display_name, "Ada");
+        assert!(
+            widget.identity_watch.watches_target(),
+            "the watch moved onto the projection's directory"
+        );
     }
 
     /// An idle window over an unchanged local directory has no metadata
