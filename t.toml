@@ -3153,6 +3153,7 @@ cpus = 8
 memory = "32G"
 timeout_secs = 14400
 default = false
+secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 
 [[check]]
 name = "desktop-package-arm64"
@@ -3168,6 +3169,7 @@ cpus = 8
 memory = "32G"
 timeout_secs = 14400
 default = false
+secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
 
 # The OS desktop payload from stable: the Fedora lanes' payloads as immutable generic packages,
 # and the `desktop-payload` pointer to them, which an OS build reads
