@@ -574,6 +574,9 @@ pub struct Avatar {
     dirty: bool,
 }
 
+// The photo type comes from runtime-identity, which only `local-daemons`
+// builds link; portable builds (the browser's) show initials or an image.
+#[cfg(feature = "local-daemons")]
 pub(super) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
         data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
@@ -637,6 +640,7 @@ impl Avatar {
 
     /// Render the validated public photo carried by canonical identity metadata.
     /// Pixels are already normalized; this opens no files and decodes no image.
+    #[cfg(feature = "local-daemons")]
     #[must_use]
     pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
         self.with_image(profile_image(photo))
@@ -1021,6 +1025,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local-daemons")]
     #[test]
     fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
         use crate::widget::{Row, TextInput};
