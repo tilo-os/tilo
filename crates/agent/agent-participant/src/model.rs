@@ -581,7 +581,7 @@ impl PlanModel for OpenAiModel {
             self.client = Some(
                 tilo_model_gateway::host_backend::CompletionClient::new()
                     .map_err(|error| cli_model_error(&error))?
-                    .with_request_hints({
+                    .with_request_hints(&{
                         let mut hints = serde_json::json!({});
                         self.profile.apply(&mut hints);
                         hints
