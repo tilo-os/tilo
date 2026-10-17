@@ -3,9 +3,9 @@
   "assets": [
     {
       "file": "e2e-tab-drag-reorder-settled.png",
-      "sha256": "99f270c7dc9e3d130d3b0aa0a2e650690795454daee4bb417dd8a578ecd655b0",
-      "bytes": 21670,
-      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/99f270c7dc9e3d130d3b0aa0a2e650690795454daee4bb417dd8a578ecd655b0/e2e-tab-drag-reorder-settled.png"
+      "sha256": "0fd17d8011ac09abf420106f7d459fd596fc804e9051dc38707abf12687c23d2",
+      "bytes": 22171,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0fd17d8011ac09abf420106f7d459fd596fc804e9051dc38707abf12687c23d2/e2e-tab-drag-reorder-settled.png"
     },
     {
       "file": "e2e-maximized-tile-controls.png",
