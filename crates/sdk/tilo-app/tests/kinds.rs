@@ -87,3 +87,34 @@ fn a_kind_publishes_the_document_operations_the_running_app_publishes() {
         );
     }
 }
+
+/// A verb a view applies now names the app it belongs to, so a receiver
+/// checking the change against the record's app admits it. Unnamed, the
+/// executor guessed one from the kind (`org.tilo.Test`) and every receiver
+/// refused the change: a chat post never reached anyone.
+#[test]
+fn a_verb_applied_now_names_its_app() {
+    let mut tally = Replica::<Tally>::new();
+    let dispatcher = tilo_app::framework::testing::dispatcher::<Tally>(TallyApp::ID);
+    dispatcher
+        .submit_now(
+            &mut tilo_app::widget::Edits::lend(tally.doc_mut()),
+            Tally::BUMP.invoke(),
+        )
+        .unwrap();
+    let version = tilo_resource::history::versions(tally.doc_mut())
+        .into_iter()
+        .last()
+        .unwrap();
+    let context = version.context.unwrap();
+    let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+        panic!("the bump records its verb: {context:?}");
+    };
+    assert_eq!(verb.action.action, "bump");
+    assert_eq!(context.app.unwrap().id, TallyApp::ID);
+    assert!(
+        verb.action.app.is_empty() || verb.action.app == TallyApp::ID,
+        "the verb names no other app: {}",
+        verb.action.app
+    );
+}
