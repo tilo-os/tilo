@@ -271,13 +271,24 @@ fn find_pattern(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<
                 .get(..byte)
                 .map_or(0, |head| head.chars().count())
         };
-        for hit in pattern.find_iter(&block.text) {
-            if hit.is_empty() {
-                continue;
-            }
+        let mut cursor = 0;
+        while let Some(hit) = pattern.find_at(&block.text, cursor) {
             let (start, end) = (char_at(hit.start()), char_at(hit.end()));
-            if !options.whole_word || is_word_match(&chars, start, end) {
+            let accepted =
+                !hit.is_empty() && (!options.whole_word || is_word_match(&chars, start, end));
+            if accepted {
                 found.push((block.id.clone(), start, end));
+            }
+            if hit.is_empty() || (!accepted && options.mode != ui::widget::FindMode::Regex) {
+                // A rejected literal must not consume a later overlapping
+                // candidate. Advance one original Unicode scalar, not one byte.
+                let Some(next) = block.text.get(hit.start()..).and_then(|s| s.chars().next())
+                else {
+                    break;
+                };
+                cursor = hit.start() + next.len_utf8();
+            } else {
+                cursor = hit.end();
             }
         }
     }
@@ -340,6 +351,38 @@ mod tests {
             find_in(&blocks, "(", pattern).is_empty(),
             "a pattern that does not compile finds nothing"
         );
+    }
+
+    #[test]
+    fn literal_whole_word_reconsiders_overlapping_candidates_after_boundary_rejection() {
+        let options = FindOptions {
+            whole_word: true,
+            ..FindOptions::default()
+        };
+        for (text, query, expected) in [
+            ("xfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+            ("İfoo-foo-foo", "foo-foo", vec![(5, 12)]),
+            ("xéé-éé-éé", "éé-éé", vec![(4, 9)]),
+            ("🙂 xfoo-foo-foo", "foo-foo", vec![(7, 14)]),
+            ("foo-foo-foo", "foo-foo", vec![(0, 7)]),
+            ("xfoo-foo", "foo-foo", vec![]),
+        ] {
+            let blocks = [block("p1", text)];
+            let mut host = Blocks(&blocks);
+            let mut matches = Vec::new();
+            let mut finder = Finder {
+                host: &mut host,
+                matches: &mut matches,
+                revealed: None,
+            };
+            let hits = finder.find(query, options);
+            assert_eq!(hits.len(), expected.len(), "{text}");
+            assert_eq!(
+                matches.iter().map(|(_, s, e)| (*s, *e)).collect::<Vec<_>>(),
+                expected,
+                "{text}"
+            );
+        }
     }
 
     /// Opening with a seed finds and selects the first match; closing drops
