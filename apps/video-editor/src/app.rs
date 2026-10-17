@@ -1199,8 +1199,6 @@ pub struct VideoEditorApp {
     /// The same kernel driving the inspector's docked-vs-overlay reveal from
     /// the right edge. See [`INSPECTOR_BREAKPOINT`].
     inspector_flap: FlapState,
-    /// Real-time clock for the flap's frame-rate-independent eased slide.
-    flap_tick: Instant,
     // --- media-bin clip management ---
     /// Right-click context menu for a bin item (Add to timeline / Rename /
     /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
@@ -1526,7 +1524,6 @@ impl VideoEditorApp {
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
-            flap_tick: ui::time::now(),
             bin_menu: ContextMenu::new(),
             history: ui::widget::HistoryOpener::new(),
             menu_target: None,
@@ -2760,13 +2757,13 @@ impl VideoEditorApp {
             self.inspector_flap.snap(inspector_open);
             return;
         }
+        // The panels slide over the theme's own base duration, each on its
+        // own clock: the first frame after idle covers the time since the
+        // toggle, not the idle gap.
         let now = ui::time::now();
-        let dt = now.duration_since(self.flap_tick).as_secs_f64();
-        self.flap_tick = now;
-        // The panels slide over the theme's own base duration.
         let duration = self.chrome_theme.tokens.motion.durations.base();
-        self.bin_flap.tick(layout, dt, duration);
-        self.inspector_flap.tick(insp, dt, duration);
+        self.bin_flap.advance(layout, now, duration);
+        self.inspector_flap.advance(insp, now, duration);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).

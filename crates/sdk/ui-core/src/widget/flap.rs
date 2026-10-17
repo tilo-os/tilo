@@ -9,7 +9,7 @@
 //! narrowed and widened again. A drawer opened over a narrow window is
 //! transient: crossing into another layout closes it.
 
-use crate::time::Duration;
+use crate::time::{Duration, Instant};
 
 /// How a sidebar resolves at the current width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +47,10 @@ pub struct FlapState {
     /// Whether the flap is open by default when docked. Overlay always
     /// defaults closed.
     docked_default_open: bool,
+    /// When the reveal was last advanced, or when its slide began; `None`
+    /// at rest. The first frame of a slide covers the time since the
+    /// person asked for it, never the idle gap before ([`Self::advance`]).
+    clock: Option<Instant>,
 }
 
 impl FlapState {
@@ -58,6 +62,7 @@ impl FlapState {
             progress: 1.0,
             last_layout: None,
             docked_default_open: true,
+            clock: None,
         }
     }
 
@@ -69,6 +74,7 @@ impl FlapState {
             progress: 0.0,
             last_layout: None,
             docked_default_open: false,
+            clock: None,
         }
     }
 
@@ -84,6 +90,10 @@ impl FlapState {
     }
 
     fn choose_in(&mut self, layout: SplitLayout, open: bool) {
+        // A slide starts now; one already moving keeps its clock.
+        if self.clock.is_none() {
+            self.clock = Some(crate::time::now());
+        }
         match layout {
             SplitLayout::Docked => self.docked_choice = Some(open),
             SplitLayout::Overlay => self.overlay_choice = Some(open),
@@ -120,12 +130,31 @@ impl FlapState {
     pub fn snap(&mut self, open: bool) {
         self.choose(open);
         self.progress = if open { 1.0 } else { 0.0 };
+        self.clock = None;
     }
 
     /// Jump the reveal to the resolved openness without recording a
     /// choice.
     pub fn settle(&mut self, layout: SplitLayout) {
         self.progress = if self.is_open(layout) { 1.0 } else { 0.0 };
+        self.clock = None;
+    }
+
+    /// Advance toward the target to `now` (the frame's time), taking
+    /// `duration` for a whole open or close. The step is the time since the
+    /// last frame of this slide, or since it was asked for — never the idle
+    /// gap before, and never clamped: a stalled frame lands where the
+    /// slide's own clock says, as a wall-clock tween does. Returns whether
+    /// it is still moving.
+    pub fn advance(&mut self, layout: SplitLayout, now: Instant, duration: Duration) -> bool {
+        let dt = self.clock.replace(now).map_or(0.0, |last| {
+            now.saturating_duration_since(last).as_secs_f64()
+        });
+        let moving = self.tick(layout, dt, duration);
+        if !moving {
+            self.clock = None;
+        }
+        moving
     }
 
     /// Note the layout the flap is laid out in. The first call settles the
@@ -226,6 +255,32 @@ mod tests {
         // And the drawer did not stay open behind the person's back.
         flap.reconcile(SplitLayout::Overlay);
         assert!(!flap.is_open(SplitLayout::Overlay));
+    }
+
+    /// After the app sat idle, the first frame of a slide moves by the time
+    /// since the toggle — not by the idle gap (which used to open a
+    /// sidebar 86 % in one frame).
+    #[test]
+    fn the_first_frame_after_idle_advances_from_the_toggle() {
+        let layout = SplitLayout::Docked;
+        let mut flap = FlapState::closed_by_default();
+        flap.reconcile(layout);
+        let idle_frame = crate::time::now();
+        assert!(!flap.advance(layout, idle_frame, BASE), "at rest");
+        flap.open();
+        let toggled = flap.clock.expect("a choice starts the slide's clock");
+        let first_frame = toggled + Duration::from_millis(11);
+        assert!(flap.advance(layout, first_frame, BASE));
+        let expected = 11.0 / 210.0;
+        assert!(
+            (flap.progress - expected).abs() < 1e-9,
+            "one frame of progress, got {}",
+            flap.progress
+        );
+        // A stall is covered, not slowed: the slide ends on its own clock.
+        assert!(!flap.advance(layout, first_frame + BASE, BASE));
+        assert_eq!(flap.reveal(), 1.0);
+        assert_eq!(flap.clock, None, "a settled flap holds no clock");
     }
 
     #[test]

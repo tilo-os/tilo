@@ -82,10 +82,6 @@ mod header_parts;
 use crate::widget::toast::{ToastKind, ToastStack};
 use header_parts::{HeaderTitle, MoreActions};
 
-/// Caps the per-frame dt so a stale clock (first frame, or a parked event
-/// loop) can't teleport a slide past its animation.
-const MAX_FRAME_DT: f64 = 0.1;
-
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NavMode {
@@ -1309,6 +1305,9 @@ pub struct NavShell {
     pane_chosen: bool,
     resize: Option<Resize>,
     last_cursor: Point,
+    /// When the push or the reduced-motion fade in flight last advanced, or
+    /// began; `None` at rest. The first frame covers the time since the
+    /// change was asked for, never an idle gap before it.
     last_tick: Option<Instant>,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
     fade: f64,
@@ -2143,6 +2142,7 @@ impl NavShell {
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
             self.fade = 0.0;
+            self.last_tick.get_or_insert_with(crate::time::now);
         }
         self.animating = true;
         self.structure_dirty = true;
@@ -2243,6 +2243,8 @@ impl NavShell {
             if self.layout_theme.reduce_motion || stack.is_empty() {
                 inputs.push_pos = None;
                 inputs.push_progress = 1.0;
+            } else {
+                self.last_tick.get_or_insert_with(crate::time::now);
             }
         }
         if let Some(binding) = self.pane_binding.as_mut() {
@@ -2732,10 +2734,12 @@ impl NavShell {
     /// Advance the slides by the time since the last frame.
     fn tick(&mut self, theme: &Theme) {
         let now = crate::time::now();
-        let dt = self.last_tick.map_or(0.0, |t| {
-            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
-        });
-        self.last_tick = Some(now);
+        // Unclamped: a stalled frame lands where the clock says, as every
+        // wall-clock tween does.
+        let dt = self
+            .last_tick
+            .replace(now)
+            .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f64());
         let base = theme.tokens.motion.durations.base();
         let reduce = theme.reduce_motion;
         let sidebar_layout = layout_of(self.geometry.sidebar);
@@ -2748,8 +2752,8 @@ impl NavShell {
                 inputs.sidebar.settle(sidebar_layout);
                 inputs.inspector.settle(inspector_layout);
             } else {
-                moving |= inputs.sidebar.tick(sidebar_layout, dt, base);
-                moving |= inputs.inspector.tick(inspector_layout, dt, base);
+                moving |= inputs.sidebar.advance(sidebar_layout, now, base);
+                moving |= inputs.inspector.advance(inspector_layout, now, base);
             }
             if stack.is_empty() || (inputs.push_progress >= 1.0 && inputs.push_pos.is_none()) {
                 inputs.push_pos = None;
@@ -2783,6 +2787,9 @@ impl NavShell {
             };
             self.paint_dirty = true;
             self.animating = self.fade < 1.0;
+            if !self.animating {
+                self.last_tick = None;
+            }
             return;
         }
         if moving {
@@ -2791,6 +2798,9 @@ impl NavShell {
             // The last frame of a slide may hide a part.
             self.structure_dirty = true;
             self.invalidate();
+        }
+        if !moving {
+            self.last_tick = None;
         }
         self.animating = moving;
     }

@@ -15,8 +15,6 @@
 //! then [`SidebarDrawer::resolve`] with the outer rect. On the event path
 //! call `resolve` alone so hit-tests match the last paint.
 
-use crate::time::Instant;
-
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -32,9 +30,6 @@ pub const DEFAULT_DRAWER_DOCKED_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
 pub const DEFAULT_DRAWER_WIDTH: f64 = Metrics::BASE.drawer_width as f64;
 /// At or above this width the drawer docks (`Metrics::compact_breakpoint`).
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f64;
-/// Upper bound (seconds) on the per-frame delta used to advance the slide, so
-/// a stale clock (first frame, or a parked event loop) can't teleport it.
-const MAX_FRAME_DT: f64 = 0.1;
 
 /// Narrows an eased reveal to `f32` for vello.
 #[allow(
@@ -84,7 +79,6 @@ pub struct SidebarDrawer {
     scrim_rect: Rect,
 
     // --- self-tick animation ---
-    last_tick: Option<Instant>,
     animating: bool,
 
     /// Never docks: a drawer over the content at every width.
@@ -143,7 +137,6 @@ impl SidebarDrawer {
             sidebar_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
-            last_tick: None,
             animating: false,
             overlay_only: false,
             with_rail: false,
@@ -630,25 +623,20 @@ impl SidebarDrawer {
         false
     }
 
-    /// Advance the eased reveal off a real wall-clock delta over the
-    /// theme's `motion.durations.base`. Call once per draw. Under reduced
-    /// motion the reveal jumps to its target. The first tick establishes
-    /// the clock (`dt == 0`); later deltas are clamped to `MAX_FRAME_DT`.
-    /// Returns whether it is still animating.
+    /// Advance the eased reveal on the slide's own clock over the theme's
+    /// `motion.durations.base` ([`FlapState::advance`]). Call once per draw.
+    /// Under reduced motion the reveal jumps to its target. Returns whether
+    /// it is still animating.
     pub fn tick(&mut self, theme: &Theme) -> bool {
-        let now = crate::time::now();
-        let dt = self.last_tick.map_or(0.0, |t| {
-            now.duration_since(t).as_secs_f64().min(MAX_FRAME_DT)
-        });
-        self.last_tick = Some(now);
-
         if theme.reduce_motion {
             self.flap.settle(self.layout);
             self.animating = false;
         } else {
-            self.animating = self
-                .flap
-                .tick(self.layout, dt, theme.tokens.motion.durations.base());
+            self.animating = self.flap.advance(
+                self.layout,
+                crate::time::now(),
+                theme.tokens.motion.durations.base(),
+            );
         }
         self.recompute_rects();
         self.animating
@@ -1321,7 +1309,11 @@ mod tests {
             d.open();
 
             d.tick(&theme);
-            assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
+            assert!(
+                d.reveal() < 0.01,
+                "the first tick covers only the time since the toggle ({})",
+                d.reveal()
+            );
 
             std::thread::sleep(crate::time::Duration::from_millis(16));
             d.tick(&theme);
