@@ -573,6 +573,7 @@ mod tests {
         assert_eq!(std::fs::read(temp.path().join("good")).unwrap(), b"export");
         assert!(!temp.path().join("bad").exists());
         assert_eq!(*closed.lock().unwrap(), ["good", "bad"]);
+        assert_eq!(outcome.reason(), Some("bad: source changed"));
     }
 
     #[test]
@@ -752,6 +753,10 @@ mod tests {
         server.join().unwrap();
         assert!(!outcome.is_done());
         assert!(outcome.reason().unwrap().contains("broken-child"));
+        assert_eq!(
+            outcome.reason(),
+            Some("folder: broken-child: provider failed")
+        );
         assert_eq!(outcome.result().len(), 1);
         assert_eq!(std::fs::read(dest.join("good")).unwrap(), b"export");
         assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 1);

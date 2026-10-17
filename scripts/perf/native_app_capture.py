@@ -148,7 +148,7 @@ def main(app_kind='scratchpad'):
         validate_frames = validate_file_explorer_frame_states
     elif app_kind == 'settings':
         from settings_effects import validate_settings_typing, validate_settings_frame_states
-        app_id = 'dev.tilo.settings'
+        app_id = 'so.tilo.settings'
         fixture_name, open_flag, minimum_lines = None, None, None
         validate_typing = lambda scenario, lines, _manifest: validate_settings_typing(scenario, lines)
         validate_scroll = None

@@ -3305,6 +3305,8 @@ impl TextInput {
 
     /// Mirror edits into caller-owned process-local memory without creating a
     /// CRDT object. Intended for passwords/PINs; use with [`Self::local`].
+    /// Publishing consumes the edit notification (`take_dirty`), just as a
+    /// document binding does; an idle sync never republishes a consumed edit.
     #[must_use]
     pub fn with_external_buffer(mut self, buffer: Arc<Mutex<String>>) -> Self {
         self.local_state = None;
@@ -5449,6 +5451,11 @@ impl Widget for TextInput {
         {
             value.zeroize();
             value.push_str(&self.text);
+            // This edit has been published. Replaying it on every sync can
+            // resurrect a secret after its owner clears an acknowledged save.
+            // Keep measurement invalidation separate from publication.
+            self.model_layout_dirty = true;
+            self.dirty = false;
         }
         if self.bound_text.is_some() {
             let _ = self.adopt_bound_text(state);
