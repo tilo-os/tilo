@@ -443,6 +443,10 @@ struct OverlayInputs {
 
 /// How long a launchpad app card waits for the Applications index to take
 /// in the installed apps after boot before falling back to the launcher.
+/// Narrowest the permission prompt is drawn over the window that asks: its
+/// label and four answers in one row.
+const PROMPT_MIN_WIDTH: f64 = 640.0;
+
 const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
 /// How often a waiting launchpad app card asks the index again.
 const LAUNCHPAD_APP_RETRY: Duration = Duration::from_millis(25);
@@ -811,6 +815,9 @@ pub struct ShellOverlayHost {
     /// `chrome.pending_grants`. `None` when the queue is empty.
     permission_prompt: Option<PermissionPrompt>,
     permission_prompt_id: Option<uuid::Uuid>,
+    /// The app the latched prompt asks for, so it opens over that app's
+    /// window ([`Self::permission_prompt_surface`]).
+    permission_prompt_app: Option<String>,
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
@@ -2548,6 +2555,7 @@ impl ShellOverlayHost {
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             permission_prompt_id: None,
+            permission_prompt_app: None,
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
@@ -7053,6 +7061,7 @@ impl ShellOverlayHost {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
                 self.permission_prompt_id = Some(pending.id);
+                self.permission_prompt_app = Some(pending.app_id.clone());
                 let label = prompt_label(&pending.request);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
@@ -7156,16 +7165,48 @@ impl ShellOverlayHost {
     }
 
     /// Geometry `draw_desktop_extras` gives the live permission prompt.
+    /// Where the permission prompt goes: across the top of the window of
+    /// the app that asks (the one showing it, else any holding it), where the
+    /// person is looking when it asks, at least
+    /// [`PROMPT_MIN_WIDTH`] wide and kept on that window's display; when the
+    /// app has no window on screen, across the top of the display in use.
     fn permission_prompt_surface(&self) -> Rect {
-        let area = self.overlay_area();
         let inset = f64::from(self.sidebar_top_y);
-        let bar_top = area.y0 + inset;
-        Rect::new(
-            area.x0 + inset,
-            bar_top,
-            area.x1 - inset,
-            bar_top + PROMPT_HEIGHT,
-        )
+        let asking = self.permission_prompt_app.as_deref().and_then(|app| {
+            let group = {
+                let st = self.chrome.as_ref()?.borrow();
+                let tree = st.tree();
+                crate::shell::placement::group_showing(tree.desktop.active_workspace()?, app)?
+            };
+            self.group_hit_candidates()
+                .into_iter()
+                .find(|(_, id, _)| *id == group)
+                .map(|(_, _, rect)| rect.intersect(self.rect))
+                .filter(|rect| rect.area() > 0.0)
+        });
+        let Some(window) = asking else {
+            let area = self.overlay_area();
+            let bar_top = area.y0 + inset;
+            return Rect::new(
+                area.x0 + inset,
+                bar_top,
+                area.x1 - inset,
+                bar_top + PROMPT_HEIGHT,
+            );
+        };
+        let outputs = self.layer_outputs();
+        let display = self.layer_geometry(&outputs).display_for(Some(window));
+        let room = (display.width() - 2.0 * inset).max(1.0);
+        let width = (window.width() - 2.0 * inset)
+            .max(PROMPT_MIN_WIDTH)
+            .min(room);
+        let x0 = (window.center().x - width / 2.0)
+            .min(display.x1 - inset - width)
+            .max(display.x0 + inset);
+        let y0 = (window.y0 + inset)
+            .max(display.y0 + inset)
+            .min(display.y1 - PROMPT_HEIGHT);
+        Rect::new(x0, y0, x0 + width, y0 + PROMPT_HEIGHT)
     }
 
     /// Seal bands for trusted surfaces that are on screen. Empty when none
