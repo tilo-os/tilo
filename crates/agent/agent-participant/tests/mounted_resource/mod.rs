@@ -184,13 +184,9 @@ pub async fn run() {
             channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
         })
         .unwrap();
-    let message = chat::demo::say(
-        &mut doc,
-        &source_author,
-        &channel.id,
-        "Hello é, mounted natively",
-    )
-    .unwrap();
+    let message = chat::demo::Room::of(doc.clone())
+        .say(&source_author, &channel.id, "Hello é, mounted natively")
+        .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
@@ -216,7 +212,10 @@ pub async fn run() {
         )
         .unwrap();
     let shared = source
-        .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
+        .read(|doc| {
+            chat::projection::read(doc)
+                .message_rows(&chat::messages::Messages::default(), &channel.id)
+        })
         .unwrap()
         .into_iter()
         .find(|row| row.text == "Discuss this mounted resource")
@@ -443,7 +442,10 @@ pub async fn run() {
                                 .unwrap();
                         }
                         let messages = source
-                            .read(|doc| chat::projection::read(doc).message_rows(&channel.id))
+                            .read(|doc| {
+                                chat::projection::read(doc)
+                                    .message_rows(&chat::messages::Messages::default(), &channel.id)
+                            })
                             .unwrap();
                         let queued = messages
                             .iter()

@@ -18,7 +18,9 @@ use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
     MenuAction, MenuTarget, RowSwipe,
 };
+use crate::messages::chat_part;
 use crate::model::{ChannelKind, Id};
+use crate::parts::ChatPart;
 use crate::record::chat;
 use crate::resource::Chat;
 
@@ -1148,7 +1150,7 @@ impl ChatApp {
     fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.can_participate() {
             let action = self.reaction_toggle_action(msg, emoji);
-            self.apply_now(doc, action);
+            self.apply_part(doc, action);
             self.reload(doc);
         }
     }
@@ -1196,7 +1198,7 @@ impl ChatApp {
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
                 let action = self.reaction_toggle_action(&target, e);
-                self.apply_now(doc, action);
+                self.apply_part(doc, action);
                 self.reload(doc);
             }
         } else {
@@ -1280,33 +1282,45 @@ impl ChatApp {
                 MenuAction::EditMessage => self.begin_edit(id),
                 MenuAction::PinMessage => {
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
-                    let pin = Chat::paths().messages.item(&item(&id)).pinned.set(!pinned);
-                    self.apply_now(doc, pin);
+                    self.apply_part(
+                        doc,
+                        ChatPart::PIN.with(chat_part::Pin {
+                            message: item(&id),
+                            pinned: !pinned,
+                        }),
+                    );
                 }
                 MenuAction::BanAuthor => self.ban_author(&id),
                 MenuAction::DeleteMessage => {
                     let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
                     if mine {
-                        self.apply_now(
+                        self.apply_part(
                             doc,
-                            Chat::DELETE_MESSAGE.with(chat::DeleteMessage { message: item(&id) }),
+                            ChatPart::DELETE_MESSAGE
+                                .with(chat_part::DeleteMessage { message: item(&id) }),
                         );
                     } else {
-                        self.apply_now(
+                        self.apply_part(
                             doc,
-                            Chat::REMOVE_MESSAGE.with(chat::RemoveMessage { message: item(&id) }),
+                            ChatPart::REMOVE_MESSAGE
+                                .with(chat_part::RemoveMessage { message: item(&id) }),
                         );
                     }
                 }
                 // The menu files a report with a plain reason; Ctrl+K's
                 // `Report message` and `Report person` ask for one.
-                MenuAction::ReportMessage => self.apply_now(
-                    doc,
-                    Chat::REPORT_MESSAGE.with(chat::ReportMessage {
-                        message: item(&id),
-                        reason: "Reported from the message menu".to_owned(),
-                    }),
-                ),
+                MenuAction::ReportMessage => {
+                    if let Some(author) = self.message(&id).map(|m| m.author.clone()) {
+                        self.apply_now(
+                            doc,
+                            Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+                                message: id.clone(),
+                                author,
+                                reason: "Reported from the message menu".to_owned(),
+                            }),
+                        );
+                    }
+                }
                 MenuAction::ReportAuthor => {
                     if let Some(author) = self.message(&id).map(|m| m.author.clone()) {
                         self.apply_now(
@@ -1629,12 +1643,13 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        self.apply_now(
+        self.apply_part(
             doc,
-            Chat::EDIT_MESSAGE.with(chat::EditMessage {
+            ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
                 message: item(&id),
                 text,
                 body: Some(body),
+                mentions: None,
             }),
         );
         self.reload(doc);
@@ -1676,14 +1691,15 @@ impl ChatApp {
         // is the writer's own and is emptied in their own record once the
         // post is taken; a refused post keeps it, to send again, and says
         // so beside the composer.
-        let posted = self.try_apply_now(
+        let posted = self.try_apply_part(
             doc,
-            Chat::POST.with(chat::Post {
+            ChatPart::POST.with(chat_part::Post {
                 channel: item(&self.active_channel),
                 text,
                 parent: parent.as_deref().map(item),
                 body: Some(body),
                 attachment: None,
+                mentions: None,
             }),
         );
         if let Err(reason) = posted {
@@ -1982,12 +1998,13 @@ impl ChatApp {
         } else {
             crate::model::Attachment::File { name, blob, size }
         };
-        self.submit(Chat::POST.with(chat::Post {
+        self.submit_part(ChatPart::POST.with(chat_part::Post {
             channel: item(&pending.channel),
             text: String::new(),
             parent: None,
             body: None,
             attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
+            mentions: None,
         }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());
@@ -2091,10 +2108,10 @@ mod tests {
         app.project_native_voice();
     }
 
-    fn app_with_doc() -> (ChatApp, AutoCommit) {
-        let mut doc = AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
+    fn app_with_doc() -> (ChatApp, crate::testing::Room) {
+        let doc = crate::testing::demo_doc();
         let mut app = ChatApp::new_ephemeral();
+        app.attach_room(&doc);
         app.reload(&doc);
         (app, doc)
     }
@@ -2318,7 +2335,7 @@ mod tests {
         assert_eq!(app.composer_main.value(), "", "no channel, no draft");
         feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         assert!(
-            !app.dispatched
+            !app.dispatched_parts
                 .borrow()
                 .iter()
                 .map(|action| serde_json::to_value(action).unwrap())
@@ -2342,7 +2359,7 @@ mod tests {
             crate::testing::write_draft(&mut app, &mut doc, "hi from the composer");
             app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
             let action = app
-                .dispatched
+                .dispatched_parts
                 .borrow()
                 .iter()
                 .map(|action| serde_json::to_value(action).unwrap())
@@ -3304,7 +3321,7 @@ mod tests {
 
     fn settle_attachment_until(
         app: &mut ChatApp,
-        doc: &mut AutoCommit,
+        doc: &mut crate::testing::Room,
         channel: &str,
         expected_count: usize,
     ) {
@@ -3900,9 +3917,12 @@ mod tests {
         }
     }
 
-    fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
+    fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Room) {
         for (author, invoke) in crate::resource::agent_work_steps() {
             crate::testing::apply_as(doc, author, invoke).unwrap();
+        }
+        for (author, invoke) in crate::resource::agent_work_part_steps() {
+            crate::testing::apply_part_as(doc, author, invoke).unwrap();
         }
         app.land(doc);
         app.stage_scenario("agent-work");
@@ -3915,7 +3935,7 @@ mod tests {
         use ui::headless::FrameHarness;
         let (app, doc) = app_with_doc();
         let mut state = ui::State::new();
-        assert!(state.adopt_doc(doc));
+        assert!(state.adopt_doc(doc.chat));
         let mut driver = FrameHarness::for_root(state, app, (1800, 900), ui::Theme::dark());
         let people = driver
             .a11y_node_named("Show people or thread")
@@ -3980,7 +4000,7 @@ mod tests {
         use ui::headless::FrameHarness;
         let (app, doc) = app_with_doc();
         let mut state = ui::State::new();
-        assert!(state.adopt_doc(doc));
+        assert!(state.adopt_doc(doc.chat));
         let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
         assert!(!driver.root::<ChatApp>().left_overlay());
         driver.resize((700, 720)).expect("normal narrow layout");
@@ -4114,7 +4134,7 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             stage_agent_work(&mut app, &mut doc);
             app.land(&mut doc);
-            app.sync(&doc, &automerge::ROOT);
+            app.sync(&doc.chat, &automerge::ROOT);
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, height);
             app.reconcile_flaps();
             app.right_flap.snap(true);
@@ -4173,7 +4193,7 @@ mod tests {
                 .trace[0]
                 .clone();
             applied_step.outcome = AgentStepOutcome::Applied;
-            crate::testing::apply_as(
+            crate::testing::apply_part_as(
                 &mut doc,
                 crate::resource::DEMO_AGENT,
                 crate::testing::record_work(
@@ -4189,7 +4209,7 @@ mod tests {
             )
             .unwrap();
             app.land(&mut doc);
-            app.sync(&doc, &automerge::ROOT);
+            app.sync(&doc.chat, &automerge::ROOT);
             render_frame(&mut app, width, height);
             assert_eq!(
                 description(&app),
@@ -4225,18 +4245,18 @@ mod tests {
         use ui::Widget;
         let (mut app, mut doc) = app_with_doc();
         stage_agent_work(&mut app, &mut doc);
-        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc.chat, &automerge::ROOT);
         let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::demo::NOW)
             .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
                 format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
                 AgentStepOutcome::Applied, index)).collect());
-        crate::testing::apply_as(
+        crate::testing::apply_part_as(
             &mut doc,
             crate::resource::DEMO_AGENT,
             crate::testing::record_work(crate::resource::DEMO_SUMMONS, &work),
         )
         .unwrap();
-        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc.chat, &automerge::ROOT);
         render_frame(&mut app, 800.0, 600.0);
         let region = app.primary_vertical_scroll().unwrap();
         assert_eq!(region.key, "thread");
@@ -4711,7 +4731,10 @@ mod tests {
                 .expect("the reaction remains visible after toggling");
             assert_ne!(after, checked, "semantic activation toggles my reaction");
             let action = serde_json::to_value(
-                app.last_dispatched()
+                app.dispatched_parts
+                    .borrow()
+                    .last()
+                    .cloned()
                     .expect("the semantic control dispatches through the door"),
             )
             .unwrap();
@@ -4834,7 +4857,7 @@ mod tests {
         // host identity must not append "Mark channel read" changes.
         let (mut app, mut doc) = app_with_doc();
         let channel = app.active_channel.clone();
-        crate::testing::apply_at(
+        crate::testing::apply_part_at(
             &mut doc,
             "u_aria",
             (crate::demo::NOW + 1) * 1000,
@@ -4844,8 +4867,8 @@ mod tests {
         let watermark = crate::testing::read_mark(&doc, &channel, &app.me.id);
         let heads = doc.get_heads();
         for _ in 0..5 {
-            assert!(!app.update(&doc, &automerge::ROOT));
-            app.sync(&doc, &automerge::ROOT);
+            assert!(!app.update(&doc.chat, &automerge::ROOT));
+            app.sync(&doc.chat, &automerge::ROOT);
         }
         assert_eq!(
             crate::testing::read_mark(&doc, &channel, &app.me.id),
@@ -4866,17 +4889,17 @@ mod tests {
             "first presentation requests a model frame"
         );
         assert!(
-            app.update(&doc, &automerge::ROOT),
+            app.update(&doc.chat, &automerge::ROOT),
             "first presentation re-runs sync"
         );
-        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc.chat, &automerge::ROOT);
         app.land(&mut doc);
         assert!(
             crate::testing::read_mark(&doc, &channel, &app.me.id) > watermark,
             "the presented channel is marked read"
         );
         assert!(
-            !app.update(&doc, &automerge::ROOT),
+            !app.update(&doc.chat, &automerge::ROOT),
             "the extra frame is one-shot"
         );
     }
@@ -4941,7 +4964,7 @@ mod tests {
                 "an empty channel has nothing unread"
             );
             // A peer posts to a channel we're not viewing (arrives via the CRDT).
-            crate::testing::apply_at(
+            crate::testing::apply_part_at(
                 &mut doc,
                 "u_aria",
                 crate::demo::NOW * 1000,
@@ -4977,7 +5000,7 @@ mod tests {
             // A remote message arrives after the current read boundary. Being in
             // the room is not enough to acknowledge it once the reader has moved
             // back through history.
-            crate::testing::apply_at(
+            crate::testing::apply_part_at(
                 &mut doc,
                 "u_aria",
                 (crate::demo::NOW + 1) * 1000,
@@ -5015,7 +5038,7 @@ mod tests {
             app.on_hit(Hit::CloseThread, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.thread_open.is_none());
             for n in 0..24 {
-                crate::testing::apply_at(
+                crate::testing::apply_part_at(
             &mut doc,
             "u_aria",
             (crate::demo::NOW + i64::from(n)) * 1000,
@@ -5451,6 +5474,10 @@ mod tests {
 
             let mut a = peer("u_alice", "Alice", "AL", 0);
             let mut b = peer("u_bob", "Bob", "BO", 1);
+            // The room's message parts, which both hold.
+            let parts = crate::testing::Room::default();
+            a.attach_room(&parts);
+            b.attach_room(&parts);
             a.reload(&doc_a);
             b.reload(&doc_b);
             assert_eq!(a.me.id, "u_alice");
@@ -5574,6 +5601,10 @@ mod tests {
 
             let mut a = peer("u_alice", "Alice", "AL", 0);
             let mut b = peer("u_bob", "Bob", "BO", 1);
+            // The room's message parts, which both hold.
+            let parts = crate::testing::Room::default();
+            a.attach_room(&parts);
+            b.attach_room(&parts);
             a.reload(&doc_a);
             b.reload(&doc_b);
 

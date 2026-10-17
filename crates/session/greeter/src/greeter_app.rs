@@ -2911,7 +2911,7 @@ mod tests {
         harness.tab(false);
         assert_eq!(
             harness.focused_access_node().and_then(|node| node.name),
-            Some("Passcode".to_string())
+            Some("Password".to_string())
         );
 
         harness.resize((3392, 1080)).unwrap();
@@ -2921,12 +2921,12 @@ mod tests {
                 .focus_access_nodes()
                 .first()
                 .and_then(|node| node.name.clone()),
-            Some("Passcode".to_string()),
+            Some("Password".to_string()),
             "the first tab stop, where autofocus lands, is the passcode"
         );
         assert_eq!(
             harness.focused_access_node().and_then(|node| node.name),
-            Some("Passcode".to_string()),
+            Some("Password".to_string()),
             "re-laying the card out on the panel keeps focus on the passcode"
         );
         let password = find_test_id(harness.root_widget(), "greeter.password")
@@ -3224,10 +3224,10 @@ mod tests {
             };
             assert_eq!(icon(&hint), 1, "a hint carries its quiet info glyph");
             assert_eq!(icon(&err), 1, "an error carries its alert glyph");
-            assert_eq!(hint.status_text(), "Enter your passcode.");
+            assert_eq!(hint.status_text(), "Enter your password.");
             assert_eq!(
                 err.status_text(),
-                "Incorrect username or passcode. Try again."
+                "Incorrect username or password. Try again."
             );
         }
         // Phase `passcode_never_enters_automerge_or_its_saved_history`.
@@ -3401,7 +3401,7 @@ mod tests {
             );
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
-                Some("Passcode")
+                Some("Password")
             );
             assert_eq!(
                 accessible_name_for(card.as_ref(), "greeter.login").as_deref(),
@@ -3425,7 +3425,7 @@ mod tests {
                 .iter()
                 .find(|node| node.state.focused)
                 .and_then(|node| node.name.as_deref());
-            assert_eq!(focused, Some("Passcode"));
+            assert_eq!(focused, Some("Password"));
         }
         // Phase `ambiguous_account_discovery_keeps_named_two_field_fallback`.
         {
@@ -3450,7 +3450,7 @@ mod tests {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
             let person = said.iter().position(|s| s == "Quinten Example");
-            let passcode = said.iter().position(|s| s == "Passcode");
+            let passcode = said.iter().position(|s| s == "Password");
             assert!(person.is_some() && person < passcode, "{said:?}");
         }
     }
@@ -3530,12 +3530,12 @@ mod tests {
         for (scenario, message, expected) in [
             (
                 AuthScenario::PersonalHint,
-                "Enter your passcode.",
+                "Enter your password.",
                 Politeness::Assertive,
             ),
             (
                 AuthScenario::PersonalError,
-                "Incorrect passcode. Try again.",
+                "Incorrect password. Try again.",
                 Politeness::Assertive,
             ),
             (
@@ -3593,11 +3593,11 @@ mod tests {
     )]
     fn every_failure_reads_as_a_clear_sentence_and_returns_to_a_ready_form() {
         let cases = [
-            (Failure::Credentials, true, "Incorrect passcode. Try again."),
+            (Failure::Credentials, true, "Incorrect password. Try again."),
             (
                 Failure::Credentials,
                 false,
-                "Incorrect username or passcode. Try again.",
+                "Incorrect username or password. Try again.",
             ),
             (
                 Failure::Locked,
@@ -3612,7 +3612,7 @@ mod tests {
             (
                 Failure::PasscodeExpired,
                 true,
-                "Your passcode has expired. Ask an administrator to reset it.",
+                "Your password has expired. Ask an administrator to reset it.",
             ),
             (
                 Failure::NotPermitted,
@@ -3622,7 +3622,7 @@ mod tests {
             (
                 Failure::Unavailable,
                 true,
-                "Your passcode couldn't be checked. Try again.",
+                "Your password couldn't be checked. Try again.",
             ),
             (
                 Failure::SessionStart,
@@ -3703,7 +3703,7 @@ mod tests {
                 .iter()
                 .find(|node| node.state.focused)
                 .and_then(|node| node.name.as_deref());
-            assert_eq!(focused, Some("Passcode"));
+            assert_eq!(focused, Some("Password"));
         }
     }
 
@@ -4085,7 +4085,7 @@ mod tests {
         }
         assert_eq!(
             app.status_text(),
-            "Incorrect passcode, 3 times in a row. Try again."
+            "Incorrect password, 3 times in a row. Try again."
         );
         app.begin_authenticating();
         app.finish_failure(Failure::Locked);

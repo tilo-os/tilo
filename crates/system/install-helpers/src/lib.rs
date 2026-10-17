@@ -17,7 +17,8 @@
 //! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
 //!   (VMs only)
 //! * [`code_refresh`]: `tilo-vm-install-proof code-refresh`, the development
-//!   VM's installer helper refresh daemon
+//!   VM's installer helper refresh daemon, its marker check and
+//!   ([`code_refresh_probe`]) its probe of the refreshed backend
 
 use std::ffi::OsString;
 use std::fmt;
@@ -26,6 +27,7 @@ use std::process::ExitCode;
 pub mod args;
 pub mod bootc_copy_cache;
 pub mod code_refresh;
+pub mod code_refresh_probe;
 pub mod dev_ssh;
 pub mod dev_target_uki;
 pub mod handoff_copy;

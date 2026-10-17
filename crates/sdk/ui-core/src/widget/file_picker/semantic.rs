@@ -139,12 +139,15 @@ impl FilePicker {
                     return Err(PickerRefusal::Unavailable);
                 }
                 self.click_open();
+                if self.name_error.is_some() {
+                    return Err(PickerRefusal::OutsideScope);
+                }
             }
             PickerOperation::Cancel => self.click_cancel(),
             PickerOperation::SetFilename { filename } => {
                 if self.mode != FilePickerMode::Save
                     || filename.len() > 255
-                    || (!filename.is_empty() && self.safe_save_target(&filename).is_none())
+                    || (!filename.is_empty() && self.resolve_save_name(&filename).is_err())
                 {
                     return Err(PickerRefusal::Unavailable);
                 }

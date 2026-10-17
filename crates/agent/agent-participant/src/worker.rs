@@ -89,9 +89,22 @@ macro_rules! app_worker {
     };
 }
 
+/// What a program's main thread gets on Linux. A worker started by a program
+/// serves on its main thread; one started by a test binary would otherwise
+/// serve on a libtest thread with Rust's 2 MiB default, which an app's
+/// worker can outgrow.
+const WORKER_STACK: usize = 8 * 1024 * 1024;
+
 #[doc(hidden)]
 pub fn serve_test_worker() {
-    if let Some(code) = dispatch_early() {
+    // A thread that cannot start or panics fails the worker, as a failed
+    // main would.
+    let served = std::thread::Builder::new()
+        .name(ARG.into())
+        .stack_size(WORKER_STACK)
+        .spawn(dispatch_early)
+        .map_or(Some(1), |thread| thread.join().unwrap_or(Some(101)));
+    if let Some(code) = served {
         #[expect(
             clippy::exit,
             reason = "the worker's test must not return to the test harness"

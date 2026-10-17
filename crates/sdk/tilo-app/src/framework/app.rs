@@ -611,7 +611,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(&mut super::Records::new(&storage));
+        A::records(&mut super::Records::new(&storage).with_base(live.clone()));
     }
     let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
@@ -837,6 +837,11 @@ fn hosted(context: &HostContext) -> super::settings::Hosted {
             .then(|| context.person_records().cloned())
             .flatten(),
         device: Some(context.device_id().to_owned()),
+        room: Some((
+            context.records().clone(),
+            context.author().0.clone(),
+            context.live_permissions(),
+        )),
     }
 }
 

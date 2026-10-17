@@ -670,7 +670,7 @@ fn handle(
                     snapshots,
                     state,
                     state.base_items.clone(),
-                    &ui::i18n!("store-runtime-reviewed"),
+                    &ui::i18n!("store-runtime-repair-reviewed"),
                     None,
                     None,
                 ),
@@ -694,7 +694,7 @@ fn handle(
             let result = state
                 .host
                 .as_ref()
-                .ok_or_else(|| ui::i18n!("store-runtime-unavailable"))
+                .ok_or_else(|| ui::i18n!("store-runtime-repair-unavailable"))
                 .and_then(|host| host.acquire_optional_runtime_reporting(&review, move |progress| {
                     // The host coalesces notifications; the UI additionally limits
                     // expensive catalogue snapshots to four per second.

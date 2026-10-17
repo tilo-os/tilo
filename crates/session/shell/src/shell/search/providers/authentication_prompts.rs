@@ -69,7 +69,7 @@ fn delivery_receipt(
     args: &tilo_actions::ActionArgs,
 ) -> Result<crate::shell::search::ActionReceipt, ActionError> {
     if !deliver(queue, ticket, cancel, args) {
-        return Err(ActionError::Refused(t("portal-auth-request-expired")));
+        return Err(ActionError::Explained(t("portal-auth-request-expired")));
     }
     // Completion is delivery to the real waiting exchange, never PAM success.
     Ok(crate::shell::search::ActionReceipt::completed())
@@ -110,7 +110,9 @@ impl SearchProvider for AuthenticationPromptsProvider {
             let invoke: Rc<crate::shell::search::InvokeFn> =
                 Rc::new(move |_doc, _root, chrome, args| {
                     if !current_admin(&chrome.borrow(), &*first_use) {
-                        return Err(ActionError::Refused(t("portal-auth-local-admin-required")));
+                        return Err(ActionError::Explained(t(
+                            "portal-auth-local-admin-required",
+                        )));
                     }
                     delivery_receipt(&queue, &selected, cancel, args)
                 });

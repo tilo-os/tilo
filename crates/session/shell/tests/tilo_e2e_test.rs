@@ -499,16 +499,15 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         assert_eq!(dropped.title, "main.ts");
     }
 
-    // Phase `overview_button_click_toggles_overview_overlay`.
-    // Clicking the top-bar overview button must toggle
-    // `chrome.overlays.overview`, driven end-to-end. Reproduces the
-    // user-reported "overview button doesn't work" bug: if dispatch is
-    // intercepted before `TopBarChrome` sees the click, `overview` stays false.
+    // Phase `workspace_name_click_asks_for_the_workspace_menu`.
+    // Clicking the top bar's workspace name must ask the host for the
+    // workspace menu, under the name, driven end-to-end: if dispatch is
+    // intercepted before `TopBarChrome` sees the click, nothing is asked.
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
 
-        let (mut bar, chrome, taffy, node, hit) = topbar_with_overview_btn_hit();
+        let (mut bar, chrome, taffy, node, hit) = topbar_with_workspace_pill_hit();
 
         // The widget tracks the cursor itself, because winit delivers MouseInput
         // without a position.
@@ -549,11 +548,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
 
         assert!(
             handled,
-            "click on overview button should be handled by the top bar"
+            "click on the workspace name should be handled by the top bar"
         );
+        let asked = chrome.borrow_mut().bar_popover_request.take();
         assert!(
-            chrome.borrow().overlays.overview,
-            "first click should open the overview overlay"
+            matches!(
+                asked,
+                Some(shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu { anchor })
+                    if anchor.contains(hit)
+            ),
+            "the first click asks for the workspace menu under the name: {asked:?}"
         );
 
         let mut handled2 = false;
@@ -572,8 +576,8 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         );
         assert!(handled2);
         assert!(
-            !chrome.borrow().overlays.overview,
-            "second click should close the overview overlay again"
+            chrome.borrow().bar_popover_request.is_some(),
+            "a second click asks again: the host toggles"
         );
     }
 
@@ -584,7 +588,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         use automerge::AutoCommit;
         use taffy::NodeId;
 
-        let (mut bar, chrome, taffy, node, _) = topbar_with_overview_btn_hit();
+        let (mut bar, chrome, taffy, node, _) = topbar_with_workspace_pill_hit();
         let mut state = AutoCommit::new();
         let root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
@@ -624,19 +628,22 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         assert!(chrome.borrow().overlays.quick_settings);
     }
 
-    // Phase `full_root_click_toggles_overview_via_topbar_button`.
+    // Phase `full_root_click_toggles_the_workspace_menu`.
     // Drives the **full** `build_tilo_root` tree, where routing via
-    // `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`.
-    // The button rect comes from a throwaway sibling `TopBarChrome` in the
-    // same viewport — topbar geometry is DPI/width-driven, so the rects match.
+    // `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`:
+    // a click on the workspace name opens the workspace menu, a second
+    // one closes it.
     {
-        fn overview_hit(widget: &dyn Widget) -> Option<Point> {
+        fn pill_hit(widget: &dyn Widget) -> Option<Point> {
             widget
                 .test_rects()
                 .into_iter()
-                .find(|(name, rect)| name == "topbar_overview_button" && rect.area() > 0.0)
+                .find(|(name, rect)| name == "topbar_workspace_pill" && rect.area() > 0.0)
                 .map(|(_, rect)| rect.center())
-                .or_else(|| widget.children().into_iter().find_map(overview_hit))
+                .or_else(|| widget.children().into_iter().find_map(pill_hit))
+        }
+        fn menu_shown(widget: &dyn Widget) -> bool {
+            widget.name() == "WorkspaceMenu" || widget.children().into_iter().any(menu_shown)
         }
         use automerge::AutoCommit;
         use std::collections::HashMap;
@@ -688,12 +695,13 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         root.apply_layout(&taffy, root_node, Point::ORIGIN);
 
         // A draw pass is required so the inner TopBarChrome populates its
-        // overview_btn_rect, which handle_event hit-tests against.
+        // workspace pill, which handle_event hit-tests against.
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
         root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        let hit = overview_hit(root.as_ref()).expect("painted root exports its overview button");
+        let hit = pill_hit(root.as_ref()).expect("painted root exports its workspace pill");
+        assert!(!menu_shown(root.as_ref()));
 
         let mut state = AutoCommit::new();
         let root_path = automerge::ROOT.clone();
@@ -704,19 +712,22 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
         );
         assert!(
-            chrome.borrow().overlays.overview,
-            "click on overview button via full root must open the overview overlay"
+            menu_shown(root.as_ref()),
+            "click on the workspace name via full root must open the workspace menu"
+        );
+        assert!(
+            chrome.borrow().bar_popover_request.is_none(),
+            "taken at once"
         );
 
-        // A second click must close it wherever the handler lives —
-        // `ShellOverlayHost` currently swallows any click while `flags.overview`
-        // is set, so only the end effect matters.
+        // The open menu takes the second press: it closes, and the name
+        // under it does not open it again.
         click_full_root(
             &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
         );
         assert!(
-            !chrome.borrow().overlays.overview,
-            "second click on the overview button must close the overview overlay"
+            !menu_shown(root.as_ref()),
+            "second click on the workspace name must close the workspace menu"
         );
     }
 
@@ -807,12 +818,11 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
 }
 
 /// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a
-/// fixed 1600x900 viewport and draws once so `overview_btn_rect` is
-/// populated, returning the pieces a caller needs to dispatch a synthetic
-/// click plus the button's screen-space centre. Split out of
-/// [`overview_button_click_toggles_overview_overlay`] to keep it under the
-/// line limit.
-fn topbar_with_overview_btn_hit() -> (
+/// fixed 1600x900 viewport and draws once so its workspace pill is placed,
+/// returning the pieces a caller needs to dispatch a synthetic click plus
+/// the pill's screen-space centre. Split out of the click phases to keep
+/// them under the line limit.
+fn topbar_with_workspace_pill_hit() -> (
     TopBarChrome,
     Chrome,
     taffy::TaffyTree<()>,
@@ -862,16 +872,16 @@ fn topbar_with_overview_btn_hit() -> (
         .expect("compute_layout");
     bar.apply_layout(&taffy, node, Point::ORIGIN);
 
-    // Draw once to populate `overview_btn_rect`.
+    // Draw once to place the workspace pill.
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    let btn = bar.overview_btn_rect();
+    let btn = bar.workspace_menu_rect();
     assert!(
         btn.area() > 0.0,
-        "draw should have populated overview_btn_rect"
+        "draw should have placed the workspace pill"
     );
     let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
 
@@ -880,7 +890,8 @@ fn topbar_with_overview_btn_hit() -> (
 
 /// One cursor-move + left-press at `hit`, mirroring how a real click event
 /// pair reaches the widget tree. Split out of
-/// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
+/// [`full_root_click_toggles_the_workspace_menu`] to keep it under
+
 /// the line limit.
 fn click_full_root(
     root: &mut Box<dyn Widget>,

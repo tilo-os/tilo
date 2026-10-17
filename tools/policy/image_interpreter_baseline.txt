@@ -7,3 +7,5 @@
 # exception made in review, with the reason after `#`.
 #
 # path  # what it does, and so what porting it touches
+image:/usr/libexec/umu_run.py  # umu-launcher, the Proton runtime launcher Windows games run through; no compiled equivalent exists
+image:/usr/libexec/tilo/finalize-rpmdb  # build time only: makes the rpmdb readable on a read-only /usr after each package change; removed before the rootfs's final checks

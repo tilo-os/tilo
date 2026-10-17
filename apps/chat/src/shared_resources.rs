@@ -320,12 +320,11 @@ mod tests {
 
     fn shared(app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>) -> String {
         let reference = serde_json::json!({"kind":"notes.page", "id":"notes.page:1", "label":"Plan", "span":{"start":6,"end":9,"unit":"Chars"}});
-        app.call_on(&crate::testing::item("channels", "c_general"), "share-resource", serde_json::json!({
-            "reference":reference, "source_provider":"record:so.tilo.notes:plan", "text":"Discuss resource"
+        app.call_on(&crate::testing::chain(), "share-resource", serde_json::json!({
+            "channel": "c_general", "reference":reference, "source_provider":"record:so.tilo.notes:plan", "text":"Discuss resource"
         })).unwrap();
         app.settle();
-        app.state()
-            .message_rows("c_general")
+        crate::testing::mounted_rows(app, "c_general")
             .into_iter()
             .find(|row| row.text == "Discuss resource")
             .unwrap()

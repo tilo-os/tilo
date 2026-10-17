@@ -122,28 +122,74 @@ impl Chat {
             .collect()
     }
 
-    /// The messages of `channel`, oldest first.
+    /// The messages of `channel` held in `messages`, oldest first, with the
+    /// feedback filed in it among them where it was filed.
     #[must_use]
-    pub fn message_rows(&self, channel: &str) -> Vec<Message> {
-        self.messages
+    pub fn message_rows(
+        &self,
+        messages: &crate::messages::Messages,
+        channel: &str,
+    ) -> Vec<Message> {
+        let mut rows: Vec<Message> = messages
             .iter()
             .filter(|(_, message)| message.channel.as_str() == channel)
             .map(|(id, message)| message_row(id, message))
+            .collect();
+        let filed = self.feedback_rows(channel);
+        if !filed.is_empty() {
+            for report in filed {
+                let at = rows.partition_point(|row| row.ts <= report.ts);
+                rows.insert(at, report);
+            }
+        }
+        rows
+    }
+
+    /// The feedback filed in `channel`, as the timeline shows it: a message
+    /// by whoever filed it, saying what they reported.
+    fn feedback_rows(&self, channel: &str) -> Vec<Message> {
+        self.feedback
+            .iter()
+            .filter_map(|(id, report)| {
+                let submission = report.submission.0.as_ref()?;
+                (submission.destination.channel == channel).then(|| {
+                    message_row(
+                        &Id::from_raw(crate::feedback::message_id(id.as_str())),
+                        &crate::record::Message {
+                            channel: Id::from_raw(channel),
+                            author: report.author.clone(),
+                            ts: report.ts,
+                            text: submission.feedback.text.clone(),
+                            ..crate::record::Message::default()
+                        },
+                    )
+                })
+            })
             .collect()
     }
 
-    /// The message `id`, in whichever channel it is.
+    /// The message `id` held in `messages`, in whichever channel it is, or
+    /// the feedback report it shows.
     #[must_use]
-    pub fn message_row(&self, id: &str) -> Option<Message> {
-        let id = Id::from_raw(id);
-        self.messages
-            .get(&id)
-            .map(|message| message_row(&id, message))
+    pub fn message_row(&self, messages: &crate::messages::Messages, id: &str) -> Option<Message> {
+        let key = Id::from_raw(id);
+        messages
+            .get(&key)
+            .map(|message| message_row(&key, message))
+            .or_else(|| {
+                self.feedback.iter().find_map(|(report, filed)| {
+                    let submission = filed.submission.0.as_ref()?;
+                    (crate::feedback::message_id(report.as_str()) == id)
+                        .then(|| self.feedback_rows(&submission.destination.channel))?
+                        .into_iter()
+                        .find(|row| row.id == id)
+                })
+            })
     }
 
-    /// How many top-level messages of `channel` `user` has seen.
+    /// How far `user` read `channel`.
     #[must_use]
-    pub fn read_mark(&self, channel: &str, user: &str) -> i64 {
+    pub fn read_mark(&self, channel: &str, user: &str) -> crate::parts::ReadMark {
         self.read
             .get(user)
             .and_then(|marks| marks.get(channel))
@@ -151,16 +197,18 @@ impl Chat {
             .unwrap_or_default()
     }
 
-    /// The top-level messages of `channel` `user` has not seen.
+    /// The top-level messages of `channel` held in `messages` that `user`
+    /// has not seen.
     #[must_use]
-    pub fn unread(&self, channel: &str, user: &str) -> u32 {
-        let total = i64::try_from(self.top_level(&Id::from_raw(channel))).unwrap_or(i64::MAX);
-        u32::try_from((total - self.read_mark(channel, user)).max(0)).unwrap_or(u32::MAX)
+    pub fn unread(&self, messages: &crate::messages::Messages, channel: &str, user: &str) -> u32 {
+        let unread = messages.unread(&Id::from_raw(channel), self.read_mark(channel, user));
+        u32::try_from(unread).unwrap_or(u32::MAX)
     }
 }
 
 /// `message` as the timeline draws it.
-pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message {
+#[must_use]
+pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
     let mut by_emoji: std::collections::BTreeMap<&str, Vec<String>> =
         std::collections::BTreeMap::new();
     for reacted in message.reactions.iter() {

@@ -33,10 +33,10 @@ pub(crate) fn answer_pending_prompt_as(
     member: Option<MemberChoice>,
 ) -> Result<(), ActionError> {
     if state.pending_grants.front().is_none_or(|p| p.id != id) {
-        return Err(ActionError::Refused(t("permission-request-expired")));
+        return Err(ActionError::Explained(t("permission-request-expired")));
     }
     if choice == PromptChoice::Always && !is_active_workspace_owner(state) {
-        return Err(ActionError::Refused(t(
+        return Err(ActionError::Explained(t(
             "permission-request-permanent-owner-required",
         )));
     }
@@ -78,7 +78,7 @@ fn member_choice(
         .text("preset")
         .map(|value| {
             tilo_action_policy::roles::AgentPreset::parse(value)
-                .ok_or_else(|| ActionError::Refused(t("agent-door-preset-invalid")))
+                .ok_or_else(|| ActionError::Explained(t("agent-door-preset-invalid")))
         })
         .transpose()?;
     Ok(args.text("agent").map(|agent| MemberChoice {
@@ -146,7 +146,9 @@ impl SearchProvider for PermissionPromptsProvider {
             on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args| {
                 let mut state = chrome.borrow_mut();
                 if !is_active_workspace_owner(&state) {
-                    return Err(ActionError::Refused(t("permission-request-owner-required")));
+                    return Err(ActionError::Explained(t(
+                        "permission-request-owner-required",
+                    )));
                 }
                 let member = member_choice(args)?;
                 answer_pending_prompt_as(&mut state, prompt_id, choice, member)

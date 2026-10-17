@@ -261,11 +261,15 @@ impl PairingPromptView {
             ));
         }
 
-        if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt {
+        // A service people would recognise is named; an unknown one is left
+        // to the explanation above rather than shown as its UUID.
+        if let PairingPrompt::AuthorizeService { uuid } = &self.request.prompt
+            && let Some(service) = bluetooth_service_key(uuid)
+        {
             body = body.push(Box::new(
                 Text::new(&t_args(
                     "bluetooth-prompt-service",
-                    &[("uuid", uuid.into())],
+                    &[("service", t(service).into())],
                 ))
                 .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
@@ -684,8 +688,50 @@ impl PairingOverlay {
     }
 }
 
+/// The catalogue key naming a Bluetooth service by what it does, for the
+/// assigned 16-bit UUIDs a person would recognise. `uuid` is the full
+/// 128-bit form on the Bluetooth base UUID.
+fn bluetooth_service_key(uuid: &str) -> Option<&'static str> {
+    let uuid = uuid.to_ascii_lowercase();
+    let short = uuid
+        .strip_suffix("-0000-1000-8000-00805f9b34fb")
+        .and_then(|head| head.strip_prefix("0000"))
+        .and_then(|short| u16::from_str_radix(short, 16).ok())?;
+    Some(match short {
+        0x110a | 0x110b | 0x110d => "bluetooth-service-audio",
+        0x1108 | 0x1112 | 0x111e | 0x111f => "bluetooth-service-calls",
+        0x110c | 0x110e | 0x110f => "bluetooth-service-remote-control",
+        0x1124 | 0x1812 => "bluetooth-service-input",
+        0x112f | 0x1130 => "bluetooth-service-contacts",
+        0x1132..=0x1134 => "bluetooth-service-messages",
+        0x1105 | 0x1106 => "bluetooth-service-files",
+        0x1115..=0x1117 => "bluetooth-service-network",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bluetooth_services_are_named_or_left_out_never_shown_as_uuids() {
+        assert_eq!(
+            super::bluetooth_service_key("0000110B-0000-1000-8000-00805F9B34FB"),
+            Some("bluetooth-service-audio")
+        );
+        assert_eq!(
+            super::bluetooth_service_key("00001124-0000-1000-8000-00805f9b34fb"),
+            Some("bluetooth-service-input")
+        );
+        assert_eq!(
+            super::bluetooth_service_key("0000fe2c-0000-1000-8000-00805f9b34fb"),
+            None
+        );
+        assert_eq!(
+            super::bluetooth_service_key("6e400001-b5a3-f393-e0a9-e50e24dcca9e"),
+            None
+        );
+    }
+
     use super::*;
     use automerge::ReadDoc as _;
 

@@ -278,6 +278,42 @@ fn a_hidden_top_bar_gives_the_window_its_strip_and_shows_over_it_when_reached_fo
     assert!((again.tab_bar.y0 - bar.y1).abs() < 0.5, "docked again");
 }
 
+/// A notification banner hangs over the window in the top-right corner. On
+/// the banner, the shell takes the pointer, so a click opens or dismisses
+/// it instead of landing in the window under it; beside it, the window
+/// keeps the pointer.
+#[test]
+fn a_banner_over_a_window_takes_the_pointer() {
+    use shell::shell::input_policy::chrome_captures_pointer;
+    use vello::kurbo::Point;
+
+    let mut panel = Panel::new();
+    let window = panel.group().0.group;
+    panel.fb.with_chrome(|chrome| {
+        chrome.push_notification_full(tilo_desktop::notifications::Notification::new(
+            "scribe asks first: Rename",
+            "Rename files based on their contents",
+        ));
+    });
+    panel.settle();
+    let banner = panel.fb.host().notification_banners_rect();
+    assert!(banner.area() > 0.0, "the banner is drawn: {banner:?}");
+    let on_banner = banner.center();
+    panel.fb.host_mut().note_pointer(on_banner);
+    assert!(
+        chrome_captures_pointer(&panel.fb),
+        "the banner, not the window under it, takes the pointer"
+    );
+    panel
+        .fb
+        .host_mut()
+        .note_pointer(Point::new(window.center().x, window.y1 - 20.0));
+    assert!(
+        !chrome_captures_pointer(&panel.fb),
+        "the window has the pointer"
+    );
+}
+
 /// The bar hidden and a maximized window's bar hidden too: reaching for the
 /// top shows the top stack the way it reads, the desktop's bar at the top
 /// and the window's bar under it, neither covering the other.

@@ -410,7 +410,9 @@ async fn assert_one_report(
             assert_eq!(&report.submission, submission);
             assert_eq!(report.author, person);
             assert_eq!(
-                replica.read(|doc| chat::projection::read(doc).message_rows("feedback").len()),
+                replica.read(|doc| chat::projection::read(doc)
+                    .message_rows(&chat::messages::Messages::default(), "feedback")
+                    .len()),
                 Some(1)
             );
             return;

@@ -2,23 +2,24 @@
 continuity-dismiss = Ausblenden
 topbar-workspace-fallback = Arbeitsbereich
 topbar-calendar-none = Kein Kalender verbunden
-topbar-sharing-agent-controls = AGENT STEUERT · { $name }
-topbar-sharing-agent-viewing = AGENT SIEHT ZU · { $name }
-topbar-sharing-person-controls = STEUERT · { $name }
-topbar-sharing-person-viewing = SIEHT ZU · { $name }
-topbar-sharing-session-controls = SITZUNG STEUERT · { $name }
-topbar-sharing-session-viewing = SITZUNG SIEHT ZU · { $name }
-topbar-sharing-count-controlling = { $controllers } { $controllers ->
-        [one] STEUERT
-       *[other] STEUERN
-    } · { $viewers } { $viewers ->
-        [one] SIEHT ZU
-       *[other] SEHEN ZU
+topbar-sharing-agent-controls = Agent steuert: { $name }
+topbar-sharing-agent-viewing = Agent sieht zu: { $name }
+topbar-sharing-person-controls = Steuert: { $name }
+topbar-sharing-person-viewing = Sieht zu: { $name }
+topbar-sharing-session-controls = Steuert: { $name }
+topbar-sharing-session-viewing = Sieht zu: { $name }
+topbar-sharing-count-controlling = { $viewers } { $viewers ->
+        [one] sieht
+       *[other] sehen
+    } zu, { $controllers } { $controllers ->
+        [one] steuert
+       *[other] steuern
     }
 topbar-sharing-count = { $viewers } { $viewers ->
-        [one] SIEHT ZU
-       *[other] SEHEN ZU
-    }
+        [one] sieht
+       *[other] sehen
+    } zu
+topbar-sharing-unknown-window = ein Fenster
 topbar-watching-count = +{ $count } { $count ->
         [one] schaut zu
        *[other] schauen zu
@@ -27,13 +28,7 @@ topbar-watching-description = { $count } { $count ->
         [one] Person schaut
        *[other] Personen schauen
     } zu, ohne teilzunehmen
-topbar-sharing-surface = Oberfläche { $surface }
-topbar-open-overview = Übersicht öffnen
 topbar-tilo-menu = Tilo-Menü
-topbar-previous-workspace = Vorheriger Arbeitsbereich
-topbar-next-workspace = Nächster Arbeitsbereich
-topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
-topbar-workspace-host = Gehostet bei { $host }
 topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
@@ -49,9 +44,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkende anzeigen
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
-topbar-network-offline = Offline
-topbar-tray-open = { $app } öffnen
-topbar-tray-menu = Menü für { $app }
 topbar-editor-control = Bearbeitungselement der oberen Leiste
 topbar-editor-remove-clock = Uhr aus der oberen Leiste entfernen
 topbar-editor-remove-system-monitor = Systemmonitor aus der oberen Leiste entfernen
@@ -89,13 +81,11 @@ topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
 topbar-strips = Leisten in diesem Arbeitsbereich
-topbar-strip-count = { $name } · { $count }
 topbar-strip-go = Zu { $name } wechseln, { $count ->
     [0] niemand dort
     [one] eine Person dort
    *[other] { $count } Personen dort
 }
-topbar-strip-add = Leiste hinzufügen
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] Eine weitere Leiste
@@ -219,7 +209,7 @@ activity-more = Mehr…
 activity-pane-timeline = Zeitleiste
 activity-pane-browse = Durchsuchen
 activity-pane-details = Details
-activity-resume-heading = ZULETZT BEARBEITET
+activity-resume-heading = Zuletzt bearbeitet
 activity-resume-context = { $app } · { $when }
 activity-resume-button = Fortsetzen →
 activity-pending-edits = Warte auf laufende Bearbeitungen
@@ -362,14 +352,14 @@ activity-tasks-pending = Aufgaben warten auf laufende Bearbeitungen
 activity-tasks-empty = Noch keine Aufgaben
 activity-tasks-empty-hint = Lege hier eine an oder bitte in einer beliebigen App einen Agenten darum.
 activity-task-new = + Neue Aufgabe
-activity-task-queue = WARTESCHLANGE DES ARBEITSBEREICHS
+activity-task-queue = Warteschlange des Arbeitsbereichs
 activity-task-composer-title = Arbeit anlegen, ohne den Schreibtisch zu verlassen
 activity-task-placeholder = Was muss erledigt werden?
-activity-task-executor-manual = Ausführung · Du oder eine andere Person · kein Modell
-activity-task-executor-none = Ausführung · Kein Agent verfügbar · Aufgabe bleibt unzugewiesen
-activity-task-executor-agent = Ausführung · Agent · { $agent }
+activity-task-executor-manual = Erledigt von dir oder einer anderen Person
+activity-task-executor-none = Kein Agent verfügbar. Die Aufgabe bleibt unzugewiesen.
+activity-task-executor-agent = Agent: { $agent }
 activity-task-no-attachment = Keine Ressource angehängt · Aufgabe gilt für den ganzen Arbeitsbereich
-activity-task-attached = Angehängt · { $app } · { $resource }
+activity-task-attached = Angehängt: { $resource } in { $app }
 activity-task-attached-workspace = Arbeitsbereich
 activity-task-cancel-compose = Abbrechen
 activity-task-create = Anlegen
@@ -380,7 +370,7 @@ activity-task-mark-started = Als begonnen markieren
 activity-task-mark-done = Als erledigt markieren
 activity-task-cancel = Aufgabe abbrechen
 activity-task-retry-agent = Agent erneut versuchen
-activity-task-audit-trail = PRÜFPROTOKOLL
+activity-task-audit-trail = Prüfprotokoll
 activity-task-audit-noted = { $what }: { $note }
 workspace-create-task = { $manual ->
     [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
@@ -775,7 +765,7 @@ workspace-settings-you-manage = Von dir verwaltet
 workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
 workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
-workspace-settings-people-header = PERSONEN
+workspace-settings-people-header = Personen
 workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
 workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
 workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
@@ -795,23 +785,23 @@ workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirk
 workspace-settings-add-agent = Agent hinzufügen
 workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
 workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
-workspace-settings-agents-header = AGENTEN
-workspace-settings-service-member = Dienstmitglied · { $access ->
-    [admin] verwaltet
-    [write] liest und bearbeitet
-    [comment] liest und kommentiert
-   *[read] liest
-} Ende-zu-Ende-verschlüsselte Inhalte · { $until } · Gerät { $device }
+workspace-settings-agents-header = Agenten
+workspace-settings-service-member = { $access ->
+    [admin] Verwaltet
+    [write] Liest und bearbeitet
+    [comment] Liest und kommentiert
+   *[read] Liest
+} verschlüsselte Inhalte · { $until }
 workspace-settings-service-until-removed = bis zur Entfernung
 workspace-settings-service-ends-soon = Zugriff endet in weniger als einer Minute
 workspace-settings-service-ends-minutes = Zugriff endet in { $minutes } Min.
 workspace-settings-service-ends-hours = Zugriff endet in { $hours } Std.
-workspace-settings-badge-service = DIENST
-workspace-settings-badge-agent = AGENT
+workspace-settings-badge-service = Dienst
+workspace-settings-badge-agent = Agent
 workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · keine eingeschränkten Berechtigungen – Prüfung erforderlich
-    [one] { $admission } · Profil { $profile } · 1 eingeschränkte Berechtigung
-   *[other] { $admission } · Profil { $profile } · { $count } eingeschränkte Berechtigungen
+    [0] { $admission } · Noch keine Berechtigungen, Prüfung nötig
+    [one] { $admission } · { $profile }, 1 Berechtigung
+   *[other] { $admission } · { $profile }, { $count } Berechtigungen
 }
 workspace-settings-admitted = Zugelassen
 workspace-settings-review-access = Zugriff prüfen
@@ -827,7 +817,7 @@ workspace-settings-agent-access-inherited = Folgt der Zulassung
 workspace-settings-agent-access-set-here = hier festgelegt
 workspace-settings-agent-access-default = Standard
 workspace-settings-agent-access-reset = Standard verwenden
-workspace-settings-agent-access-always = IMMER ERLAUBT · { $count }
+workspace-settings-agent-access-always = Immer erlaubt · { $count }
 workspace-settings-agent-access-stop = Wieder fragen
 workspace-settings-agent-access-empty = Noch keine Apps in diesem Arbeitsbereich.
 workspace-settings-answer-allow = Erlauben
@@ -840,10 +830,10 @@ workspace-settings-admission-comment = Zulassung zum Kommentieren
 workspace-settings-admission-read = Zulassung zum Lesen
 workspace-settings-unavailable-app = Nicht verfügbare App
 workspace-settings-apps-empty-title = Keine Dateiverknüpfungen installiert
-workspace-settings-apps-empty-detail = Apps erscheinen hier, sobald sie unterstützte Dateitypen angeben.
+workspace-settings-apps-empty-detail = Noch keine App gibt einen unterstützten Dateityp an.
 workspace-settings-apps-intro-title = Standards ohne Bindung
 workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vor; jede Person kann ausdrücklich etwas anderes wählen.
-workspace-settings-apps-header = STANDARDANWENDUNGEN
+workspace-settings-apps-header = Standard-Apps
 workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
 workspace-settings-your-choice = Deine Wahl
 workspace-settings-resource-extension = .{ $ext }-Dateien
@@ -869,10 +859,10 @@ workspace-settings-permissions-empty-title = Keine Berechtigungen erteilt
 workspace-settings-permissions-empty-detail = Apps erhalten nichts, bis es hier erteilt oder in einer Abfrage erlaubt wird.
 workspace-settings-more = +{ $count } weitere
 workspace-settings-who = Wer
-workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeiner Zugriff auf den Arbeitsbereich)
+workspace-settings-who-agent = Wer: ein Agent, nur mit Zugriff auf dieses Fenster
 workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
 workspace-settings-what-it-allows = Was es erlaubt
-workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
+workspace-settings-grant-header = Berechtigung erteilen
 workspace-settings-saved-roles = Rollen verwalten ({ $count })
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
@@ -893,12 +883,12 @@ workspace-settings-revoke-permission = Berechtigung entziehen
 workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
 workspace-settings-workspace-fallback = Arbeitsbereich
 workspace-settings-identity-caption = Arbeitsbereich · { $role }
-workspace-settings-current-workspace = AKTUELLER ARBEITSBEREICH
+workspace-settings-current-workspace = Aktueller Arbeitsbereich
 workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
-workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
+workspace-settings-invite-hint = Wähle eine Person und eine Rolle. Die Einladung ist signiert und gilt eine Stunde.
 workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
 workspace-settings-invite-create = Erstellen
 workspace-settings-devices-title = Deine Geräte
@@ -986,7 +976,7 @@ launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
 
 # Empty-workspace launchpad: the keyboard hint under the cards
-launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
+launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
 
 # Peers arriving in and leaving a workspace, batched into one toast
 
@@ -1011,7 +1001,7 @@ people-panel-stop-following = Beenden
 people-panel-invite = Einladen
 people-panel-join = Beitreten
 launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
-workspace-settings-sheet-keyboard-hint = ↑ ↓ zum Auswählen · Eingabetaste zum Bestätigen · Esc zum Abbrechen
+workspace-settings-sheet-keyboard-hint = ↑ ↓ wählen, Eingabetaste bestätigt, Esc bricht ab
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
@@ -1068,8 +1058,8 @@ overview-presence-many = { $count } Personen sind hier
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo
 browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du machst, wird laufend gespeichert und Ende-zu-Ende-verschlüsselt.
-browser-welcome-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Strg+K findet jede App
-browser-welcome-hint-mac = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  ⌘K findet jede App
+browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet, Strg+K findet jede App
+browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jede App
 
 # The overview panel a host without its own overview draws
 overview-panel-title = Übersicht
@@ -1101,7 +1091,7 @@ tilo-about-link-community = Community
 
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
-activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }
+activity-catch-up-goals = Aufgaben im Arbeitsbereich: { $done } abgeschlossen, { $unfinished } offen · aktualisiert { $when }
 activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
 activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
 activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
@@ -1131,7 +1121,7 @@ activity-task-direction-label = Anweisungen für den Agenten
 activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
 activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
 activity-task-review-saving = Wird gespeichert…
-activity-task-review-saved = Gespeichert. Die Reaktion des Agenten erscheint hier.
+activity-task-review-saved = Gespeichert. Warte auf die Antwort des Agenten.
 activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
 
 activity-confirm-waiting = Wartet auf deine Bestätigung
@@ -1160,7 +1150,7 @@ activity-confirm-bcc = Bcc
 activity-confirm-subject = Betreff
 activity-confirm-body = Nachricht
 activity-confirm-attachments = Anhänge
-activity-confirm-confirm = Bestätigen
+activity-confirm-confirm = Erlauben
 activity-confirm-edit = Bearbeiten
 activity-confirm-discard = Änderungen verwerfen
 activity-confirm-decline = Ablehnen
@@ -1179,7 +1169,7 @@ activity-confirm-notice-review = Ansehen
 
 activity-task-next = Nächste Aufgabe
 activity-task-previous = Vorherige Aufgabe
-activity-task-review-source = Stand beim Arbeitsbereich · Version { $generation } · abgerufen { $time }
+activity-task-review-source = Stand beim Arbeitsbereich, Version { $generation } · abgerufen { $time }
 activity-task-review-status = { $status ->
         [queued] { $agent } hat noch nicht angefangen
         [in-progress] { $agent } arbeitet daran
@@ -1210,8 +1200,6 @@ activity-task-awaiting-acceptance = Wartet darauf, dass der Agent die Aufgabe ü
 activity-task-run-accepted = Der Agent hat die Aufgabe übernommen · zuletzt { $time }
 activity-task-run-planning = Der Agent plant die Schritte · zuletzt { $time }
 activity-task-run-executing = Der Agent nimmt Änderungen vor · zuletzt { $time }
-topbar-cpu-reading = CPU { $value }
-topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
@@ -1219,7 +1207,7 @@ activity-morning-empty = Morgenquellen: Ressource unter Verlauf → Details ausw
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
 activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
 activity-morning-source-unnamed = Gewählte Quelle
-activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
+activity-morning-source = { $source }, letzte Aktivität { $time } · möglicherweise nicht aktuell
 
 activity-morning-open = Morgenquelle öffnen
 

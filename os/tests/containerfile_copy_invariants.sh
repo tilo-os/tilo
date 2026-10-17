@@ -252,7 +252,10 @@ containerfile="$repo/os/Containerfile"
 # COPY of the Python UKI editor.
 # The installed consumer capability producers are tilo-prepared-setup modes
 # now, so their six Python script rows are gone.
-expected_contract=28fa67fe1a1572d95230fce47a02857832194d2dd360bf40aaa8dc310f2e742e
+# hardware_profile.py no longer ships: the image reads its profile with the
+# compiled reader, so the component staging row for it is gone.
+# verify-no-python-runtime.sh is copied in for the rootfs's final checks.
+expected_contract=0b60d55a8bc7bf7c42bc8aefb859cf82dbb99e43ec5e475cc0041c5b1612a4c3
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

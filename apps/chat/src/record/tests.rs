@@ -1,6 +1,9 @@
+use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
 use super::*;
+use crate::messages::{Messages, chat_part};
+use crate::parts::ChatPart;
 
 const ADA: &str = "u_ada";
 const BO: &str = "u_bo";
@@ -35,14 +38,85 @@ pub(super) fn room() -> Replica<Chat> {
     ada
 }
 
-fn post(text: &str) -> Invoke<Chat> {
-    Chat::POST.with(chat::Post {
-        channel: id("c_general"),
-        text: text.into(),
-        parent: None,
-        body: None,
-        attachment: None,
-    })
+/// Ada's starter chat with Bo introduced, and the part of its messages,
+/// one replica of each: verbs on the messages are read against the chat
+/// record where they are invoked, as the window's chain reads them.
+pub(super) struct Talk {
+    pub(super) chat: Replica<Chat>,
+    pub(super) part: Replica<ChatPart>,
+    now_ms: i64,
+}
+
+impl Talk {
+    pub(super) fn new() -> Self {
+        let chat = room();
+        let mut part = Replica::<ChatPart>::new().as_author(ADA);
+        part.set_now_ms(1_000_000);
+        Self {
+            chat,
+            part,
+            now_ms: 1_000_000,
+        }
+    }
+
+    /// Another replica of both, as `author`.
+    pub(super) fn fork_as(&mut self, author: &str) -> Self {
+        Self {
+            chat: self.chat.fork().as_author(author),
+            part: self.part.fork().as_author(author),
+            now_ms: self.now_ms,
+        }
+    }
+
+    pub(super) fn sync_with(&mut self, other: &mut Self) {
+        self.chat.sync_with(&mut other.chat).unwrap();
+        self.part.sync_with(&mut other.part).unwrap();
+    }
+
+    pub(super) fn set_now_ms(&mut self, now_ms: i64) {
+        self.now_ms = now_ms;
+        self.chat.set_now_ms(now_ms);
+        self.part.set_now_ms(now_ms);
+    }
+
+    /// Apply a verb on the messages, as the person confirming it would.
+    pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), DoorError> {
+        use ui::framework::Chained as _;
+        if let Some(refusal) = invoke.refusal() {
+            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+        }
+        let mut action = invoke
+            .build(self.now_ms)
+            .map_err(DoorError::InvalidArguments)?;
+        ChatPart::prepare(&mut action, &self.chat.state().unwrap()).map_err(DoorError::Failed)?;
+        self.part.apply_action(&action).map(drop)
+    }
+
+    pub(super) fn messages(&self) -> Messages {
+        Messages::single(self.part.state().unwrap())
+    }
+
+    pub(super) fn rows(&self, channel: &str) -> Vec<crate::model::Message> {
+        self.chat
+            .state()
+            .unwrap()
+            .message_rows(&self.messages(), channel)
+    }
+
+    /// The id of the message saying `text`.
+    pub(super) fn said(&self, text: &str) -> Id {
+        self.part
+            .state()
+            .unwrap()
+            .messages
+            .iter()
+            .find(|(_, message)| message.text == text)
+            .map_or_else(|| panic!("no message says {text:?}"), |(id, _)| id.clone())
+    }
+}
+
+pub(super) fn post(text: &str) -> Invoke<ChatPart> {
+    post_to("c_general", text)
 }
 
 #[test]
@@ -52,17 +126,18 @@ fn a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not() {
         avatar: Some("ab".repeat(32)),
         persona: None,
     };
-    let mut ada = room();
+    let mut ada = Talk::new();
     let mut bridge = ada
+        .part
         .fork()
         .as_bot_for("5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1", ADA)
         .showing(shown.clone());
     bridge.apply(post("from Discord")).unwrap();
-    ada.sync_with(&mut bridge).unwrap();
-    let mut posing = ada.fork().as_author(BO).showing(shown.clone());
+    ada.part.sync_with(&mut bridge).unwrap();
+    let mut posing = ada.part.fork().as_author(BO).showing(shown.clone());
     posing.apply(post("not Grace")).unwrap();
-    ada.sync_with(&mut posing).unwrap();
-    let rows = ada.state().unwrap().message_rows("c_general");
+    ada.part.sync_with(&mut posing).unwrap();
+    let rows = ada.rows("c_general");
     let of = |text: &str| rows.iter().find(|row| row.text == text).unwrap();
     let bridged = of("from Discord");
     assert_eq!(bridged.author, "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1");
@@ -74,25 +149,15 @@ fn a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not() {
     );
 }
 
-fn reply(parent: &Id, text: &str) -> Invoke<Chat> {
-    Chat::POST.with(chat::Post {
+fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
+    ChatPart::POST.with(chat_part::Post {
         channel: id("c_general"),
         text: text.into(),
         parent: Some(parent.clone()),
         body: None,
         attachment: None,
+        mentions: None,
     })
-}
-
-/// The id of the message saying `text`.
-fn said(replica: &Replica<Chat>, text: &str) -> Id {
-    replica
-        .state()
-        .unwrap()
-        .messages
-        .iter()
-        .find(|(_, message)| message.text == text)
-        .map_or_else(|| panic!("no message says {text:?}"), |(id, _)| id.clone())
 }
 
 #[test]
@@ -125,7 +190,10 @@ fn a_new_chat_starts_with_its_creator_and_a_starter_workspace() {
             .collect::<Vec<_>>(),
         [(ADA, "Ada"), (BO, "Bo")]
     );
-    assert!(chat.messages.is_empty(), "no fabricated conversation");
+    assert!(
+        !chat.channels.is_empty(),
+        "a starter workspace, and no fabricated conversation: messages are kept in parts"
+    );
 }
 
 #[test]
@@ -158,23 +226,23 @@ fn a_hosted_chat_starts_in_its_workspace_and_is_never_rebound() {
 
 #[test]
 fn posting_records_its_author_time_and_mentions() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.set_now_ms(1_234_000);
     ada.apply(post("hi @Bo, the deck is up")).unwrap();
-    let chat = ada.state().unwrap();
-    let rows = chat.message_rows("c_general");
+    let chat = ada.chat.state().unwrap();
+    let rows = ada.rows("c_general");
     assert_eq!(rows.len(), 1);
     let message = &rows[0];
     assert_eq!(message.author, ADA, "the poster is whoever invoked");
     assert_eq!(message.ts, 1234, "the time is the action's");
     assert_eq!(message.mentions.len(), 1);
     assert_eq!(message.mentions[0].user, BO);
-    assert_eq!(chat.unread("c_general", BO), 1);
+    assert_eq!(chat.unread(&ada.messages(), "c_general", BO), 1);
 }
 
 #[test]
 fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     assert!(ada.apply(post("   ")).is_err(), "an empty message");
     assert!(
         ada.apply(post(&"x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
@@ -182,19 +250,12 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
         "a document, not a turn"
     );
     assert!(
-        ada.apply(Chat::POST.with(chat::Post {
-            channel: id("c_lounge"),
-            text: "hello".into(),
-            parent: None,
-            body: None,
-            attachment: None,
-        }))
-        .is_err(),
+        ada.apply(post_to("c_lounge", "hello")).is_err(),
         "a voice channel has no timeline"
     );
     assert!(ada.apply(post_to("c_gone", "hello")).is_err());
     assert!(
-        ada.apply(Chat::POST.with(chat::Post {
+        ada.apply(ChatPart::POST.with(chat_part::Post {
             channel: id("c_general"),
             text: "look".into(),
             parent: None,
@@ -207,50 +268,52 @@ fn a_post_that_says_nothing_or_is_misplaced_is_refused() {
                 height: 10,
                 size: 0,
             }),
+            mentions: None,
         }))
         .is_err(),
         "an attachment is a content address"
     );
-    assert!(ada.state().unwrap().messages.is_empty());
+    assert!(ada.messages().is_empty());
 }
 
-fn post_to(channel: &str, text: &str) -> Invoke<Chat> {
-    Chat::POST.with(chat::Post {
+fn post_to(channel: &str, text: &str) -> Invoke<ChatPart> {
+    ChatPart::POST.with(chat_part::Post {
         channel: id(channel),
         text: text.into(),
         parent: None,
         body: None,
         attachment: None,
+        mentions: None,
     })
 }
 
 #[test]
 fn a_reply_to_a_missing_or_deleted_message_is_refused() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     assert!(
         ada.apply(reply(&id("missing"), "Where did it go?"))
             .is_err()
     );
-    assert!(ada.state().unwrap().messages.is_empty());
+    assert!(ada.messages().is_empty());
 
     ada.apply(post("The plan")).unwrap();
-    let parent = said(&ada, "The plan");
-    ada.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+    let parent = ada.said("The plan");
+    ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
         message: parent.clone(),
     }))
     .unwrap();
     assert!(ada.apply(reply(&parent, "My answer")).is_err());
     assert!(
-        ada.state().unwrap().messages.is_empty(),
+        ada.messages().is_empty(),
         "a reply must not be accepted into a thread nobody can open"
     );
 }
 
 #[test]
 fn an_attachment_is_posted_by_its_content_address() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     let blob = "ab".repeat(32);
-    ada.apply(Chat::POST.with(chat::Post {
+    ada.apply(ChatPart::POST.with(chat_part::Post {
         channel: id("c_general"),
         text: String::new(),
         parent: None,
@@ -263,9 +326,10 @@ fn an_attachment_is_posted_by_its_content_address() {
             height: 0,
             size: 1200,
         }),
+        mentions: None,
     }))
     .unwrap();
-    let rows = ada.state().unwrap().message_rows("c_general");
+    let rows = ada.rows("c_general");
     assert_eq!(
         rows[0].attachment,
         Some(crate::model::Attachment::File {
@@ -278,39 +342,38 @@ fn an_attachment_is_posted_by_its_content_address() {
 
 #[test]
 fn threads_answer_top_level_messages_of_their_channel() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.apply(post("the plan")).unwrap();
-    let plan = said(&ada, "the plan");
+    let plan = ada.said("the plan");
     ada.apply(reply(&plan, "sounds good")).unwrap();
-    let answer = said(&ada, "sounds good");
+    let answer = ada.said("sounds good");
     assert!(
         ada.apply(reply(&answer, "nested")).is_err(),
         "a reply answers a top-level message"
     );
-    let chat = ada.state().unwrap();
-    let rows = chat.message_rows("c_general");
+    let rows = ada.rows("c_general");
     assert_eq!(crate::model::reply_count(&rows, plan.as_str()), 1);
-    assert_eq!(chat.top_level(&id("c_general")), 1);
+    assert_eq!(ada.messages().top_level(&id("c_general")), 1);
 }
 
 #[test]
 fn reactions_are_each_persons_own() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.apply(post("ship it")).unwrap();
-    let message = said(&ada, "ship it");
+    let message = ada.said("ship it");
     let react = |emoji: &str| {
-        Chat::REACT.with(chat::React {
+        ChatPart::REACT.with(chat_part::React {
             message: message.clone(),
             emoji: emoji.into(),
         })
     };
-    let mut bo = ada.fork().as_author(BO);
+    let mut bo = ada.fork_as(BO);
     ada.apply(react("🎉")).unwrap();
     bo.apply(react("🎉")).unwrap();
     bo.apply(react("👍")).unwrap();
-    ada.sync_with(&mut bo).unwrap();
-    let reactions = |replica: &Replica<Chat>| {
-        replica.state().unwrap().message_rows("c_general")[0]
+    ada.sync_with(&mut bo);
+    let reactions = |talk: &Talk| {
+        talk.rows("c_general")[0]
             .reactions
             .iter()
             .map(|reaction| (reaction.emoji.clone(), reaction.users.clone()))
@@ -324,12 +387,12 @@ fn reactions_are_each_persons_own() {
         ],
         "both first reactions with one emoji count"
     );
-    bo.apply(Chat::UNREACT.with(chat::Unreact {
+    bo.apply(ChatPart::UNREACT.with(chat_part::Unreact {
         message: message.clone(),
         emoji: "👍".into(),
     }))
     .unwrap();
-    bo.apply(Chat::UNREACT.with(chat::Unreact {
+    bo.apply(ChatPart::UNREACT.with(chat_part::Unreact {
         message: message.clone(),
         emoji: "🎉".into(),
     }))
@@ -344,21 +407,22 @@ fn reactions_are_each_persons_own() {
 
 #[test]
 fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.set_now_ms(10_000);
     ada.apply(post("teh plan")).unwrap();
-    let message = said(&ada, "teh plan");
+    let message = ada.said("teh plan");
     ada.set_now_ms(20_000);
     let edit = |text: &str| {
-        Chat::EDIT_MESSAGE.with(chat::EditMessage {
+        ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
             message: message.clone(),
             text: text.into(),
             body: None,
+            mentions: None,
         })
     };
     ada.apply(edit("the plan, @Bo")).unwrap();
     ada.apply(edit("the plan, @Bo")).unwrap();
-    let row = ada.state().unwrap().message_rows("c_general").remove(0);
+    let row = ada.rows("c_general").remove(0);
     assert!(row.edited);
     assert_eq!(row.text, "the plan, @Bo");
     assert_eq!(
@@ -370,13 +434,13 @@ fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
         "an unchanged edit records nothing"
     );
     assert_eq!(row.mentions.len(), 1, "the edit's mentions are resolved");
-    ada.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+    ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
         message: message.clone(),
     }))
     .unwrap();
-    assert!(ada.state().unwrap().messages.is_empty());
+    assert!(ada.messages().is_empty());
     assert!(
-        ada.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage { message }))
+        ada.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage { message }))
             .is_err()
     );
 }
@@ -501,52 +565,59 @@ fn a_channel_category_must_belong_to_its_workspace() {
 }
 
 #[test]
-fn deleting_a_channel_takes_its_messages_and_read_marks() {
-    let mut ada = room();
+fn deleting_a_channel_takes_its_read_marks() {
+    let mut ada = Talk::new();
     ada.apply(post("hello")).unwrap();
-    ada.apply(Chat::MARK_READ.with(chat::MarkRead {
-        channel: id("c_general"),
-        seen: None,
-    }))
-    .unwrap();
-    ada.apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
-        channel: id("c_general"),
-    }))
-    .unwrap();
-    let chat = ada.state().unwrap();
-    assert!(chat.messages.is_empty());
-    assert_eq!(chat.read_mark("c_general", ADA), 0);
+    ada.chat
+        .apply(Chat::MARK_READ.with(chat::MarkRead {
+            channel: id("c_general"),
+            part: 0,
+            seen: 1,
+        }))
+        .unwrap();
+    ada.chat
+        .apply_confirmed(Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
+            channel: id("c_general"),
+        }))
+        .unwrap();
+    let chat = ada.chat.state().unwrap();
+    assert_eq!(
+        chat.read_mark("c_general", ADA),
+        crate::parts::ReadMark::default()
+    );
+    assert!(
+        chat.message_rows(&ada.messages(), "c_general").len() == 1
+            && chat.channels.get(&id("c_general")).is_none(),
+        "its messages stay in their part, in a channel nobody shows"
+    );
 }
 
 #[test]
 fn a_read_mark_is_the_readers_own_and_never_counts_unseen_messages() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     for text in ["one", "two", "three"] {
         ada.apply(post(text)).unwrap();
     }
-    let mut bo = ada.fork().as_author(BO);
-    bo.apply(Chat::MARK_READ.with(chat::MarkRead {
-        channel: id("c_general"),
-        seen: Some(2),
-    }))
-    .unwrap();
-    let chat = bo.state().unwrap();
-    assert_eq!(chat.unread("c_general", BO), 1);
-    assert_eq!(chat.unread("c_general", ADA), 3, "Ada read nothing");
-    bo.apply(Chat::MARK_READ.with(chat::MarkRead {
-        channel: id("c_general"),
-        seen: Some(99),
-    }))
-    .unwrap();
-    assert_eq!(bo.state().unwrap().read_mark("c_general", BO), 3);
-    bo.apply(Chat::MARK_READ.with(chat::MarkRead {
-        channel: id("c_general"),
-        seen: Some(1),
-    }))
-    .unwrap();
+    let mut bo = ada.fork_as(BO);
+    let mark = |seen: u32| {
+        Chat::MARK_READ.with(chat::MarkRead {
+            channel: id("c_general"),
+            part: 0,
+            seen,
+        })
+    };
+    bo.chat.apply(mark(2)).unwrap();
+    let chat = bo.chat.state().unwrap();
+    let held = bo.messages();
+    assert_eq!(chat.unread(&held, "c_general", BO), 1);
+    assert_eq!(chat.unread(&held, "c_general", ADA), 3, "Ada read nothing");
+    bo.chat.apply(mark(3)).unwrap();
+    let three = crate::parts::ReadMark { part: 0, seen: 3 };
+    assert_eq!(bo.chat.state().unwrap().read_mark("c_general", BO), three);
+    bo.chat.apply(mark(1)).unwrap();
     assert_eq!(
-        bo.state().unwrap().read_mark("c_general", BO),
-        3,
+        bo.chat.state().unwrap().read_mark("c_general", BO),
+        three,
         "a mark never moves back"
     );
 }
@@ -554,12 +625,12 @@ fn a_read_mark_is_the_readers_own_and_never_counts_unseen_messages() {
 #[test]
 fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
     const AGENT: &str = "agent-task:22222222-2222-4222-8222-222222222222";
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.apply(post("@Tide chart the revenue")).unwrap();
-    let summons = said(&ada, "@Tide chart the revenue");
-    let mut agent = ada.fork().as_author(AGENT);
+    let summons = ada.said("@Tide chart the revenue");
+    let mut agent = ada.fork_as(AGENT);
     let work = |state: &str, outcome: &str| {
-        Chat::RECORD_WORK.with(chat::RecordWork {
+        ChatPart::RECORD_WORK.with(chat_part::RecordWork {
             message: summons.clone(),
             work: WorkUpdate {
                 state: state.into(),
@@ -582,9 +653,10 @@ fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
     };
     agent.apply(work("doing", "asked")).unwrap();
     agent.apply(work("done", "applied")).unwrap();
-    let chat = agent.state().unwrap();
+    let chat = agent.chat.state().unwrap();
+    let held = agent.messages();
     let reply = chat
-        .message_row(reply_id(&summons, AGENT).as_str())
+        .message_row(&held, reply_id(&summons, AGENT).as_str())
         .expect("the agent's reply is made once");
     assert_eq!(reply.author, AGENT);
     assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
@@ -604,10 +676,10 @@ fn an_agent_records_its_work_on_its_own_reply_to_the_summons() {
         work.trace[0].outcome,
         crate::model::AgentStepOutcome::Applied
     );
-    assert_eq!(chat.message_rows("c_general").len(), 2);
+    assert_eq!(chat.message_rows(&held, "c_general").len(), 2);
     assert!(
         agent
-            .apply(Chat::RECORD_WORK.with(chat::RecordWork {
+            .apply(ChatPart::RECORD_WORK.with(chat_part::RecordWork {
                 message: summons,
                 work: WorkUpdate {
                     state: "dancing".into(),
@@ -648,9 +720,16 @@ fn an_agent_is_named_once_for_everyone() {
 
 #[test]
 fn plain_changes_are_field_edits_at_their_paths() {
-    let mut ada = room();
-    ada.apply(post("pin me")).unwrap();
-    let message = said(&ada, "pin me");
+    let mut talk = Talk::new();
+    talk.apply(post("pin me")).unwrap();
+    let message = talk.said("pin me");
+    talk.apply(ChatPart::PIN.with(chat_part::Pin {
+        message: message.clone(),
+        pinned: true,
+    }))
+    .unwrap();
+    assert!(talk.messages().get(&message).unwrap().pinned);
+    let mut ada = talk.chat;
     let paths = Chat::paths();
     for edit in [
         paths
@@ -663,7 +742,6 @@ fn plain_changes_are_field_edits_at_their_paths() {
             .item(&id("c_general"))
             .topic
             .set("Say hi".into()),
-        paths.messages.item(&message).pinned.set(true),
         paths.channels.item(&id("c_lounge")).archived.set(true),
         paths
             .people
@@ -679,88 +757,109 @@ fn plain_changes_are_field_edits_at_their_paths() {
         (general.name.as_str(), general.topic.as_str()),
         ("lobby", "Say hi")
     );
-    assert!(chat.messages.get(&message).unwrap().pinned);
     assert!(chat.channels.get(&id("c_lounge")).unwrap().archived);
     assert_eq!(chat.user_rows()[0].status, crate::model::Presence::Dnd);
-    let text = paths.messages.item(&message).text.set("rewritten".into());
-    assert!(
-        ada.apply(Invoke::edit(&text).unwrap()).is_err(),
-        "a message's text changes only through edit-message"
-    );
+    let messages = ChatPart::paths().messages.item(&message);
+    for edit in [
+        messages.text.set("rewritten".into()),
+        messages.pinned.set(false),
+    ] {
+        assert!(
+            talk.part.apply(Invoke::edit(&edit).unwrap()).is_err(),
+            "a message's text changes only through edit-message, its pin through pin"
+        );
+    }
 }
 
 #[test]
 fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.apply(post("base")).unwrap();
-    let base = said(&ada, "base");
-    let mut bo = ada.fork().as_author(BO);
+    let base = ada.said("base");
+    let mut bo = ada.fork_as(BO);
     ada.apply(post("from ada")).unwrap();
     bo.apply(post("from bo")).unwrap();
-    ada.apply(Chat::REACT.with(chat::React {
-        message: base.clone(),
-        emoji: "🎉".into(),
-    }))
-    .unwrap();
-    bo.apply(Chat::REACT.with(chat::React {
-        message: base.clone(),
-        emoji: "🎉".into(),
-    }))
-    .unwrap();
+    let react = || {
+        ChatPart::REACT.with(chat_part::React {
+            message: base.clone(),
+            emoji: "🎉".into(),
+        })
+    };
+    ada.apply(react()).unwrap();
+    bo.apply(react()).unwrap();
     let rename = Chat::paths()
         .channels
         .item(&id("c_general"))
         .topic
         .set("Planning".into());
-    bo.apply(Invoke::edit(&rename).unwrap()).unwrap();
+    bo.chat.apply(Invoke::edit(&rename).unwrap()).unwrap();
     bo.apply(reply(&base, "threaded")).unwrap();
-    ada.sync_with(&mut bo).unwrap();
-    let (left, right) = (ada.state().unwrap(), bo.state().unwrap());
-    assert_eq!(left, right);
-    let rows = left.message_rows("c_general");
+    ada.sync_with(&mut bo);
+    assert_eq!(ada.chat.state().unwrap(), bo.chat.state().unwrap());
+    assert_eq!(ada.part.state().unwrap(), bo.part.state().unwrap());
+    let rows = ada.rows("c_general");
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[0].reactions[0].users, [ADA, BO]);
     assert_eq!(
-        left.channels.get(&id("c_general")).unwrap().topic,
+        ada.chat
+            .state()
+            .unwrap()
+            .channels
+            .get(&id("c_general"))
+            .unwrap()
+            .topic,
         "Planning"
     );
 }
 
 #[test]
 fn replaying_the_log_reproduces_the_record() {
-    let mut ada = Replica::<Chat>::new().as_author(ADA);
-    let mut fresh = ada.fork();
+    let mut ada = Talk::new();
+    let mut fresh = ada.part.fork();
     ada.set_now_ms(5_000);
-    ada.apply(begin("Ada", "AD")).unwrap();
     ada.apply(post("one")).unwrap();
-    let one = said(&ada, "one");
+    let one = ada.said("one");
     ada.apply(reply(&one, "two")).unwrap();
-    ada.apply(Chat::REACT.with(chat::React {
+    ada.apply(ChatPart::REACT.with(chat_part::React {
         message: one,
         emoji: "👍".into(),
     }))
     .unwrap();
-    for envelope in ada.log().to_vec() {
+    for envelope in ada.part.log().to_vec() {
         fresh.replay(&envelope).unwrap();
     }
     assert_eq!(
-        ada.heads(),
+        ada.part.heads(),
         fresh.heads(),
         "the same changes, byte for byte"
     );
-    let (left, right) = (ada.state().unwrap(), fresh.state().unwrap());
+    let (left, right) = (ada.part.state().unwrap(), fresh.state().unwrap());
     assert_eq!(left, right);
-    assert_eq!(right.message_rows("c_general").len(), 2);
+    assert_eq!(
+        ada.chat
+            .state()
+            .unwrap()
+            .message_rows(&Messages::single(right), "c_general")
+            .len(),
+        2
+    );
 }
 
 #[test]
 fn the_record_offers_each_item_its_views_with_no_window_open() {
-    let mut ada = room();
-    ada.apply(post("the deck is up")).unwrap();
-    let message = said(&ada, "the deck is up");
-    let children = <Chat as ui::tilo_resource::Resource>::children(&ada.state().unwrap());
+    let mut talk = Talk::new();
+    talk.apply(post("the deck is up")).unwrap();
+    let message = talk.said("the deck is up");
+    let mut children = <Chat as ui::tilo_resource::Resource>::children(&talk.chat.state().unwrap());
+    let part = talk.part.state().unwrap();
+    children.extend(<ChatPart as ui::tilo_resource::Resource>::children(&part));
+    let ada = talk.chat;
     let item = |field: &str, raw: &Id| {
-        let wanted = ui::tilo_resource::items::item_resource_id::<Chat>(field, raw);
+        let wanted = if field == "messages" {
+            ui::tilo_resource::items::item_resource_id::<ChatPart>(field, raw)
+        } else {
+            ui::tilo_resource::items::item_resource_id::<Chat>(field, raw)
+        };
         children
             .iter()
             .find(|child| child.id.as_str() == wanted)
@@ -819,36 +918,37 @@ fn the_record_offers_each_item_its_views_with_no_window_open() {
 
 #[test]
 fn only_the_author_edits_or_deletes_and_a_moderator_removes() {
-    let mut ada = room();
+    let mut ada = Talk::new();
     ada.apply(post("mine")).unwrap();
-    let message = said(&ada, "mine");
-    let mut bo = ada.fork().as_author(BO);
+    let message = ada.said("mine");
+    let mut bo = ada.fork_as(BO);
     assert!(
-        bo.apply(Chat::EDIT_MESSAGE.with(chat::EditMessage {
+        bo.apply(ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
             message: message.clone(),
             text: "yours now".into(),
             body: None,
+            mentions: None,
         }))
         .is_err(),
         "nobody edits another's message"
     );
     assert!(
-        bo.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+        bo.apply(ChatPart::DELETE_MESSAGE.with(chat_part::DeleteMessage {
             message: message.clone(),
         }))
         .is_err(),
         "nobody deletes another's message"
     );
-    assert_eq!(bo.state().unwrap().messages.len(), 1);
-    bo.apply_confirmed(Chat::REMOVE_MESSAGE.with(chat::RemoveMessage { message }))
+    assert_eq!(bo.messages().len(), 1);
+    bo.apply(ChatPart::REMOVE_MESSAGE.with(chat_part::RemoveMessage { message }))
         .unwrap();
-    assert!(bo.state().unwrap().messages.is_empty());
+    assert!(bo.messages().is_empty());
 }
 
 #[test]
 fn removing_a_message_sits_under_the_moderation_node() {
     let field = |id: &str| {
-        Chat::declarations()
+        ChatPart::declarations()
             .into_iter()
             .find(|decl| decl.id == id)
             .map(|decl| decl.field)
@@ -862,12 +962,14 @@ fn removing_a_message_sits_under_the_moderation_node() {
 
 #[test]
 fn a_guest_reports_a_message_or_a_person_and_only_moderators_decide() {
-    let mut ada = room();
-    ada.apply(post("buy cheap links")).unwrap();
-    let message = said(&ada, "buy cheap links");
+    let mut talk = Talk::new();
+    talk.apply(post("buy cheap links")).unwrap();
+    let message = talk.said("buy cheap links");
+    let mut ada = talk.chat;
     let mut bo = ada.fork().as_author(BO);
     bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
-        message: message.clone(),
+        message: message.to_string(),
+        author: ADA.into(),
         reason: "spam".into(),
     }))
     .unwrap();

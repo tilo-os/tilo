@@ -68,6 +68,9 @@ pub const HEADLESS_VBLANK_HZ_ENV: &str = "TILO_HEADLESS_VBLANK_HZ";
 pub const OUTPUT_FIXTURES: &[(&str, &str)] = &[
     // A HiDPI laptop panel with a high-refresh desktop monitor to its right.
     ("docked-laptop", "2560x1600@2~60,2560x1440@1~144"),
+    // A 2x laptop panel beside a 1080p monitor taller than it, logically:
+    // the desktop's bottom edge and centre are both on the monitor.
+    ("laptop-beside-1080p", "2944x1840@2,1920x1080@1"),
     // A monitor with the laptop centred underneath it.
     ("vertical-stack", "2560x1440@1,1920x1200@1.25+512+1440"),
     // A 1080p panel rotated to portrait beside a 2x 4K monitor.

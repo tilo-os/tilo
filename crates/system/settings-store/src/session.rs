@@ -37,6 +37,7 @@ use crate::{
 };
 
 mod change_log;
+mod checked_copy;
 mod view;
 
 use change_log::LeafChange;
@@ -94,6 +95,22 @@ impl SessionPaths {
         }
     }
 
+    /// Resolve only a trusted root spelling (for example the login home),
+    /// leaving all components below it for checked traversal. Never pass an
+    /// app-writable copy directory as `root`.
+    ///
+    /// # Errors
+    /// The trusted root cannot be resolved.
+    pub fn resolve_trusted_root(mut self, root: &Path) -> std::io::Result<Self> {
+        let resolved = root.canonicalize()?;
+        for path in [&mut self.person, &mut self.device, &mut self.copy] {
+            if let Ok(relative) = path.strip_prefix(root) {
+                *path = resolved.join(relative);
+            }
+        }
+        Ok(self)
+    }
+
     /// The bounded log of who changed which leaf, beside the records.
     #[must_use]
     pub fn change_log(&self) -> PathBuf {
@@ -107,6 +124,7 @@ impl SessionPaths {
 struct CopyIdentity {
     len: u64,
     modified: tilo_clock::SystemTime,
+    checked: Option<checked_copy::Identity>,
 }
 
 /// How long after its modification a file's time may still be shared by a
@@ -119,6 +137,7 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
     Some(CopyIdentity {
         len: meta.len,
         modified: meta.modified,
+        checked: None,
     })
 }
 
@@ -148,6 +167,97 @@ fn identity_says_changed(identity: Option<CopyIdentity>, state: &State) -> Optio
             })
     });
     (!recent).then_some(false)
+}
+
+/// Access policy retained for the lifetime of the session. Checked access never
+/// resolves the copy's pathname again after opening its parent directory.
+enum CopyAccess {
+    Legacy(PathBuf),
+    Checked(checked_copy::CheckedCopy),
+}
+
+enum CopyLock {
+    Legacy {
+        _guard: tilo_files::Lock,
+    },
+    Checked {
+        _guard: tilo_files::native::lock::FileLock,
+    },
+}
+
+impl From<checked_copy::Identity> for CopyIdentity {
+    fn from(identity: checked_copy::Identity) -> Self {
+        Self {
+            len: identity.len,
+            modified: identity.modified,
+            checked: Some(identity),
+        }
+    }
+}
+
+impl CopyAccess {
+    fn lock(&self) -> std::io::Result<CopyLock> {
+        match self {
+            Self::Legacy(path) => Ok(CopyLock::Legacy {
+                _guard: lock_copy(path)?,
+            }),
+            Self::Checked(copy) => Ok(CopyLock::Checked {
+                _guard: copy.lock()?,
+            }),
+        }
+    }
+
+    fn identity(&self) -> std::io::Result<Option<CopyIdentity>> {
+        match self {
+            Self::Legacy(path) => Ok(copy_identity(path)),
+            Self::Checked(copy) => Ok(copy.identity()?.map(Into::into)),
+        }
+    }
+
+    /// Checked reads return the identity of the very descriptor they read.
+    /// Callers hold the copy lock before reading its contents.
+    fn read(&self) -> std::io::Result<(Map<String, Value>, Option<CopyIdentity>)> {
+        match self {
+            Self::Legacy(path) => Ok((crate::load_for_update(path)?, copy_identity(path))),
+            Self::Checked(copy) => {
+                let (document, identity) = copy.read()?;
+                Ok((document, identity.map(Into::into)))
+            }
+        }
+    }
+
+    /// An unlocked hint only: recent checked copies are read after locking.
+    fn may_have_changed(&self, state: &State) -> bool {
+        match self {
+            Self::Legacy(path) => copy_changed(path, state),
+            Self::Checked(_) => self.identity().map_or(true, |identity| {
+                identity_says_changed(identity, state).unwrap_or(true)
+            }),
+        }
+    }
+
+    fn write_copy(&self, paths: &SessionPaths, state: &mut State) -> std::io::Result<()> {
+        match self {
+            Self::Legacy(_) => write_copy(paths, state),
+            Self::Checked(copy) => {
+                let projection = state.projection();
+                if projection == state.copy && state.copy_identity.is_some() {
+                    return Ok(());
+                }
+                match copy.write(&projection) {
+                    Ok(identity) => {
+                        state.copy = projection;
+                        state.copy_identity = Some(identity.into());
+                        Ok(())
+                    }
+                    Err(error) => {
+                        state.copy_identity = None;
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct State {
@@ -275,6 +385,7 @@ impl Touched {
 /// The session's settings document: see the [module docs](self).
 pub struct SessionSettings {
     paths: SessionPaths,
+    copy_access: CopyAccess,
     state: Mutex<State>,
     revision: AtomicU64,
     changes: crate::ChangeSignal,
@@ -304,28 +415,50 @@ impl SessionSettings {
     /// The copy cannot be locked, an existing record or copy cannot be read,
     /// or a record or the copy cannot be written.
     pub fn open(paths: SessionPaths) -> std::io::Result<Self> {
-        let _lock = lock_copy(&paths.copy)?;
+        let copy_access = CopyAccess::Legacy(paths.copy.clone());
+        Self::open_with(paths, copy_access)
+    }
+
+    /// Open with strict, descriptor-relative access to the settings copy.
+    /// Missing copies are empty; malformed documents, links and nonregular
+    /// files are errors rather than empty settings. The parent directory is
+    /// retained so later operations cannot be redirected by renaming it.
+    ///
+    /// This protects only copy access. Record and history paths remain trusted
+    /// caller inputs and are not anchored to the retained directory.
+    ///
+    /// # Errors
+    /// Returns an error for unsafe or unreadable copies, lock or persistence
+    /// failures, or unsupported platforms. There is no unchecked fallback.
+    pub fn open_checked(paths: SessionPaths) -> std::io::Result<Self> {
+        let copy_access = CopyAccess::Checked(checked_copy::CheckedCopy::open(&paths.copy)?);
+        Self::open_with(paths, copy_access)
+    }
+
+    fn open_with(paths: SessionPaths, copy_access: CopyAccess) -> std::io::Result<Self> {
+        let _lock = copy_access.lock()?;
         let mut state = State {
             person: crate::load_for_update(&paths.person)?,
             device: crate::load_for_update(&paths.device)?,
             copy: Map::new(),
             copy_identity: None,
         };
-        let copy = crate::load_for_update(&paths.copy)?;
+        let (copy, identity) = copy_access.read()?;
         let previous = state.projection();
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &previous, &mut log);
         persist(&paths, &state, touched)?;
         change_log::append(&paths.change_log(), &log, None);
         state.copy = copy;
-        state.copy_identity = copy_identity(&paths.copy);
-        write_copy(&paths, &mut state)?;
+        state.copy_identity = identity;
+        copy_access.write_copy(&paths, &mut state)?;
         let committed = Committed {
             document: state.projection(),
             revision: 1,
         };
         Ok(Self {
             paths,
+            copy_access,
             state: Mutex::new(state),
             revision: AtomicU64::new(1),
             changes: crate::ChangeSignal::default(),
@@ -445,22 +578,21 @@ impl SessionSettings {
         if !self.has_pending() {
             return;
         }
-        let Ok(_lock) = lock_copy(&self.paths.copy) else {
+        let Ok(_lock) = self.copy_access.lock() else {
             // Still pending: the next call tries again.
             return;
         };
+        // Read successfully before removing any accepted edits from pending.
+        if self.take_in_copy(&mut state).is_err() {
+            return;
+        }
         self.apply_pending(&mut state);
     }
 
-    /// With the state and the copy locked: apply what the loop accepted and
-    /// write it. A failure reverts the writes in the document.
+    /// With the state and copy locked and the copy already taken in: apply
+    /// what the loop accepted and write it. A failure reverts the writes.
     fn apply_pending(&self, state: &mut State) {
         if !self.has_pending() {
-            return;
-        }
-        // Another process's write to the copy first, as every write does;
-        // the pending writes stay laid over what it publishes.
-        if self.take_in_copy(state).is_err() {
             return;
         }
         let edits = std::mem::take(&mut *self.pending.lock_recover());
@@ -505,7 +637,7 @@ impl SessionSettings {
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
-        let _ = write_copy(&self.paths, state);
+        let _ = self.copy_access.write_copy(&self.paths, state);
         self.resync_committed(state);
     }
 
@@ -543,27 +675,29 @@ impl SessionSettings {
     /// changes, so those waiting for a change hear of it at once.
     pub fn refresh(&self) {
         let mut state = self.state.lock_recover();
-        if !copy_changed(&self.paths.copy, &state) {
+        if !self.copy_access.may_have_changed(&state) {
             return;
         }
-        let Ok(_lock) = lock_copy(&self.paths.copy) else {
+        let Ok(_lock) = self.copy_access.lock() else {
             return;
         };
         if self.take_in_copy(&mut state).is_ok() {
             // A failed write forgets the copy's identity, so the next reader
             // tries again.
-            let _ = write_copy(&self.paths, &mut state);
+            let _ = self.copy_access.write_copy(&self.paths, &mut state);
         }
     }
 
     /// Whether [`Self::refresh`] may find another process's write: the
     /// copy's size or time is not what this source last wrote or read, or it
-    /// is too recent for them to tell. One `stat`, no storage lock: a state
+    /// is too recent for them to tell. One identity check, no storage lock: a state
     /// held by a writer answers yes and leaves the deciding to `refresh`. A
     /// reader asks this before waking a refresh worker, so reads of an
     /// unchanged copy wake nobody.
     pub(super) fn copy_may_have_changed(&self) -> bool {
-        let identity = copy_identity(&self.paths.copy);
+        let Ok(identity) = self.copy_access.identity() else {
+            return true;
+        };
         let state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -574,11 +708,18 @@ impl SessionSettings {
 
     /// With the copy locked: apply what another process wrote to it.
     fn take_in_copy(&self, state: &mut State) -> std::io::Result<()> {
-        if !copy_changed(&self.paths.copy, state) {
-            return Ok(());
+        // Keep the legacy cache and read-error handling unchanged. Checked
+        // reads must succeed before any records, history or revision change,
+        // including when a same-size write shares the cached timestamp.
+        match &self.copy_access {
+            CopyAccess::Legacy(path) => {
+                if !copy_changed(path, state) {
+                    return Ok(());
+                }
+            }
+            CopyAccess::Checked(_) => {}
         }
-        let identity = copy_identity(&self.paths.copy);
-        let copy = crate::load_for_update(&self.paths.copy)?;
+        let (copy, identity) = self.copy_access.read()?;
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
@@ -640,7 +781,7 @@ impl SessionSettings {
         decide: &mut Decide<'_>,
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
-        let _lock = lock_copy(&self.paths.copy)?;
+        let _lock = self.copy_access.lock()?;
         self.take_in_copy(&mut state)?;
         // Writes the loop accepted come first, so this one is decided and
         // ordered after them.
@@ -666,7 +807,7 @@ impl SessionSettings {
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
-        Ok(match write_copy(&self.paths, &mut state) {
+        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
             Ok(()) => ConditionalUpdate::Stored,
             Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
         })
@@ -734,7 +875,7 @@ impl SettingsSource for SessionSettings {
         update: crate::DisplayUpdate,
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
-        let _lock = lock_copy(&self.paths.copy)?;
+        let _lock = self.copy_access.lock()?;
         self.take_in_copy(&mut state)?;
         self.apply_pending(&mut state);
         if !update.matches(&state.projection()) {
@@ -771,7 +912,7 @@ impl SettingsSource for SessionSettings {
         if touched.device {
             self.publish_committed(&state);
         }
-        Ok(match write_copy(&self.paths, &mut state) {
+        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
             Ok(()) => ConditionalUpdate::Stored,
             Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
         })
@@ -831,6 +972,19 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 
 /// Lock the settings file at `path`, creating its directory if needed.
 pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
+    #[cfg(unix)]
+    {
+        use tilo_files::native::atomic::{Privacy, ProvisionError, provision_directory};
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        // The lock backend otherwise creates missing parents without durability
+        // barriers, hiding those creations from the subsequent atomic write.
+        if !parent.is_dir() {
+            provision_directory(parent, Privacy::Inherit).map_err(ProvisionError::into_io_error)?;
+        }
+    }
     let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
     tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
         .map_err(std::io::Error::other)
@@ -840,6 +994,124 @@ pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_open_rejects_malformed_copies_and_legacy_preserves_unreadable_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let paths = SessionPaths::beside(root.join("settings.json"));
+        for invalid in [b"".as_slice(), b"{", b"[]", b"null", b"\xff"] {
+            std::fs::write(&paths.copy, invalid).unwrap();
+            assert_eq!(
+                SessionSettings::open_checked(paths.clone())
+                    .err()
+                    .unwrap()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            assert!(load_at(&paths.copy).is_empty());
+            let legacy = SessionSettings::open(paths.clone());
+            if std::str::from_utf8(invalid).is_ok() {
+                assert!(legacy.is_ok(), "legacy repairs malformed readable JSON");
+            } else {
+                assert_eq!(
+                    legacy
+                        .err()
+                        .expect("unreadable bytes must refuse import")
+                        .kind(),
+                    std::io::ErrorKind::InvalidData
+                );
+                assert_eq!(std::fs::read(&paths.copy).unwrap(), invalid);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_read_errors_leave_records_history_revision_and_pending_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let session =
+            SessionSettings::open_checked(SessionPaths::beside(root.join("settings.json")))
+                .unwrap();
+        session
+            .update_section("power", object(json!({"idle": 5})))
+            .unwrap();
+        session.accept_deferred("power", &ChangeOrigin::default(), &mut |_| {
+            object(json!({"idle": 7}))
+        });
+        let document = session.state.lock_recover().projection();
+        let revision = session.revision.load(Ordering::Acquire);
+        let history = session.change_log();
+        let person = std::fs::read(&session.paths.person).ok();
+        let device = std::fs::read(&session.paths.device).ok();
+        let committed = session.committed.lock_recover().document.clone();
+        for invalid in [b"{".as_slice(), b"[]", b"null", b"\xff"] {
+            std::fs::write(&session.paths.copy, invalid).unwrap();
+            assert!(session.copy_may_have_changed());
+            session.refresh();
+            session.write_pending();
+            assert!(
+                session
+                    .update_section("power", object(json!({"idle": 9})))
+                    .is_err()
+            );
+            assert!(
+                session
+                    .compare_update_section(
+                        "power",
+                        &object(json!({"idle": 5})),
+                        object(json!({"idle": 9}))
+                    )
+                    .is_err()
+            );
+            assert_eq!(session.state.lock_recover().projection(), document);
+            assert_eq!(session.revision.load(Ordering::Acquire), revision);
+            assert_eq!(session.change_log(), history);
+            assert_eq!(std::fs::read(&session.paths.person).ok(), person);
+            assert_eq!(std::fs::read(&session.paths.device).ok(), device);
+            assert_eq!(session.committed.lock_recover().document, committed);
+            assert_eq!(session.pending.lock_recover().len(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_session_retains_copy_directory_after_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let original = root.join("original");
+        let paths = SessionPaths {
+            person: root.join("person.json"),
+            device: root.join("device.json"),
+            copy: original.join("settings.json"),
+        };
+        let session = SessionSettings::open_checked(paths).unwrap();
+        let moved = root.join("moved");
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::write(original.join("settings.json"), b"{\"foreign\":true}").unwrap();
+        crate::update_section_at(
+            &moved.join("settings.json"),
+            "power",
+            object(json!({"idle": 5})),
+        )
+        .unwrap();
+        assert_eq!(session.load()["power"]["idle"], json!(5));
+        session
+            .update_section("power", object(json!({"idle": 7})))
+            .unwrap();
+        assert_eq!(
+            load_at(&moved.join("settings.json"))["power"]["idle"],
+            json!(7)
+        );
+        assert_eq!(
+            load_at(&original.join("settings.json")),
+            object(json!({"foreign": true}))
+        );
+        assert!(!original.join("settings.json.lock").exists());
+    }
 
     #[test]
     fn opening_a_session_preserves_unreadable_records_and_copy() {

@@ -20,31 +20,36 @@
         },
         {
           "kind": "target_size",
-          "target": "semantic:topbar:overview",
+          "target": "semantic:topbar:workspace-settings",
           "min": [
             24,
             24
           ]
         },
         {
-          "kind": "gap",
-          "first": "semantic:topbar:workspace-down",
-          "second": "semantic:topbar:workspace-settings",
-          "axis": "x",
-          "min": 4,
-          "max": 12
+          "kind": "target_size",
+          "target": "semantic:topbar:profile",
+          "min": [
+            24,
+            24
+          ]
         },
         {
           "kind": "aligned",
-          "first": "semantic:topbar:overview",
+          "first": "semantic:topbar:profile",
           "second": "semantic:topbar:workspace-settings",
           "axis": "y",
           "tolerance": 1
         },
         {
           "kind": "no_overlap",
-          "first": "semantic:topbar:workspace-down",
-          "second": "semantic:topbar:workspace-settings"
+          "first": "semantic:topbar:workspace-settings",
+          "second": "semantic:topbar:center:clock"
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:topbar:profile",
+          "second": "semantic:topbar:quick-settings"
         }
       ]
     }

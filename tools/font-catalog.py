@@ -245,7 +245,10 @@ def default_cache():
         return Path(cache)
     if tests := os.environ.get("TILO_TEST_CACHE_DIR"):
         return Path(tests) / "font-artifacts"
-    home = os.environ.get("XDG_CACHE_HOME") or (os.environ.get("HOME") and os.path.join(os.environ["HOME"], ".cache"))
+    # A home that isn't a directory can't hold one: a bootc image's /root links to /var/roothome,
+    # which exists only once the system boots, so the OS image's builder has none.
+    home = os.environ.get("XDG_CACHE_HOME") or (
+        os.path.isdir(os.environ.get("HOME", "")) and os.path.join(os.environ["HOME"], ".cache"))
     if home:
         return Path(home) / "tilo/test-env/font-artifacts"
     target = os.environ.get("CARGO_TARGET_DIR")
@@ -287,7 +290,9 @@ def prepared_root(source, scope, cache=None, offline=None):
                 raise ValueError("prepared font catalog symlink is forbidden") from error
             verify_prepared(dest, source, scope)
         except OSError as error:
-            if error.errno not in (errno.EEXIST, errno.ENOTEMPTY) and not isinstance(error, FileExistsError):
+            # Another build published the catalog first; any other error (a cache directory that
+            # can't be made, for one) is the answer, not a catalog to verify.
+            if error.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not (dest.exists() or dest.is_symlink()):
                 raise
             if dest.is_symlink():
                 raise ValueError("prepared font catalog symlink is forbidden") from error

@@ -336,81 +336,76 @@ fn session_host_view(
     }
 }
 
-fn install_session_settings() {
+fn install_session_settings() -> std::io::Result<()> {
     let Some(paths) = settings_store::SessionPaths::configured() else {
         tracing::warn!("no config directory; settings are not kept this session");
-        return;
+        return Ok(());
+    };
+    // Bootc accepts /home/<user> as well as /var/home/<user>. Only the
+    // login home is trusted here; copy-directory components stay unresolved
+    // until descriptor-relative traversal rejects any links beneath it.
+    let paths = match std::env::var_os("HOME") {
+        Some(home) => paths.resolve_trusted_root(std::path::Path::new(&home))?,
+        None => paths,
     };
     let copy = paths.copy.clone();
-    match settings_store::SessionSettings::open(paths) {
-        Ok(session) => {
-            let session = std::sync::Arc::new(session);
-            // Another process writing the copy (Settings, a CLI) is taken in
-            // as it lands, which wakes every app following its settings.
-            let taken_in = std::sync::Arc::downgrade(&session);
-            let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
-                if let Some(session) = taken_in.upgrade() {
-                    session.refresh();
-                }
-            }) {
-                Ok(watch) => {
-                    static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
-                        std::sync::OnceLock::new();
-                    // Only the first session's watch is kept; a later one
-                    // would be dropped here and watch nothing.
-                    COPY_WATCH.set(watch).is_ok()
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "settings copy watch unavailable; other processes' writes reach apps within a second"
-                    );
-                    false
-                }
-            };
-            let source = session_host_view(session, copy_watched);
-            let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
-            let source = match dictionary_root
-                .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
-            {
-                Some(service) => {
-                    let host =
-                        std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
-                            source,
-                            std::sync::Arc::new(service),
-                            std::sync::Arc::new(dictionary_identity_owner),
-                        ));
-                    if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
-                        && let Some(directory) =
-                            store.path().parent().filter(|directory| directory.is_dir())
-                    {
-                        let weak = std::sync::Arc::downgrade(&host);
-                        if let Ok(watch) =
-                            settings_store::watch::watch_identity_at(directory, move || {
-                                if let Some(host) = weak.upgrade() {
-                                    settings_store::SettingsSource::dictionary_service(
-                                        host.as_ref(),
-                                    );
-                                }
-                            })
-                        {
-                            static IDENTITY_WATCH: std::sync::OnceLock<
-                                settings_store::watch::SettingsWatch,
-                            > = std::sync::OnceLock::new();
-                            let _ = IDENTITY_WATCH.set(watch);
-                        }
-                    }
-                    host as std::sync::Arc<dyn settings_store::SettingsSource>
-                }
-                None => source,
-            };
-            settings_store::install_source(Some(source));
+    let session = std::sync::Arc::new(settings_store::SessionSettings::open_checked(paths)?);
+    // Another process writing the copy (Settings, a CLI) is taken in
+    // as it lands, which wakes every app following its settings.
+    let taken_in = std::sync::Arc::downgrade(&session);
+    let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
+        if let Some(session) = taken_in.upgrade() {
+            session.refresh();
         }
-        Err(error) => tracing::error!(
-            %error,
-            "cannot open the settings records; this session reads and writes settings.json itself"
-        ),
-    }
+    }) {
+        Ok(watch) => {
+            static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
+                std::sync::OnceLock::new();
+            // Only the first session's watch is kept; a later one
+            // would be dropped here and watch nothing.
+            COPY_WATCH.set(watch).is_ok()
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "settings copy watch unavailable; other processes' writes reach apps within a second"
+            );
+            false
+        }
+    };
+    let source = session_host_view(session, copy_watched);
+    let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
+    let source = match dictionary_root
+        .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
+    {
+        Some(service) => {
+            let host = std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
+                source,
+                std::sync::Arc::new(service),
+                std::sync::Arc::new(dictionary_identity_owner),
+            ));
+            if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
+                && let Some(directory) =
+                    store.path().parent().filter(|directory| directory.is_dir())
+            {
+                let weak = std::sync::Arc::downgrade(&host);
+                if let Ok(watch) = settings_store::watch::watch_identity_at(directory, move || {
+                    if let Some(host) = weak.upgrade() {
+                        settings_store::SettingsSource::dictionary_service(host.as_ref());
+                    }
+                }) {
+                    static IDENTITY_WATCH: std::sync::OnceLock<
+                        settings_store::watch::SettingsWatch,
+                    > = std::sync::OnceLock::new();
+                    let _ = IDENTITY_WATCH.set(watch);
+                }
+            }
+            host as std::sync::Arc<dyn settings_store::SettingsSource>
+        }
+        None => source,
+    };
+    settings_store::install_source(Some(source));
+    Ok(())
 }
 
 #[allow(
@@ -585,17 +580,10 @@ pub fn run() -> std::process::ExitCode {
         return verify_collaboration_identity_entrypoint(provision_identity_requested);
     }
 
-    if firstboot_requested {
-        if let Err(e) = firstboot::run() {
-            // Don't fail the boot — log and continue. A non-zero exit still poisons
-            // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
-            tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
-        }
-        if compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
-            && let Err(e) = firstboot::import_host_input_settings()
-        {
-            tracing::warn!("firstboot: host input import failed ({e}); using Tilo defaults");
-        }
+    if firstboot_requested && let Err(e) = firstboot::run() {
+        // Don't fail the boot — log and continue. A non-zero exit still poisons
+        // the wider boot transaction even though the systemd unit marks first-boot done regardless, so we swallow the error here.
+        tracing::warn!("firstboot: setup hit an error ({e}); continuing with compositor boot");
     }
     // `--firstboot` is the host-session wrapper hook: it performs setup then
     // falls through to the normal compositor entry point. System units use
@@ -621,9 +609,20 @@ pub fn run() -> std::process::ExitCode {
         }
     };
 
-    // After first boot has written what it imports, so the records take it
-    // in, and before the compositor's first read.
-    install_session_settings();
+    // Keep setup and identity preparation first, but install the checked source
+    // before the host import can read or update settings. Otherwise its legacy
+    // copy writer could replace a symlink before checked startup sees it.
+    if let Err(error) = install_session_settings() {
+        tracing::error!(%error, "cannot safely open session settings; repair the settings copy or its lock before starting the session");
+        return std::process::ExitCode::FAILURE;
+    }
+
+    if firstboot_requested
+        && compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
+        && let Err(e) = firstboot::import_host_input_settings()
+    {
+        tracing::warn!("firstboot: host input import failed ({e}); using Tilo defaults");
+    }
 
     // The compositor serves portals unconditionally — the shipped session runs
     // `shell --backend drm` with no flags, so gating file open/save behind an
@@ -653,6 +652,10 @@ fn version_request(mut args: impl Iterator<Item = String>) -> Option<String> {
         format!("tilo-shell {version}")
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/firstboot.rs"]
+mod firstboot_tests;
 
 #[cfg(test)]
 mod tests {

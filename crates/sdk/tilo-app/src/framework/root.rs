@@ -1780,6 +1780,7 @@ impl RootModel for ResourceRoot {
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
+        handlers.insert(super::chain::CHAIN_ACTION_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_INVITE_TYPE.to_owned());
         if self.stages.opens() {
@@ -1894,6 +1895,16 @@ impl RootModel for ResourceRoot {
             let output = self
                 .storage
                 .record_action(self.dispatch.me(), request.payload)?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::chain::CHAIN_ACTION_TYPE
+        {
+            let output = self
+                .storage
+                .chain_action(self.dispatch.me(), request.payload)?;
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));

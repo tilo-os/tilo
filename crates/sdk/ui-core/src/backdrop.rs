@@ -47,11 +47,8 @@ use crate::floating_surface::Material;
 use crate::theme::Theme;
 
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
-/// opaque: each region costs one extra render of everything below it,
-/// except one over the desktop alone that is unchanged since the last frame
-/// ([`BackdropBlur::prepare`] keeps its blur). Room for the tab strips of
-/// the windows on screen and the menus opened over them.
-pub const MAX_BACKDROP_REGIONS: usize = 12;
+/// opaque: each region costs one extra render of everything below it.
+pub const MAX_BACKDROP_REGIONS: usize = 4;
 
 /// Logical pixels per texel of the blurred image a surface is drawn with.
 /// The backdrop is a low-frequency signal; two pixels per texel is
@@ -106,40 +103,6 @@ pub(crate) fn fill(
     );
 }
 
-/// What a surface's blurred backdrop is made of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Samples {
-    /// Everything drawn before it.
-    Below,
-    /// Only the desktop: what a host marked with [`mark_desktop`].
-    Desktop,
-}
-
-/// [`fill`] for a surface that stands on the desktop and nothing else, such
-/// as a window group's docked tab strip: windows never overlap, so what is
-/// behind it is the desktop, whatever windows were drawn before it. Its
-/// backdrop is the scene a host marked with [`mark_desktop`], which stays
-/// the same frame to frame while the desktop does, so its blur is kept
-/// instead of redone ([`BackdropBlur::prepare`]). Without a mark it takes
-/// everything drawn before it, as [`fill`] does.
-pub(crate) fn fill_over_desktop(
-    scene: &mut Scene,
-    transform: Affine,
-    shape: &impl Shape,
-    material: Material,
-    theme: &Theme,
-    ground: Color,
-) {
-    fill_sampling(
-        scene,
-        transform,
-        shape,
-        (material, Samples::Desktop),
-        theme,
-        ground,
-    );
-}
-
 /// [`fill`] with a ground of the caller's choosing: a surface that lifts
 /// itself off the desktop by its own tone (a notification card) tints the
 /// same blurred backdrop with that tone instead of the panel ground.
@@ -151,27 +114,8 @@ pub(crate) fn fill_with_ground(
     theme: &Theme,
     ground: Color,
 ) {
-    fill_sampling(
-        scene,
-        transform,
-        shape,
-        (material, Samples::Below),
-        theme,
-        ground,
-    );
-}
-
-fn fill_sampling(
-    scene: &mut Scene,
-    transform: Affine,
-    shape: &impl Shape,
-    (material, samples): (Material, Samples),
-    theme: &Theme,
-    ground: Color,
-) {
     if blurs(material, theme)
-        && let Some((image, brush_transform)) =
-            record(scene, transform, shape, (theme, ground), samples)
+        && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
     {
         let brush = ImageBrush::new(image)
             .with_extend(Extend::Pad)
@@ -212,10 +156,6 @@ pub struct RecordedBackdrop {
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
-    /// The surface samples only the desktop, and `below` is the desktop a
-    /// host marked ([`mark_desktop`]): it stays the same while the desktop
-    /// does, so its blur may be kept from one frame to the next.
-    pub over_desktop: bool,
 }
 
 impl RecordedBackdrop {
@@ -245,9 +185,6 @@ struct Recording {
     /// say where that scene lands. Their `layer` is unset until then.
     pending: Vec<(usize, RecordedBackdrop)>,
     surfaces: Vec<RecordedBackdrop>,
-    /// Scenes, by address, and the desktop each holds up to where a host
-    /// marked it ([`mark_desktop`]).
-    desktops: Vec<(usize, Scene)>,
 }
 
 /// A placeholder's slot: the recording depth and the region index in it.
@@ -294,7 +231,6 @@ impl BackdropRecording {
                 nested: Vec::new(),
                 pending: Vec::new(),
                 surfaces,
-                desktops: Vec::new(),
             })
         });
         Self {
@@ -346,23 +282,6 @@ pub fn layer_scene(scene: &Scene, layer: u32) {
     });
 }
 
-/// What `scene` holds so far is the desktop: everything a surface that
-/// stands on the desktop alone (a docked tab strip) is blurred over, with
-/// the scenes the host composes below `scene`'s layer under it. A host
-/// drawing the desktop into its own layer marks the next layer's scene
-/// before anything is drawn into it; one drawing everything into one scene
-/// marks it once the desktop is drawn. Marking again moves the mark. A
-/// no-op outside a recording.
-pub fn mark_desktop(scene: &Scene) {
-    let address = std::ptr::from_ref(scene) as usize;
-    RECORDING.with(|slot| {
-        if let Some(recording) = slot.borrow_mut().as_mut() {
-            recording.desktops.retain(|(known, _)| *known != address);
-            recording.desktops.push((address, scene.clone()));
-        }
-    });
-}
-
 /// `child` is a scene a widget draws now and composes into another scene
 /// afterwards with [`append_nested`] (a subtree cache). Floating surfaces
 /// drawn into it wait there and take what lies below them once it is
@@ -402,28 +321,10 @@ pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usi
             .partition(|(address, _)| *address == child_address);
         recording.pending = kept;
         let count = carried.len();
-        let parent_desktop = recording
-            .desktops
-            .iter()
-            .find_map(|(known, desktop)| (*known == parent).then_some(desktop));
         for (_, mut surface) in carried {
-            if surface.over_desktop {
-                // The child's own content is not behind a surface that
-                // stands on the desktop; the parent's desktop is, once one
-                // is known.
-                match parent_desktop {
-                    Some(desktop) => surface.below = desktop.clone(),
-                    None if parent_nested => {}
-                    None => {
-                        surface.below = scene.clone();
-                        surface.over_desktop = false;
-                    }
-                }
-            } else {
-                let mut below = scene.clone();
-                below.append(&surface.below, Some(transform));
-                surface.below = below;
-            }
+            let mut below = scene.clone();
+            below.append(&surface.below, Some(transform));
+            surface.below = below;
             surface.bounds = transform.transform_rect_bbox(surface.bounds);
             surface.blur_px *= transform.determinant().abs().sqrt();
             if let Some(layer) = parent_layer {
@@ -445,8 +346,8 @@ fn record(
     scene: &Scene,
     transform: Affine,
     shape: &impl Shape,
-    (theme, ground): (&Theme, Color),
-    samples: Samples,
+    theme: &Theme,
+    ground: Color,
 ) -> Option<(ImageData, Affine)> {
     RECORDING.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -482,18 +383,6 @@ fn record(
                 bounds.width() / f64::from(width),
                 bounds.height() / f64::from(height),
             );
-        let desktop = recording
-            .desktops
-            .iter()
-            .find_map(|(known, desktop)| (*known == address).then_some(desktop));
-        // A nested scene has no mark of its own: its surface over the
-        // desktop takes the desktop of the scene it lands in
-        // ([`append_nested`]).
-        let (below, over_desktop) = match (samples, desktop, layer) {
-            (Samples::Desktop, Some(desktop), _) => (desktop.clone(), true),
-            (Samples::Desktop, None, None) => (Scene::new(), true),
-            _ => (scene.clone(), false),
-        };
         let surface = RecordedBackdrop {
             image: image.clone(),
             bounds,
@@ -502,9 +391,8 @@ fn record(
             blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px)
                 * transform.determinant().abs().sqrt(),
             layer: layer.unwrap_or_default(),
-            below,
+            below: scene.clone(),
             ground,
-            over_desktop,
         };
         if layer.is_some() {
             recording.surfaces.push(surface);
@@ -567,9 +455,6 @@ pub struct BackdropRegion {
     /// The opaque panel ground: what the backdrop shows where nothing below
     /// covers it and the target is cleared to transparency.
     pub ground: Color,
-    /// `below` is the desktop alone ([`RecordedBackdrop::over_desktop`]): a
-    /// blur of it is kept while it, the rect and the blur stay the same.
-    pub over_desktop: bool,
 }
 
 /// The backdrops one frame draws its floating surfaces over.
@@ -592,7 +477,6 @@ impl BackdropFrame {
                     blur_px: surface.blur_px,
                     below: surface.below,
                     ground: surface.ground,
-                    over_desktop: surface.over_desktop,
                 })
                 .collect(),
         }
@@ -669,9 +553,6 @@ pub struct BackdropStats {
     pub substituted: usize,
     /// Regions that stay opaque: off target, or their backdrop failed to render.
     pub skipped: usize,
-    /// Of the substituted regions, those over an unchanged desktop that kept
-    /// the blur made for an earlier frame instead of rendering it again.
-    pub kept: usize,
     /// CPU time spent encoding and submitting, in microseconds. The GPU
     /// work runs ahead of the frame's own render on the same queue.
     pub encode_us: u64,
@@ -725,10 +606,6 @@ pub struct BackdropBlur {
     outputs: Vec<Option<Texture>>,
     /// Placeholders currently substituted on the renderer.
     substituted: Vec<ImageData>,
-    /// Per region slot, what the blur in its output was made from, for a
-    /// region over the desktop ([`BackdropRegion::over_desktop`]): the
-    /// same key in a later frame reuses the output.
-    kept: Vec<Option<u64>>,
 }
 
 impl BackdropBlur {
@@ -831,7 +708,6 @@ impl BackdropBlur {
             across: None,
             outputs: Vec::new(),
             substituted: Vec::new(),
-            kept: Vec::new(),
         }
     }
 
@@ -874,23 +750,7 @@ impl BackdropBlur {
         }
         queue.write_buffer(&self.passes, 0, &self.strided(&pass_bytes));
         for (region, plan) in planned {
-            let key = keep_key(region, target, base);
-            if key.is_some()
-                && self.kept.get(plan.slot).copied().flatten() == key
-                && self.reuse(renderer, region, plan.slot)
-            {
-                stats.substituted = stats.substituted.saturating_add(1);
-                stats.kept = stats.kept.saturating_add(1);
-                continue;
-            }
-            let rendered = self.render_one(device, queue, renderer, region, &plan, base);
-            if self.kept.len() <= plan.slot {
-                self.kept.resize(plan.slot.saturating_add(1), None);
-            }
-            if let Some(kept) = self.kept.get_mut(plan.slot) {
-                *kept = if rendered { key } else { None };
-            }
-            if rendered {
+            if self.render_one(device, queue, renderer, region, &plan, base) {
                 stats.substituted = stats.substituted.saturating_add(1);
             } else {
                 stats.skipped = stats.skipped.saturating_add(1);
@@ -906,28 +766,6 @@ impl BackdropBlur {
         for image in self.substituted.drain(..) {
             renderer.override_image(&image, None);
         }
-    }
-
-    /// Substitute `region`'s placeholder with the blur its slot already
-    /// holds. `false` when the slot has none of the placeholder's size.
-    fn reuse(&mut self, renderer: &mut Renderer, region: &BackdropRegion, slot: usize) -> bool {
-        let Some(output) = self.outputs.get(slot).and_then(Option::as_ref) else {
-            return false;
-        };
-        if output.size() != (region.image.width, region.image.height) {
-            return false;
-        }
-        renderer.override_image(
-            &region.image,
-            Some(wgpu::TexelCopyTextureInfoBase {
-                texture: output.texture.clone(),
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            }),
-        );
-        self.substituted.push(region.image.clone());
-        true
     }
 
     /// Lay the tightly packed pass parameters out at the device's uniform
@@ -1130,144 +968,6 @@ impl BackdropBlur {
     }
 }
 
-/// What a region over the desktop's blur is made from: its place, its blur,
-/// the target, and every byte of the desktop scene. `None` for a region
-/// that samples whatever was drawn before it, whose backdrop (app content,
-/// other materials) changes without its encoding saying so, and for a
-/// desktop that draws pixels living outside the scene (a client's buffer).
-fn keep_key(region: &BackdropRegion, target: (u32, u32), base: Color) -> Option<u64> {
-    use std::hash::Hasher;
-    if !region.over_desktop {
-        return None;
-    }
-    let encoding = region.below.encoding();
-    let mut hash = rustc_hash::FxHasher::default();
-    for value in [
-        region.rect.x0,
-        region.rect.y0,
-        region.rect.x1,
-        region.rect.y1,
-        region.blur_px,
-    ] {
-        hash.write_u64(value.to_bits());
-    }
-    hash.write_u32(target.0);
-    hash.write_u32(target.1);
-    hash.write_u32(region.image.width);
-    hash.write_u32(region.image.height);
-    hash.write_u32(base.to_rgba8().to_u32());
-    hash.write_u32(region.ground.to_rgba8().to_u32());
-    for tag in &encoding.path_tags {
-        hash.write_u8(tag.0);
-    }
-    for word in encoding.path_data.iter().chain(&encoding.draw_data) {
-        hash.write_u32(*word);
-    }
-    for tag in &encoding.draw_tags {
-        hash.write_u32(tag.0);
-    }
-    for transform in &encoding.transforms {
-        for value in transform.matrix.iter().chain(&transform.translation) {
-            hash.write_u32(value.to_bits());
-        }
-    }
-    let mut debug = DebugHasher(&mut hash);
-    for style in &encoding.styles {
-        std::fmt::Write::write_fmt(&mut debug, format_args!("{style:?}")).ok()?;
-    }
-    let resources = &encoding.resources;
-    for stop in &resources.color_stops {
-        std::fmt::Write::write_fmt(&mut debug, format_args!("{stop:?}")).ok()?;
-    }
-    for glyph in &resources.glyphs {
-        hash.write_u32(glyph.id);
-        hash.write_u32(glyph.x.to_bits());
-        hash.write_u32(glyph.y.to_bits());
-    }
-    for run in &resources.glyph_runs {
-        hash.write_u64(run.font.data.id());
-        hash.write_u32(run.font.index);
-        hash.write_u32(run.font_size.to_bits());
-        hash.write_usize(run.glyphs.start);
-        hash.write_usize(run.glyphs.end);
-        let mut debug = DebugHasher(&mut hash);
-        std::fmt::Write::write_fmt(
-            &mut debug,
-            format_args!(
-                "{:?}{:?}{:?}{:?}{}{:?}{:?}",
-                run.transform,
-                run.glyph_transform,
-                run.brush_transform,
-                run.font_embolden,
-                run.hint,
-                run.style,
-                run.normalized_coords,
-            ),
-        )
-        .ok()?;
-    }
-    for coord in &resources.normalized_coords {
-        hash.write_i16(*coord);
-    }
-    for patch in &resources.patches {
-        match patch {
-            vello_encoding::Patch::Image {
-                draw_data_offset,
-                image,
-            } => {
-                // Pixels supplied from outside the scene can change under
-                // the same image.
-                if image.data.is_empty() {
-                    return None;
-                }
-                hash.write_usize(*draw_data_offset);
-                hash.write_u64(image.data.id());
-                let mut debug = DebugHasher(&mut hash);
-                std::fmt::Write::write_fmt(
-                    &mut debug,
-                    format_args!("{:?}{:?}", image.format, image.alpha_type),
-                )
-                .ok()?;
-                hash.write_u32(image.width);
-                hash.write_u32(image.height);
-            }
-            vello_encoding::Patch::Ramp {
-                draw_data_offset,
-                stops,
-                extend,
-            } => {
-                hash.write_usize(*draw_data_offset);
-                hash.write_usize(stops.start);
-                hash.write_usize(stops.end);
-                let mut debug = DebugHasher(&mut hash);
-                std::fmt::Write::write_fmt(&mut debug, format_args!("{extend:?}")).ok()?;
-            }
-            vello_encoding::Patch::GlyphRun { index } => hash.write_usize(*index),
-        }
-    }
-    for count in [
-        encoding.n_paths,
-        encoding.n_path_segments,
-        encoding.n_clips,
-        encoding.n_open_clips,
-        encoding.flags,
-    ] {
-        hash.write_u32(count);
-    }
-    Some(hash.finish())
-}
-
-/// Feeds a value's `Debug` text into a hasher, for the few encoding types
-/// that have no hashable fields of their own.
-struct DebugHasher<'a, H: std::hash::Hasher>(&'a mut H);
-
-impl<H: std::hash::Hasher> std::fmt::Write for DebugHasher<'_, H> {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.0.write(text.as_bytes());
-        Ok(())
-    }
-}
-
 /// Decide the source rectangle, the halvings and the kernel for `region`,
 /// or `None` when it has nothing to blur.
 #[allow(
@@ -1434,3 +1134,5 @@ fn ensure_level(
 
 #[cfg(test)]
 mod tests;
+
+pub mod desktop;

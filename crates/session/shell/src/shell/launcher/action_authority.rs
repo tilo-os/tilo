@@ -89,6 +89,11 @@ pub(crate) struct Authority {
     exporting: Arc<Mutex<Vec<Exporting>>>,
     /// Signalled whenever [`Export::publish`] replaces the published policy.
     changed: std::sync::Condvar,
+    /// The writer its queued publications and renewals run on when not the
+    /// shell's own: a test that holds its writer still then stalls no other
+    /// test's saves.
+    #[cfg(test)]
+    writer: std::sync::OnceLock<Arc<crate::shell::durable_writer::DurableWriter>>,
 }
 
 impl Default for Authority {
@@ -100,11 +105,35 @@ impl Default for Authority {
             exporting: published.exporting.clone(),
             published: Mutex::new(published),
             changed: std::sync::Condvar::new(),
+            #[cfg(test)]
+            writer: std::sync::OnceLock::new(),
         }
     }
 }
 
 impl Authority {
+    /// The state writer this authority's queued jobs run on.
+    fn writer(&self) -> &crate::shell::durable_writer::DurableWriter {
+        #[cfg(test)]
+        if let Some(writer) = self.writer.get() {
+            return writer;
+        }
+        crate::shell::durable_writer::global()
+    }
+
+    /// Run this authority's queued jobs on a writer of its own, which the
+    /// caller may hold without holding up anything else.
+    #[cfg(test)]
+    pub(crate) fn own_writer(&self) -> Arc<crate::shell::durable_writer::DurableWriter> {
+        self.writer
+            .get_or_init(|| {
+                Arc::new(crate::shell::durable_writer::DurableWriter::spawn(
+                    "tilo-test-authority-writer",
+                ))
+            })
+            .clone()
+    }
+
     /// The state writer's key for this authority's `job`. A queued job is
     /// replaced by a later one with the same key, so a publication may only
     /// supersede an older one of the same writer's tree.
@@ -196,8 +225,10 @@ impl Export {
     }
 
     pub(crate) fn submit(self) {
-        crate::shell::durable_writer::global()
-            .submit(self.3.job_key("publication"), move || self.publish());
+        let authority = self.3.clone();
+        authority
+            .writer()
+            .submit(authority.job_key("publication"), move || self.publish());
     }
 }
 
@@ -510,7 +541,7 @@ fn captured_revision() -> Option<u64> {
 /// `TimedOut` when the state writer has made no progress.
 #[cfg(target_os = "linux")]
 fn await_published(authority: &Authority, room: RoomId, revision: u64) -> std::io::Result<()> {
-    let writer = crate::shell::durable_writer::global();
+    let writer = authority.writer();
     let mut published = lock(&authority.published);
     let mut seen = writer.progress();
     while published.revisions.get(&room).copied().unwrap_or(0) < revision {
@@ -682,8 +713,9 @@ impl Authority {
         }
         published.next_refresh = now.checked_add(Duration::from_secs(1));
         drop(published);
-        crate::shell::durable_writer::global()
-            .submit(self.job_key("heartbeat"), move || self.renew());
+        let authority = self.clone();
+        self.writer()
+            .submit(self.job_key("heartbeat"), move || authority.renew());
     }
 
     /// Judge the running sandboxes again and renew every live projection.
@@ -955,6 +987,9 @@ mod tests {
             managed_agent_id: None,
         };
         let authority = Arc::new(Authority::default());
+        // Renewal runs on this authority's own writer, which other tests'
+        // saves do not queue on.
+        let writer = authority.own_writer();
         let first = attach_to(authority.clone(), &app, room, &mut command).unwrap();
         let binding = first.binding.clone();
         let path = binding_path(&binding);
@@ -974,7 +1009,7 @@ mod tests {
         authority
             .clone()
             .tick(Instant::now() + Duration::from_secs(2));
-        assert!(crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(3)));
+        writer.flush();
         let renewed: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(renewed.issued_at_unix_ms >= before.issued_at_unix_ms);
@@ -1061,14 +1096,12 @@ mod tests {
         let revision = tree.policy_revision;
         let authority = tree.native_runtime.action_authority();
         let export = Export::of(&tree);
+        let writer = authority.own_writer();
         let saver = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
-            crate::shell::durable_writer::global().submit(
-                std::path::PathBuf::from("late-save"),
-                move || {
-                    export.publish();
-                },
-            );
+            writer.submit(std::path::PathBuf::from("late-save"), move || {
+                export.publish();
+            });
         });
         let registered = register(authority, room, "so.tilo.unsaved", &granted, revision);
         saver.join().unwrap();
@@ -1092,14 +1125,12 @@ mod tests {
         tree.policy_revision = crate::shell::state::next_policy_revision();
         let authority = tree.native_runtime.action_authority();
         let export = Export::of(&tree);
+        let writer = authority.own_writer();
         let saver = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            crate::shell::durable_writer::global().submit(
-                std::path::PathBuf::from("withdrawn-save"),
-                move || {
-                    export.publish();
-                },
-            );
+            writer.submit(std::path::PathBuf::from("withdrawn-save"), move || {
+                export.publish();
+            });
         });
         let registered = register(authority, room, "so.tilo.withdrawn", &granted, captured);
         saver.join().unwrap();
@@ -1234,9 +1265,13 @@ mod tests {
         };
         let before = Export::of(&tree.read());
 
+        // The commit's export queues behind an earlier write on the writer
+        // that publishes it. Held on this authority's own writer, the wait
+        // holds up no other test's saves.
+        let writer = authority.own_writer();
         let (release, held) = std::sync::mpsc::channel::<()>();
         let (started, starting) = std::sync::mpsc::channel();
-        crate::shell::durable_writer::global().submit(PathBuf::from("earlier-write"), move || {
+        writer.submit(PathBuf::from("earlier-write"), move || {
             let _ = started.send(());
             let _ = held.recv();
         });
@@ -1250,7 +1285,7 @@ mod tests {
             "the accepted record's export is on its way; nothing was withdrawn"
         );
         drop(release);
-        crate::shell::persist::wait_for_saves();
+        writer.flush();
         assert!(children.iter().all(running));
 
         tree.write()

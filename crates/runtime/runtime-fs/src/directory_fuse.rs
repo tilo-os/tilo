@@ -58,7 +58,7 @@ struct Rows {
     cursor: u64,
     sequence: u64,
     base: u64,
-    rows: Vec<Result<(u64, FileType, OsString), i32>>,
+    entries: Vec<Result<(u64, FileType, OsString), i32>>,
     high_water: u64,
     done: bool,
 }
@@ -92,8 +92,11 @@ fn reply_errno(failure: io::Error) -> fuser::Errno {
     // Transport/authority errors remain I/O failure, never successful access.
     fuser::Errno::EIO
 }
-fn kind(raw: u32) -> FileType {
-    match raw {
+/// The FUSE type of a native `S_IFMT` value. `DirectoryClient` already
+/// refuses any other value; one that still arrives is an I/O failure, never
+/// a guessed type.
+fn kind(raw: u32) -> io::Result<FileType> {
+    Ok(match raw {
         libc::S_IFREG => FileType::RegularFile,
         libc::S_IFDIR => FileType::Directory,
         libc::S_IFLNK => FileType::Symlink,
@@ -101,8 +104,8 @@ fn kind(raw: u32) -> FileType {
         libc::S_IFSOCK => FileType::Socket,
         libc::S_IFBLK => FileType::BlockDevice,
         libc::S_IFCHR => FileType::CharDevice,
-        _ => unreachable!("DirectoryClient rejects invalid native type"),
-    }
+        _ => return Err(error(libc::EIO)),
+    })
 }
 fn name(name: &OsStr) -> io::Result<EntryName> {
     EntryName::new(name.to_os_string()).map_err(|_| error(libc::EINVAL))
@@ -302,14 +305,20 @@ impl DirectoryFilesystem {
         };
         Ok((ino, stat))
     }
-    fn attr(&self, ino: u64, metadata: &Metadata, file_type: u32, execute_bits: u16) -> FileAttr {
+    fn attr(
+        &self,
+        ino: u64,
+        metadata: &Metadata,
+        file_type: u32,
+        execute_bits: u16,
+    ) -> io::Result<FileAttr> {
         let time = metadata
             .modified_unix_seconds
             .and_then(|v| u64::try_from(v).ok())
             .and_then(|v| UNIX_EPOCH.checked_add(Duration::from_secs(v)))
             .unwrap_or(UNIX_EPOCH);
         let directory = metadata.kind == EntryKind::Directory;
-        FileAttr {
+        Ok(FileAttr {
             ino: INodeNo(ino),
             size: metadata.size,
             blocks: metadata.size.div_ceil(512),
@@ -317,7 +326,7 @@ impl DirectoryFilesystem {
             mtime: time,
             ctime: time,
             crtime: time,
-            kind: kind(file_type),
+            kind: kind(file_type)?,
             perm: if directory {
                 0o700
             } else if metadata.kind == EntryKind::Other {
@@ -331,7 +340,7 @@ impl DirectoryFilesystem {
             rdev: 0,
             blksize: 4096,
             flags: 0,
-        }
+        })
     }
     fn attributes(
         &self,
@@ -386,7 +395,7 @@ impl DirectoryFilesystem {
             }
             (stat.metadata, stat.execute_bits)
         };
-        Ok(self.attr(ino, &metadata, node.file_type, execute_bits))
+        self.attr(ino, &metadata, node.file_type, execute_bits)
     }
     fn open_file(&self, table: &mut Table, ino: u64, mode: OpenMode) -> io::Result<u64> {
         if table.files.len() >= HANDLES {
@@ -449,7 +458,9 @@ impl DirectoryFilesystem {
         self.job_effect(id, false)?.ok_or_else(|| error(libc::EIO))
     }
     fn job_effect(&self, id: u64, require_capture: bool) -> io::Result<Option<[u64; 2]>> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or_else(|| error(libc::EOVERFLOW))?;
         let mut failed = false;
         let mut destination = None;
         let mut captured = false;
@@ -524,12 +535,14 @@ impl Filesystem for DirectoryFilesystem {
             }
             // The request stays bound to this actual FUSE inode. In particular,
             // an open old FD cannot acquire the history of a replacement name.
-            if let Some(pin) = node.pin {
-                if self.source.metadata_pin(pin)?.identity != node.identity {
-                    return Err(error(libc::ESTALE));
-                }
+            if let Some(pin) = node.pin
+                && self.source.metadata_pin(pin)?.identity != node.identity
+            {
+                return Err(error(libc::ESTALE));
             }
             let parent = self.directory(&mut table, node.parent)?;
+            // The history query is a round trip to the source: never under the table lock.
+            drop(table);
             let name = node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?;
             let bytes = self
                 .source
@@ -585,9 +598,10 @@ impl Filesystem for DirectoryFilesystem {
                 .lookups
                 .checked_add(1)
                 .ok_or_else(|| error(libc::ENFILE))?;
+            drop(table);
             Ok::<_, io::Error>((
                 ino,
-                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits),
+                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)?,
             ))
         })();
         match result {
@@ -664,16 +678,15 @@ impl Filesystem for DirectoryFilesystem {
             if node.kind != EntryKind::File {
                 return Err(error(libc::EPERM));
             }
-            if let Some(handle) = handle {
-                if table
+            if let Some(handle) = handle
+                && table
                     .files
                     .get(&handle.0)
                     .ok_or_else(|| error(libc::EBADF))?
                     .node
                     != ino.0
-                {
-                    return Err(error(libc::EBADF));
-                }
+            {
+                return Err(error(libc::EBADF));
             }
             let directory = self.directory(&mut table, node.parent)?;
             self.source.set_created_permissions(
@@ -684,7 +697,9 @@ impl Filesystem for DirectoryFilesystem {
             )?;
             // Native setter checks real original-UID fchmod/readback. Presentation
             // retains the target policy baseline; mode is no authority upgrade.
-            self.attributes(&mut table, ino.0, handle)
+            let result = self.attributes(&mut table, ino.0, handle);
+            drop(table);
+            result
         })();
         match result {
             Ok(attr) => reply.attr(&TTL, &attr),
@@ -720,7 +735,7 @@ impl Filesystem for DirectoryFilesystem {
                 .cloned()
                 .filter(|node| node.kind == EntryKind::File)
                 .ok_or_else(|| error(libc::ESTALE))?;
-            match command {
+            let result = match command {
                 save_marker::PROBE if input.is_empty() && output == 4 => {
                     Ok(Some(save_marker::MAGIC))
                 }
@@ -739,7 +754,9 @@ impl Filesystem for DirectoryFilesystem {
                 }
                 save_marker::PROBE | save_marker::ARM => Err(error(libc::EINVAL)),
                 _ => Err(error(libc::ENOTTY)),
-            }
+            };
+            drop(table);
+            result
         })();
         match result {
             Ok(Some(magic)) => reply.ioctl(0, &magic),
@@ -759,11 +776,13 @@ impl Filesystem for DirectoryFilesystem {
                 return Err(error(libc::EINVAL));
             }
             let parent = self.directory(&mut table, node.parent)?;
-            self.source.readlink(
+            let result = self.source.readlink(
                 parent,
                 node.name.as_ref().ok_or_else(|| error(libc::ESTALE))?,
                 node.identity,
-            )
+            );
+            drop(table);
+            result
         })();
         match result {
             Ok(bytes) => reply.data(&bytes),
@@ -908,10 +927,11 @@ impl Filesystem for DirectoryFilesystem {
                     sequence: 0,
                     base: 0,
                     high_water: 0,
-                    rows,
+                    entries: rows,
                     done: false,
                 },
             );
+            drop(table);
             Ok(id)
         })();
         match result {
@@ -928,7 +948,9 @@ impl Filesystem for DirectoryFilesystem {
                 .filter(|rows| rows.node == ino.0)
                 .ok_or_else(|| error(libc::EBADF))?;
             let directory = self.directory(&mut table, ino.0)?;
-            self.source.sync_directory(directory)
+            let result = self.source.sync_directory(directory);
+            drop(table);
+            result
         })();
         match result {
             Ok(()) => reply.ok(),
@@ -968,16 +990,18 @@ impl Filesystem for DirectoryFilesystem {
                 rows.sequence = 0;
                 rows.base = 0;
                 rows.done = false;
-                rows.rows = vec![
+                rows.entries = vec![
                     Ok((ino.0, FileType::Directory, OsString::from("."))),
                     Ok((parent, FileType::Directory, OsString::from(".."))),
                 ];
             }
-            let replay_deadline = Instant::now() + Duration::from_secs(5);
+            let replay_deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or_else(|| error(libc::EOVERFLOW))?;
             loop {
                 let end = rows
                     .base
-                    .checked_add(rows.rows.len() as u64)
+                    .checked_add(rows.entries.len() as u64)
                     .ok_or_else(|| error(libc::EOVERFLOW))?;
                 if offset < end || rows.done {
                     if offset > end {
@@ -992,19 +1016,22 @@ impl Filesystem for DirectoryFilesystem {
                 rows.sequence = page.next_sequence;
                 rows.done = page.done;
                 rows.base = end;
-                rows.rows = page
+                rows.entries = page
                     .entries
                     .into_iter()
                     .map(|row| match row.stat {
-                        Some(stat) => {
-                            Ok((0, kind(stat.file_type), row.name.as_os_str().to_os_string()))
-                        }
+                        Some(stat) => kind(stat.file_type)
+                            .map(|kind| (0, kind, row.name.as_os_str().to_os_string()))
+                            .map_err(|_| libc::EIO),
                         None => Err(libc::EACCES),
                     })
                     .collect();
             }
-            let index = usize::try_from(offset - rows.base).map_err(|_| error(libc::EINVAL))?;
-            for (index, row) in rows.rows.iter().enumerate().skip(index) {
+            let index = offset
+                .checked_sub(rows.base)
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or_else(|| error(libc::EINVAL))?;
+            for (index, row) in rows.entries.iter().enumerate().skip(index) {
                 let (entry_ino, kind, name) = row.as_ref().map_err(|code| error(*code))?;
                 let cookie = rows
                     .base
@@ -1016,6 +1043,7 @@ impl Filesystem for DirectoryFilesystem {
                 }
                 rows.high_water = rows.high_water.max(cookie);
             }
+            drop(table);
             Ok::<_, io::Error>(())
         })();
         match result {
@@ -1071,13 +1099,17 @@ impl Filesystem for DirectoryFilesystem {
                 return Err(error(libc::ESTALE));
             }
             let handle = self.open_file(&mut table, ino, mode)?;
-            table
+            let node = table
                 .nodes
                 .get_mut(&ino)
-                .ok_or_else(|| error(libc::ESTALE))?
-                .lookups += 1;
+                .ok_or_else(|| error(libc::ESTALE))?;
+            node.lookups = node
+                .lookups
+                .checked_add(1)
+                .ok_or_else(|| error(libc::EOVERFLOW))?;
+            drop(table);
             Ok((
-                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits),
+                self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)?,
                 handle,
             ))
         })();
@@ -1113,7 +1145,9 @@ impl Filesystem for DirectoryFilesystem {
                 .retire_created(directory, &name, stat.identity)?;
             // Source policy admits only its real own-created temporary. The
             // native completed effect retains it in recovery, never raw Purge.
-            if self.job_effect(job, true)?.is_some() {
+            let effect = self.job_effect(job, true)?;
+            drop(table);
+            if effect.is_some() {
                 return Err(error(libc::EIO));
             }
             // Completion is the durable native captured-inode receipt. The
@@ -1148,12 +1182,16 @@ impl Filesystem for DirectoryFilesystem {
             if stat.identity != identity {
                 return Err(error(libc::ESTALE));
             }
-            table
+            let node = table
                 .nodes
                 .get_mut(&ino)
-                .ok_or_else(|| error(libc::ESTALE))?
-                .lookups += 1;
-            Ok(self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits))
+                .ok_or_else(|| error(libc::ESTALE))?;
+            node.lookups = node
+                .lookups
+                .checked_add(1)
+                .ok_or_else(|| error(libc::EOVERFLOW))?;
+            drop(table);
+            self.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)
         })();
         match result {
             Ok(attr) => {
@@ -1175,8 +1213,7 @@ impl Filesystem for DirectoryFilesystem {
         reply: ReplyEmpty,
     ) {
         let result = (|| {
-            if parent != newparent
-                || (flags.bits() != 0 && flags.bits() != libc::RENAME_NOREPLACE as u32)
+            if parent != newparent || (flags.bits() != 0 && flags.bits() != libc::RENAME_NOREPLACE)
             {
                 return Err(error(libc::EOPNOTSUPP));
             }
@@ -1184,7 +1221,7 @@ impl Filesystem for DirectoryFilesystem {
             let old = name(component)?;
             let new = name(newcomponent)?;
             let directory = self.directory(&mut table, parent.0)?;
-            let job = if flags.bits() == libc::RENAME_NOREPLACE as u32 {
+            let job = if flags.bits() == libc::RENAME_NOREPLACE {
                 if self.source.stat(directory, &new)?.is_some() {
                     return Err(error(libc::EEXIST));
                 }
@@ -1200,6 +1237,7 @@ impl Filesystem for DirectoryFilesystem {
                     node.name = Some(new.clone());
                 }
             }
+            drop(table);
             Ok::<_, io::Error>(())
         })();
         match result {
@@ -1250,6 +1288,129 @@ mod tests {
         );
     }
 
+    fn assert_native_symlink_identity(disk: &std::path::Path, source: &DirectoryConnection) {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        // Exercise actual connected RPC, native backend, and bounded bridge.
+        let raw = std::ffi::OsString::from_vec(b"nested/missing-\xff".to_vec());
+        std::os::unix::fs::symlink(&raw, disk.join("raw-link")).unwrap();
+        let link_name = EntryName::new("raw-link".into()).unwrap();
+        let link = source.stat(ROOT_DIRECTORY, &link_name).unwrap().unwrap();
+        assert_eq!(
+            source
+                .readlink(ROOT_DIRECTORY, &link_name, link.identity)
+                .unwrap(),
+            raw.as_bytes()
+        );
+        std::os::unix::fs::symlink("other", disk.join("replacement-link")).unwrap();
+        std::fs::rename(disk.join("replacement-link"), disk.join("raw-link")).unwrap();
+        assert!(
+            source
+                .readlink(ROOT_DIRECTORY, &link_name, link.identity)
+                .is_err()
+        );
+    }
+
+    fn assert_native_mode_observations(
+        disk: &std::path::Path,
+        fs: &DirectoryFilesystem,
+        table: &mut Table,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(disk.join("file"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let executable = fs
+            .source
+            .stat(ROOT_DIRECTORY, &EntryName::new("file".into()).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(executable.execute_bits, 0o111);
+        let (executable_ino, actual) = fs
+            .observe(table, ROOT, &EntryName::new("file".into()).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs.attr(
+                executable_ino,
+                &actual.metadata,
+                actual.file_type,
+                actual.execute_bits
+            )
+            .unwrap()
+            .perm,
+            0o711
+        );
+        let handle = fs.open_file(table, executable_ino, OpenMode::Read).unwrap();
+        std::fs::set_permissions(disk.join("file"), std::fs::Permissions::from_mode(0o640))
+            .unwrap();
+        assert_eq!(
+            fs.attributes(table, executable_ino, None).unwrap().perm,
+            0o600
+        );
+        assert_eq!(
+            fs.attributes(table, executable_ino, Some(FileHandle(handle)))
+                .unwrap()
+                .perm,
+            0o600
+        );
+        // Metadata remains observational; virtual owner and write/read policy stay target-local.
+        assert_eq!(
+            fs.attributes(table, executable_ino, None).unwrap().uid,
+            1000
+        );
+        let held = table.files.remove(&handle).unwrap();
+        fs.source.release(held.remote).unwrap();
+    }
+
+    fn assert_native_pin_capacity(
+        disk: &std::path::Path,
+        fs: &DirectoryFilesystem,
+        table: &mut Table,
+        old: u64,
+    ) {
+        // Actual native metadata pins consume descriptors even without byte
+        // opens. Capacity refusal must leave the old unlinked inode pinned.
+        while table.nodes.len() < RESIDENT_NODES {
+            let name = format!("capacity-{}", table.nodes.len());
+            std::fs::write(disk.join(&name), b"capacity").unwrap();
+            fs.observe(table, ROOT, &EntryName::new(name.into()).unwrap())
+                .unwrap();
+        }
+        std::fs::write(disk.join("capacity-refused"), b"not admitted").unwrap();
+        assert_eq!(
+            fs.observe(
+                table,
+                ROOT,
+                &EntryName::new("capacity-refused".into()).unwrap()
+            )
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENFILE)
+        );
+        assert_eq!(table.nodes.len(), RESIDENT_NODES);
+        assert_eq!(fs.attributes(table, old, None).unwrap().size, 12);
+        assert!(table.nodes[&old].pin.is_some());
+    }
+
+    fn assert_native_special_types(fs: &DirectoryFilesystem, table: &mut Table) {
+        for (name, expected) in [("socket", FileType::Socket), ("fifo", FileType::NamedPipe)] {
+            let (ino, stat) = fs
+                .observe(table, ROOT, &EntryName::new(name.into()).unwrap())
+                .unwrap();
+            assert_eq!(
+                fs.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)
+                    .unwrap()
+                    .kind,
+                expected
+            );
+            assert_eq!(fs.attributes(table, ino, None).unwrap().kind, expected);
+            assert_eq!(
+                fs.open_file(table, ino, OpenMode::Read)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EOPNOTSUPP)
+            );
+        }
+    }
+
     #[test]
     fn native_lookup_pins_inode_and_preserves_socket_fifo_types() {
         let disk = tempfile::tempdir().unwrap();
@@ -1293,99 +1454,11 @@ mod tests {
         )
         .unwrap();
         let source = DirectoryConnection::connected(stream).unwrap();
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        // Exercise actual connected RPC, native backend, and bounded bridge.
-        let raw = std::ffi::OsString::from_vec(b"nested/missing-\xff".to_vec());
-        std::os::unix::fs::symlink(&raw, disk.path().join("raw-link")).unwrap();
-        let link_name = EntryName::new("raw-link".into()).unwrap();
-        let link = source.stat(ROOT_DIRECTORY, &link_name).unwrap().unwrap();
-        assert_eq!(
-            source
-                .readlink(ROOT_DIRECTORY, &link_name, link.identity)
-                .unwrap(),
-            raw.as_bytes()
-        );
-        std::os::unix::fs::symlink("other", disk.path().join("replacement-link")).unwrap();
-        std::fs::rename(
-            disk.path().join("replacement-link"),
-            disk.path().join("raw-link"),
-        )
-        .unwrap();
-        assert!(
-            source
-                .readlink(ROOT_DIRECTORY, &link_name, link.identity)
-                .is_err()
-        );
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(
-            disk.path().join("file"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        let executable = source
-            .stat(ROOT_DIRECTORY, &EntryName::new("file".into()).unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(executable.execute_bits, 0o111);
+        assert_native_symlink_identity(disk.path(), &source);
         let fs = DirectoryFilesystem::new(source.clone(), 1000, 1000).unwrap();
         let mut table = fs.lock().unwrap();
-        let (executable_ino, actual) = fs
-            .observe(&mut table, ROOT, &EntryName::new("file".into()).unwrap())
-            .unwrap();
-        assert_eq!(
-            fs.attr(
-                executable_ino,
-                &actual.metadata,
-                actual.file_type,
-                actual.execute_bits
-            )
-            .perm,
-            0o711
-        );
-        let handle = fs
-            .open_file(&mut table, executable_ino, OpenMode::Read)
-            .unwrap();
-        std::fs::set_permissions(
-            disk.path().join("file"),
-            std::fs::Permissions::from_mode(0o640),
-        )
-        .unwrap();
-        assert_eq!(
-            fs.attributes(&mut table, executable_ino, None)
-                .unwrap()
-                .perm,
-            0o600
-        );
-        assert_eq!(
-            fs.attributes(&mut table, executable_ino, Some(FileHandle(handle)))
-                .unwrap()
-                .perm,
-            0o600
-        );
-        // Metadata remains observational; virtual owner and write/read policy stay target-local.
-        assert_eq!(
-            fs.attributes(&mut table, executable_ino, None).unwrap().uid,
-            1000
-        );
-        let held = table.files.remove(&handle).unwrap();
-        fs.source.release(held.remote).unwrap();
-        for (name, expected) in [("socket", FileType::Socket), ("fifo", FileType::NamedPipe)] {
-            let (ino, stat) = fs
-                .observe(&mut table, ROOT, &EntryName::new(name.into()).unwrap())
-                .unwrap();
-            assert_eq!(
-                fs.attr(ino, &stat.metadata, stat.file_type, stat.execute_bits)
-                    .kind,
-                expected
-            );
-            assert_eq!(fs.attributes(&mut table, ino, None).unwrap().kind, expected);
-            assert_eq!(
-                fs.open_file(&mut table, ino, OpenMode::Read)
-                    .unwrap_err()
-                    .raw_os_error(),
-                Some(libc::EOPNOTSUPP)
-            );
-        }
+        assert_native_mode_observations(disk.path(), &fs, &mut table);
+        assert_native_special_types(&fs, &mut table);
         let (old, observed) = fs
             .observe(&mut table, ROOT, &EntryName::new("file".into()).unwrap())
             .unwrap();
@@ -1405,30 +1478,7 @@ mod tests {
         assert_ne!(old, new);
         assert_eq!(replaced.metadata.size, 3);
         assert_ne!(observed.identity, replaced.identity);
-        // Actual native metadata pins consume descriptors even without byte
-        // opens. Capacity refusal must leave the old unlinked inode pinned.
-        let mut serial = 0;
-        while table.nodes.len() < RESIDENT_NODES {
-            let name = format!("capacity-{serial}");
-            serial += 1;
-            std::fs::write(disk.path().join(&name), b"capacity").unwrap();
-            fs.observe(&mut table, ROOT, &EntryName::new(name.into()).unwrap())
-                .unwrap();
-        }
-        std::fs::write(disk.path().join("capacity-refused"), b"not admitted").unwrap();
-        assert_eq!(
-            fs.observe(
-                &mut table,
-                ROOT,
-                &EntryName::new("capacity-refused".into()).unwrap()
-            )
-            .unwrap_err()
-            .raw_os_error(),
-            Some(libc::ENFILE)
-        );
-        assert_eq!(table.nodes.len(), RESIDENT_NODES);
-        assert_eq!(fs.attributes(&mut table, old, None).unwrap().size, 12);
-        assert!(table.nodes[&old].pin.is_some());
+        assert_native_pin_capacity(disk.path(), &fs, &mut table, old);
         authority.revoke_directory(&root).unwrap();
         assert!(
             source

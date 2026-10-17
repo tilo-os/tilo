@@ -260,6 +260,45 @@ impl Room {
             .unwrap()
     }
 
+    /// The chat's first part of messages, as the room holds it.
+    async fn part(&self) -> AutoCommit {
+        self.rooms
+            .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
+            .await
+            .unwrap()
+            .map(|bytes| AutoCommit::load(&bytes).unwrap())
+            .unwrap_or_default()
+    }
+
+    /// Change the chat's first part of messages as its author's device
+    /// would, reading the chat record where it is changed.
+    async fn part_as<T: Send + 'static>(
+        &self,
+        change: impl FnOnce(&mut AutoCommit, &chat::Chat) -> Result<T, String> + Send + 'static,
+    ) -> T {
+        let chat = self.chat().await;
+        self.rooms
+            .author_application(
+                &self.id,
+                &self.cert,
+                &self.catalogue,
+                CHAT,
+                chat::parts::part(0).as_str(),
+                move |part| change(part, &chat),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// `who` does `invoke` to Chat's messages from their own device.
+    async fn act_on_messages(&self, who: &str, invoke: Invoke<chat::parts::ChatPart>) {
+        let who = who.to_owned();
+        self.part_as(move |part, chat| {
+            chat::demo::apply_part_doc(part, chat, &who, invoke).map_err(|error| error.to_string())
+        })
+        .await;
+    }
+
     /// `who` does `invoke` in Chat from their own device.
     async fn act(&self, who: &str, invoke: Invoke<chat::Chat>) {
         let who = who.to_owned();
@@ -271,15 +310,15 @@ impl Room {
 
     async fn ada_says(&self, channel: &str, text: &str) -> String {
         let (ada, channel, text) = (self.ada.clone(), channel.to_owned(), text.to_owned());
-        self.chat_as(move |doc| {
-            chat::demo::say(doc, &ada, &channel, &text).map_err(|error| error.to_string())
+        self.part_as(move |part, chat| {
+            chat::demo::say_in_part(part, chat, &ada, &channel, &text)
+                .map_err(|error| error.to_string())
         })
         .await
     }
 
     async fn message(&self, text: &str) -> Option<(String, chat::record::Message)> {
-        self.chat()
-            .await
+        chat::messages::read_part(&self.part().await)
             .messages
             .iter()
             .find(|(_, message)| message.text == text)
@@ -297,7 +336,7 @@ impl Room {
     /// entry.
     async fn shown_as(&self, text: &str) -> Option<String> {
         let (id, _) = self.message(text).await?;
-        let doc = self.doc(CHAT).await;
+        let doc = self.part().await;
         doc.clone().get_changes(&[]).into_iter().find_map(|change| {
             let name = change
                 .message()
@@ -307,8 +346,10 @@ impl Room {
             let after = doc.clone().fork_at(&[change.hash()]).ok()?;
             let before = doc.clone().fork_at(change.deps()).ok()?;
             let has = |doc: &AutoCommit| {
-                chat::Chat::read(doc)
-                    .is_ok_and(|chat| chat.messages.iter().any(|(m, _)| m.as_str() == id))
+                chat::messages::read_part(doc)
+                    .messages
+                    .iter()
+                    .any(|(m, _)| m.as_str() == id)
             };
             (has(&after) && !has(&before)).then_some(name)
         })
@@ -628,12 +669,13 @@ async fn live(token: String, guild_id: String) -> usize {
         link(&guild_id, &first_text, Some(&sent)),
     );
 
-    room.act(
+    room.act_on_messages(
         &room.ada,
-        chat::Chat::EDIT_MESSAGE.with(chat::record::chat::EditMessage {
+        chat::parts::ChatPart::EDIT_MESSAGE.with(chat::messages::chat_part::EditMessage {
             message: Id::from_raw(&first),
             text: "hello from Tilo, edited".into(),
             body: None,
+            mentions: None,
         }),
     )
     .await;
@@ -647,9 +689,9 @@ async fn live(token: String, guild_id: String) -> usize {
     .await;
     report.case("Tilo->Discord edit", edited.is_some(), "content rewritten");
 
-    room.act(
+    room.act_on_messages(
         &room.ada,
-        chat::Chat::REACT.with(chat::record::chat::React {
+        chat::parts::ChatPart::REACT.with(chat::messages::chat_part::React {
             message: Id::from_raw(&first),
             emoji: "👍".into(),
         }),
@@ -669,7 +711,7 @@ async fn live(token: String, guild_id: String) -> usize {
     .await;
     report.case("Tilo->Discord reaction", reacted.is_some(), "👍 by the bot");
 
-    room.act(
+    room.act_on_messages(
         &room.ada,
         chat::demo::post(&general, "a reply from Tilo", Some(&first)),
     )
@@ -694,9 +736,9 @@ async fn live(token: String, guild_id: String) -> usize {
 
     let bytes = b"the minutes, from Tilo".to_vec();
     let blob = blobs.store(&bytes).unwrap();
-    room.act(
+    room.act_on_messages(
         &room.ada,
-        chat::Chat::POST.with(chat::record::chat::Post {
+        chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
             channel: Id::from_raw(&general),
             text: "notes from Tilo".into(),
             parent: None,
@@ -709,6 +751,7 @@ async fn live(token: String, guild_id: String) -> usize {
                 height: 0,
                 size: bytes.len() as u64,
             }),
+            mentions: None,
         }),
     )
     .await;
@@ -734,9 +777,9 @@ async fn live(token: String, guild_id: String) -> usize {
     })
     .await
     .unwrap_or_default();
-    room.act(
+    room.act_on_messages(
         &room.ada,
-        chat::Chat::DELETE_MESSAGE.with(chat::record::chat::DeleteMessage {
+        chat::parts::ChatPart::DELETE_MESSAGE.with(chat::messages::chat_part::DeleteMessage {
             message: Id::from_raw(&doomed),
         }),
     )

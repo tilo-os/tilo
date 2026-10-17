@@ -10,7 +10,7 @@ use tilo_desktop::feedback::Focused;
 
 pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     let apps = st.hosted_inputs.in_process().cloned().ok_or_else(|| {
-        ActionError::Refused(crate::shell::i18n::t("feedback-action-unavailable"))
+        ActionError::Explained(crate::shell::i18n::t("feedback-action-unavailable"))
     })?;
     // Native tiles other than built-ins carry no app-chosen display name.
     let focused = tilo_desktop::feedback::focused(&st.tree().desktop, |_| None);

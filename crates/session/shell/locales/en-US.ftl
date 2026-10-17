@@ -23,10 +23,7 @@ continuity-other-device = your other device
 tab-closed-toast = Closed { $title }
 tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
-tab-closed-undo-hint = Select to undo, or press { $chord } later
-tab-closed-undo-hint-unbound = Select to undo
 workspace-deleted-toast = Deleted { $name }
-workspace-deleted-toast-hint = Select to undo
 workspace-deleted-undo = Undo
 
 # Display layout sheet (Super+P)
@@ -81,7 +78,7 @@ wireless-connecting = Connecting…
 wireless-connect = Connect
 wireless-stop = Stop
 wireless-wait = Wait
-wireless-protocols = Miracast · Google Cast · AirPlay · FCast
+wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
@@ -89,7 +86,7 @@ display-identify-unnamed = Display { $number }
 
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
-overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click to close it, or drag it onto another workspace to move it there.
+overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
 overview-window-move-failed = Can't move this window
 
 # Fixed shell chords, as the shortcut guide and the keyboard map name them
@@ -110,7 +107,7 @@ shortcut-picture-in-picture = Picture in picture
 shortcut-save-recent-replay = Save recent replay
 shortcut-workspace-history = Workspace history
 shortcut-explore-workspace-history = Explore workspace history
-shortcut-guide = Keyboard guide
+shortcut-guide = Keyboard shortcuts
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
 shortcut-vim-navigation = Vim navigation
@@ -121,7 +118,7 @@ shortcut-name-search = Search everywhere
 shortcut-name-workspace-overview = Overview
 shortcut-name-lock = Lock screen
 shortcut-name-quick-settings = Quick Settings
-shortcut-name-shortcut-help = Desktop help
+shortcut-name-shortcut-help = Keyboard shortcuts
 shortcut-name-focus-previous-window = Focus previous window
 shortcut-name-focus-next-window = Focus next window
 shortcut-name-previous-tab = Previous tab
@@ -187,8 +184,8 @@ keyboard-shortcut-conflict = { $chord } is already used for “{ $shortcut }”.
 keyboard-shortcut-invalid = That shortcut is not supported.
 
 # Shortcut guide (F1)
-guide-title = Desktop help
-guide-reopen-hint = Press F1 anywhere to reopen this guide · Select a navigation keycap to change it
+guide-title = Keyboard shortcuts
+guide-reopen-hint = Select a navigation shortcut to change it
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }” · Esc cancels
 guide-message-esc-cancels = { $message } · Esc cancels
@@ -228,23 +225,23 @@ guide-touch-previous-workspace = Previous workspace
 guide-touch-next-workspace = Next workspace
 guide-touch-open-overview = Open overview
 guide-touch-close-overview = Close overview
-guide-navigation-heading = EDIT NAVIGATION SHORTCUTS
-guide-essentials-heading = DESKTOP ESSENTIALS
-guide-group-windows = WINDOWS & WORKSPACES
-guide-group-search = SEARCH & SYSTEM
-guide-group-capture = CAPTURE & DISPLAY
+guide-navigation-heading = Edit navigation shortcuts
+guide-essentials-heading = Desktop essentials
+guide-group-windows = Windows and workspaces
+guide-group-search = Search and system
+guide-group-capture = Capture and display
 guide-overview = Overview
 guide-unassigned = Unassigned
 guide-unassigned-inline = unassigned
-guide-pointer = Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize
+guide-pointer = Pointer: click a window to focus it, drag tabs or groups to reorder them, drag an edge to resize
 guide-your-shortcuts = Your shortcuts: { $shortcuts }
-guide-vim-mode = Vim mode · h j k l
-guide-a11y-name = Desktop keyboard and mouse guide
+guide-vim-mode = Vim keys: h j k l
+guide-a11y-name = Keyboard shortcuts
 guide-a11y-description = Focus windows with { $window-back } or { $window-next }; tabs with { $tab-back } or { $tab-next }; strips with { $strip-back } or { $strip-next }; workspaces with { $workspace-back } or { $workspace-next }; move groups with { $group-left } or { $group-right }; resize with { $narrower } or { $wider }. Essential desktop actions: { $essentials }. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.
 
 # Devices and media, the Quick Settings drill-in
 devices-media-title = Devices and media
-devices-media-description = Local audio outputs and identity-certified Tilo devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.
+devices-media-description = Audio outputs on this computer and your other Tilo devices. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.
 devices-media-list = Media destinations
 
 # Quick Settings
@@ -320,13 +317,13 @@ qs-edit-required-a11y = Required Quick Settings control
 qs-edit-remove-a11y = Remove Quick Settings control
 qs-edit-add-a11y = Add Quick Settings control
 qs-edit-required-control-a11y = Required; use Control plus Arrow keys to reorder
-qs-edit-optional-control-a11y = Select to add or remove; use Control plus Arrow keys to reorder
+qs-edit-optional-control-a11y = Adds or removes this control. Control plus Arrow keys reorder it.
 
 # Quick Settings: Wi-Fi
 qs-wifi = Wi-Fi
 qs-wifi-off = Wi-Fi is off
 qs-wifi-scanning = Scanning for networks…
-qs-wifi-scan-failed = Couldn’t scan · Refresh to try again
+qs-wifi-scan-failed = Couldn't scan for networks
 qs-wifi-none = No networks found
 qs-wifi-choose-a11y = Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot
 qs-wifi-rescan-a11y = Scan for Wi-Fi networks
@@ -348,7 +345,7 @@ qs-bluetooth-device-connected-a11y = Connected; open device actions
 qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
-qs-vpn-empty = No VPN profiles yet · add one in Settings
+qs-vpn-empty = No VPN profiles. Add one in Settings.
 qs-vpn-none-a11y = No VPN profiles configured
 qs-vpn-choose-a11y = Connect or disconnect a configured VPN profile
 qs-vpn-connected-a11y = VPN connected
@@ -495,7 +492,7 @@ host-activity-reviewing-sensitive = Reviewing sensitive history
 host-exposure-kind-unidentified = unidentified session
 host-exposure-kind-agent = agent
 host-exposure-kind-person = person
-host-exposure-surface = surface { $surface }
+host-exposure-surface = a window
 host-exposure-controls = { $name } ({ $kind }) controls { $target }
 host-exposure-views = { $name } ({ $kind }) views { $target }
 
@@ -523,9 +520,14 @@ host-session-action-blocked = Session action blocked
 
 # Search and app actions
 host-action-started = Started “{ $title }”
-host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
 host-action-failed-status = Couldn't run
+host-action-check-values = Check the values and try again.
+host-action-try-again = Something went wrong. Try again.
+uri-open-invalid = This link can't be opened.
+uri-open-no-settings = Settings isn't installed on this device.
+uri-open-no-handler = No installed app opens this kind of link.
+uri-open-no-workspace = Open a workspace, then try again.
 launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
@@ -547,9 +549,9 @@ host-a11y-tab-menu = { $title } tab menu
 
 # Wi-Fi joins from Quick Settings
 host-wifi-connected-title = Connected to { $ssid }
-host-wifi-connected-shared-credential = Used the encrypted credential from one of your certified devices.
+host-wifi-connected-shared-credential = Used the password saved on one of your devices.
 host-wifi-connected-sharing-unavailable = Connected, but encrypted sharing is temporarily unavailable.
-host-wifi-connected-shared = Connected and encrypted separately for each certified device.
+host-wifi-connected-shared = Connected. Your other devices can join with the same password.
 host-wifi-connected-saved = Connected. This saved network will rejoin automatically.
 host-wifi-connected-open = Connected to the open network.
 host-wifi-saved-password-stale = The saved password no longer works. Enter the current password.
@@ -629,15 +631,15 @@ a11y-clipboard-list = Retained clipboard items
 a11y-bluetooth-accessory = Bluetooth accessory
 a11y-bluetooth-disconnect = Disconnect { $accessory } from this device
 a11y-bluetooth-move-to = Move to { $device }
-a11y-bluetooth-destination-local = This is the current certified device
+a11y-bluetooth-destination-local = This device
 a11y-bluetooth-destination-online = The destination confirms its own local pairing before this device disconnects
-a11y-bluetooth-destination-offline = Offline certified device
+a11y-bluetooth-destination-offline = Offline device
 a11y-bluetooth-move = Move { $accessory }
-a11y-bluetooth-move-description = Choose a certified destination already paired with this accessory. Bond keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.
+a11y-bluetooth-move-description = Choose one of your devices already paired with this accessory. Pairing keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.
 a11y-bluetooth-destinations = Bluetooth destinations
 
 # Accessibility tree: devices and media rows
-a11y-certified-display = Certified display
+a11y-certified-display = Your other display
 a11y-placement-apply = Apply this reversible display placement
 a11y-placement-dismiss = Dismiss this display placement suggestion
 a11y-placement-undo = Undo placement for { $display }
@@ -690,7 +692,7 @@ capability-network = Network access
 
 # The session's agent door: a client in this login (an AI agent in a
 # terminal) asks to work in a workspace as an agent member.
-agent-door-client = { $client } ({ $program }, pid { $pid })
+agent-door-client = { $client } ({ $program })
 agent-door-client-in-app = { $who } in { $app }
 agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
 agent-door-param-agent = The agent to admit it as: an existing agent member, or a new one by this name. Defaults to the name the prompt proposes.
@@ -731,144 +733,140 @@ search-filter-all = All
 search-filter-more = More
 
 # Quick Settings: devices and media rows
-qs-devices-mic-other = Microphone · record from here
+qs-devices-mic-other = Not in use
 qs-devices-mic-current = Current microphone
 qs-devices-mic-level = { " " }· input level { $level }%
 qs-devices-mic-muted = { " " }· muted
-qs-devices-this-device = This device · identity-certified
-qs-devices-offline = Offline · identity-certified
-qs-devices-sending = Sending securely · { $percent }% · resumable
-qs-devices-sent = Transfer sent securely
-qs-devices-transfer-failed = Transfer failed · source remains available
-qs-devices-mutual-control = Mutual control active · local input always wins
-qs-devices-may-control = May control this device · local input always wins
-qs-devices-control-granted = Control granted · place beside this display to cross
-qs-devices-play-here = Play { $media } here · direct encrypted handoff
-qs-devices-audio-only = Online · audio only for this video
-qs-devices-no-output = Online · no media output
-qs-devices-unavailable-media = Online · unavailable for this media
-qs-devices-online = Online · identity-certified
-qs-devices-health = { $reachability ->
-        [online] reachable
-        [stale] presence stale
-       *[offline] offline
-    } · { $latency } · { $power }{ $saver ->
-        [yes] { " " }· energy saver
-       *[no] {""}
-    } · { $routes } active routes
-qs-devices-latency-unknown = latency unknown
-qs-devices-latency = { $ms } ms
-qs-devices-battery-unknown = battery unknown
+qs-devices-this-device = This device
+qs-devices-offline = Offline
+qs-devices-sending = Sending, { $percent }%
+qs-devices-sent = Sent
+qs-devices-transfer-failed = Couldn't send. The original is still here.
+qs-devices-mutual-control = You control each other
+qs-devices-may-control = Can control this device
+qs-devices-control-granted = You can control it. Place it beside this display.
+qs-devices-play-here = Play { $media } here
+qs-devices-audio-only = Audio only for this video
+qs-devices-no-output = No media output
+qs-devices-unavailable-media = Can't play this
+qs-devices-online = Online
+qs-devices-health = { $power }
 qs-devices-external-power = external power
 qs-devices-charging = charging { $percent }%
 qs-devices-battery = battery { $percent }%
 
 # Quick Settings: moving a Bluetooth accessory
-qs-bluetooth-move-note = The destination must already have its own pairing · bond keys never leave a device
+qs-bluetooth-move-note = The other device must already be paired with it
 qs-devices-fabric-unavailable = Personal device fabric is unavailable
 qs-bluetooth-this-device = This device
 qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
-qs-bluetooth-this-certified = This certified device
+qs-bluetooth-this-certified = This device
 qs-bluetooth-move-here = Move here after its local pairing is confirmed
-qs-devices-showing = Showing { $first }–{ $last } of { $total } · scroll for more
+qs-devices-showing = { $first }–{ $last } of { $total }
 
 # Quick Settings: devices and media pane
 qs-devices-header = Devices & media
 qs-devices-no-identity = Set up your personal identity to connect devices
-qs-devices-note = Direct when reachable · no vendor cloud · certified devices only
-qs-devices-empty = Connected outputs and enrolled devices appear here
+qs-devices-note = Direct between your devices, never through a vendor's cloud
+qs-devices-empty = No outputs or devices
 qs-devices-place = Place { $display } { $side ->
         [left] left
         [right] right
         [above] above
        *[below] below
     }
-qs-devices-place-note = Local sensor evidence · review before applying
+qs-devices-place-note = Suggested by this device's sensors. Check it before applying.
 qs-devices-placement-undo-note = Restore the exact placement from before calibration
 qs-devices-speaker-join = Join { $group } as the { $role }?
-qs-devices-speaker-join-note = { $leader } asked · asked once, leave any time
-qs-devices-speaker-join-note-output = { $leader } asked · plays on { $output } · asked once, leave any time
-qs-devices-speaker-for = for { $peer } · select to stop
+qs-devices-speaker-join-note = { $leader } asked. You can leave any time.
+qs-devices-speaker-join-note-output = { $leader } asked to play on { $output }. You can leave any time.
+qs-devices-speaker-for = Playing for { $peer }
 qs-devices-another-device = another device
-qs-devices-speaker-connecting = { $playing } playing, { $waiting } connecting · select to stop
+qs-devices-speaker-connecting = { $playing } playing, { $waiting } connecting
 qs-devices-speakers-playing = { $count ->
-        [one] { $count } speaker playing · select to stop
-       *[other] { $count } speakers playing · select to stop
+        [one] { $count } speaker playing
+       *[other] { $count } speakers playing
     }
-qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing clocks… · select to stop
+qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing…
 qs-devices-speaker-clock-failed = { $count ->
-        [one] { $count } speaker can't play in time: { $reason } · select to stop
-       *[other] { $count } speakers can't play in time: { $reason } · select to stop
+        [one] { $count } speaker can't keep time: { $reason }
+       *[other] { $count } speakers can't keep time: { $reason }
     }
-qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
-qs-devices-speaker-membership-note = set up on { $leader } · select to leave
+qs-devices-speaker-setup-note = Stereo pair or room speakers, in Settings
+qs-devices-speaker-membership-note = Set up on { $leader }
 qs-devices-speaker-listen = Let { $leader } use this microphone for { $group }?
-qs-devices-speaker-listen-note = only during speaker calibration · the recording stays here
-qs-devices-speaker-listen-note-microphone = uses { $microphone } · only during speaker calibration · the recording stays here
-qs-devices-speaker-listener-note = set up on { $leader } · select to stop
-qs-devices-another-certified = Another certified device
-qs-devices-requested-allow-once = { $source } requested this · allow once or decline
-qs-devices-audio-app = Focused app audio · stops when focus changes
-qs-devices-audio-system = All system audio · select a certified destination below
-qs-devices-certified-device = certified device
-qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
-qs-devices-audio-streaming = streaming with { $peer } · select to stop
-qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
-qs-devices-audio-syncing = syncing clocks with { $peer }… · select to stop
-qs-devices-audio-clock-failed = can't play in time with { $peer }: { $reason } · select to stop
+qs-devices-speaker-listen-note = Only while calibrating. The recording stays on this device.
+qs-devices-speaker-listen-note-microphone = Uses { $microphone } only while calibrating. The recording stays on this device.
+qs-devices-speaker-listener-note = Set up on { $leader }
+qs-devices-another-certified = Another of your devices
+qs-devices-requested-allow-once = { $source } asked for this
+qs-devices-audio-app = Audio of the focused app
+qs-devices-audio-system = All system audio. Choose a device below.
+qs-devices-certified-device = Another device
+qs-devices-audio-awaiting = Waiting for { $peer } to allow it
+qs-devices-audio-streaming = Streaming to { $peer }
+qs-devices-audio-interrupted = Interrupted on { $peer }
+qs-devices-audio-syncing = Syncing with { $peer }…
+qs-devices-audio-clock-failed = Can't keep time with { $peer }: { $reason }
 qs-devices-capture-share = Share this device's { $input }
-qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
+qs-devices-capture-requested = { $source } asked for this for { $app }
 qs-devices-capture-use-remote = Use remote { $input }
-qs-devices-capture-source-note = Select a certified source device below · approval required there
+qs-devices-capture-source-note = Choose a device below. It asks for approval there.
 qs-devices-capture-waiting-on = Waiting for approval on { $peer }
 qs-devices-capture-allow-app = Allow the focused app once
 qs-devices-capture-waiting-ready = Waiting for { $peer } to become ready
-qs-devices-capture-private = Private session with { $peer } · select to stop
+qs-devices-capture-private = Private session with { $peer }
 qs-devices-capture-source-unavailable = Source cannot provide this input
 qs-devices-capture-receiver-unavailable = Private receiver could not be created
-qs-devices-capture-interrupted = Certified route interrupted · session closed
-qs-devices-call-requested = { $source } requested this · select to allow once
-qs-devices-call-source-note = Live here · select a certified destination below
-qs-devices-bluetooth-requested = { $source } requested this handoff · select to approve once
-qs-devices-handoff-checking = Checking { $peer } · select to cancel
-qs-devices-handoff-awaiting = Waiting for approval on { $peer } · select to cancel
-qs-devices-handoff-releasing = Releasing here · select to cancel
-qs-devices-handoff-pairing = Pairing on { $peer } · select to cancel
-qs-devices-handoff-connecting = Connecting on { $peer } · select to cancel
-qs-devices-handoff-confirming = Connected · confirming authenticated handoff
+qs-devices-capture-interrupted = Connection lost. The session ended.
+qs-devices-call-requested = { $source } asked for this
+qs-devices-call-source-note = Live here. Choose a device below.
+qs-devices-bluetooth-requested = { $source } asked for this handoff
+qs-devices-handoff-checking = Checking { $peer }…
+qs-devices-handoff-awaiting = Waiting for approval on { $peer }
+qs-devices-handoff-releasing = Releasing here…
+qs-devices-handoff-pairing = Pairing on { $peer }…
+qs-devices-handoff-connecting = Connecting on { $peer }…
+qs-devices-handoff-confirming = Connected, confirming…
 qs-devices-handoff-connected = Now connected to { $peer }
-qs-devices-handoff-failed-retry = { $reason } · select to retry
-qs-devices-cancelled-retry = Cancelled · select to retry
+qs-devices-handoff-failed-retry = { $reason }
+qs-devices-cancelled-retry = Cancelled
 qs-devices-cancelled = Cancelled
-qs-devices-controller-requested = { $source } requested this for { $app } · allow once
-qs-devices-controller-local = Local controller · select a certified destination below
-qs-devices-controller-forwarding = Forwarding to { $target } · select to stop
-qs-devices-controller-awaiting = Waiting for approval on { $target } · select to cancel
-qs-devices-media-waiting = Waiting for destination · select to cancel
+qs-devices-controller-requested = { $source } asked for this for { $app }
+qs-devices-controller-local = This controller. Choose a device below.
+qs-devices-controller-forwarding = Forwarding to { $target }
+qs-devices-controller-awaiting = Waiting for approval on { $target }
+qs-devices-media-waiting = Waiting for the other device
 qs-devices-media-opened = Opened on destination
-qs-devices-media-failed = Could not move media ({ $reason }) · select to retry
-qs-devices-media-playing = Playing now · select a destination below
-qs-devices-media-paused = Paused · select a destination below
-qs-devices-output-default = Local output · current default
-qs-devices-output-route = Local output · route current audio here
-qs-devices-output-bluetooth = Bluetooth { $codec } · route current audio here
+qs-devices-media-failed = Couldn't move it: { $reason }
+qs-devices-media-playing = Playing
+qs-devices-media-paused = Paused
+qs-devices-output-default = In use
+qs-devices-output-route = Not in use
+qs-devices-output-bluetooth = Bluetooth { $codec }
 qs-devices-tether-requesting = Waiting for phone approval
 qs-devices-tether-consent = Allow once or decline
 qs-devices-tether-preparing = Starting this phone's hotspot
 qs-devices-tether-connecting = Joining the phone's hotspot
-qs-devices-tether-requester = Connected through this phone · select to disconnect
-qs-devices-tether-provider = Sharing this phone's connection · select to disconnect
+qs-devices-tether-requester = Connected through this phone
+qs-devices-tether-provider = Sharing this phone's connection
+qs-devices-action-stop = Stop
+qs-devices-action-cancel = Cancel
+qs-devices-action-retry = Try again
+qs-devices-action-dismiss = Dismiss
+qs-devices-action-leave = Leave
+qs-devices-action-disconnect = Disconnect
 qs-devices-tether-denied = Declined on the phone
 qs-devices-tether-expired = Request expired
-qs-devices-tether-offline = Device went offline · disconnected
+qs-devices-tether-offline = The device went offline
 qs-devices-tether-disabled = Wi-Fi Continuity was disabled
 qs-devices-tether-failed = Could not establish tethering
 qs-devices-tether-disconnected = Disconnected
-qs-devices-tether-with = Tethering · { $peer }
-qs-devices-ask-phone = Ask this phone to share its connection · approval required there
-qs-devices-use-controller = Use selected controller here · target approves once
-qs-devices-use-input = Use this device's { $input } · source approves once
-qs-devices-play-audio-here = Play selected audio here · target approves once
+qs-devices-tether-with = Tethering with { $peer }
+qs-devices-ask-phone = Ask it to share its connection
+qs-devices-use-controller = Use the controller here
+qs-devices-use-input = Use this device's { $input }
+qs-devices-play-audio-here = Play the audio here
 qs-devices-no-audio = This device has no audio output
 qs-devices-place-this-left = Place this display to the left
 qs-devices-place-this-right = Place this display to the right
@@ -876,12 +874,12 @@ qs-devices-place-this-above = Place this display above
 qs-devices-place-this-below = Place this display below
 
 # Quick Settings: clipboard history
-qs-clipboard-search-empty = Search clipboard… · type to filter
+qs-clipboard-search-empty = Search clipboard…
 qs-clipboard-search-matches = { $count ->
         [one] Search: { $query } · { $count } match
        *[other] Search: { $query } · { $count } matches
     }
-qs-clipboard-empty-hint = Copied items appear here
+qs-clipboard-empty-hint = Nothing copied yet
 qs-clipboard-no-matches = No matches for ‘{ $query }’
 qs-clipboard-search-range = Search clipboard… · { $first }–{ $last } of { $total }
 qs-clipboard-search-count = { $count ->
@@ -892,7 +890,7 @@ qs-clipboard-clear = Clear
 qs-clipboard-clear-a11y = Clear unpinned clipboard history
 qs-clipboard-use-a11y = Use clipboard item
 qs-clipboard-mime-bytes = { $mime } · { $bytes } bytes
-qs-clipboard-row-detail = { $source } · { $age } · { $bytes } B
+qs-clipboard-row-detail = { $source } · { $age }
 qs-clipboard-remove-a11y = Remove clipboard item
 
 # Quick Settings: joining a protected Wi-Fi network
@@ -1018,11 +1016,11 @@ launch-failure-title = Couldn't open { $app }
 
 # Tab and window actions that could not be carried out
 window-duplicate-no-tab = There is no tab to duplicate.
-window-duplicate-foreign = This window belongs to an app the compositor doesn't host, so it can't be copied. Open a second one from search instead.
+window-duplicate-foreign = Can't duplicate this window. Open another one from search.
 window-tab-action-no-tab = There is no tab to act on.
 window-tab-action-unknown-tab = That tab is no longer open.
 window-tab-action-only-tab = This is the window's only tab; there is nothing to split it from.
-window-tab-action-document-refused = The workspace document did not accept the change, so nothing was moved.
+window-tab-action-document-refused = Couldn't move the tab. Try again.
 
 # Tab context menu, workspace toasts and placeholder tiles
 shell-workspace-renamed = Workspace renamed
@@ -1035,21 +1033,21 @@ shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
 
 # Session (power) menu
-power-menu-title = Session
-power-menu-description-switch-user = Lock, leave, switch user, suspend, restart, or shut down this computer
-power-menu-description = Lock, leave, suspend, restart, or shut down this computer
+power-menu-title = Power
+power-menu-description-switch-user = Lock, log out, switch user, suspend, restart, or shut down this computer
+power-menu-description = Lock, log out, suspend, restart, or shut down this computer
 power-lock = Lock
 power-lock-detail = Keep apps running
 power-logout = Log out
-power-logout-detail = End this session
+power-logout-detail = Open apps close
 power-switch-user = Switch user
-power-switch-user-detail = Keep this session running
+power-switch-user-detail = Your apps keep running
 power-suspend = Suspend
 power-suspend-detail = Resume where you left off
 power-restart = Restart
-power-restart-detail = Restart the computer
+power-restart-detail = Open apps close
 power-shut-down = Shut down
-power-shut-down-detail = Turn off the computer
+power-shut-down-detail = Open apps close
 
 # Lock screen
 lock-screen-a11y-name = Tilo lock screen
@@ -1079,7 +1077,15 @@ bluetooth-prompt-explain-request = The code is shown on the device you are pairi
 bluetooth-prompt-explain-confirm-pairing = This device cannot show a code to compare, so there is nothing to check against. Only continue if you started this pairing yourself.
 bluetooth-prompt-explain-authorize-service = A device you have already paired is asking to use a new service. Paired devices can send input and audio to this machine.
 bluetooth-prompt-digits-entered = { $entered } of 6 digits entered
-bluetooth-prompt-service = Service { $uuid }
+bluetooth-prompt-service = For { $service }
+bluetooth-service-audio = audio
+bluetooth-service-calls = calls
+bluetooth-service-remote-control = media controls
+bluetooth-service-input = input
+bluetooth-service-contacts = contacts
+bluetooth-service-messages = messages
+bluetooth-service-files = file transfer
+bluetooth-service-network = network sharing
 bluetooth-prompt-pin-placeholder = PIN
 bluetooth-prompt-code-placeholder = 6-digit code
 bluetooth-prompt-reject = Don't pair
@@ -1143,7 +1149,7 @@ bluetooth-handoff-failure-target-unavailable = target unavailable or declined
 bluetooth-handoff-failure-disconnect-source = source could not release accessory
 bluetooth-handoff-failure-pair-target = target pairing failed
 bluetooth-handoff-failure-connect-target = target connection failed
-bluetooth-handoff-failure-send = certified route was interrupted
+bluetooth-handoff-failure-send = the connection was interrupted
 bluetooth-handoff-failure-timed-out = transaction timed out
 bluetooth-handoff-failure-rollback = source rollback failed
 
@@ -1248,10 +1254,11 @@ search-tray-entry-off = { $item }: { $entry } (off)
 # Search: desktop windows
 
 # Search: shell actions, as palette rows
-search-action-shortcut-help-toggle = Show desktop help
+search-action-shortcut-help-toggle = Show keyboard shortcuts
 search-action-shortcut-help-toggle-subtitle = F1 opens it anywhere; Super+/ is the configurable shortcut for the same guide
 search-action-desktop-tour-open = Take the desktop tour
 search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction to navigation, organisation and collaboration
+search-provider-device-local = Private windows
 search-action-feedback-open = Give feedback
 search-action-feedback-open-subtitle = Report a problem or an idea about the window in front; you review what is sent
 feedback-action-unavailable = Feedback is not available on this desktop
@@ -1605,8 +1612,8 @@ search-continuity-call-consent-subtitle = Resolve this exact call handoff consen
 
 # First-login identity setup: what the identity is
 onboarding-intro-title = Set up your Tilo identity
-onboarding-intro-body = Tilo creates a cryptographic identity that belongs to you, then certifies a separate key for this device. Collaboration and peer invitations rely on it. Individual app edits are not all cryptographically signed yet.
-onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it certifies each of your devices.
+onboarding-intro-body = You get a cryptographic identity that belongs to you, and this device gets its own key. Collaboration and invitations rely on it. Not every edit in apps is signed yet.
+onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it vouches for each of your devices.
 onboarding-intro-point-local = It is created on this computer. Nothing is uploaded and no server keeps a copy.
 onboarding-intro-point-not-account = It is not an account and has no password. There is nothing to sign in to.
 onboarding-choice-create = Create a new identity
@@ -1665,7 +1672,7 @@ onboarding-restore-file-label = Backup file
 
 # First-login identity setup: connecting an existing identity
 onboarding-connect-recovery-title = Your existing identity needs recovery
-onboarding-connect-recovery-message = Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.
+onboarding-connect-recovery-message = Your existing identity couldn't be verified. Unlock the desktop keyring and try again, or restore an encrypted backup. Your identity stays as it is until then.
 onboarding-connect-failed = That identity could not be connected
 onboarding-connect-retry-keyring = Retry keyring
 onboarding-connect-browse = Browse
@@ -1692,7 +1699,7 @@ onboarding-nearby-ended = The pairing window closed or approval was cancelled. C
 onboarding-nearby-unknown = Choose Try again.
 onboarding-nearby-detail = Details: { $detail }
 onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
-onboarding-nearby-permission = Tilo could not write where this computer keeps its device identity. Choose Try again once that is fixed.
+onboarding-nearby-permission = This computer's device identity couldn't be saved. Once that's fixed, choose Try again.
 onboarding-nearby-storage-full-title = This computer's disk is full
 onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
 onboarding-nearby-read-only-title = This computer's storage is read-only
@@ -1740,7 +1747,7 @@ onboarding-done-title = Your identity is ready
 onboarding-done-body = This fingerprint identifies your local cryptographic root. Tilo can present it in collaboration flows that support verification; you do not need to type it.
 onboarding-done-ready = Identity stored on this device
 onboarding-host-done-title = Your Tilo identity is ready
-onboarding-host-done-body = Tilo will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.
+onboarding-host-done-body = You use this local identity when you collaborate or invite people. It is separate from your Linux login and is not an online account.
 onboarding-host-done-ready = Ready for Tilo collaboration
 onboarding-done-next-title = What happens next
 onboarding-done-next-body = The desktop is ready. Sharing remains off until you deliberately enable it in Settings.
@@ -1751,7 +1758,7 @@ onboarding-done-backup-recommended-body = Create an encrypted portable backup fr
 onboarding-done-joined-key-elsewhere = Nothing to back up here
 onboarding-done-joined-key-elsewhere-body = This device joined your identity from another device, which keeps its key. Losing this device loses no identity; keep the backup of the device that approved it.
 onboarding-done-system-care-title = System care
-onboarding-done-system-care-body = Tilo checks signed system updates automatically after setup when the machine is online. You can check, stage, and roll back releases in Settings.
+onboarding-done-system-care-body = Signed system updates are checked automatically when the computer is online. You can check, stage, and roll back releases in Settings.
 onboarding-tour-take = Take a quick tour
 onboarding-finish = Continue to desktop
 
@@ -1786,7 +1793,7 @@ onboarding-tour-stage-begin = Begin
 onboarding-tour-skip = Skip tour
 onboarding-tour-enter = Enter Tilo
 onboarding-tour-navigate-title = Everything is close at hand
-onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
+onboarding-tour-navigate-intro = The desktop stays calm until you ask for something. Every gesture here has a keyboard route too.
 onboarding-tour-search-title = Search
 onboarding-tour-search-title-mac = Search
 onboarding-tour-search-keys = Super+Space
@@ -1987,7 +1994,6 @@ shell-path-open-failed = Cannot open { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
-editor-hint-click = Click to edit
 notes-empty-title = This note is empty
 notes-empty-body = Jot anything here. Changes are saved as you type.
 notes-empty-action = Start writing
@@ -1995,7 +2001,7 @@ window-move-unknown-tab = That window is no longer open.
 window-move-unknown-workspace = That workspace is gone.
 window-move-same-workspace = The window is already in that workspace.
 window-move-pinned = This window belongs to its workspace and cannot move.
-window-move-document-refused = The workspace document did not accept the change, so nothing was moved.
+window-move-document-refused = Couldn't move the window. Try again.
 window-move-hosted-workspace = That workspace is run by its owner, and this device can't reach it right now, so windows can't be carried into or out of it.
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
@@ -2011,7 +2017,7 @@ window-transfer-grants-stay = What this app may do in { $from } stays there and 
 window-transfer-move-blocked = Move isn't available because another window in { $from } still shows this document. Close that window first, or make a copy.
 window-transfer-choice-move = Move — { $from } no longer has it
 window-transfer-choice-copy = Copy — { $from } keeps the original
-window-transfer-confirm = Continue
+window-transfer-confirm = Move
 window-transfer-fresh-title = “{ $window }” can't take its work to { $to }
 window-transfer-fresh-detail = This app keeps what you're doing inside its running program, so none of it can cross into another workspace. “{ $window }” stays open in { $from }, unchanged. You can open a new, empty window of the app in { $to } instead.
 window-transfer-choice-fresh = Open a new window in { $to }
@@ -2076,7 +2082,7 @@ search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
 shortcut-step-type-phrase = Type “{ $phrase }” to confirm.
 shortcut-step-confirm-title = { $action }?
-shortcut-step-confirm = Confirm
+shortcut-step-confirm = Allow
 shortcut-step-ask-detail = “{ $shortcut }” asks for { $param }.
 shortcut-step-continue = Continue
 shortcut-step-yes = Yes
@@ -2117,7 +2123,7 @@ a11y-status-readout = Status readout
 # Compositor notices: lock screen status, X11 compatibility, collaboration, nearby drops, captures
 lock-screen-status = Lock status
 xwayland-unavailable-title = X11 compatibility unavailable
-xwayland-unavailable-body = Legacy X11 apps can’t open in this workspace right now. Tilo could not keep the compatibility service running; use a Wayland app or restart the desktop session.
+xwayland-unavailable-body = Legacy X11 apps can’t open in this workspace right now. Use a Wayland app, or log out and back in.
 collab-unavailable-services-root = The service directory could not be created: { $error }
 collab-unavailable-socket-taken = Another session on this machine already owns the collaboration socket.
 collab-unavailable-broker = The broker could not start: { $error }
@@ -2140,7 +2146,7 @@ capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Recent capture continues without audio
 capture-failed = Capture failed
 settings-not-saved-title = Setting not saved
-settings-not-saved-body = Tilo could not save a change to your settings, so it went back to what it was. Check that the disk has free space, then try again.
+settings-not-saved-body = A change to your settings couldn't be saved, so it went back to what it was. Check that the disk has free space, then try again.
 idle-inhibit-unnamed-app = An app
 
 # Sending a screenshot to a device or into the workspace files
@@ -2177,7 +2183,7 @@ speaker-error-session-gone = that speaker group session is no longer active
 speaker-error-name = give the speakers a name of up to 64 characters
 speaker-error-roles = each speaker needs its own output and its own role, and a stereo pair needs both sides
 speaker-error-unavailable = speaker groups are unavailable
-device-fabric-error-no-identity = this device has no certified personal identity
+device-fabric-error-no-identity = this device has no personal identity yet
 speaker-error-speaker-unavailable = that speaker is not available right now
 speaker-error-output-disconnected = that output is no longer connected
 speaker-error-already-playing = a speaker is already playing its sound
@@ -2305,15 +2311,15 @@ remote-capture-error-cannot-receive = this device cannot receive the requested r
 remote-capture-error-unknown-request = unknown remote capture request
 remote-capture-error-unknown-session = unknown remote capture session
 tethering-error-continuity-off = Wi-Fi Continuity is disabled on this device
-tethering-error-choose-phone = choose an online certified phone
+tethering-error-choose-phone = choose one of your phones that is online
 tethering-error-unavailable = tethering coordinator is unavailable
 tethering-error-too-many = too many tethering requests are already active
 tethering-error-history-full = tethering history is temporarily full
 tethering-error-session-inactive = that tethering session is no longer active
 tethering-error-request-gone = that tethering request is no longer pending
 gamepad-error-unavailable = physical gamepad manager is unavailable
-gamepad-error-no-identity = local certified-device identity is unavailable
-gamepad-error-target-unknown = target is not in the certified device fabric
+gamepad-error-no-identity = this device's identity is unavailable
+gamepad-error-target-unknown = that device isn't one of yours
 gamepad-error-target-offline = target device is not an online remote device
 gamepad-error-disconnected = that game controller is no longer connected
 gamepad-error-already-forwarded = that game controller is already being forwarded
@@ -2371,7 +2377,7 @@ airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver
 hosted-document-unavailable = { $path } is unavailable: { $error }
 
 # A camera, microphone or scanner shared from another of your devices
-remote-capture-source-label = { $app } on certified device
+remote-capture-source-label = { $app } on another device
 
 # Print jobs: the title a print queue shows when the app gave none
 print-untitled-document = Document
@@ -2406,7 +2412,7 @@ dictation-language-unavailable = This speech model does not support the requeste
 dictation-microphone-unavailable = Microphone access is unavailable. Check your input device.
 dictation-vocabulary-unavailable = Your personal dictionary changed or became unavailable. Dictation stopped; start a new session.
 dictation-audio-interrupted = Microphone audio was interrupted. No text was inserted.
-dictation-live-preview = Preview · { $text } · May change
+dictation-live-preview = Preview: { $text }
 dictation-open-settings = Set up
 dictation-edit-rejected = Microphone off · The original field refused the text or changed. Your transcript is kept privately for 10 minutes. Copy exports it to your clipboard; discard removes it.
 dictation-delivery-unknown = Microphone off · Text insertion was not confirmed. Check the original field before inserting again. Your transcript is kept privately for 10 minutes; copy exports it to your clipboard.
@@ -2463,8 +2469,8 @@ session-diagnostics-gpu_stages = Record GPU stage timing
 session-diagnostics-gpu_timestamps = Enable GPU timestamps
 session-diagnostics-gpu_dispatch_timestamps = Enable GPU dispatch timestamps
 session-diagnostics-dispatch-requires-timestamps = GPU dispatch timing requires GPU timestamps.
-session-diagnostics-profile-start = Profile the compositor and save the profile
-session-diagnostics-profile-stop = Stop profiling the compositor
+session-diagnostics-profile-start = Record a desktop performance profile
+session-diagnostics-profile-stop = Stop recording the performance profile
 session-diagnostics-profile-seconds = How many seconds to record (default 30)
 session-diagnostics-profile-seconds-range = A profile records between 1 and { $max } seconds.
 session-diagnostics-profile-no-state-dir = There is no state directory to save the profile in; set HOME or XDG_STATE_HOME.
@@ -2544,7 +2550,7 @@ setting-keyboard-layout-words = language input source keymap tastatur sprache be
 setting-appearance-mode = Appearance mode
 setting-appearance-mode-words = dark light night theme design dunkel hell nacht
 display-remote-heading = Your other screens
-display-remote-title = { $number } · { $name } · { $device }
+display-remote-title = Display { $number }: { $name } on { $device }
 display-remote-row = { $status } · { $title }
 display-remote-row-description = Include this screen in your shared display layout
 display-remote-offline = Offline
@@ -2565,7 +2571,7 @@ activity-morning-empty = Morning sources: choose a resource in Explore → Detai
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = This source isn't available here
 activity-morning-source-unnamed = Chosen source
-activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+activity-morning-source = { $source }, last activity { $time } · may be out of date
 activity-morning-open = Open morning source
 
 # Canonical first-use action admission; never includes private identity material.
@@ -2748,7 +2754,7 @@ agent-quick-steer-applied = { $agent } is following your note.
 agent-quick-run-starting = Starting: { $task }
 agent-quick-run-working = Working on it: { $task }
 agent-quick-run-waiting = Waiting for your confirmation
-agent-quick-draft-confirm = Confirm
+agent-quick-draft-confirm = Allow
 agent-quick-draft-edit = Edit
 agent-quick-draft-decline = Decline
 agent-quick-run-done = { $agent } is done.
@@ -2978,3 +2984,9 @@ drives-read-only-hibernated = Windows is hibernated or uses Fast Startup on this
 drives-read-only-not-shut-down = Windows wasn't shut down properly. Shut Windows down fully to make changes.
 drives-read-only-check = Windows wants to check this drive for errors. Shut Windows down fully to make changes.
 drives-failed-title = { $drive } couldn't be opened
+
+# The top bar's workspace menu and profile card
+workspace-menu-settings = Workspace settings…
+profile-action-identities = Your identities
+profile-action-backup = Back up your identity…
+profile-action-pair-device = Pair a device…

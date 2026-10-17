@@ -321,6 +321,29 @@ pub trait AppWidget: Widget {
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
         None
     }
+
+    /// What a private window offers its own device: the resources and
+    /// actions its door publishes, for the host to list and invoke for this
+    /// device's person without publishing them to any room. `None` for a
+    /// window that is not private, whose actions reach automation through
+    /// its collaboration route instead.
+    fn device_local_resources(&self) -> Option<Vec<tilo_actions::Resource>> {
+        None
+    }
+
+    /// Invoke one of [`Self::device_local_resources`]' actions as the
+    /// window's own person, through its door.
+    ///
+    /// # Errors
+    /// Refuses a window that offers no device-local actions, and whatever
+    /// the door refuses.
+    fn invoke_device_local_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        Err(tilo_actions::DoorError::Unknown(address.clone()))
+    }
 }
 
 // The sole internal owner adapter; raw descendants inherit its layout boundary.

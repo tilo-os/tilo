@@ -156,11 +156,9 @@ mod open_with_tests {
         w.entries = vec![file_entry("thing.zzz")];
         let mut runner = RecRunner::default();
         assert!(w.open_entry(0, &mut runner).unwrap());
-        let status = w
-            .status
-            .clone()
-            .expect("the refusal reaches the status bar");
-        assert!(status.contains("thing.zzz"), "must name the file: {status}");
+        let told = w.notice_line().expect("the refusal is said in a notice");
+        assert!(told.contains("thing.zzz"), "must name the file: {told}");
+        assert!(told.contains("no installed app"), "and say why: {told}");
         assert!(runner.opened.is_empty(), "a refusal is not a fallback");
         clear_document_opener();
     }
@@ -199,8 +197,14 @@ mod open_with_tests {
         };
         assert!(w.open_entry(0, &mut runner).unwrap());
         assert_eq!(
-            w.status.as_deref(),
-            Some("No installed app opens .zzz files")
+            w.notice_line().as_deref(),
+            Some(
+                format!(
+                    "{}. No installed app opens .zzz files",
+                    t_args("files-open-failed", &[arg("name", "thing.zzz")])
+                )
+                .as_str()
+            )
         );
     }
 
@@ -1372,17 +1376,25 @@ mod command_path_tests {
             .as_ref()
             .expect("shortcut reference opens");
         assert_eq!(panel.title, "Keyboard shortcuts");
+        // Real chords with the platform's key names, never narration
+        // about modifiers.
         assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line.contains("Grid navigation"))
+            panel.lines.iter().any(|line| line == "Rename: F2"),
+            "{:?}",
+            panel.lines
         );
         assert!(
             panel
                 .lines
                 .iter()
-                .any(|line| line.contains("Primary modifier"))
+                .any(|line| line == "New folder: Ctrl+Shift+N"),
+            "{:?}",
+            panel.lines
+        );
+        assert!(
+            panel.lines.iter().all(|line| !line.contains("Primary")),
+            "{:?}",
+            panel.lines
         );
     }
 
@@ -1430,7 +1442,6 @@ mod command_path_tests {
     #[test]
     fn folder_resource_exports_canonical_actions_handlers_and_ids() {
         resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
-        locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action();
         every_exported_local_file_handler_is_declared_for_the_broker();
         exported_background_operations_have_valid_job_contracts();
         resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
@@ -1498,63 +1509,11 @@ mod command_path_tests {
         );
     }
 
-    fn locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let home_dir = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path()),
-            Some(home_dir.path().to_path_buf()),
-        );
-        // This is intentionally a synthetic, non-existent Trash path. The
-        // resource contract is testable without touching a developer's real
-        // Trash; runtime revalidation is covered by the command itself.
-        w.last_trash_undo = Some("not-a-queued-operation".into());
-        let mut doc = automerge::AutoCommit::new();
-        let folder = crate::files_app::published::tree(&w, &doc)
-            .into_iter()
-            .next()
-            .expect("current folder resource");
-        let undo = folder
-            .actions
-            .iter()
-            .find(|action| action.id == "undo-trash")
-            .expect("verified local undo is exported through the folder resource");
-        assert_eq!(undo.kind, OperationKind::Effect);
-        assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.kind, ActionKind::Outside);
-        assert_eq!(
-            undo.contract.retry,
-            ui::tilo_actions::RetryPolicy::AtMostOnce
-        );
-        assert!(
-            !undo.contract.reversible,
-            "filesystem restore is not replayable history"
-        );
-        let undo_encoded = undo.build_json(&serde_json::Map::new()).unwrap();
-
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut w,
-                OperationKind::Effect,
-                &undo_encoded.type_id,
-                &undo_encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
-        assert!(
-            w.last_trash_undo.is_none(),
-            "a stale external Trash state clears the ephemeral local affordance"
-        );
-    }
-
-    fn large_text_view_menu_clamps_undo_inside_the_live_window() {
+    fn large_text_view_menu_clamps_inside_the_live_window() {
         let mut w = FileExplorerWidget::new();
         w.rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
         let mut menu = w.new_overlay_menu();
-        menu.push(MenuItem::action(t("files-undo-move-trash"), || {}));
+        menu.push(MenuItem::action(t("files-menu-remove-favourite"), || {}));
         // Model a top-right toolbar trigger before the menu paints at 200%
         // text. The overlay must use the window as its viewport, not the
         // normal-scale trigger's original right-edge position.
@@ -1565,7 +1524,7 @@ mod command_path_tests {
         assert!(menu.y0 >= w.rect.y0 && menu.y1 <= w.rect.y1, "{menu:?}");
         assert!(
             menu.width() >= 400.0,
-            "the scaled menu keeps enough width for the Undo label: {menu:?}"
+            "the scaled menu keeps enough width for its label: {menu:?}"
         );
     }
 
@@ -2017,7 +1976,7 @@ mod command_path_tests {
         context_select_targets_the_clicked_row_not_a_stale_selection();
         context_menu_gates_new_file_on_templates_existing();
         disappearing_templates_do_not_leave_an_empty_flyout();
-        large_text_view_menu_clamps_undo_inside_the_live_window();
+        large_text_view_menu_clamps_inside_the_live_window();
     }
 
     fn context_menu_exposes_the_sort_section_including_type() {
@@ -2047,7 +2006,7 @@ mod command_path_tests {
     /// phase on its own temp dir and widget.
     #[test]
     fn navigation_listing_history_and_error_recovery() {
-        state_surface_copy_is_bounded_and_keeps_the_folder_context();
+        state_surface_copy_names_the_folder_and_offers_what_can_help();
         retry_refresh_recovers_from_error_once_the_dir_exists();
         history_back_and_forward_traverse_visited_dirs();
         double_click_click_command_navigates_into_a_directory();
@@ -2055,25 +2014,35 @@ mod command_path_tests {
         scroll_position_survives_a_structural_rebuild_but_resets_on_navigation();
     }
 
-    fn state_surface_copy_is_bounded_and_keeps_the_folder_context() {
+    fn state_surface_copy_names_the_folder_and_offers_what_can_help() {
         let mut w = FileExplorerWidget::new();
-        w.current_path = PathBuf::from(format!(
-            "/workspace/{}",
-            "a-very-long-folder-name/".repeat(8)
+        w.current_path = PathBuf::from("/workspace/projects/secret");
+        let denied = std::io::Error::from_raw_os_error(13).to_string();
+        w.error = Some(t_args(
+            "files-directory-read-failed",
+            &[arg("error", denied)],
         ));
-        w.error = Some("permission denied while opening this folder".repeat(8));
 
-        let (title, detail, can_retry) = w.state_surface_copy().expect("error state copy");
-        assert_eq!(title, t("files-load-error-title"));
-        assert!(can_retry);
-        assert!(
-            detail.contains("…"),
-            "long location/error is bounded: {detail}"
+        let (title, detail, has_action) = w.state_surface_copy().expect("error state copy");
+        assert_eq!(
+            title,
+            t_args("files-load-error-title", &[arg("name", "secret")])
         );
-        assert!(
-            detail.chars().count() < 190,
-            "recovery copy stays readable on narrow screens: {detail}"
+        assert_eq!(detail, t("files-folder-error-permission"));
+        assert!(has_action);
+        assert_eq!(
+            w.folder_recovery_command(),
+            FileCommand::Up,
+            "trying again can't fix a permission; going up can"
         );
+        assert_eq!(w.folder_recovery_label(), t("files-open-enclosing"));
+
+        let odd = std::io::Error::from_raw_os_error(5).to_string();
+        w.error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
+        let (_, detail, _) = w.state_surface_copy().expect("error state copy");
+        assert!(!detail.contains("os error"), "{detail}");
+        assert_eq!(w.folder_recovery_command(), FileCommand::Refresh);
+        assert_eq!(w.folder_recovery_label(), t("files-try-again"));
     }
 
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
@@ -5002,6 +4971,197 @@ mod responsive_body_tests {
             );
             self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
+
+        /// Press `s` with Ctrl held; whether Files took the key.
+        fn ctrl_char(&mut self, s: &str) -> bool {
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
+            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .modifiers(winit::keyboard::ModifiersState::CONTROL)
+                .send(&mut self.w, &ui::synthetic_input::keyboard_input(ev))
+                .handled
+        }
+
+        /// Paint the window's top layer: the notice, the status bubble and
+        /// open menus.
+        fn draw_overlay(&mut self) {
+            let theme = Theme::dark();
+            let presence = ui::presence::PresenceCtx::empty();
+            let mut scene = vello::Scene::new();
+            self.w.draw_overlay(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut self.tr,
+                &theme,
+                &presence,
+            );
+        }
+    }
+
+    /// Feedback is quiet unless there is something to do about it: selecting
+    /// never pops the status bubble, a move to Trash is one notice whose Undo
+    /// asks the host for the window's Undo, and Ctrl+Z is the host's.
+    #[test]
+    fn changes_announce_once_with_the_windows_undo() {
+        use crate::file_ops::Change;
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        h.draw_overlay();
+        h.w.status = None;
+        h.w.select(Some(1));
+        h.draw_overlay();
+        assert!(
+            !h.w.status_bubble.is_visible(ui::time::now()) || ui::time::wall_frozen(),
+            "selecting a file is not news"
+        );
+
+        assert!(
+            !h.ctrl_char("z"),
+            "Ctrl+Z falls through to the window's Undo"
+        );
+
+        // The host publishes what the window can undo every frame.
+        ui::undo::UndoControl::set_undo_status(&mut h.w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        let gone = dir.path().join("a.txt").display().to_string();
+        h.w.settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        let told = h.w.notice_line().expect("a move to Trash is said");
+        assert_eq!(
+            told,
+            t_args("files-moved-to-trash", &[arg("count", 1)]),
+            "one plain line, no meta text"
+        );
+        h.lay_out(1000.0, 720.0);
+        h.draw_overlay();
+        let undo = h.w.notice.action_rect();
+        assert!(undo.width() > 0.0, "the notice paints its Undo");
+        h.cursor(undo.center().x, undo.center().y);
+        h.left_press();
+        h.left_release();
+        assert_eq!(
+            ui::undo::UndoControl::take_undo_request(&mut h.w),
+            Some(ui::UndoRequest::Undo),
+            "Undo asks the host, the same door as Ctrl+Z"
+        );
+        assert!(
+            h.w.notice_line().is_none(),
+            "acting on the notice takes it down"
+        );
+
+        // A rename or a new folder shows in the listing and says nothing.
+        h.w.settle_op(
+            OpFollowUp::Rename,
+            &ui::tilo_resource::Settled::Done(vec![Change::Moved {
+                from: dir.path().join("b.txt").display().to_string(),
+                to: dir.path().join("d.txt").display().to_string(),
+            }]),
+        );
+        assert!(h.w.notice_line().is_none());
+        assert!(h.w.status_line().is_none());
+
+        // A failure says what and why, in words.
+        h.w.settle_op(
+            OpFollowUp::Rename,
+            &ui::tilo_resource::Settled::Failed {
+                reason: std::io::Error::from_raw_os_error(13).to_string(),
+                partial: vec![],
+            },
+        );
+        let told = h.w.notice_line().expect("a failed rename is said");
+        assert!(told.contains(&t("files-error-permission")), "{told}");
+        assert!(!told.contains("os error"), "{told}");
+    }
+
+    /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
+    /// start of a name moves to it.
+    #[test]
+    fn keys_go_back_forward_up_and_type_to_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        for name in ["beta.txt", "bravo.txt", "charlie.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        let selected = |h: &H| {
+            h.w.selection
+                .primary()
+                .and_then(|i| h.w.displayed_entries().get(i).map(|e| e.name.clone()))
+        };
+        h.type_char("b");
+        assert_eq!(selected(&h).as_deref(), Some("beta.txt"));
+        h.type_char("r");
+        assert_eq!(selected(&h).as_deref(), Some("bravo.txt"));
+
+        h.w.navigate(dir.path().join("alpha"));
+        h.lay_out(1000.0, 720.0);
+        let alt = |h: &mut H, key| {
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
+            );
+            ui::testing::Dispatch::new()
+                .doc(&mut h.state.doc)
+                .path(&h.state.root)
+                .layout(&h.taffy, h.node)
+                .modifiers(winit::keyboard::ModifiersState::ALT)
+                .send(&mut h.w, &ui::synthetic_input::keyboard_input(ev))
+                .handled
+        };
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowLeft));
+        assert_eq!(h.w.current_path(), dir.path());
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowRight));
+        assert_eq!(h.w.current_path(), dir.path().join("alpha"));
+        assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowUp));
+        assert_eq!(h.w.current_path(), dir.path());
+    }
+
+    /// A drag resting on a folder opens it, so a drop reaches deeper; a
+    /// drag that moved on, or ended, opens nothing.
+    #[test]
+    fn a_drag_resting_on_a_folder_opens_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        w.navigate(dir.path().to_path_buf());
+        let now = ui::time::now();
+        w.spring = Some((inner.clone(), now));
+        assert!(!w.spring_open_if_due(now), "no drag, nothing opens");
+        w.pin_drag = Some(dir.path().join("a.txt"));
+        assert!(!w.spring_open_if_due(now), "not rested long enough yet");
+        assert!(w.spring_open_if_due(now + SPRING_OPEN));
+        assert_eq!(w.current_path(), inner);
+        assert!(
+            w.pin_drag.is_some(),
+            "the drag goes on in the opened folder"
+        );
+    }
+
+    #[test]
+    fn rename_selects_the_name_but_not_its_extension() {
+        assert_eq!(rename_stem_end("report.final.pdf", false), Some(12));
+        assert_eq!(rename_stem_end("notes", false), None);
+        assert_eq!(rename_stem_end(".bashrc", false), None);
+        assert_eq!(rename_stem_end("photos.2024", true), None);
     }
 
     fn first_scrollable_viewport(
@@ -5537,15 +5697,14 @@ mod responsive_body_tests {
         h.lay_out(1000.0, 720.0);
         h.draw();
 
-        // The seed selected the whole name, so typing replaces it.
-        for ch in ["b", ".", "m", "d"] {
-            h.type_char(ch);
-        }
+        // The seed selected the name but not its extension, so typing
+        // replaces the name and keeps the type.
+        h.type_char("b");
         h.press_named(winit::keyboard::NamedKey::Enter);
 
         assert!(!h.w.is_renaming(), "Enter commits and closes the editor");
         assert!(
-            dir.path().join("b.md").exists(),
+            dir.path().join("b.txt").exists(),
             "the typed name renamed the file on disk"
         );
         assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
@@ -5560,7 +5719,7 @@ mod responsive_body_tests {
     }
 
     /// Dragging a folder out of the list and dropping it on the docked sidebar
-    /// pins it to Favourites; a release off the sidebar pins nothing.
+    /// pins it to Favorites; a release off the sidebar pins nothing.
     fn dropping_a_folder_on_the_sidebar_pins_it() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
@@ -5648,7 +5807,7 @@ mod responsive_body_tests {
     }
 
     /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
-    /// Favourites), not the file-view context menu. The pinned Home entry offers
+    /// Favorites), not the file-view context menu. The pinned Home entry offers
     /// no Remove. Drives the real right-press path end to end.
     #[test]
     fn right_clicking_a_favourite_opens_its_menu() {
@@ -5710,7 +5869,7 @@ mod responsive_body_tests {
         h.right_press();
         let home = h.open_menu_labels();
         assert!(
-            !home.iter().any(|l| l == "Remove from Favourites"),
+            !home.iter().any(|l| l == "Remove from Favorites"),
             "Home is pinned and cannot be removed: {home:?}",
         );
     }
@@ -5869,7 +6028,15 @@ mod accessibility_tests {
         );
         assert!(error.value.as_deref().unwrap().contains("Try again"));
         let state = error.children.first().expect("error state semantic group");
-        assert_eq!(state.name.as_deref(), Some("Couldn’t open this folder"));
+        let name = widget
+            .current_path()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert_eq!(
+            state.name.as_deref(),
+            Some(t_args("files-load-error-title", &[arg("name", name)]).as_str())
+        );
         assert_eq!(state.live, Some(Politeness::Assertive));
         let retry = state.children.first().expect("retry semantic action");
         assert_eq!(retry.role, Role::Button);
@@ -6272,10 +6439,8 @@ mod injected_startup_tests {
         assert!(widget.thumbs.is_none());
         crate::command::push(&widget.cmds, FileCommand::Activate(0));
         assert!(widget.drain_commands());
-        assert_eq!(
-            widget.status_line(),
-            Some("Document opening is unavailable")
-        );
+        let told = widget.notice_line().expect("a failed open is said");
+        assert!(told.contains(&t("files-open-unavailable")), "{told}");
         assert_eq!(calls.get(), 0);
         assert_eq!(guard.attempts(), 0);
         assert_eq!(listings.observations(), vec![(child, false)]);
@@ -6323,7 +6488,12 @@ mod injected_startup_tests {
         );
         let document = automerge::AutoCommit::new();
         Widget::sync(&mut widget, &document, &automerge::ROOT);
-        assert_eq!(widget.status_line(), Some("document storage unavailable"));
+        let told = widget.notice_line().expect("the shell's refusal is said");
+        assert!(
+            told.starts_with(&t_args("files-open-failed", &[arg("name", "Welcome.txt")])),
+            "{told}"
+        );
+        assert!(told.contains("document storage unavailable"), "{told}");
         assert!(widget.pending_document_open.is_none());
     }
 

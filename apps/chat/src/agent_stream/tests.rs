@@ -1,14 +1,15 @@
 use super::*;
-use crate::{record::chat, resource::Chat};
-use automerge::AutoCommit;
+use crate::messages::chat_part;
+use crate::parts::ChatPart;
+use crate::testing::Room;
 use ui::tilo_resource::Id;
 
-fn fixture() -> AutoCommit {
+fn fixture() -> Room {
     crate::testing::demo_doc()
 }
 
-fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<Chat> {
-    Chat::STREAM_OUTPUT.with(chat::StreamOutput {
+fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<ChatPart> {
+    ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
         channel: Id::from_raw("c_crit"),
         reply: "stream_reply".into(),
         name: None,
@@ -21,17 +22,15 @@ fn event(sequence: u64, output: AgentOutput) -> ui::tilo_resource::Invoke<Chat> 
     })
 }
 
-fn apply(doc: &mut AutoCommit, sequence: u64, output: AgentOutput) {
-    crate::testing::apply_as(doc, crate::model::ME, event(sequence, output)).unwrap();
+fn apply(doc: &mut Room, sequence: u64, output: AgentOutput) {
+    crate::testing::apply_part_as(doc, crate::model::ME, event(sequence, output)).unwrap();
 }
 
-fn message(doc: &AutoCommit) -> crate::model::Message {
-    crate::projection::read(doc)
-        .message_row("stream_reply")
-        .unwrap()
+fn message(doc: &Room) -> crate::model::Message {
+    doc.message_row("stream_reply").unwrap()
 }
 
-fn stream(doc: &AutoCommit) -> AgentStream {
+fn stream(doc: &Room) -> AgentStream {
     message(doc).work.unwrap().stream.unwrap()
 }
 
@@ -51,9 +50,9 @@ fn live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failur
             text: "Hello 🌍".into(),
         },
     );
-    assert!(crate::testing::apply_as(&mut doc, crate::model::ME, duplicate).is_err());
+    assert!(crate::testing::apply_part_as(&mut doc, crate::model::ME, duplicate).is_err());
     assert!(
-        crate::testing::apply_as(
+        crate::testing::apply_part_as(
             &mut doc,
             crate::model::ME,
             event(3, AgentOutput::TextDelta { text: "gap".into() })
@@ -82,11 +81,19 @@ fn live_events_append_unicode_exactly_once_and_preserve_partial_answer_on_failur
             detail: "Connection lost".into(),
         },
     );
-    let loaded = AutoCommit::load(&doc.save()).unwrap();
-    assert_eq!(message(&loaded).text, "Hello 🌍 — retained");
-    assert_eq!(stream(&loaded).reasoning, "Provider summary 🦀");
-    assert_eq!(stream(&loaded).finish, Some(AgentFinish::Failed));
-    assert_eq!(stream(&loaded).detail, "Connection lost");
+    // What a part keeps is what loads back.
+    let loaded = crate::messages::Messages::single(crate::messages::read_part(
+        &automerge::AutoCommit::load(&doc.part_bytes(0).unwrap()).unwrap(),
+    ));
+    let reply = crate::projection::message_row(
+        &Id::from_raw("stream_reply"),
+        loaded.get(&Id::from_raw("stream_reply")).unwrap(),
+    );
+    let kept = reply.work.as_ref().unwrap().stream.clone().unwrap();
+    assert_eq!(reply.text, "Hello 🌍 — retained");
+    assert_eq!(kept.reasoning, "Provider summary 🦀");
+    assert_eq!(kept.finish, Some(AgentFinish::Failed));
+    assert_eq!(kept.detail, "Connection lost");
 }
 
 #[test]
@@ -115,7 +122,7 @@ fn terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply() {
             },
         );
         assert!(
-            crate::testing::apply_as(
+            crate::testing::apply_part_as(
                 &mut doc,
                 crate::model::ME,
                 event(
@@ -146,7 +153,7 @@ fn terminal_outcomes_remain_distinct_and_a_retry_cannot_reuse_a_reply() {
 fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
     let mut doc = fixture();
     assert!(
-        crate::testing::apply_as(
+        crate::testing::apply_part_as(
             &mut doc,
             crate::model::ME,
             event(
@@ -158,11 +165,7 @@ fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
         )
         .is_err()
     );
-    assert!(
-        crate::projection::read(&doc)
-            .message_row("stream_reply")
-            .is_none()
-    );
+    assert!(doc.message_row("stream_reply").is_none());
     apply(
         &mut doc,
         1,
@@ -171,7 +174,7 @@ fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
         },
     );
     assert!(
-        crate::testing::apply_as(
+        crate::testing::apply_part_as(
             &mut doc,
             "u_aria",
             event(
@@ -189,7 +192,8 @@ fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
 #[test]
 fn reasoning_history_grows_linearly_with_received_content() {
     let mut doc = fixture();
-    let baseline = doc.save().len();
+    let part = |doc: &Room| doc.part_bytes(0).unwrap();
+    let baseline = part(&doc).len();
     let mut expected = String::new();
     let mut random = 7_u64;
     let mut halfway = 0;
@@ -210,10 +214,10 @@ fn reasoning_history_grows_linearly_with_received_content() {
             AgentOutput::ReasoningDelta { text: chunk },
         );
         if sequence == 96 {
-            halfway = doc.save().len() - baseline;
+            halfway = part(&doc).len() - baseline;
         }
     }
-    let saved = doc.save();
+    let saved = part(&doc);
     let growth = saved.len() - baseline;
     assert!(
         growth < expected.len() * 4,
@@ -224,9 +228,13 @@ fn reasoning_history_grows_linearly_with_received_content() {
         growth < halfway * 3,
         "doubling content grew history from {halfway} to {growth}"
     );
-    let loaded = AutoCommit::load(&saved).unwrap();
-    assert_eq!(stream(&loaded).reasoning, expected);
-    assert_eq!(stream(&loaded).sequence, 192);
+    let loaded = crate::messages::Messages::single(crate::messages::read_part(
+        &automerge::AutoCommit::load(&saved).unwrap(),
+    ));
+    let reply = loaded.get(&Id::from_raw("stream_reply")).unwrap();
+    let kept = reply.work.as_ref().unwrap().stream.as_ref().unwrap();
+    assert_eq!(kept.reasoning, expected);
+    assert_eq!(kept.sequence, 192);
 }
 
 #[test]
@@ -235,7 +243,7 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
     let summons = Id::from_raw("m_concept");
     let reply = crate::record::reply_id(&summons, crate::model::ME);
     let output = |sequence, event| {
-        Chat::STREAM_OUTPUT.with(chat::StreamOutput {
+        ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
             channel: Id::from_raw("c_crit"),
             reply: reply.to_string(),
             name: None,
@@ -247,7 +255,7 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
             .unwrap(),
         })
     };
-    crate::testing::apply_as(
+    crate::testing::apply_part_as(
         &mut doc,
         crate::model::ME,
         output(
@@ -258,10 +266,10 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
         ),
     )
     .unwrap();
-    crate::testing::apply_as(
+    crate::testing::apply_part_as(
         &mut doc,
         crate::model::ME,
-        Chat::RECORD_WORK.with(chat::RecordWork {
+        ChatPart::RECORD_WORK.with(chat_part::RecordWork {
             message: summons,
             work: crate::record::WorkUpdate {
                 state: "doing".into(),
@@ -283,7 +291,7 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
         }),
     )
     .unwrap();
-    crate::testing::apply_as(
+    crate::testing::apply_part_as(
         &mut doc,
         crate::model::ME,
         output(
@@ -294,9 +302,7 @@ fn work_updates_do_not_erase_provider_stream_or_trace() {
         ),
     )
     .unwrap();
-    let message = crate::projection::read(&doc)
-        .message_row(reply.as_str())
-        .unwrap();
+    let message = doc.message_row(reply.as_str()).unwrap();
     let work = message.work.unwrap();
     assert_eq!(work.stream.unwrap().reasoning, "Preserved reasoning");
     assert_eq!(work.trace.len(), 1);
@@ -322,6 +328,7 @@ fn rendering_discloses_only_provider_reasoning_and_preserves_public_work_card() 
         },
     );
     let mut app = crate::ChatApp::new_ephemeral();
+    app.attach_room(&doc);
     app.reload(&doc);
     let message = message(&doc);
     let collapsed = app.agent_display_blocks(&message);
@@ -354,7 +361,10 @@ fn stream_fixtures_are_durable_and_long_thread_uses_the_shared_scroll_service() 
     ] {
         let mut app = TestApp::<crate::ChatShell>::capture(Some(scenario)).unwrap();
         let state = app.state();
-        let message = state.message_row("shot_agent_stream").unwrap();
+        let held = app
+            .with_surface::<crate::ChatApp, _>(|surface| surface.held_messages())
+            .unwrap();
+        let message = state.message_row(&held, "shot_agent_stream").unwrap();
         assert!(message.work.as_ref().unwrap().stream.is_some());
         app.with_surface::<crate::ChatApp, _>(|surface| {
             assert_eq!(

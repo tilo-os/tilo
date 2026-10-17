@@ -21,7 +21,6 @@ from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_de
 
 FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
-PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
 # Sorts after the image's own kargs.d drop-ins, so a board console named here
 # is the last console= and becomes /dev/console.
@@ -203,13 +202,6 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     }
     outputs[PROFILE_PATH] = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     outputs[DEFINITION_PATH] = (json.dumps(definition, indent=2) + "\n").encode("utf-8")
-    # The runtime backend validates the definition with this parser. Keep
-    # both in the same image generation; an older parser rejects schema 2
-    # definitions even when their firmware and DTB bytes are valid.
-    parser = Path(__file__).with_name("hardware_profile.py").read_bytes().replace(b"\r\n", b"\n")
-    if not parser or b"\r" in parser or b"\0" in parser:
-        raise ValueError("hardware profile parser is not a valid LF script")
-    outputs[PARSER_PATH] = parser
     initramfs_firmware = [*firmware_names.values(), *installed_system_firmware]
     modular_boot = []
     for name in definition.get("boot_modules", []):

@@ -167,11 +167,12 @@ fn general(app: &TestApp<ChatShell>) -> (String, crate::model::Channel) {
 }
 
 /// Every message of the chat `app` holds.
-fn messages(app: &TestApp<ChatShell>) -> Vec<crate::model::Message> {
+fn messages(app: &mut TestApp<ChatShell>) -> Vec<crate::model::Message> {
+    let held = crate::testing::mounted_messages(app);
     let chat = app.state();
     chat.channel_rows()
         .iter()
-        .flat_map(|channel| chat.message_rows(&channel.id))
+        .flat_map(|channel| chat.message_rows(&held, &channel.id))
         .collect()
 }
 
@@ -252,7 +253,16 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
 #[test]
 fn search_hits_open_the_workspace_channel_message_and_person_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
-    let entries = Chat::search(&app.state());
+    // The record's entries, and the messages the window holds.
+    let mut entries = Chat::search(&app.state());
+    entries.extend(
+        app.with_surface::<ChatApp, _>(|surface| {
+            ui::framework::ResourceSurface::<Chat, crate::effects::ChatEffect>::search_entries(
+                surface,
+            )
+        })
+        .unwrap(),
+    );
     let anchor = |query: &str, field: &str| {
         entries
             .iter()
@@ -292,11 +302,15 @@ fn search_hits_open_the_workspace_channel_message_and_person_they_name() {
 #[test]
 fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let (channel, _) = general(&app);
-    app.call_on(&channel, "post", serde_json::json!({"text": "café notes"}))
-        .unwrap();
+    let _ = general(&app);
+    app.call_on(
+        &crate::testing::chain(),
+        "post",
+        serde_json::json!({"channel": "c_general", "text": "café notes"}),
+    )
+    .unwrap();
     app.settle();
-    let id = messages(&app)
+    let id = messages(&mut app)
         .into_iter()
         .find(|m| m.text == "café notes")
         .unwrap()
@@ -317,7 +331,7 @@ fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
     assert_eq!(view.editor_mut().selected_text().as_deref(), Some("é"));
     drop(bodies);
     app.call_on(
-        &message,
+        &crate::testing::message_item(&id),
         "edit-message",
         serde_json::json!({"text": "changed"}),
     )
@@ -347,25 +361,25 @@ fn shared_space_call_status_returns_a_report_and_never_claims_live_capture() {
     assert_eq!(status["reported"]["capture_active"], false);
     assert_eq!(status["reported"]["muted"], true);
     assert_eq!(status["channel"], serde_json::Value::Null);
-    assert!(messages(&app).is_empty());
+    assert!(messages(&mut app).is_empty());
 }
 
 #[test]
 fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let (channel, _) = general(&app);
+    let _ = general(&app);
     let reference = serde_json::json!({
         "kind": "word_processor.block", "id": "word_processor.block:paragraph-7",
         "label": "Proposal", "span": {"start": 2, "end": 9, "unit": "Chars"}
     });
     app.call_on(
-        &channel,
+        &crate::testing::chain(),
         "share-resource",
-        serde_json::json!({"reference": reference, "source_provider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
+        serde_json::json!({"channel": "c_general", "reference": reference, "source_provider": "record:so.tilo.word-processor:proposal", "text": "Discuss this paragraph"}),
     )
     .unwrap();
     app.settle();
-    let message = messages(&app)
+    let message = messages(&mut app)
         .into_iter()
         .find(|m| m.text == "Discuss this paragraph")
         .unwrap();
@@ -384,13 +398,13 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
         app.call_on(
-            &channel,
+            &crate::testing::chain(),
             "share-resource",
-            serde_json::json!({"reference": reference})
+            serde_json::json!({"channel": "c_general", "reference": reference})
         )
         .is_err()
     );
-    assert_eq!(messages(&app).len(), 1);
+    assert_eq!(messages(&mut app).len(), 1);
     let read = app
         .call_on(&target, "read-message", serde_json::json!({}))
         .unwrap()
@@ -404,7 +418,7 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
 #[test]
 fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let (channel, _) = general(&app);
+    let _ = general(&app);
     for id in [
         "/home/person/private",
         "https://example.test",
@@ -413,9 +427,9 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     ] {
         assert!(
             app.call_on(
-                &channel,
+                &crate::testing::chain(),
                 "share-resource",
-                serde_json::json!({
+                serde_json::json!({"channel": "c_general",
                     "reference": {"kind": "word_processor.block", "id": id, "label": "Proposal"}
                 })
             )
@@ -424,15 +438,15 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     }
     assert!(
         app.call_on(
-            &item("channels", "c_lounge"),
+            &crate::testing::chain(),
             "share-resource",
-            serde_json::json!({
+            serde_json::json!({"channel": "c_lounge",
                 "reference": {"kind": "word_processor.block", "id": "block-7", "label": "Proposal"}
             })
         )
         .is_err()
     );
-    assert!(messages(&app).is_empty());
+    assert!(messages(&mut app).is_empty());
 }
 
 #[test]
@@ -455,7 +469,11 @@ fn a_new_room_record_starts_with_its_creators_workspace() {
             .any(|channel| channel.name == "general"),
         "the starter channels"
     );
-    assert!(state.messages.is_empty(), "no fabricated conversation");
+    let mut app = app;
+    assert!(
+        crate::testing::mounted_messages(&mut app).is_empty(),
+        "no fabricated conversation"
+    );
 }
 
 /// The root's action `id`, as the window publishes it now.
@@ -587,7 +605,6 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         "attach-file",
         "select-input",
         "start-call",
-        "post",
         "create-workspace",
     ] {
         assert!(root.iter().any(|action| action == id), "{id}: {root:?}");
@@ -595,8 +612,6 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     let general = on(&item("channels", "c_general"));
     for id in [
         "open-channel",
-        "post",
-        "share-resource",
         "submit-feedback",
         "mark-read",
         "move-channel",
@@ -607,6 +622,14 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         assert!(
             general.iter().any(|action| action == id),
             "{id}: {general:?}"
+        );
+    }
+    // Posting is the chat's messages' own: the chain the window publishes.
+    let messages = on(&crate::testing::chain());
+    for id in ["post", "post-file", "share-resource", "stream-output"] {
+        assert!(
+            messages.iter().any(|action| action == id),
+            "{id}: {messages:?}"
         );
     }
     let lounge = on(&crate::testing::call_row("c_lounge"));
@@ -629,16 +652,16 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     let agent = ActionInvoker::actor("agent-task:44444444-4444-4444-8444-444444444444")
         .with_kind(ActorKind::Agent)
         .acting_for("ada");
-    let (channel, _) = general(&app);
+    let _ = general(&app);
     app.call_by(
         agent.clone(),
-        &channel,
+        &crate::testing::chain(),
         "post",
-        serde_json::json!({"text": "Summary: two open questions"}),
+        serde_json::json!({"channel": "c_general", "text": "Summary: two open questions"}),
     )
     .unwrap();
     app.settle();
-    let posted = messages(&app).pop().unwrap();
+    let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Summary: two open questions");
     assert_eq!(
         posted.author, "agent-task:44444444-4444-4444-8444-444444444444",
@@ -646,20 +669,18 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
     );
     app.call_by(
         agent,
-        &item("messages", &posted.id),
+        &crate::testing::message_item(&posted.id),
         "react",
         serde_json::json!({"emoji": "👀"}),
     )
     .unwrap();
     app.settle();
-    let reacted = messages(&app).pop().unwrap();
+    let reacted = messages(&mut app).pop().unwrap();
     assert_eq!(reacted.reactions[0].emoji, "👀");
-    let entry = app.history().pop().unwrap();
-    let invoker = entry.invoker.unwrap();
     assert_eq!(
-        (invoker.kind, invoker.on_behalf_of.as_deref()),
-        (ActorKind::Agent, Some("ada")),
-        "history names the agent and the person it acted for"
+        reacted.reactions[0].users,
+        ["agent-task:44444444-4444-4444-8444-444444444444"],
+        "the reaction is the agent's"
     );
 }
 
@@ -673,13 +694,13 @@ fn history_entries_render_as_the_apps_sentences() {
     let (channel, _) = general(&app);
     app.call_by(
         agent.clone(),
-        &channel,
+        &crate::testing::chain(),
         "post",
-        serde_json::json!({"text": "Standup moved to 10"}),
+        serde_json::json!({"channel": "c_general", "text": "Standup moved to 10"}),
     )
     .unwrap();
     app.settle();
-    let posted = item("messages", &messages(&app).pop().unwrap().id);
+    let posted = crate::testing::message_item(&messages(&mut app).pop().unwrap().id);
     app.call_by(
         agent.clone(),
         &posted,
@@ -713,8 +734,13 @@ fn history_entries_render_as_the_apps_sentences() {
         serde_json::json!({"name": "Offsite"}),
     )
     .unwrap();
-    app.call_by(agent, &channel, "mark-read", serde_json::json!({}))
-        .unwrap();
+    app.call_by(
+        agent,
+        &channel,
+        "mark-read",
+        serde_json::json!({"part": 0, "seen": 1}),
+    )
+    .unwrap();
     app.settle();
 
     let sentences = app.sentences(app.history().iter().filter(|entry| {
@@ -724,10 +750,9 @@ fn history_entries_render_as_the_apps_sentences() {
     }));
     assert_eq!(
         sentences,
+        // What it did to the messages is in the history of the part that
+        // holds them; the record's history has the rest.
         [
-            "Posted: Standup moved to 10",
-            "Reacted with 👍",
-            "Edited a message: Standup moved to 10:30",
             "Set the topic of #general to Daily notes",
             "Created the workspace Offsite",
             "Marked #general read",
@@ -738,22 +763,24 @@ fn history_entries_render_as_the_apps_sentences() {
 #[test]
 fn every_scenario_stages_through_the_resource_and_its_surface() {
     for scenario in SCENARIOS {
-        let app = TestApp::<ChatShell>::capture(Some(scenario))
+        let mut app = TestApp::<ChatShell>::capture(Some(scenario))
             .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+        let held = crate::testing::mounted_messages(&mut app);
         let state = app.state();
         if *scenario == "starter" {
             assert!(state.workspace_rows().iter().all(|ws| ws.id == "ws_home"));
         } else {
             assert!(
-                state.message_row("m_concept").is_some(),
+                state.message_row(&held, "m_concept").is_some(),
                 "{scenario} shows the demo conversation"
             );
         }
     }
-    let agent = TestApp::<ChatShell>::capture(Some("agent-work")).unwrap();
+    let mut agent = TestApp::<ChatShell>::capture(Some("agent-work")).unwrap();
+    let held = crate::testing::mounted_messages(&mut agent);
     let state = agent.state();
     let reply = state
-        .message_row(&crate::testing::agent_reply())
+        .message_row(&held, &crate::testing::agent_reply())
         .expect("agent reply is durable");
     assert_eq!(reply.author, DEMO_AGENT, "the agent authors its own reply");
     assert_eq!(reply.parent.as_deref(), Some(DEMO_SUMMONS));
@@ -1097,12 +1124,12 @@ fn authenticated_agent_entry_has_navigation_without_an_ordinary_authority_lane()
 #[test]
 fn a_handed_over_file_posts_as_a_file() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
-    let (channel, _) = general(&app);
+    let _ = general(&app);
     let hash = app.content().put(b"minutes of the meeting").unwrap();
     app.call_on(
-        &channel,
+        &crate::testing::chain(),
         "post-file",
-        serde_json::json!({
+        serde_json::json!({"channel": "c_general",
             "content": ui::tilo_actions::content_resource(&hash),
             "name": "minutes.txt",
             "text": "Here are the minutes",
@@ -1110,7 +1137,7 @@ fn a_handed_over_file_posts_as_a_file() {
     )
     .unwrap();
     app.settle();
-    let posted = messages(&app).pop().unwrap();
+    let posted = messages(&mut app).pop().unwrap();
     assert_eq!(posted.text, "Here are the minutes");
     assert_eq!(
         posted.attachment,
@@ -1123,9 +1150,9 @@ fn a_handed_over_file_posts_as_a_file() {
     let missing = tilo_content::hash_bytes(b"never stored");
     assert!(
         app.call_on(
-            &channel,
+            &crate::testing::chain(),
             "post-file",
-            serde_json::json!({"content": missing, "name": "x.txt"}),
+            serde_json::json!({"channel": "c_general", "content": missing, "name": "x.txt"}),
         )
         .is_err()
     );

@@ -59,7 +59,7 @@ impl ShellLayer for WindowSwitcher {
             cx.transform,
             cx.text_renderer,
             cx.theme,
-            cx.geometry.viewport,
+            cx.geometry.display_for(None),
             Instant::now(),
             cx.thumbnails,
         );

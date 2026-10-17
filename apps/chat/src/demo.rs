@@ -1,11 +1,17 @@
 //! The demo workspace a screenshot or a test shows: its people, rooms and
 //! conversation, read by `me`. Never a real record's content.
+//!
+//! The chat record ([`demo`]) holds the people and rooms; the conversation
+//! is the first part of the chat's messages ([`demo_part`]). A tool or a
+//! test without a window holds both as documents ([`Room`]).
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Atom, Edit, Id, Invoke, Json, ModelError, Replica, Set};
 
+use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
+use crate::parts::ChatPart;
 use crate::record::{Category, Channel, Chat, Message, Person, Revision, Workspace, chat};
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
@@ -344,12 +350,9 @@ impl Demo {
     }
 }
 
-/// The demo workspace, with `me` as the person reading it.
+/// The demo workspace, with `me` as the person reading it: its people and
+/// rooms. Its conversation is [`demo_part`].
 #[must_use]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the demo's people, rooms and conversation, written out as data"
-)]
 pub fn demo(me: &str) -> Chat {
     let mut chat = Chat::default();
     for (id, name, initials, color, status) in [
@@ -415,6 +418,15 @@ pub fn demo(me: &str) -> Chat {
             },
         );
     }
+    chat
+}
+
+/// The demo conversation, as the first part of the chat's messages, with
+/// `me` as the person reading it.
+#[must_use]
+pub fn demo_part(me: &str) -> ChatPart {
+    let participants = demo(me).participants();
+    let mut part = ChatPart::default();
     let mine = |id: &str| {
         if id == crate::model::ME {
             me.to_owned()
@@ -422,7 +434,7 @@ pub fn demo(me: &str) -> Chat {
             id.to_owned()
         }
     };
-    let post = |chat: &mut Chat, id: String, channel: &str, message: NewMessage| {
+    let mut post = |id: String, channel: &str, message: NewMessage| {
         let mut reactions = Set::new();
         for (emoji, users) in message.reactions {
             for user in users {
@@ -432,13 +444,13 @@ pub fn demo(me: &str) -> Chat {
                 });
             }
         }
-        chat.messages.push(
+        part.messages.push(
             Id::from_raw(id),
             Message {
                 channel: Id::from_raw(channel),
                 author: Atom(mine(&message.author)),
                 ts: message.ts,
-                mentions: Json(crate::mention::resolve(&message.text, &chat.participants())),
+                mentions: Json(crate::mention::resolve(&message.text, &participants)),
                 text: message.text,
                 edited: message.edited,
                 history: Json(
@@ -461,21 +473,28 @@ pub fn demo(me: &str) -> Chat {
     let mut crit = Demo::design_crit_early();
     crit.extend(Demo::design_crit_late());
     for (id, message) in crit {
-        post(&mut chat, id.to_owned(), "c_crit", message);
+        post(id.to_owned(), "c_crit", message);
     }
     for (index, message) in Demo::design_crit_thread("m_concept")
         .into_iter()
         .enumerate()
     {
-        post(&mut chat, format!("m_thread_{index}"), "c_crit", message);
+        post(format!("m_thread_{index}"), "c_crit", message);
     }
-    post(
-        &mut chat,
-        "m_welcome".to_owned(),
-        "c_general",
-        Demo::general_welcome(),
-    );
-    chat
+    post("m_welcome".to_owned(), "c_general", Demo::general_welcome());
+    part
+}
+
+/// `part` written into an empty part, message by message: what a capture's
+/// scenario and a test start from.
+#[must_use]
+pub fn part_edits(part: &ChatPart) -> Vec<Edit<ChatPart>> {
+    let paths = ChatPart::paths();
+    part.messages
+        .iter()
+        .enumerate()
+        .map(|(at, (id, item))| paths.messages.insert_as(id, at, item))
+        .collect()
 }
 
 /// `chat` written into an empty record, item by item: what a capture's
@@ -492,9 +511,6 @@ pub fn edits(chat: &Chat) -> Vec<Edit<Chat>> {
     }
     for (at, (id, item)) in chat.channels.iter().enumerate() {
         edits.push(paths.channels.insert_as(id, at, item));
-    }
-    for (at, (id, item)) in chat.messages.iter().enumerate() {
-        edits.push(paths.messages.insert_as(id, at, item));
     }
     for person in &chat.people {
         edits.push(paths.people.insert(person));
@@ -524,6 +540,21 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
     Ok(())
 }
 
+/// Write `part` into `doc`, a document holding no part yet, as one change:
+/// a part of the chat's messages as a tool or a test holds it.
+///
+/// # Errors
+/// When `part` does not fit the part's model.
+pub fn write_part(doc: &mut AutoCommit, part: &ChatPart) -> Result<(), ModelError> {
+    <ChatPart as ui::tilo_resource::Resource>::initialize(doc)?;
+    commit_genesis(doc);
+    for edit in part_edits(part) {
+        edit.apply_local(doc)?;
+    }
+    doc.commit();
+    Ok(())
+}
+
 /// Commit what a brand-new chat starts with, named as its genesis.
 fn commit_genesis(doc: &mut AutoCommit) {
     doc.commit_with(
@@ -542,12 +573,216 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     Ok(())
 }
 
-/// The demo workspace in `doc`, read by [`crate::model::ME`].
+/// The demo workspace's chat record in `doc`, read by
+/// [`crate::model::ME`]: its people and rooms, without the conversation.
 ///
 /// # Errors
 /// When `doc` already holds a chat the demo does not fit into.
 pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
     write(doc, &demo(crate::model::ME))
+}
+
+/// The demo workspace in `room`, read by [`crate::model::ME`]: its chat
+/// record, and its conversation as the first part of its messages.
+///
+/// # Errors
+/// When `room` already holds a chat the demo does not fit into.
+pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
+    seed(&mut room.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
+    for edit in part_edits(&demo_part(crate::model::ME)) {
+        let insert =
+            Invoke::edit(&edit).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        room.apply_part_as(crate::model::ME, insert)?;
+    }
+    Ok(())
+}
+
+/// A chat as a tool or a test holds it without a window: the room's chat
+/// record, as a document, and the parts of its messages, as the chain a
+/// window holds them in ([`ui::framework::Chain`]). It reads and changes
+/// like the chat record it dereferences to; a verb on the messages applies
+/// through the chain to the part it changes ([`Room::apply_part_as`]).
+pub struct Room {
+    /// The room's chat record.
+    pub chat: AutoCommit,
+    /// The parts of its messages.
+    parts: Option<ui::framework::Chain<ChatPart>>,
+    /// The chat record as the chain's actions read it: refreshed before
+    /// each of them.
+    base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>>,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        let base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> = std::rc::Rc::default();
+        let read = std::rc::Rc::clone(&base);
+        Self {
+            chat: AutoCommit::new(),
+            parts: ui::framework::Chain::detached(
+                <crate::ChatShell as ui::framework::ResourceApp>::ID,
+                crate::model::ME,
+                move || std::rc::Rc::clone(&read.borrow()),
+            ),
+            base,
+        }
+    }
+}
+
+impl std::ops::Deref for Room {
+    type Target = AutoCommit;
+
+    fn deref(&self) -> &AutoCommit {
+        &self.chat
+    }
+}
+
+impl std::ops::DerefMut for Room {
+    fn deref_mut(&mut self) -> &mut AutoCommit {
+        &mut self.chat
+    }
+}
+
+impl Room {
+    /// A room holding the chat record `chat` and no messages yet.
+    #[must_use]
+    pub fn of(chat: AutoCommit) -> Self {
+        Self {
+            chat,
+            ..Self::default()
+        }
+    }
+
+    /// The demo workspace, read by [`crate::model::ME`].
+    ///
+    /// # Errors
+    /// Never for an empty room: the demo fits it.
+    pub fn demo() -> Result<Self, DoorError> {
+        let mut room = Self::default();
+        seed_room(&mut room)?;
+        Ok(room)
+    }
+
+    /// The chain the messages are held in, for a window over this room.
+    #[must_use]
+    pub fn chain(&self) -> Option<ui::framework::Chain<ChatPart>> {
+        self.parts.clone()
+    }
+
+    /// The chat record as the chain's actions read it: what a window over
+    /// this room refreshes when it reads the record.
+    #[must_use]
+    pub fn base(&self) -> std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> {
+        std::rc::Rc::clone(&self.base)
+    }
+
+    /// The chat record as it stands.
+    #[must_use]
+    pub fn read(&self) -> Chat {
+        crate::projection::read(&self.chat)
+    }
+
+    /// The parts of the messages, read.
+    #[must_use]
+    pub fn messages(&self) -> Messages {
+        self.parts
+            .as_ref()
+            .map(|chain| Messages::new(chain.parts()))
+            .unwrap_or_default()
+    }
+
+    /// The numbers of the parts held.
+    #[must_use]
+    pub fn part_numbers(&self) -> Vec<u64> {
+        self.messages()
+            .parts()
+            .iter()
+            .map(|(index, _)| *index)
+            .collect()
+    }
+
+    /// Part `index` as a document's bytes, for a tool that carries it to
+    /// another device.
+    #[must_use]
+    pub fn part_bytes(&self, index: u64) -> Option<Vec<u8>> {
+        self.parts.as_ref()?.part_bytes(index)
+    }
+
+    /// The messages of `channel`, oldest first, as the window draws them.
+    #[must_use]
+    pub fn message_rows(&self, channel: &str) -> Vec<crate::model::Message> {
+        self.read().message_rows(&self.messages(), channel)
+    }
+
+    /// The message `id`, in whichever channel and part it is.
+    #[must_use]
+    pub fn message_row(&self, id: &str) -> Option<crate::model::Message> {
+        self.read().message_row(&self.messages(), id)
+    }
+
+    /// Apply `invoke`, a verb of the chat record, as `author` invokes it.
+    ///
+    /// # Errors
+    /// As [`apply_as`].
+    pub fn apply_as(&mut self, author: &str, invoke: Invoke<Chat>) -> Result<(), DoorError> {
+        apply_as(&mut self.chat, author, invoke)
+    }
+
+    /// Apply `invoke`, a verb on the messages, as `author` invokes it: read
+    /// against the chat record where it is invoked and applied through the
+    /// chain to the part it changes (started when it is new). The part's
+    /// number.
+    ///
+    /// # Errors
+    /// The chat record's refusal, or the verb's own.
+    pub fn apply_part_as(
+        &mut self,
+        author: &str,
+        invoke: Invoke<ChatPart>,
+    ) -> Result<u64, DoorError> {
+        self.apply_part_at(author, ui::tilo_resource::origin_now_ms(), invoke)
+    }
+
+    /// [`Self::apply_part_as`] at `now_ms`, the action's time.
+    ///
+    /// # Errors
+    /// As [`Self::apply_part_as`].
+    pub fn apply_part_at(
+        &mut self,
+        author: &str,
+        now_ms: i64,
+        invoke: Invoke<ChatPart>,
+    ) -> Result<u64, DoorError> {
+        let chain = self
+            .parts
+            .as_ref()
+            .ok_or_else(|| DoorError::Failed("the room holds no messages".into()))?;
+        if let Some(refusal) = invoke.refusal() {
+            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+        }
+        *self.base.borrow_mut() = std::rc::Rc::new(crate::projection::read(&self.chat));
+        chain
+            .stage_at(&invoke, author, now_ms)
+            .map_err(|error| DoorError::Failed(error.to_string()))
+    }
+
+    /// Post `text` in `channel` as `author`; the new message's id.
+    ///
+    /// # Errors
+    /// As [`Self::apply_part_as`].
+    pub fn say(&mut self, author: &str, channel: &str, text: &str) -> Result<String, DoorError> {
+        let before: Vec<String> = self
+            .message_rows(channel)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        self.apply_part_as(author, post(channel, text, None))?;
+        Ok(self
+            .message_rows(channel)
+            .into_iter()
+            .map(|message| message.id)
+            .find(|id| !before.contains(id))
+            .unwrap_or_default())
+    }
 }
 
 // What a tool or a test holding a bare chat document does with it: apply
@@ -623,34 +858,91 @@ pub fn introduce(
 
 /// `post` of `text` in `channel`, optionally in the thread of `parent`.
 #[must_use]
-pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<Chat> {
-    Chat::POST.with(chat::Post {
+pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart> {
+    ChatPart::POST.with(chat_part::Post {
         channel: Id::from_raw(channel),
         text: text.into(),
         parent: parent.map(Id::from_raw),
         body: None,
         attachment: None,
+        mentions: None,
     })
 }
 
-/// Post `text` in `channel` as `author`; the new message's id.
+/// Apply `invoke`, a verb on the messages, as `author` invokes it to
+/// `part`, a part of the chat's messages held as a document (started with
+/// its genesis when empty), read against the chat record `chat` as the
+/// window's chain reads it: for a tool or a host that carries the parts as
+/// documents itself.
 ///
 /// # Errors
-/// As [`apply_as`].
-pub fn say(
-    doc: &mut AutoCommit,
+/// The chat record's refusal, or the door's or the verb's own.
+pub fn apply_part_doc(
+    part: &mut AutoCommit,
+    chat: &Chat,
+    author: &str,
+    invoke: Invoke<ChatPart>,
+) -> Result<(), DoorError> {
+    use automerge::ReadDoc as _;
+    use ui::framework::Chained as _;
+    if let Some(refusal) = invoke.refusal() {
+        return Err(DoorError::InvalidArguments(refusal.to_owned()));
+    }
+    if part
+        .get(automerge::ROOT, "messages")
+        .map_err(|error| DoorError::Failed(error.to_string()))?
+        .is_none()
+    {
+        <ChatPart as ui::tilo_resource::Resource>::initialize(part)
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        commit_genesis(part);
+    }
+    let mut action = invoke
+        .build(ui::tilo_resource::origin_now_ms())
+        .map_err(DoorError::InvalidArguments)?;
+    ChatPart::prepare(&mut action, chat).map_err(DoorError::Failed)?;
+    let mut replica = Replica::<ChatPart>::from_doc(std::mem::take(part))
+        .as_invoker(author)
+        .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
+    let applied = replica.apply_action(&action).map(drop);
+    std::mem::swap(part, replica.doc_mut());
+    applied
+}
+
+/// Post `text` in `channel` as `author` into `part`, as
+/// [`apply_part_doc`] applies it; the new message's id.
+///
+/// # Errors
+/// As [`apply_part_doc`].
+pub fn say_in_part(
+    part: &mut AutoCommit,
+    chat: &Chat,
     author: &str,
     channel: &str,
     text: &str,
 ) -> Result<String, DoorError> {
-    let messages = |doc: &AutoCommit| crate::projection::read(doc).message_rows(channel);
-    let before: Vec<String> = messages(doc).into_iter().map(|m| m.id).collect();
-    apply_as(doc, author, post(channel, text, None))?;
-    Ok(messages(doc)
+    let ids = |part: &AutoCommit| -> Vec<Id> {
+        crate::messages::read_part(part)
+            .messages
+            .ids()
+            .cloned()
+            .collect()
+    };
+    let before = ids(part);
+    apply_part_doc(part, chat, author, post(channel, text, None))?;
+    Ok(ids(part)
         .into_iter()
-        .map(|message| message.id)
         .find(|id| !before.contains(id))
+        .map(|id| id.to_string())
         .unwrap_or_default())
+}
+
+/// Post `text` in `channel` of `room` as `author`; the new message's id.
+///
+/// # Errors
+/// As [`Room::apply_part_as`].
+pub fn say(room: &mut Room, author: &str, channel: &str, text: &str) -> Result<String, DoorError> {
+    room.say(author, channel, text)
 }
 
 /// Start the chat in `doc` in the workspace `workspace` named `label` a

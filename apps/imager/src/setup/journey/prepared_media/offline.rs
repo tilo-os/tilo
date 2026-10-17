@@ -671,7 +671,7 @@ fn copy_sidecar(
 mod tests {
     use super::*;
     use crate::setup::{
-        account_transfer, browser_profiles,
+        account_transfer,
         flatpak_transfer::{
             Installation, InstalledRef,
             portable::{self, PortableFlatpakSource},
@@ -679,6 +679,7 @@ mod tests {
         journey::{accounts, browser::SelectedSources},
         portable_home_media::HomeSource,
     };
+    use imager_backend::setup::browser_profiles;
     use std::{fs, path::Path};
     const PASSWORD: &[u8] = b"several unrelated installation words";
 

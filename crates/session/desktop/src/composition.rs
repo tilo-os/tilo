@@ -472,6 +472,58 @@ impl DesktopSurface {
         })
     }
 
+    /// Every private window this surface hosts, by tab, with the resources
+    /// it offers this device's automation ([`ui::widget::AppWidget::device_local_resources`]).
+    pub fn device_local_windows(&mut self) -> Vec<(u64, Vec<tilo_actions::Resource>)> {
+        let mut windows = Vec::new();
+        self.for_each_app(|tab, app| {
+            if let Some(resources) = app.device_local_resources() {
+                windows.push((tab, resources));
+            }
+        });
+        windows
+    }
+
+    /// Invoke `address` on the private window of tab `tab`, through its door.
+    ///
+    /// # Errors
+    /// Refuses a tab that hosts no private window here, and whatever its
+    /// door refuses.
+    pub fn invoke_device_local_action(
+        &mut self,
+        tab: u64,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        let mut result = Err(tilo_actions::DoorError::Unknown(address.clone()));
+        self.for_each_app(|candidate, app| {
+            if candidate == tab {
+                result = app.invoke_device_local_action(address, arguments);
+            }
+        });
+        result
+    }
+
+    /// Visit each tab's in-process app, across every strip.
+    fn for_each_app(&mut self, mut visit: impl FnMut(u64, &mut dyn ui::widget::AppWidget)) {
+        for strip in self.strip_ids() {
+            let Some(row) = self.row_mut(strip) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                let tabs: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
+                for tab in tabs {
+                    if let Some(ui::widget::TileContent::App(app)) = group
+                        .host_for_tab_mut(tab)
+                        .map(ui::widget::TileHost::content_mut)
+                    {
+                        visit(tab, app.as_mut());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn row(&self, id: StripId) -> Option<&GroupRow> {
         self.row_at(*self.rows.get(&id)?)
     }
@@ -1105,14 +1157,10 @@ impl DesktopSurface {
             self.root.draw(scene, transform, text, theme, presence);
             return;
         }
-        if let Some(backdrop) = child_mut(self.root.as_mut(), &[0, 0]) {
-            backdrop.draw(scene, transform, text, theme, presence);
-        }
-        // Windows never overlap, so a window's docked tab strip has only
-        // this behind it: its blur stays valid while the desktop does.
-        ui::backdrop::mark_desktop(scene);
-        if let Some(windows) = child_mut(self.root.as_mut(), &[0, 1, 1]) {
-            windows.draw(scene, transform, text, theme, presence);
+        for path in [&[0, 0][..], &[0, 1, 1]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
         }
     }
 
@@ -1150,9 +1198,6 @@ impl DesktopSurface {
         presence: &PresenceCtx,
     ) -> Option<Rect> {
         child_mut(self.root.as_mut(), &[0, 0])?.draw(backdrop, transform, text, theme, presence);
-        // The desktop is the section below: nothing drawn into the
-        // workspace is behind a window's docked tab strip.
-        ui::backdrop::mark_desktop(workspace);
         if self.external_navigation {
             child_mut(self.root.as_mut(), &[0, 1, 0])?
                 .draw(workspace, transform, text, theme, presence);

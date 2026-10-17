@@ -18,6 +18,7 @@ mod change_watch;
 ))]
 pub use change_watch::{ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes};
 pub mod bounded;
+pub mod checked;
 pub mod identity;
 pub mod lock;
 pub mod nofollow;

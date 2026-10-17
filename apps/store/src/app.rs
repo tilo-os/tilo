@@ -1967,8 +1967,9 @@ impl StoreApp {
             if matches!(finish, Finish::RuntimeReview | Finish::RuntimeAcquire)
                 && let Some(recovery) = &mut self.runtime_recovery
             {
-                recovery.phase =
-                    crate::runtime_recovery::Phase::Failed(ui::i18n!("store-runtime-unavailable"));
+                recovery.phase = crate::runtime_recovery::Phase::Failed(ui::i18n!(
+                    "store-runtime-repair-unavailable"
+                ));
             }
             if finish == Finish::Package {
                 self.active_operation = None;

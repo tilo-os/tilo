@@ -1,23 +1,11 @@
 use super::*;
-use crate::model::ChannelKind;
-use crate::record::{Channel, Chat, Message};
+use crate::record::Message;
 use automerge::{ROOT, transaction::Transactable};
 use ui::tilo_resource::{Atom, Id};
 fn fixture(texts: &[&str]) -> AutoCommit {
-    let mut chat = Chat::default();
-    for id in ["one", "two"] {
-        chat.channels.push(
-            Id::from_raw(id),
-            Channel {
-                workspace: Id::from_raw("ws"),
-                name: id.to_uppercase(),
-                kind: ChannelKind::Text,
-                ..Channel::default()
-            },
-        );
-    }
+    let mut part = crate::parts::ChatPart::default();
     for (i, text) in texts.iter().enumerate() {
-        chat.messages.push(
+        part.messages.push(
             Id::from_raw(format!("m{i}")),
             Message {
                 channel: Id::from_raw("one"),
@@ -28,7 +16,7 @@ fn fixture(texts: &[&str]) -> AutoCommit {
             },
         );
     }
-    chat.messages.push(
+    part.messages.push(
         Id::from_raw("private-other"),
         Message {
             channel: Id::from_raw("two"),
@@ -37,7 +25,7 @@ fn fixture(texts: &[&str]) -> AutoCommit {
         },
     );
     let mut doc = AutoCommit::new();
-    crate::demo::write(&mut doc, &chat).unwrap();
+    crate::demo::write_part(&mut doc, &part).unwrap();
     doc
 }
 /// The stored message `id`'s fields.
@@ -94,9 +82,12 @@ fn semantic_read_exact_channel_and_requested_message_capacity() {
         ["three"]
     );
     assert!(last.next.is_none());
-    assert_eq!(
-        read_messages(&doc, &doc.base_heads(), "absent", None, limits(2)).unwrap_err(),
-        ReadError::Malformed
+    // A part names no channels: a channel it holds nothing of reads empty.
+    assert!(
+        read_messages(&doc, &doc.base_heads(), "absent", None, limits(2))
+            .unwrap()
+            .messages
+            .is_empty()
     );
 }
 #[test]

@@ -143,7 +143,7 @@ impl TerminalDeviceShellProvider {
             on_invoke: None,
             on_begin_invoke: Some(Rc::new(move |_, _, chrome, args| {
                 if !is_active_workspace_owner(&chrome.borrow()) {
-                    return Err(ActionError::Refused(crate::shell::i18n::t(
+                    return Err(ActionError::Explained(crate::shell::i18n::t(
                         "terminal-device-shell-owner-required",
                     )));
                 }

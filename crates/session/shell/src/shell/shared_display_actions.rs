@@ -60,7 +60,7 @@ fn view_of(facts: PersonDisplays) -> Option<SharedDisplayView> {
 }
 
 pub(crate) fn inspect() -> Result<serde_json::Value, ActionError> {
-    let view = current().ok_or_else(|| ActionError::Refused(t("display-remote-unavailable")))?;
+    let view = current().ok_or_else(|| ActionError::Explained(t("display-remote-unavailable")))?;
     let outputs = view
         .layout
         .listed()
@@ -89,22 +89,22 @@ pub(crate) fn include(
 ) -> Result<(), ActionError> {
     if !crate::shell::search::providers::actions::current_shell_action_authorized(state, INCLUDE_ID)
     {
-        return Err(ActionError::Refused(t("display-remote-permission")));
+        return Err(ActionError::Explained(t("display-remote-permission")));
     }
-    let view = current().ok_or_else(|| ActionError::Refused(t("display-remote-unavailable")))?;
+    let view = current().ok_or_else(|| ActionError::Explained(t("display-remote-unavailable")))?;
     if !view
         .layout
         .listed()
         .any(|display| display.is(device, output))
     {
-        return Err(ActionError::Refused(t("display-remote-unavailable")));
+        return Err(ActionError::Explained(t("display-remote-unavailable")));
     }
     let current_revision = view
         .arrangement
         .entry(device, output)
         .map_or(0, |entry| entry.rev);
     if current_revision != revision {
-        return Err(ActionError::Refused(t("display-remote-stale")));
+        return Err(ActionError::Explained(t("display-remote-stale")));
     }
     view.layout
         .set_enabled(&view.arrangement, device, output, included)

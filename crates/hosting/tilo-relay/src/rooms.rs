@@ -419,7 +419,9 @@ impl GovernedRoom {
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             return Err("a room change cannot replace the room".into());
         }
+        let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
+        crate::timing::window("room.commit.prepare", preparing);
         let generation = self
             .record
             .generation
@@ -461,16 +463,25 @@ impl GovernedRoom {
                 .collect::<Result<_, _>>()?;
             record.published = 0;
         } else {
+            let diffing = crate::timing::start();
             let messages = candidate.durable_mutation_messages(&self.peer, key, now, generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
+            crate::timing::window("room.commit.messages", diffing);
         }
+        let encoding = crate::timing::start();
         record.peer = candidate.durable()?;
+        crate::timing::window("room.commit.durable", encoding);
         record.generation = generation;
+        let deriving = crate::timing::start();
         record.collaboration = state(&record, &candidate)?;
+        crate::timing::window("room.commit.state", deriving);
         let prior = std::mem::replace(&mut self.record, record);
-        if let Err(error) = self.persist() {
+        let persisting = crate::timing::start();
+        let persisted = self.persist();
+        crate::timing::window("room.commit.persist", persisting);
+        if let Err(error) = persisted {
             self.record = prior;
             return Err(error);
         }

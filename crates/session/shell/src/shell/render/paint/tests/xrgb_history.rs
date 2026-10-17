@@ -33,7 +33,7 @@ fn pointer_swizzle_matches_scalar_oracle_for_unaligned_and_truncated_rows() {
     }
 }
 
-const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
+const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_workspace_pill"];
 
 fn dispatch_native_benchmark_click(
     frame: &mut FrameBuilder,
@@ -777,7 +777,7 @@ fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets(
         let overlays = frame.chrome().overlays;
         assert!(
             !overlays.overview,
-            "overview click dismisses Quick Settings"
+            "the workspace pill click dismisses Quick Settings"
         );
         if let Some(previous) = previous_quick_settings {
             assert_ne!(

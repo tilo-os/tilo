@@ -128,6 +128,11 @@ pub(crate) struct ViewStorage {
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
     /// Those sections, as the door reaches them.
     section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
+    /// The store of the app's records in the room, for the records it
+    /// keeps beside its own: not in a view of a past version.
+    room: Option<super::chain::RoomRecords>,
+    /// The chains the views opened ([`super::Chain`]).
+    chains: super::chain::Chains,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -136,12 +141,20 @@ pub(crate) struct ViewStorage {
 pub(crate) struct Hosted {
     pub(crate) person: Option<ui_core::record::person::PersonRecords>,
     pub(crate) device: Option<String>,
+    /// The store of the app's records in the room, who edits there and
+    /// what they may do.
+    pub(crate) room: Option<(
+        ui_core::record::RecordStore,
+        String,
+        ui_core::permissions::LivePermissions,
+    )>,
 }
 
 /// [`Hosted`], with the person's records opened for one app.
 pub(crate) struct Attached {
     person: Option<super::person::PersonState>,
     device: Option<String>,
+    room: Option<super::chain::RoomRecords>,
 }
 
 impl Hosted {
@@ -151,6 +164,15 @@ impl Hosted {
                 .person
                 .map(|records| super::person::PersonState::new(records, app_id, app_title)),
             device: self.device,
+            room: self
+                .room
+                .map(|(store, me, permissions)| super::chain::RoomRecords {
+                    store,
+                    me,
+                    permissions: Some(permissions),
+                    app_id,
+                    app_title,
+                }),
         }
     }
 }
@@ -165,7 +187,29 @@ impl ViewStorage {
             sections: RefCell::default(),
             held_sections: RefCell::default(),
             section_doors: RefCell::default(),
+            room: hosted.room,
+            chains: super::chain::Chains::default(),
         })
+    }
+
+    /// The chain of `P` the app keeps beside its record, opened on first
+    /// use, its actions reading the app's record from `base`. `None` where
+    /// the window keeps no records in a room (a view of a past version).
+    pub(crate) fn chain<P: super::Chained>(
+        &self,
+        base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
+    ) -> Option<Rc<super::chain::ChainState<P>>> {
+        self.chains.open::<P>(self.room.as_ref(), base)
+    }
+
+    /// Answer one published action of a chain the views opened, invoked by
+    /// someone the window knows as `me`.
+    pub(crate) fn chain_action(
+        &self,
+        me: Option<&str>,
+        payload: &[u8],
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.chains.answer(me, payload)
     }
 
     pub(crate) fn storage(&self) -> &AppStorage {
@@ -204,6 +248,7 @@ impl ViewStorage {
             .map(super::person::PersonState::doors)
             .unwrap_or_default();
         doors.extend(self.section_doors.borrow().iter().cloned());
+        doors.extend(self.chains.doors());
         doors
             .iter()
             .map(|door| (door.id().to_owned(), door.revision()))
@@ -222,6 +267,7 @@ impl ViewStorage {
                 .iter()
                 .map(|door| door.publish()),
         );
+        resources.extend(self.chains.doors().iter().map(|door| door.publish()));
         resources
     }
 
@@ -362,6 +408,9 @@ impl ViewStorage {
         let _profile = tilo_resource::profiling::Phase::start("framework.view_storage_refresh");
         if let Some(person) = &self.person {
             person.refresh();
+        }
+        for chain in self.chains.doors() {
+            let _ = chain.revision();
         }
         // Take the list so a refresh that builds a view (a switch reacting
         // to the new value) may follow more without a reentrant borrow.

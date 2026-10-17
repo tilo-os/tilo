@@ -3,9 +3,10 @@
   "goal": "Read where you are, what leaves this workspace and where else to go, without lines stacking",
   "viewport": [1280, 800],
   "text_scale": 2,
-  "budget": {"clicks": 1, "keys": 0},
+  "budget": {"clicks": 2, "keys": 0},
   "steps": [
-    {"op": "input", "action": {"click_named": "semantic:topbar:overview"}},
+    {"op": "input", "action": {"click_named": "semantic:topbar:workspace-settings"}},
+    {"op": "input", "action": {"click_named": "semantic:Overview"}},
     {"op": "checkpoint", "name": "overview", "checks": [
       {"kind": "visible", "target": "semantic:Home"},
       {"kind": "visible", "target": "semantic:New workspace"},
@@ -17,7 +18,7 @@
       {"kind": "gap", "first": "semantic:Home", "second": "semantic:New workspace", "axis": "y", "min": 96, "max": 400},
       {"kind": "aligned", "first": "semantic:Home", "second": "semantic:New workspace", "axis": "x", "tolerance": 0.5},
 
-      {"kind": "no_overlap", "first": "semantic:Workspace overview", "second": "semantic:topbar:overview"}
+      {"kind": "no_overlap", "first": "semantic:Workspace overview", "second": "semantic:topbar:workspace-settings"}
     ]}
   ]
 }

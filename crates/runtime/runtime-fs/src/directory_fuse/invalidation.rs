@@ -1,6 +1,6 @@
 //! Kernel dentry eviction, never native pin eviction. Only actual FORGET lets
 //! the filesystem release lookup custody. Notifications run outside callbacks
-//! and table locks; the same managed worker's NamespaceOwner owns kernel stop.
+//! and table locks; the same managed worker's `NamespaceOwner` owns kernel stop.
 use super::{Node, ROOT, TRIM_AT, TRIM_TO, Table};
 use fuser::{INodeNo, Notifier};
 use std::{
@@ -22,7 +22,7 @@ pub struct InvalidationControl {
 }
 /// A stop request for the same FUSE process, not an observed kernel retirement.
 /// Drop never waits on a notifier syscall that could require FUSE dispatch.
-/// The canonical NamespaceOwner must still stop/reap the worker process.
+/// The canonical `NamespaceOwner` must still stop/reap the worker process.
 pub struct InvalidationWorker {
     stop: Arc<AtomicBool>,
     control: InvalidationControl,
@@ -64,8 +64,7 @@ impl InvalidationControl {
             .spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     match receiver.recv_timeout(Duration::from_millis(50)) {
-                        Ok(()) => (),
-                        Err(mpsc::RecvTimeoutError::Timeout) => (),
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => (),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                     let Some(table) = table.upgrade() else { break };
@@ -73,19 +72,12 @@ impl InvalidationControl {
                     let candidates = match table.lock() {
                         Ok(state) if state.nodes.len() >= TRIM_AT => {
                             let count = state.nodes.len().saturating_sub(TRIM_TO);
-                            let ids: Vec<u64> = state
+                            state
                                 .nodes
                                 .iter()
-                                .filter_map(|(&ino, node)| {
-                                    eligible(&state, ino, node).then_some(ino)
-                                })
+                                .filter(|&(&ino, node)| eligible(&state, ino, node))
                                 .take(count)
-                                .collect();
-                            ids.into_iter()
-                                .filter_map(|ino| {
-                                    let node = state.nodes.get(&ino)?;
-                                    Some((ino, node.clone()))
-                                })
+                                .map(|(&ino, node)| (ino, node.clone()))
                                 .collect::<Vec<_>>()
                         }
                         Ok(_) => continue,

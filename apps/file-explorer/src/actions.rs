@@ -142,6 +142,6 @@ mod tests {
         seed: seeded(),
         registry: registry(),
         resources: |document| folder_resources(document),
-        palette: ["Refresh folder", "Add to Favourites", "Sort by name"],
+        palette: ["Refresh folder", "Add to Favorites", "Sort by name"],
     }
 }

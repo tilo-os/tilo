@@ -10,7 +10,22 @@ fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
         tilo_content::ContentStore::memory(),
     );
     app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
+    app.attach_detached_chain(&me);
     app.sync(doc, &ROOT);
+    app
+}
+
+/// [`projection`] over `room`, its messages included.
+fn projection_of(room: &crate::testing::Room, identity: LocalIdentity) -> ChatApp {
+    let me = identity.id.clone();
+    let mut app = ChatApp::new(
+        identity,
+        crate::app::ChatRuntime::Unavailable,
+        tilo_content::ContentStore::memory(),
+    );
+    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
+    app.attach_room(room);
+    app.sync(&room.chat, &ROOT);
     app
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -401,8 +416,8 @@ fn semantic_composer_and_send_mutate_the_canonical_component_once() {
     let owner = semantic_owner_path(&frame.inspection().root, "chat.composer")
         .expect("the real component exports the composer target");
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
 
@@ -419,7 +434,7 @@ fn semantic_composer_and_send_mutate_the_canonical_component_once() {
 
     let (after, draft, sent) = records
         .read(&checkout.id, |doc| {
-            let messages = crate::testing::messages(doc, "c_general");
+            let messages = crate::testing::messages_in(&records, "c_general");
             (
                 messages
                     .iter()
@@ -440,8 +455,8 @@ fn semantic_composer_and_send_mutate_the_canonical_component_once() {
 fn assistive_composer_and_send_use_the_same_canonical_component_action() {
     let (mut frame, records, checkout) = semantic_component_harness("chat-assistive-route");
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     let composer = frame
@@ -463,7 +478,7 @@ fn assistive_composer_and_send_use_the_same_canonical_component_action() {
     let (after, draft) = records
         .read(&checkout.id, |doc| {
             (
-                crate::testing::top_level(doc, "c_general"),
+                crate::testing::top_level_in(&records, "c_general"),
                 crate::testing::draft_text(doc, "c_general"),
             )
         })
@@ -482,8 +497,8 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
         .expect("the painted Send command has pointer bounds")
         .center();
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     frame
@@ -498,8 +513,8 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
     frame.click_at(send.x, send.y);
 
     let after = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     assert_eq!(
@@ -597,8 +612,8 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
     let (mut frame, records, checkout) = semantic_component_harness("chat-semantic-enter");
     let owner = semantic_owner_path(&frame.inspection().root, "chat.composer").unwrap();
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     frame
@@ -624,10 +639,13 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
     frame.key("Enter");
     records
         .read(&checkout.id, |doc| {
-            assert_eq!(crate::testing::top_level(doc, "c_general"), before + 1);
+            assert_eq!(
+                crate::testing::top_level_in(&records, "c_general"),
+                before + 1
+            );
             assert_eq!(crate::testing::draft_text(doc, "c_general"), "");
             assert_eq!(
-                crate::testing::messages(doc, "c_general")
+                crate::testing::messages_in(&records, "c_general")
                     .last()
                     .unwrap()
                     .text,
@@ -657,7 +675,10 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
     frame.set_modifiers(&[]);
     records
         .read(&checkout.id, |doc| {
-            assert_eq!(crate::testing::top_level(doc, "c_general"), before + 1);
+            assert_eq!(
+                crate::testing::top_level_in(&records, "c_general"),
+                before + 1
+            );
             assert!(
                 !crate::projection::has_draft(doc, "c_general"),
                 "the draft is the writer's own, never the room's"
@@ -715,8 +736,8 @@ fn consecutive_semantic_sends_leave_an_empty_composer_each_time() {
     let (mut frame, records, checkout) = semantic_component_harness("chat-consecutive-sends");
     let owner = semantic_owner_path(&frame.inspection().root, "chat.composer").unwrap();
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     for (n, text) in ["first message", "second message", "third message"]
@@ -739,9 +760,9 @@ fn consecutive_semantic_sends_leave_an_empty_composer_each_time() {
         let (count, draft, last) = records
             .read(&checkout.id, |doc| {
                 (
-                    crate::testing::top_level(doc, "c_general"),
+                    crate::testing::top_level_in(&records, "c_general"),
                     crate::testing::draft_text(doc, "c_general"),
-                    crate::testing::messages(doc, "c_general")
+                    crate::testing::messages_in(&records, "c_general")
                         .last()
                         .map(|m| m.text.clone()),
                 )
@@ -769,8 +790,8 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
         .unwrap()
         .center();
     let before = records
-        .read(&checkout.id, |doc| {
-            crate::testing::top_level(doc, "c_general")
+        .read(&checkout.id, |_| {
+            crate::testing::top_level_in(&records, "c_general")
         })
         .unwrap();
     for (n, text) in ["first typed", "second typed", "third typed"]
@@ -788,7 +809,7 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
         let (count, draft) = records
             .read(&checkout.id, |doc| {
                 (
-                    crate::testing::top_level(doc, "c_general"),
+                    crate::testing::top_level_in(&records, "c_general"),
                     crate::testing::draft_text(doc, "c_general"),
                 )
             })
@@ -814,8 +835,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     use tilo_actions::ParticipantId;
     let cache = ui::portable_storage::PortableStorage::new("chat-agent-mount", "device").unwrap();
     let (mut visitor, records, checkout) = component_mount(&cache, "Visitor", 1);
-    let channel = crate::testing::item("channels", "c_general");
-    let channel = channel.as_str();
+    let chain = crate::testing::chain();
     let invoke = |frame: &mut ui::headless::FrameHarness,
                   resource: &str,
                   action: &str,
@@ -835,9 +855,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     invoke(
         &mut visitor,
-        channel,
+        &chain,
         "post",
-        serde_json::json!({"text": "Where does Odysseus wake up?"}),
+        serde_json::json!({"channel": "c_general", "text": "Where does Odysseus wake up?"}),
     );
 
     let (mut agent, _, _) = component_mount(&cache, "agent-task:reading", 2);
@@ -868,9 +888,16 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     assert_eq!(read["agent"], false);
     assert_eq!(read["mine"], false);
 
+    // Its work is recorded on the message itself, in the part of the
+    // chat's messages that holds it.
+    let message_item = |row: &str| {
+        let (_, id) =
+            ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(row).unwrap();
+        crate::testing::message_item(id.as_str())
+    };
     invoke(
         &mut agent,
-        &question,
+        &message_item(&question),
         "record-work",
         serde_json::json!({
             "work": {"state": "done", "did": "Add note", "trace": [{
@@ -896,7 +923,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
 
     let (author, agents) = records
         .read(&checkout.id, |doc| {
-            let reply = crate::testing::messages(doc, "c_general").pop().unwrap();
+            let reply = crate::testing::messages_in(&records, "c_general")
+                .pop()
+                .unwrap();
             (reply.author, crate::projection::read(doc).agent_authors())
         })
         .unwrap();
@@ -919,7 +948,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: visitor.component_instance_id().unwrap(),
-        address: tilo_actions::ActionAddress::new(question.as_str(), "record-work"),
+        address: tilo_actions::ActionAddress::new(message_item(&question), "record-work"),
     };
     let _ = visitor.invoke_bound_action(
         &address,
@@ -1018,24 +1047,24 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
 fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
     use crate::effects::ChatEffect;
     let identity = LocalIdentity::demo();
-    let mut doc = AutoCommit::new();
-    crate::demo::write(&mut doc, &crate::demo::demo(&identity.id)).unwrap();
+    let mut doc = crate::testing::demo_doc();
     let message = crate::testing::messages(&doc, "c_general")
         .first()
         .expect("seeded message")
         .clone();
     // Only its author edits a message.
-    crate::testing::apply_as(
+    crate::testing::apply_part_as(
         &mut doc,
         &message.author,
-        crate::resource::Chat::EDIT_MESSAGE.with(crate::record::chat::EditMessage {
+        crate::parts::ChatPart::EDIT_MESSAGE.with(crate::messages::chat_part::EditMessage {
             message: ui::tilo_resource::Id::from_raw(message.id.clone()),
             text: "café notes".into(),
             body: None,
+            mentions: None,
         }),
     )
     .unwrap();
-    let mut app = projection(&doc, identity);
+    let mut app = projection_of(&doc, identity);
     for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
         app.answer_effect(ChatEffect::RevealMessageRange {
             message: message.id.clone(),
@@ -1082,19 +1111,17 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             "device",
         )
         .unwrap();
-        let (mut frame, records, checkout) =
+        let (mut frame, records, _) =
             component_mount_in_room(&cache, "author", 1, "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71");
         let share = BoundActionAddress {
             instance_id: 1,
-            address: tilo_actions::ActionAddress::new(
-                crate::testing::item("channels", "c_general"),
-                "share-resource",
-            ),
+            address: tilo_actions::ActionAddress::new(crate::testing::chain(), "share-resource"),
         };
         frame
             .invoke_bound_action(
                 &share,
                 serde_json::json!({
+                    "channel": "c_general",
                     "reference": {"id":"chat.message:target", "kind":"chat.message", "label":"Target"},
                     "source_provider":"record:so.tilo.chat:"
                 })
@@ -1104,9 +1131,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             .unwrap();
         frame.persist_flush();
         frame.relayout();
-        let bytes = records.replication_snapshot(&checkout.id).unwrap().0;
-        let doc = AutoCommit::load(&bytes).unwrap();
-        let shared = crate::testing::messages(&doc, "c_general")
+        let shared = crate::testing::messages_in(&records, "c_general")
             .into_iter()
             .find(|message| message.reference.is_some())
             .unwrap();
