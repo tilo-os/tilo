@@ -1224,3 +1224,42 @@ fn labelled_section_insets_items_without_inventing_tree_depth() {
         );
     }
 }
+
+#[test]
+fn a_row_is_found_by_its_search_terms_and_says_which() {
+    let items = vec![
+        NavItem::new("pointing", "Mouse & touchpad").search_terms([
+            NavSearchTerm::named("Tap to click"),
+            NavSearchTerm::named("Natural scrolling").also(["reverse scrolling"]),
+            NavSearchTerm::words(["trackpad"]),
+        ]),
+        NavItem::new("network", "Network")
+            .search_terms([NavSearchTerm::named("Airplane mode").also(["flight mode"])]),
+        NavItem::new("displays", "Displays").search_terms([NavSearchTerm::named("Night light")]),
+    ];
+    let tap = super::narrow(&items, "tap");
+    assert_eq!(tap.len(), 1, "only the page holding it");
+    assert_eq!(tap[0].secondary.as_deref(), Some("Tap to click"));
+    let reverse = super::narrow(&items, "reverse");
+    assert_eq!(
+        reverse[0].secondary.as_deref(),
+        Some("Natural scrolling"),
+        "a word finds the thing and the row names it"
+    );
+    let trackpad = super::narrow(&items, "trackpad");
+    assert_eq!(trackpad[0].id, "pointing");
+    assert_eq!(
+        trackpad[0].secondary, None,
+        "words for the page itself add nothing"
+    );
+    let light = super::narrow(&items, "light");
+    assert_eq!(
+        light
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["displays"],
+        "a word start, not the middle of \"flight\""
+    );
+    assert!(super::narrow(&items, "zzz").is_empty());
+}

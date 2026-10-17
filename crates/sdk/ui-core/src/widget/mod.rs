@@ -3097,7 +3097,9 @@ pub use window_header::{
     WindowHeader, WindowHistory,
 };
 mod nav_list;
-pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
+pub use nav_list::{
+    NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
