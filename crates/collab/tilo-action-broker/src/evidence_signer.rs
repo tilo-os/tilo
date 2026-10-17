@@ -303,7 +303,16 @@ mod tests {
         let mut registry = store.load().expect("registry");
         registry.default_identity = None;
         registry.workspace_identities.clear();
-        store.save(&registry).expect("unselect");
+        registry.identities.clear();
+        // Reconciliation restores selection from records still on disk, so
+        // removing only the explicit selection leaves a legitimate fallback.
+        std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
+        store.save(&registry).expect("remove identity");
+        assert!(
+            tilo_identity_host::registry::selected_identity_profile(&fixture.room)
+                .expect("selection")
+                .is_none()
+        );
         assert!(
             cache
                 .sign_at(&fixture.room, b"after", Fixture::now())
@@ -344,11 +353,8 @@ mod tests {
         cert.signature = root
             .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))
             .expect("certify");
-        std::fs::write(
-            fixture.cert_file(),
-            serde_json::to_vec(&cert).expect("serialize"),
-        )
-        .expect("write certificate");
+        tilo_user_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
+            .expect("write certificate");
         fixture.settle();
         let mut cache = SignerCache::default();
         cache

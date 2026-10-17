@@ -132,6 +132,7 @@ mod durable_local_matrix {
         stream: Option<runtime_collab::InvocationStream>,
         binding: runtime_collab::PublishedInvocationBinding,
         authorize: ui::invocation_scope::PublishedInvocationAuthorizer,
+        bridge_task: tokio::task::JoinHandle<()>,
     }
     impl Rig {
         async fn new(env: &Environment) -> Self {
@@ -172,6 +173,20 @@ mod durable_local_matrix {
                 )
                 .await
                 .unwrap();
+            // Mirror the production accept loop: later continuations can queue
+            // another eager admission after the caller's first explicit drain.
+            let bridge_state = Arc::downgrade(&state);
+            let bridge_directories = directories.clone();
+            let turn = state.action_directory_bridge.turn.clone();
+            let bridge_task = tokio::task::spawn_local(async move {
+                loop {
+                    turn.notified().await;
+                    let Some(state) = bridge_state.upgrade() else {
+                        break;
+                    };
+                    state.drain_action_directory_bridge(&bridge_directories);
+                }
+            });
             Self {
                 state,
                 directories,
@@ -179,6 +194,7 @@ mod durable_local_matrix {
                 stream: Some(stream),
                 binding,
                 authorize,
+                bridge_task,
             }
         }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
@@ -209,6 +225,8 @@ mod durable_local_matrix {
             }
         }
         async fn stop(mut self) {
+            self.bridge_task.abort();
+            let _ = (&mut self.bridge_task).await;
             self.worker.server.abort();
             self.worker.client.abort();
             // Abort completion releases the real server's state/journal references.

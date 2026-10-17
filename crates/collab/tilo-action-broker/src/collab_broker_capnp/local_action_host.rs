@@ -406,9 +406,26 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        let admitted = match self.check(caller) {
-            Ok(admitted) => admitted,
-            Err(error) => return Pending::ready(Err(error)),
+        // A new application admission is queued onto the broker. Validate its
+        // lease here, but verify live certificate/policy there, not twice across
+        // an asynchronous boundary. Replay/checkpoint replies still verify here
+        // because they may return retained private data without another dispatch.
+        let deferred = request.target.address.resource.as_str()
+            != super::workspace_checkpoints::RESOURCE
+            && self
+                .state
+                .remote_job(&self.effective, &request.invocation)
+                .is_none();
+        let admitted = if deferred {
+            if let Err(error) = self.check_lease(caller) {
+                return Pending::ready(Err(error));
+            }
+            self.admission.admitted.clone()
+        } else {
+            match self.check(caller) {
+                Ok(admitted) => admitted,
+                Err(error) => return Pending::ready(Err(error)),
+            }
         };
         if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
@@ -441,9 +458,9 @@ impl ActionHost for CertifiedLocalActionHost {
         {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
-        // This admission stands for the dispatch this call reaches; whatever
-        // continues after it returns verifies again.
-        super::admission_memo::with_admitted_now(&self.admission, admitted, || {
+        // Only lend a live admission to synchronous work. A newly queued
+        // dispatch verifies its original custody on the broker turn instead.
+        let invoke = || {
             self.state.action_invoke_with_origin(
                 &self.effective,
                 None,
@@ -454,7 +471,12 @@ impl ActionHost for CertifiedLocalActionHost {
                 }),
                 &request,
             )
-        })
+        };
+        if deferred {
+            invoke()
+        } else {
+            super::admission_memo::with_admitted_now(&self.admission, admitted, invoke)
+        }
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {

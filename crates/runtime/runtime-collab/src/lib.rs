@@ -3593,7 +3593,7 @@ pub struct PublishedInvocationBinding {
 pub struct PublishedInvocationResult {
     pub id: u64,
     pub update_json: String,
-    /// Host-private AdmissionEvidence JSON from an owner-authorized observation,
+    /// Host-private `AdmissionEvidence` JSON from an owner-authorized observation,
     /// never a public stream. Empty wire fields decode as absent.
     pub admission_json: Option<String>,
     /// Host-private terminal evidence JSON with the same owner-only visibility.
