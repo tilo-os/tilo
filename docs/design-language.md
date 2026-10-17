@@ -140,6 +140,13 @@ shadow plus, on dark themes, a 1 px light inner edge.
   unblurred translucency.
 - Chrome over media (video controls, photo info) uses the same material on the
   media itself.
+- The window group's docked tab strip is one body behind the whole strip,
+  with the active tab an opaque lift on it and a hovered one a film of that
+  lift. It is solid by default; a theme may make it a floating-material
+  surface (frosted: the desktop behind it blurred and tinted), never an
+  unblurred film. Tabs inside a window stand on the opaque window ground with
+  the same tiers and no strip. High contrast and reduced transparency make
+  the strip solid.
 
 ## Type
 
