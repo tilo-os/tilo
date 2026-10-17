@@ -14188,6 +14188,24 @@ impl ShellOverlayHost {
         if self.portal_dialogs.view().is_none() {
             return false;
         }
+        if self.portal_dialogs.layout(self.overlay_area()).is_none() {
+            // A security review that cannot fit is not an invisible Allow
+            // button. Keep Escape available, but consume every other input.
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key: Key::Named(NamedKey::Escape),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                self.portal_dialogs.cancel();
+            }
+            return true;
+        }
         let modifiers = *ctx.modifiers;
         match event {
             WindowEvent::KeyboardInput {

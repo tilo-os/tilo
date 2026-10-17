@@ -175,6 +175,7 @@ impl CapnpBrokerState {
                 != tilo_actions::ConfirmationPolicy::None
                 || contract.risk.requires_confirmation(),
             confirming: false,
+            moderation: None,
         };
         Some((consent, (descriptor.resource_kind.clone(), contract.need())))
     }

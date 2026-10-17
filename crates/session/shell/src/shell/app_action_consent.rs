@@ -118,6 +118,65 @@ mod tests {
             risk: tilo_actions::RiskLevel::Low,
             needs_confirmation: false,
             confirming: false,
+            moderation: None,
+        }
+    }
+
+    #[test]
+    fn moderation_sheet_discloses_content_destination_and_identity_for_one_call() {
+        use crate::shell::portal_dialog::PortalDialogController;
+        use tilo_action_broker::app_actions::{ModerationConsentPreview, ModerationConsentPurpose};
+        for purpose in [
+            ModerationConsentPurpose::Report,
+            ModerationConsentPurpose::Appeal,
+        ] {
+            let queue = PortalDialogQueue::default();
+            let prompter = SheetPrompter::new(queue.clone(), Arc::new(|_| true));
+            let mut consent = request("person:ada");
+            consent.confirming = true;
+            consent.target_app = "so.tilo.store".into();
+            consent.moderation = Some(ModerationConsentPreview {
+                purpose,
+                destination: "https://registry.example".into(),
+                owner_root: "ab".repeat(32),
+                signing_root: "12".repeat(32),
+                target: "case-or-package".into(),
+                category: Some("policy".into()),
+                content: "The package description is misleading".into(),
+                evidence_digest: Some("cd".repeat(32)),
+            });
+            let mut answer = prompter.ask(consent.clone()).unwrap();
+            let mut sheet = PortalDialogController::new(queue);
+            assert!(sheet.pump());
+            let view = sheet.view().unwrap();
+            let detail = view.detail();
+            for text in [
+                "https://registry.example",
+                "case-or-package",
+                "policy",
+                "The package description is misleading",
+            ] {
+                assert!(detail.contains(text), "missing {text}: {detail}");
+            }
+            let unwrapped = detail.replace('\n', "");
+            for key in ["ab", "12", "cd"] {
+                assert!(unwrapped.contains(&key.repeat(32)));
+            }
+            assert!(!detail.contains("{\""), "no opaque operation JSON");
+            assert_eq!(view.choices().len(), 1, "no lasting grant for disclosure");
+            assert!(
+                sheet
+                    .layout(vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 1080.0))
+                    .is_some()
+            );
+            assert!(
+                sheet
+                    .layout(vello::kurbo::Rect::new(0.0, 0.0, 480.0, 320.0))
+                    .is_none(),
+                "never approve a clipped review"
+            );
+            assert!(sheet.confirm());
+            assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once);
         }
     }
 
