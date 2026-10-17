@@ -14764,7 +14764,6 @@ dependencies = [
  "tar",
  "tempfile",
  "terminal",
- "test-http",
  "thiserror 2.0.21",
  "threshold-identity",
  "tilo-accessibility-settings",
