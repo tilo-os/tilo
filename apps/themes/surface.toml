@@ -47,6 +47,10 @@ fields = [
   { path = "themes.*.motion", type = "f64" },
   { path = "themes.*.blur", type = "f64" },
   { path = "themes.*.tint_opacity", type = "f64" },
+  { path = "themes.*.frosted_strip", type = "bool" },
+  { path = "themes.*.rim_span", type = "f64" },
+  { path = "themes.*.rim_alpha", type = "f64" },
+  { path = "themes.*.hover_alpha", type = "f64" },
 ]
 
 [[resources.verbs]]

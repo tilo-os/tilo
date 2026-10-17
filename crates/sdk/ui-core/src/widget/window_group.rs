@@ -264,6 +264,9 @@ pub struct WindowGroup {
     /// Layout jumps to the destination; paint interpolates (no Taffy).
     rect_spring: Option<RectSprings>,
     last_rect_step: Option<Instant>,
+    /// [`Self::draw_docked_strip`] stepped the rect spring for the frame
+    /// whose `draw` comes next.
+    spring_stepped: bool,
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
     width_spring: Option<Spring>,
@@ -398,6 +401,7 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
+            Self::paint_strip_body(&self.bar, scene, transform, theme);
             self.bar.draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -455,6 +459,7 @@ impl WindowGroup {
             .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
+        bar.set_on_strip(true);
         Self {
             id,
             close_reports: vec![],
@@ -492,6 +497,7 @@ impl WindowGroup {
             spawned_at: None,
             rect_spring: None,
             last_rect_step: None,
+            spring_stepped: false,
             width_spring: None,
             last_width_step: None,
             held_back: false,
@@ -1159,6 +1165,7 @@ impl WindowGroup {
         let capture_rect = host.complete_content_rect()?;
         self.bar
             .set_group_focused(self.focused || self.search_active);
+        Self::paint_strip_body(&self.bar, scene, transform, theme);
         self.bar.draw(scene, transform, tr, theme, presence);
         if let Some(name) = opening_name.as_deref() {
             host.set_opening_name(name);
@@ -1340,6 +1347,7 @@ impl WindowGroup {
         host.set_panic_scope(tab_id);
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
+        bar.set_on_strip(true);
         Self {
             id,
             close_reports: vec![],
@@ -1377,6 +1385,7 @@ impl WindowGroup {
             spawned_at: None,
             rect_spring: None,
             last_rect_step: None,
+            spring_stepped: false,
             width_spring: None,
             last_width_step: None,
             held_back: false,
@@ -2144,6 +2153,104 @@ impl WindowGroup {
         } else {
             (1.0, 0.0, 0.0, 1.0)
         }
+    }
+
+    /// `transform` moved by the spawn or close curve's offset and scale
+    /// (`fade_transform_params`) and by the rect spring: where the group
+    /// and everything of it paints this frame.
+    fn fade_affine(
+        &self,
+        transform: Affine,
+        (fade_x, fade_y, fade_scale): (f64, f64, f64),
+    ) -> Affine {
+        // Tolerance rather than exact float equality: this only gates a
+        // no-op-transform fast path, so a value merely close to identity
+        // is close enough to skip composing it.
+        const FADE_EPS: f64 = 1e-9;
+        // `fade_y` is currently always 0, kept in the tuple in case a
+        // future close curve wants a settle.
+        // Affine composition is floating-point matrix multiply — it
+        // cannot overflow or panic the way integer arithmetic can.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+        )]
+        let transform = if fade_x.abs() > FADE_EPS
+            || fade_y.abs() > FADE_EPS
+            || (fade_scale - 1.0).abs() > FADE_EPS
+        {
+            let cx = self.rect.center().x;
+            let cy = self.rect.center().y;
+            transform
+                * Affine::translate((cx + fade_x, cy + fade_y))
+                * Affine::scale(fade_scale)
+                * Affine::translate((-cx, -cy))
+        } else {
+            transform
+        };
+        self.rect_draw_affine(transform)
+    }
+
+    /// Paint the body of this group's docked tab strip
+    /// ([`crate::chrome::SelectorRole::Strip`]) under where [`Widget::draw`]
+    /// puts its tabs, through the same fade and spring.
+    ///
+    /// Whoever draws the group calls this first, into the scene the group
+    /// is composed into rather than into a drawing of the group it keeps:
+    /// the strip is made of the floating material, whose blurred backdrop is
+    /// recorded only where it is drawn, so a kept drawing replayed on a
+    /// later frame would show the strip opaque.
+    pub fn draw_docked_strip(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.maximized || !self.navigation_bar_visible() {
+            return;
+        }
+        // As `draw`: nothing paints until the group has something to show.
+        if !Widget::presented(self) && !Widget::opening(self) && !self.is_closing() {
+            return;
+        }
+        self.reduce_motion = theme.reduce_motion;
+        self.step_rect_spring();
+        self.spring_stepped = true;
+        let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
+        if fade_alpha <= 0.0 {
+            return;
+        }
+        let bar = self.bar.bar_rect();
+        if bar.width() <= 0.0 || bar.height() <= 0.0 {
+            return;
+        }
+        let fading = fade_alpha < 1.0;
+        if fading {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                fade_alpha,
+                transform,
+                &bar.inflate(16.0, 16.0),
+            );
+        }
+        let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
+        Self::paint_strip_body(&self.bar, scene, transform, theme);
+        if fading {
+            scene.pop_layer();
+        }
+    }
+
+    /// The docked strip's body at the bar's rect, its capsule concentric
+    /// with the tabs inset in it.
+    fn paint_strip_body(bar: &TabBar, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let strip = crate::chrome::strip_shape(
+            bar.bar_rect(),
+            f64::from(theme.tokens.radii.control),
+            crate::widget::tabs::TAB_PILL_INSET_Y,
+        );
+        crate::chrome::paint_selector(
+            scene,
+            transform,
+            &strip,
+            crate::chrome::SelectorRole::Strip,
+            theme,
+        );
     }
 
     /// Paints each still-fading closed tab (opacity 1→0, scale 1→0.95,
@@ -3131,11 +3238,11 @@ impl Widget for WindowGroup {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        self.step_rect_spring();
-        // Tolerance rather than exact float equality: this only gates a
-        // no-op-transform fast path, so a value merely close to identity
-        // is close enough to skip composing it.
-        const FADE_EPS: f64 = 1e-9;
+        // The strip under the tabs was drawn first and already moved the
+        // spring for this frame; stepping it twice would run it fast.
+        if !std::mem::take(&mut self.spring_stepped) {
+            self.step_rect_spring();
+        }
         // An indicator that flashes in and out before an app has time to
         // draw would just be a flicker, so nothing paints until either
         // something has drawn or the wait is long enough to say so.
@@ -3181,28 +3288,7 @@ impl Widget for WindowGroup {
                 &clip,
             );
         }
-        // `fade_y` is currently always 0, kept in the tuple in case a
-        // future close curve wants a settle.
-        // Affine composition is floating-point matrix multiply — it
-        // cannot overflow or panic the way integer arithmetic can.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-        )]
-        let transform = if fade_x.abs() > FADE_EPS
-            || fade_y.abs() > FADE_EPS
-            || (fade_scale - 1.0).abs() > FADE_EPS
-        {
-            let cx = self.rect.center().x;
-            let cy = self.rect.center().y;
-            transform
-                * Affine::translate((cx + fade_x, cy + fade_y))
-                * Affine::scale(fade_scale)
-                * Affine::translate((-cx, -cy))
-        } else {
-            transform
-        };
-        let transform = self.rect_draw_affine(transform);
+        let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
         if !self.maximized && self.navigation_bar_visible() {
@@ -3654,6 +3740,87 @@ mod tests {
     /// rest it is not painted: an app's panels came and went under a pair
     /// of bars that looked like their scrollbar. Hovering the band or
     /// dragging shows it.
+    /// The docked strip is a body of its own under the tabs, and the tabs
+    /// on it lift off its ground, inset from its ends as from its top.
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "sample points are small positive pixel coordinates"
+    )]
+    fn tabs_stand_on_the_docked_strip_and_lift_off_its_ground() {
+        use crate::color_compat::ColorCompat;
+        use crate::offscreen::OffscreenRenderer;
+        use taffy::prelude::TaffyMaxContent;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut group = make_group();
+            let mut tree = TaffyTree::new();
+            let node = group.build_layout(&mut tree, &theme, &mut Default::default());
+            let mut style = tree.style(node).unwrap().clone();
+            style.size.width = Dimension::length(360.0);
+            tree.set_style(node, style).unwrap();
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(360.0),
+                        height: Dimension::length(240.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            group.apply_layout(&tree, node, Point::new(20.0, 20.0));
+            let bar = group.bar_rect();
+            let first = group.tab_rects()[0];
+            assert!(
+                (first.x0 - bar.x0 - crate::widget::tabs::TAB_PILL_INSET_Y).abs() < 1e-6,
+                "{}: the first tab sits the strip's inset in from its end: {first:?} in {bar:?}",
+                theme.name
+            );
+            let mut scene = Scene::new();
+            group.draw_docked_strip(&mut scene, Affine::IDENTITY, &theme);
+            group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let mut renderer = OffscreenRenderer::new(400, 300);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.base);
+            let at = |x: f64, y: f64| {
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x as u32, y as u32);
+                (r, g, b)
+            };
+            let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
+            let ground = crate::chrome::strip_ground(&theme);
+            let close = |a: (u8, u8, u8), b: (u8, u8, u8)| {
+                a.0.abs_diff(b.0) <= 2 && a.1.abs_diff(b.1) <= 2 && a.2.abs_diff(b.2) <= 2
+            };
+            // Outside a backdrop recording the strip is its opaque ground.
+            let strip = at(bar.x0 + 3.0, bar.center().y);
+            assert!(
+                close(strip, rgb(ground)),
+                "{}: the strip's body {strip:?} is not its ground {:?}",
+                theme.name,
+                rgb(ground)
+            );
+            let active = crate::chrome::selector_tier(
+                &theme,
+                crate::chrome::SelectionState::active(true),
+                ground,
+            );
+            let pill = at(first.x0 + 5.0, first.center().y);
+            assert!(
+                close(pill, rgb(active.fill)),
+                "{}: the active tab {pill:?} is not the lift of the strip's ground {:?}",
+                theme.name,
+                rgb(active.fill)
+            );
+        }
+    }
+
     #[test]
     #[allow(
         clippy::cast_possible_truncation,

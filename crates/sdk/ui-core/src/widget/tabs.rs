@@ -127,16 +127,19 @@ fn point_delta(a: Point, b: Point) -> vello::kurbo::Vec2 {
     a - b
 }
 
-/// Delegates to [`crate::chrome::shell::selection_tier`]; the tier table lives there.
+/// A tab on `ground` in one state: [`crate::chrome::selector_tier`], whose
+/// tier table every selector shares.
 pub(crate) fn pill_appearance(
     theme: &Theme,
+    ground: vello::peniko::Color,
     is_active: bool,
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    crate::chrome::shell::glass_selector(
+    crate::chrome::selector_tier(
         theme,
         crate::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
+        ground,
     )
 }
 
@@ -270,6 +273,10 @@ pub struct TabBar {
     /// inside the list, matching the native tab-list convention without
     /// flooding ordinary Tab traversal with every individual pill.
     keyboard_focus: bool,
+    /// The bar stands on a docked strip of its own (the window group's,
+    /// [`crate::chrome::SelectorRole::Strip`]) rather than on the window
+    /// ground, so its tabs lift off the strip's ground.
+    on_strip: bool,
     rect: Rect,
     tab_rects: Vec<Rect>,
     /// The 18px visual close chips. Kept separate from the larger pointer
@@ -464,6 +471,7 @@ impl TabBar {
             active_id,
             group_focus: GroupFocus::Focused,
             keyboard_focus: false,
+            on_strip: false,
             rect: Rect::ZERO,
             tab_rects: Vec::new(),
             close_rects: Vec::new(),
@@ -691,10 +699,16 @@ impl TabBar {
         } else {
             transform
         };
-        // Shared glass material (`chrome::shell::paint_glass_body`) so the strip
-        // can't drift from the rest of the chrome.
+        // The one selector painter, so a tab can't drift from the rest of
+        // the chrome.
         let shape = RoundedRect::from_rect(r, radius);
-        crate::chrome::shell::paint_glass_body(scene, pill_transform, r, radius, theme, &look, 1.0);
+        crate::chrome::paint_selector(
+            scene,
+            pill_transform,
+            &shape,
+            crate::chrome::SelectorRole::Item(&look),
+            theme,
+        );
         if is_active && self.shows_group_focus && self.group_focus == GroupFocus::Focused {
             // A restrained focus keyline separates two different facts that
             // used to share one treatment: "active tab in this group" and
@@ -1112,10 +1126,10 @@ impl TabBar {
         let metrics = self.face_metrics;
         let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
         let cy = r.center().y;
-        // The ring is the pill's own ground (its glass film over the strip),
-        // so overlapping faces read as cut out of the tab, not stickered on.
+        // The ring is the pill's own ground (its body over the strip), so
+        // overlapping faces read as cut out of the tab, not stickered on.
         let ring = crate::tokens::colors::over(
-            ctx.theme.tokens.colors.surfaces.base,
+            self.ground(ctx.theme),
             pill.look.fill.with_alpha(1.0),
             pill.look.fill.components[3],
         );
@@ -1232,7 +1246,10 @@ impl TabBar {
                 true,
             )
         } else if is_hover {
-            (chip_hover_tint(theme, CHIP_HOVER_TINT_ALPHA), true)
+            (
+                chip_hover_tint(self.ground(theme), CHIP_HOVER_TINT_ALPHA),
+                true,
+            )
         } else {
             (vello::peniko::Color::TRANSPARENT, false)
         };
@@ -1285,7 +1302,7 @@ impl TabBar {
         if suppress_hover || is_pinned {
             return;
         }
-        let chip_tint = chip_hover_tint(theme, ACTION_HOVER_TINT_ALPHA);
+        let chip_tint = chip_hover_tint(self.ground(theme), ACTION_HOVER_TINT_ALPHA);
         let icon_idle = theme.tokens.colors.text_dim;
         let icon_active = theme.tokens.colors.text_primary;
 
@@ -1354,7 +1371,7 @@ impl TabBar {
         transform: Affine,
         c: &ClosingTab,
         tr: &mut TextRenderer,
-        theme: &Theme,
+        (theme, ground): (&Theme, vello::peniko::Color),
     ) {
         let r = c.pill_rect;
         let radius = f64::from(theme.tokens.radii.control);
@@ -1362,14 +1379,12 @@ impl TabBar {
         // Hovered tier, not inactive: active-id already shifted at close-start, and
         // an inactive pill is fully transparent, which would leave the title and ×
         // floating on the bar for the fade.
-        crate::chrome::shell::paint_glass_body(
+        crate::chrome::paint_selector(
             scene,
             transform,
-            r,
-            radius,
+            &RoundedRect::from_rect(r, radius),
+            crate::chrome::SelectorRole::Item(&pill_appearance(theme, ground, false, true, false)),
             theme,
-            &pill_appearance(theme, false, true, false),
-            1.0,
         );
         let text_style = theme.text(TextRole::Label);
         let title_weight = TextWeight::Semibold;
@@ -2429,6 +2444,34 @@ impl TabBar {
         }
     }
 
+    /// Stand the bar on a docked strip of its own instead of the window
+    /// ground: its tabs then lift off the strip's ground.
+    pub fn set_on_strip(&mut self, on_strip: bool) {
+        self.on_strip = on_strip;
+    }
+
+    /// The span the pills are laid out across: the whole bar, or on a
+    /// docked strip the strip less the inset its pills keep from its ends,
+    /// the same inset they keep from its top and bottom, so the strip's
+    /// capsule is concentric with the tabs in it.
+    fn pill_row(&self) -> Rect {
+        if self.on_strip && self.rect.width() > 2.0 * TAB_PILL_INSET_Y {
+            self.rect.inset((-TAB_PILL_INSET_Y, 0.0))
+        } else {
+            self.rect
+        }
+    }
+
+    /// The ground this bar's tabs stand on: the docked strip's, or the
+    /// window's.
+    fn ground(&self, theme: &Theme) -> vello::peniko::Color {
+        if self.on_strip {
+            crate::chrome::strip_ground(theme)
+        } else {
+            theme.tokens.colors.surfaces.content
+        }
+    }
+
     /// The single place active/hover/pressed are read into an appearance, so
     /// `draw_pill_inner` and every other reader can't drift apart. Pressed tracks
     /// the press-source pill across the whole press → (optional drag) → release
@@ -2445,7 +2488,9 @@ impl TabBar {
             );
         // The carried object needs its own readable surface even when its
         // source tab is inactive. This changes paint, not tab selection.
-        let mut look = pill_appearance(theme, is_active || is_carried, is_hover, is_pressed);
+        let ground = self.ground(theme);
+        let mut look =
+            pill_appearance(theme, ground, is_active || is_carried, is_hover, is_pressed);
         // Inactive body rides the reveal curve instead of switching on/off with
         // the pointer, fading (fill + edge together, so the hairline can't flicker
         // off a frame late) over the same frames its chips slide back in.
@@ -2456,7 +2501,7 @@ impl TabBar {
                 self.reveal_fade(idx)
             };
             if fade > 0.0 {
-                let hovered = pill_appearance(theme, false, true, false);
+                let hovered = pill_appearance(theme, ground, false, true, false);
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "fade is clamped to 0.0..=1.0 by reveal_fade"
@@ -2500,7 +2545,7 @@ impl TabBar {
         if close_hover {
             Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
         } else if is_hover {
-            Some(chip_hover_tint(theme, CHIP_HOVER_TINT_ALPHA))
+            Some(chip_hover_tint(self.ground(theme), CHIP_HOVER_TINT_ALPHA))
         } else {
             None
         }
@@ -2938,11 +2983,12 @@ fn chip_hover_ring(chip: Rect) -> Rect {
     square_at(chip.center(), CLOSE_W)
 }
 
-/// A hover wash for a chip, derived against the chrome's ground the way a
-/// hairline is (HIG §9.5): white over a dark pill, black over a light one.
-/// A literal white at low alpha was invisible on the light palettes.
-fn chip_hover_tint(theme: &Theme, alpha: u8) -> vello::peniko::Color {
-    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+/// A hover wash for a chip, derived against the ground the bar stands on
+/// the way a hairline is (HIG §9.5): white over a dark pill, black over a
+/// light one. A literal white at low alpha was invisible on the light
+/// palettes.
+fn chip_hover_tint(ground: vello::peniko::Color, alpha: u8) -> vello::peniko::Color {
+    Colors::hairline_on(ground, alpha)
 }
 
 impl Widget for TabBar {
@@ -3007,12 +3053,13 @@ impl Widget for TabBar {
 
         // Absorbs float drift only — `fit_pill_widths` already sized the row to
         // fit. Disabled with no width yet, where clamping would collapse to the origin.
-        let right_limit = if self.rect.width() > 0.0 {
-            self.rect.x1
+        let row = self.pill_row();
+        let right_limit = if row.width() > 0.0 {
+            row.x1
         } else {
             f64::INFINITY
         };
-        let mut x = self.rect.x0;
+        let mut x = row.x0;
         for (slot, &i) in visual_order.iter().enumerate() {
             let is_pinned = self
                 .tabs
@@ -3085,7 +3132,7 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if self.new_tab && plus_x1 <= self.rect.x1 {
+        self.new_tab_rect = if self.new_tab && plus_x1 <= row.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -3508,11 +3555,12 @@ impl TabBar {
         } else {
             0.0
         };
-        let laid_out = self.rect.width() > 0.0;
+        let row = self.pill_row();
+        let laid_out = row.width() > 0.0;
         let fit_avail = if laid_out {
-            (self.rect.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
+            (row.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
         } else {
-            self.rect.width()
+            row.width()
         };
         let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
         // Growth beyond resting, scaled down together if two pills are briefly
@@ -3735,6 +3783,7 @@ impl TabBar {
         if self.closing_tabs.is_empty() {
             return;
         }
+        let ground = self.ground(theme);
         // `CLOSE_FADE_MS` is a small fixed positive animation-timing constant.
         #[allow(
             clippy::cast_possible_truncation,
@@ -3781,7 +3830,7 @@ impl TabBar {
                 ),
                 Affine::translate((-centre.x, -centre.y)),
             );
-            Self::draw_closing_pill(scene, close_transform, c, tr, theme);
+            Self::draw_closing_pill(scene, close_transform, c, tr, (theme, ground));
             scene.pop_layer();
         }
     }
@@ -3841,7 +3890,7 @@ impl TabBar {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha_u8),
+            Colors::hairline_on(self.ground(theme), alpha_u8),
             None,
             &line,
         );
@@ -5172,7 +5221,7 @@ mod tests {
         {
             use crate::a11y::relative_luminance;
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let ground = theme.tokens.colors.surfaces.base;
+                let ground = crate::chrome::strip_ground(&theme);
                 let g = relative_luminance(ground);
                 let lift_of = |c: vello::peniko::Color| {
                     let a = f32::from(c.a()) / 255.0;
@@ -5197,10 +5246,34 @@ mod tests {
                     (relative_luminance(seen) - g).abs()
                 };
 
-                let idle = pill_appearance(&theme, false, false, false);
-                let hover = pill_appearance(&theme, false, true, false);
-                let active = pill_appearance(&theme, true, false, false);
-                let active_hover = pill_appearance(&theme, true, true, false);
+                let idle = pill_appearance(
+                    &theme,
+                    crate::chrome::strip_ground(&theme),
+                    false,
+                    false,
+                    false,
+                );
+                let hover = pill_appearance(
+                    &theme,
+                    crate::chrome::strip_ground(&theme),
+                    false,
+                    true,
+                    false,
+                );
+                let active = pill_appearance(
+                    &theme,
+                    crate::chrome::strip_ground(&theme),
+                    true,
+                    false,
+                    false,
+                );
+                let active_hover = pill_appearance(
+                    &theme,
+                    crate::chrome::strip_ground(&theme),
+                    true,
+                    true,
+                    false,
+                );
 
                 assert_eq!(
                     idle.fill.a(),
@@ -5233,9 +5306,11 @@ mod tests {
                     theme.name,
                 );
                 assert!(
-                    active.border.is_some() && active.inner_glow.is_some(),
-                    "{}: active pill must paint a border + inner glow so it reads \
-                 as raised",
+                    active.border.is_some()
+                        && active.inner_glow.is_some()
+                            == crate::chrome::selector_finish(&theme).rim().is_some(),
+                    "{}: active pill must paint an edge, and the finish's lit rim, so \
+                 it reads as raised",
                     theme.name,
                 );
                 assert_eq!(
@@ -5249,8 +5324,20 @@ mod tests {
         // Case `pressed_pill_uses_active_visuals_and_scales_down`.
         {
             let theme = Theme::dark();
-            let pressed_inactive = pill_appearance(&theme, false, false, true);
-            let active = pill_appearance(&theme, true, false, false);
+            let pressed_inactive = pill_appearance(
+                &theme,
+                crate::chrome::strip_ground(&theme),
+                false,
+                false,
+                true,
+            );
+            let active = pill_appearance(
+                &theme,
+                crate::chrome::strip_ground(&theme),
+                true,
+                false,
+                false,
+            );
 
             assert_eq!(
                 pressed_inactive.fill.a(),
@@ -6051,8 +6138,9 @@ mod tests {
         // over a dark palette and dark over a light one — a literal white at
         // low alpha was invisible on the light palettes.
         {
-            let dark = chip_hover_tint(&Theme::dark(), ACTION_HOVER_TINT_ALPHA);
-            let light = chip_hover_tint(&Theme::light(), ACTION_HOVER_TINT_ALPHA);
+            let ground = |theme: Theme| crate::chrome::strip_ground(&theme);
+            let dark = chip_hover_tint(ground(Theme::dark()), ACTION_HOVER_TINT_ALPHA);
+            let light = chip_hover_tint(ground(Theme::light()), ACTION_HOVER_TINT_ALPHA);
             assert_eq!(dark.a(), ACTION_HOVER_TINT_ALPHA);
             assert_eq!(light.a(), ACTION_HOVER_TINT_ALPHA);
             assert!(
@@ -6507,7 +6595,13 @@ mod tests {
             for is_active in [false, true] {
                 for is_hover in [false, true] {
                     for is_pressed in [false, true] {
-                        let look = pill_appearance(&theme, is_active, is_hover, is_pressed);
+                        let look = pill_appearance(
+                            &theme,
+                            crate::chrome::strip_ground(&theme),
+                            is_active,
+                            is_hover,
+                            is_pressed,
+                        );
                         assert_eq!(
                             close_affordance_visible(&look, false),
                             look.fill.a() > 0,

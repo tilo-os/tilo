@@ -46,6 +46,11 @@ themes-motion-material = Motion and material
 themes-motion = Motion
 themes-blur = Blur behind menus
 themes-tint-opacity = Menu opacity
+themes-tab-strip = Window tab strip
+themes-tab-strip-help = Frosted blurs the desktop behind a window's tabs, as menus do. High contrast and reduced transparency always make it solid.
+themes-rim-span = Active tab light
+themes-rim-alpha = Active tab light strength
+themes-hover-alpha = Hovered tab strength
 
 themes-reset-button = Reset
 
@@ -81,6 +86,13 @@ themes-theme-distinct-letters = { $new ->
 themes-theme-motion = Set the motion of { $item } to { $new }
 themes-theme-blur = Set the blur of { $item } to { $new } px
 themes-theme-tint-opacity = Set the tint opacity of { $item } to { $new }
+themes-theme-frosted-strip = { $new ->
+    [true] Made the tab strip of { $item } frosted
+   *[other] Made the tab strip of { $item } solid
+}
+themes-theme-rim-span = Set how far the active tab light of { $item } reaches to { $new }
+themes-theme-rim-alpha = Set the active tab light of { $item } to { $new }
+themes-theme-hover-alpha = Set the hovered tab strength of { $item } to { $new }
 themes-new-theme = Started a theme from { $base }
 themes-reset = Reset { $item } to the graphite preset
 themes-delete = Deleted { $item }

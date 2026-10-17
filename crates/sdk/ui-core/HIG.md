@@ -903,6 +903,38 @@ a dark palette), so it stays at least `SELECTION_MIN_STEP` (OKLCH ΔL 0.06)
 from the ground on content, sidebar, inspector, raised and panel grounds in
 every material.
 
+**Selectors are one painter.** Everything you choose one of from a strip —
+a window's tabs, an in-app `TabBar`, the segments of a `ToggleGroup`
+(`Segmented` and `Tabs`), the top bar's selectors — resolves its state with
+`chrome::selector_tier(theme, state, ground)` against the ground it really
+stands on and paints with `chrome::paint_selector`:
+
+| State | Fill | Edge | Lit rim |
+|---|---|---|---|
+| idle | none | none | none |
+| hover | the active lift as a film, at the theme's hover opacity | none | none |
+| **active** | `lift_on(ground, 1.0)`, opaque | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
+| pressed | as active, scaled 0.97 | as active | as active |
+
+The active fill is `selection_tier_on`'s lift, so a chosen tab and a selected
+row move the same distance off the same ground; the hover film, composited
+on an opaque ground, also clears `SELECTION_MIN_STEP` and stays short of the
+active step. The window group's tab strip stands on a body of its own,
+`SelectorRole::Strip`, one body behind the whole strip rather than one per
+tab: the panel ground, or where the theme makes it frosted
+(`StripMaterial::Floating`) the floating material over the desktop behind
+it (blur and 72 % panel-ground tint, as menus and the palette). Frosted is
+not the stock finish while the shell's retained presenter gives up its pan
+layers, scroll copies and sparse damage for any frame with a blurred surface
+on screen. In-app
+tabs stand on the window ground and have no strip: there is nothing behind
+them to blur, and the same tiers make them read as the same family. The
+rim span, rim and hover opacity and what the strip is made of are the
+theme's (`material.selector`, Theme Studio); high contrast, forced colours
+and reduced transparency make the strip and the hover solid and drop the
+rim. `tests/design_token_audit.rs` checks the tiers on every preset against
+the strip, window, track and desktop grounds.
+
 **One content edge.** Inside a column, everything that is text starts on the
 column's content edge: a `ListRow`'s title, a `Section` or `SectionHeader`
 title, a `PropertyList`'s labels, a `StatTile`'s label, a `DataTable`'s first
@@ -1063,7 +1095,7 @@ edge or a clear contrast step** against the surface it sits on, at 1× in dark
 and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
 inset 1 px stroke (`ui::surface::card`, the chip family's `ChipFace` /
 `BadgeFace`, or the same geometry inline); chosen states use `selection_tier`
-(Controls) or `glass_selector` (shell Selectors); focus is `intent.you` (your
+(Controls) or `selector_tier` (Selectors, §9.3); focus is `intent.you` (your
 colour); disabled is the rest face under `widget::DISABLED_ALPHA`, with its
 edge kept at full strength, so rest and disabled never look the same.
 
@@ -1079,7 +1111,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
-| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
+| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a selector thumb (`selector_tier(raised)`, §9.3) inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track; the chosen tab is a selector on the window ground, as an in-app `TabBar`'s. `Quiet`: no track, a bare lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
@@ -1098,7 +1130,8 @@ edge kept at full strength, so rest and disabled never look the same.
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
 | App chrome Toolbar band (`toolbar::paint_band`) | none: the region's ground | `chrome_hairline` along the bottom |
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
-| Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
+| Selectors (tab pills, tray pill, scope chip) | idle none | none; chosen and hovered through `paint_selector` (§9.3) |
+| Window group tab strip | the floating material over the desktop (`SelectorRole::Strip`), opaque panel ground without blur | `edge_on(panel_ground)` |
 
 Forced-colour accessibility is the field-edge exception: when
 `Theme::colors_are_forced()` collapses surface levels, the shared field painter

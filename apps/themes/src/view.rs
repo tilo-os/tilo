@@ -595,7 +595,32 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 ))
                 .field(Field::new(
                     "themes-tint-opacity",
-                    slider(cx, &id, (0.6, 1.0), theme.tint_opacity),
+                    slider(cx, &id, (0.6, 1.0), theme.tint_opacity.clone()),
+                ))
+                .field(
+                    Field::new(
+                        "themes-tab-strip",
+                        choice(
+                            cx,
+                            ["Frosted", "Solid"],
+                            theme.frosted_strip.clone(),
+                            [true, false],
+                        ),
+                    )
+                    .with_help("themes-tab-strip-help")
+                    .with_trailing_control(),
+                )
+                .field(Field::new(
+                    "themes-rim-span",
+                    slider(cx, &id, (0.0, 1.0), theme.rim_span.clone()),
+                ))
+                .field(Field::new(
+                    "themes-rim-alpha",
+                    slider(cx, &id, (0.0, 0.5), theme.rim_alpha.clone()),
+                ))
+                .field(Field::new(
+                    "themes-hover-alpha",
+                    slider(cx, &id, (0.7, 1.0), theme.hover_alpha),
                 )),
         );
 

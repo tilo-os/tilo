@@ -5,6 +5,7 @@ pub mod metrics;
 pub mod motion;
 pub mod palette;
 pub mod radii;
+pub mod selector;
 pub mod spacing;
 pub mod syntax_palette;
 pub mod terminal_palette;
@@ -20,6 +21,7 @@ pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
 pub use palette::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
 pub use radii::Radii;
+pub use selector::{SelectorFinish, StripMaterial};
 pub use spacing::{Rhythm, RhythmScale, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
@@ -47,6 +49,9 @@ pub struct Tokens {
     /// it produces, because calm and lively are not separable from stiffness
     /// alone.
     pub motion_character: f32,
+    /// What a docked selector strip stands on and how its items are lit
+    /// (`crate::chrome::paint_selector`).
+    pub selector: SelectorFinish,
 }
 
 impl Tokens {
@@ -57,6 +62,7 @@ impl Tokens {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());
         let dark = colors.palette.dark;
+        let colors_high_contrast = colors.palette.high_contrast;
         Self {
             terminal_palette: TerminalPalette::from_colors(&colors),
             syntax: SyntaxPalette::from_colors(&colors),
@@ -73,6 +79,11 @@ impl Tokens {
             motion: Motion::default(),
             font_mono,
             motion_character: 1.0,
+            selector: if colors_high_contrast {
+                SelectorFinish::OPAQUE
+            } else {
+                SelectorFinish::STOCK
+            },
         }
     }
 

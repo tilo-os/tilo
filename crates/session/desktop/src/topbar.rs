@@ -793,14 +793,31 @@ fn until_next_time_bucket(since_epoch: Duration, bucket_secs: u64) -> Duration {
     bucket.saturating_sub(into)
 }
 
-/// `surfaces.raised` is `#ffffff` on light, same as the bar's own
-/// surface — invisible if used directly — so selection lift derives
-/// from luminance instead.
+/// A selector on the bar. The bar has no surface of its own: its selectors
+/// stand on the desktop ground, so they lift off that.
 fn bar_selector_body(
     theme: &Theme,
     state: ui::chrome::SelectionState,
 ) -> ui::chrome::SelectionTier {
-    ui::chrome::selection_tier(theme, state)
+    ui::chrome::selector_tier(theme, state, theme.tokens.colors.surfaces.base)
+}
+
+/// Paint a selector on the bar at `shape` in `state`, through the one
+/// selector painter.
+fn paint_bar_selector(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    state: ui::chrome::SelectionState,
+    theme: &Theme,
+) {
+    ui::chrome::paint_selector(
+        scene,
+        transform,
+        shape,
+        ui::chrome::SelectorRole::Item(&bar_selector_body(theme, state)),
+        theme,
+    );
 }
 
 /// Measured advances of the system monitor's six runs, at the weight and
@@ -2246,28 +2263,6 @@ impl TopBarChrome {
         let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
         // The switches are square targets of the shared control height.
         let switch_w = BAR_CONTROL_PX;
-        let nav_width = control
-            + f64::from(tokens.spacing.s2)
-            + 1.0
-            + f64::from(tokens.spacing.s2)
-            + switch_w * 2.0;
-        let nav_rect = Rect::new(
-            x,
-            center_y - control / 2.0,
-            x + nav_width,
-            center_y + control / 2.0,
-        );
-        let nav_body = bar_selector_body(theme, ui::chrome::SelectionState::active(false));
-        ui::chrome::shell::paint_glass_body(
-            scene,
-            transform,
-            nav_rect,
-            ui::chrome::ChromeRole::Selector.radius(theme, nav_rect.height()),
-            theme,
-            &nav_body,
-            1.0,
-        );
-
         self.overview_btn_rect = Rect::new(
             x,
             center_y - control / 2.0,
@@ -2279,15 +2274,15 @@ impl TopBarChrome {
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().overlays.overview);
         if overview_open {
-            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            ui::chrome::shell::paint_glass_body(
+            paint_bar_selector(
                 scene,
                 transform,
-                self.overview_btn_rect,
-                ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
+                &RoundedRect::from_rect(
+                    self.overview_btn_rect,
+                    ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
+                ),
+                ui::chrome::SelectionState::active(true),
                 theme,
-                &selected,
-                1.0,
             );
         }
         let overview_icon_rect = Rect::new(
@@ -2413,15 +2408,15 @@ impl TopBarChrome {
             center_y + control / 2.0,
         );
         if open {
-            let selected = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            ui::chrome::shell::paint_glass_body(
+            paint_bar_selector(
                 scene,
                 transform,
-                self.tilo_mark_rect,
-                ui::chrome::ChromeRole::Selector.radius(theme, control),
+                &RoundedRect::from_rect(
+                    self.tilo_mark_rect,
+                    ui::chrome::ChromeRole::Selector.radius(theme, control),
+                ),
+                ui::chrome::SelectionState::active(true),
                 theme,
-                &selected,
-                1.0,
             );
         }
         let side = f64::from(theme.tokens.metrics.icon_md);
@@ -2598,17 +2593,13 @@ impl TopBarChrome {
             ws_pill_outer,
             ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
         );
-        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(Fill::NonZero, transform, body.fill, None, &pill);
-        if let Some(edge) = body.border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &pill,
-            );
-        }
+        paint_bar_selector(
+            scene,
+            transform,
+            &pill,
+            ui::chrome::SelectionState::active(true),
+            theme,
+        );
         let workspace_lens_open = self
             .chrome
             .as_ref()
@@ -2706,17 +2697,13 @@ impl TopBarChrome {
                 band,
                 ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
             );
-            let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-            scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
-            if let Some(edge) = body.border {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    edge,
-                    None,
-                    &band_rr,
-                );
-            }
+            paint_bar_selector(
+                scene,
+                transform,
+                &band_rr,
+                ui::chrome::SelectionState::active(true),
+                theme,
+            );
         }
         let (content_x0, content_x1) = Self::center_content_lane(band);
         let content_cx = f64::midpoint(content_x0, content_x1);
@@ -3662,8 +3649,13 @@ impl TopBarChrome {
             self.tray_pill_rect,
             ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
         );
-        let tray_body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
-        scene.fill(Fill::NonZero, transform, tray_body.fill, None, &tray);
+        paint_bar_selector(
+            scene,
+            transform,
+            &tray,
+            ui::chrome::SelectionState::active(true),
+            theme,
+        );
         // At 3% the user needs to notice the whole pill, not just read
         // the glyph.
         if self.status.battery_is_critical() {

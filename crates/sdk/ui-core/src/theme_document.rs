@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use crate::tokens::colors::{Colors, PresenceHue};
 use crate::tokens::contrast::{ContrastFinding, audit};
 use crate::tokens::palette::{Emphasis, Palette, Tone};
+use crate::tokens::selector::SelectorFinish;
 
 /// The one schema this build reads and writes.
-pub const THEME_SCHEMA_VERSION: u32 = 6;
+pub const THEME_SCHEMA_VERSION: u32 = 7;
 
 /// The window tile's radius. Every other radius derives from it
 /// concentrically (`crate::tokens::Radii::from_window_radius`).
@@ -114,7 +115,8 @@ impl ThemeMotion {
 }
 
 /// The floating material: how strongly the backdrop behind floating chrome
-/// is blurred, and how opaque the overlay tint over it is.
+/// is blurred, how opaque the overlay tint over it is, and the finish of
+/// selectors, whose docked strip is made of it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeMaterial {
@@ -122,6 +124,9 @@ pub struct ThemeMaterial {
     pub blur: f32,
     /// Opacity of the overlay tint over the blurred backdrop.
     pub tint_opacity: f32,
+    /// What the window group's tab strip stands on, and the lit rim and
+    /// hover film of the selectors in it and everywhere else.
+    pub selector: SelectorFinish,
 }
 
 impl ThemeMaterial {
@@ -197,6 +202,11 @@ impl ThemeDocument {
                 } else {
                     crate::tokens::colors::MATERIAL_ALPHA
                 },
+                selector: if opaque {
+                    SelectorFinish::OPAQUE
+                } else {
+                    SelectorFinish::STOCK
+                },
             },
         }
     }
@@ -244,6 +254,16 @@ impl ThemeDocument {
         }
         if !within(self.material.tint_opacity, &ThemeMaterial::TINT_ADMITTED) {
             return Err("material tint opacity outside 0.6..=1");
+        }
+        let selector = &self.material.selector;
+        if !within(selector.rim_span, &SelectorFinish::RIM_SPAN_ADMITTED) {
+            return Err("selector rim span outside 0..=1");
+        }
+        if !within(selector.rim_alpha, &SelectorFinish::RIM_ALPHA_ADMITTED) {
+            return Err("selector rim opacity outside 0..=0.5");
+        }
+        if !within(selector.hover_alpha, &SelectorFinish::HOVER_ALPHA_ADMITTED) {
+            return Err("selector hover opacity outside 0.7..=1");
         }
         Ok(())
     }
@@ -485,6 +505,14 @@ mod tests {
                 Box::new(|d: &mut ThemeDocument| d.material.tint_opacity = 0.2),
             ),
             (
+                "hover",
+                Box::new(|d: &mut ThemeDocument| d.material.selector.hover_alpha = 0.3),
+            ),
+            (
+                "rim",
+                Box::new(|d: &mut ThemeDocument| d.material.selector.rim_alpha = f32::NAN),
+            ),
+            (
                 "chroma",
                 Box::new(|d: &mut ThemeDocument| d.palette.chroma = 0.2),
             ),
@@ -519,6 +547,7 @@ mod tests {
         assert!((hc.shape.window_radius - 6.0).abs() < f32::EPSILON);
         assert!((hc.density.spacing - 1.2).abs() < f32::EPSILON);
         assert!(hc.material.blur.abs() < f32::EPSILON);
+        assert_eq!(hc.material.selector, SelectorFinish::OPAQUE);
         assert_eq!(hc.findings(), Vec::new());
     }
 }
