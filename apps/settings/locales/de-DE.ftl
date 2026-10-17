@@ -2564,3 +2564,20 @@ accounts-remove-files = Dateien entfernen
 accounts-disconnect-mail = Mail trennen
 accounts-service-action = { $action } — { $service }
 accounts-mail-configured = E-Mail · { $identity }
+
+## Appearance: desk widgets
+
+settings-desk-card = Widgets am Rand
+settings-desk-music = Musik
+settings-desk-team = Leute in diesem Arbeitsbereich
+settings-desk-when = Erscheint
+settings-desk-edge = Wartet am
+settings-desk-show-pause = Wenn ich beim Tippen innehalte
+settings-desk-show-always = Immer, auf den Streifen, an die ich es anhefte
+settings-desk-show-ask = Nur, wenn ich frage
+settings-desk-edge-left = Linken Rand
+settings-desk-edge-right = Rechten Rand
+settings-desk-edge-bottom = Unteren Rand
+settings-desk-edge-bottom-left = Unten links
+settings-desk-edge-bottom-right = Unten rechts
+settings-desk-note = Widgets weichen aus, während du tippst, und kommen zurück, wenn du innehältst oder zu ihrem Rand greifst. Halte oder tippe Super, um alle zu sehen. Zieh eins an einen anderen Rand; seine Nadel hält es auf dem Streifen, auf dem du bist.

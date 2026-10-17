@@ -430,6 +430,8 @@ pub struct AppearancePane {
     /// The desktop's chrome preferences (the top bar), kept beside the
     /// shell's other desktop controls.
     desktop: Followed<DesktopControls>,
+    /// The desk widgets' choices, edited on this pane too.
+    desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     shown: Shown,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
@@ -443,6 +445,7 @@ impl AppearancePane {
     pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
         let prefs = cx.follow::<AppearancePrefs>();
         let desktop = cx.follow::<DesktopControls>();
+        let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
         let shown = Shown::of(prefs.get());
         shown.hide_top_bar.set(desktop.get().hide_top_bar);
         let status_shown = wallpaper_status.get();
@@ -450,6 +453,7 @@ impl AppearancePane {
             cx,
             prefs,
             desktop,
+            desk,
             shown,
             wallpaper_status,
             status_shown,
@@ -567,6 +571,7 @@ impl AppearancePane {
             theme_card,
             self.schedule_card(),
             desktop_card,
+            self.desk_widgets_card(),
             access_card,
             preview,
             explainer,
@@ -1097,6 +1102,9 @@ mod tests {
         );
     }
 }
+
+#[path = "appearance/desk_widgets.rs"]
+mod desk_widgets;
 
 #[cfg(test)]
 #[path = "appearance/inspection_tests.rs"]

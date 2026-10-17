@@ -445,6 +445,49 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
+/// The person's desk widgets: which they keep, when each shows itself and
+/// at which edge. The compositor reads the same leaves
+/// ([`settings_store::desk_widgets`]), and the desk writes a pin or a
+/// widget dragged to another edge back here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+pub struct DeskWidgetsPrefs {
+    /// Now playing, with play/pause and next.
+    #[serde(default = "default_music_widget")]
+    pub music: settings_store::desk_widgets::WidgetPrefs,
+    /// The people in this workspace.
+    #[serde(default = "default_team_widget")]
+    pub team: settings_store::desk_widgets::WidgetPrefs,
+}
+
+fn default_music_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::Music,
+    )
+}
+
+fn default_team_widget() -> settings_store::desk_widgets::WidgetPrefs {
+    settings_store::desk_widgets::WidgetPrefs::default_for(
+        settings_store::desk_widgets::WidgetId::Team,
+    )
+}
+
+impl Default for DeskWidgetsPrefs {
+    fn default() -> Self {
+        Self {
+            music: default_music_widget(),
+            team: default_team_widget(),
+        }
+    }
+}
+
+impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::desk_widgets::SECTION);
+}
+
+#[ui::tilo_resource::resource(kind = "settings.desk_widgets", label = "Desk widgets")]
+impl DeskWidgetsPrefs {}
+
 /// This device's idle and button preferences, read by the compositor's
 /// idle layer.
 impl ui::storage::SettingsSchema for PowerPrefs {
