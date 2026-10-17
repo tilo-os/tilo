@@ -364,8 +364,9 @@ pub(crate) use codec::decode_action_directory_row;
 #[cfg(feature = "client")]
 pub use codec::{
     decode_action_directory_page, decode_action_directory_resolution, decode_exported_action,
-    decode_surface_delta, write_action_directory_page, write_action_directory_resolution,
-    write_action_directory_row, write_exported_action, write_surface_delta,
+    decode_surface_delta, resolve_local_document_action, write_action_directory_page,
+    write_action_directory_resolution, write_action_directory_row, write_exported_action,
+    write_surface_delta,
 };
 
 /// The Cap'n Proto codec: the only place an exported action or directory
@@ -874,13 +875,43 @@ mod codec {
         })
     }
 
-    /// Decode an exact action-directory resolution from its Cap'n Proto wire
-    /// form.
+    /// Resolve a retained pre-event snapshot for local mutation admission only.
+    /// This must never be used to authorize delivery of an ordinary invocation.
     ///
     /// # Errors
+    /// Returns an error on RPC failure or an oversized resolution.
+    #[expect(
+        clippy::future_not_send,
+        reason = "directory capabilities are Rc-backed and driven on a LocalSet"
+    )]
+    pub async fn resolve_local_document_action(
+        directory: &crate::ActionDirectoryClient,
+        revision: &str,
+        resource: &str,
+        action: &str,
+        max_bytes: u64,
+    ) -> capnp::Result<ActionDirectoryResolution> {
+        let mut request = directory.resolve_local_document_action_request();
+        {
+            let mut wire = request.get();
+            wire.set_revision(revision);
+            wire.set_resource(resource);
+            wire.set_action(action);
+        }
+        let reply = request.send().promise.await?;
+        let resolution = reply.get()?.get_resolution()?;
+        if resolution.total_size()?.word_count.saturating_mul(8) > max_bytes {
+            return Err(capnp::Error::failed(
+                "local directory resolution exceeds byte budget".into(),
+            ));
+        }
+        decode_action_directory_resolution(resolution)
+    }
+
+    /// Decode an exact action-directory resolution from its wire form.
     ///
-    /// Returns a Cap'n Proto error when the union or a contained action row is
-    /// malformed.
+    /// # Errors
+    /// Returns an error for a malformed union or row.
     pub fn decode_action_directory_resolution(
         resolution: collab_capnp::action_directory_resolution::Reader<'_>,
     ) -> Result<ActionDirectoryResolution, capnp::Error> {

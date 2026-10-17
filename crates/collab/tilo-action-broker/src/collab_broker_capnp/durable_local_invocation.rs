@@ -606,7 +606,7 @@ fn confirmation(value: &str) -> Result<Option<DirectoryActionConfirmation>, capn
         },
     )
 }
-fn write_observation(
+pub(super) fn write_observation(
     mut out: runtime_collab::collab_capnp::published_invocation_observation::Builder<'_>,
     host: uuid::Uuid,
     invocation: tilo_actions::InvocationId,

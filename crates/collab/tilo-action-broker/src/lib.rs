@@ -12,6 +12,7 @@ pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
 mod evidence_signer;
+pub mod local_document_action;
 pub mod peer_actions;
 pub mod policy_schedule;
 pub mod published_authorization;

@@ -464,6 +464,12 @@ interface ChannelHandle {
   browserServiceSessionCommand @63 (command :Data) -> (reply :Data);
   # Person-only private host door. The app, workspace and certificate come
   # from the admitted native worker; onBehalfOf names retained original custody.
+  # Admission of an already speculatively applied local Document action.
+  # Closed bounded version-1 JSON; caller/app/record derive from this channel.
+  # Never redispatches, certifies execution, or authorizes publication.
+  admitLocalDocumentAction @66 (request :Data)
+      -> (observation :PublishedInvocationObservation);
+
   personChat @64 (command :Data, onBehalfOf :Data) -> (reply :Data);
   # Native Chat's original person actor only; reauthorized on every next.
   subscribePersonChat @65 (publicKey :Text, onBehalfOf :Data) -> (stream :PersonChatStream);
@@ -506,6 +512,11 @@ interface ActionDirectory {
   # An empty `revision` resolves against the directory as it is now; a found
   # resolution then names that revision in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution);
+  # Admission of an already-applied local document mutation only. Resolves
+  # an exact pre-event revision retained by the SDK until admission completes;
+  # never falls back to the current directory or authorizes remote delivery.
+  resolveLocalDocumentAction @2 (revision :Text, resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
 }
 
