@@ -2274,6 +2274,16 @@ pub fn revalidate_resource_claim(
         .is_ok()
 }
 
+/// Whether the installed package `package_id` declares `capability` in its
+/// signed manifest, re-read now: an upgrade that drops it stops what it
+/// allowed at once, and a package that is gone declares nothing.
+pub fn package_declares_capability(package_id: &str, capability: &str) -> bool {
+    read_installed_apps().is_ok_and(|apps| {
+        apps.iter()
+            .any(|app| app.package_id == package_id && app.declares_capability(capability))
+    })
+}
+
 /// This machine's applications, as the shared workspace settings name
 /// them: running under this session, installed as packages, or host apps.
 #[derive(Clone, Copy, Debug, Default)]

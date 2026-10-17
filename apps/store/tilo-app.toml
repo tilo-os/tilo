@@ -19,7 +19,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "processes"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "processes", "open-uri"]
 
 [resources]
 kinds = ["store.catalog"]

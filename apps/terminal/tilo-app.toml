@@ -35,7 +35,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["processes"]
-optional = ["clipboard", "files.paths", "app-files", "threads", "settings"]
+optional = ["clipboard", "files.paths", "app-files", "threads", "settings", "open-uri"]
 
 [resources]
 kinds = ["terminal.history", "terminal.session", "environment"]

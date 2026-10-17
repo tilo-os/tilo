@@ -18,7 +18,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "settings", "threads", "notifications"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "settings", "threads", "notifications", "open-uri"]
 
 [resources]
 kinds = ["notes.notebook", "tilo.rich-text"]

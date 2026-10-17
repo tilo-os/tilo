@@ -29,7 +29,7 @@ aarch64 = "aarch64"
 # macOS prompts for the camera from the usage string this declaration puts in
 # the .app's Info.plist; without it the system ends the process on first use.
 [capabilities]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "open-uri"]
 
 [resources]
 kinds = ["camera"]

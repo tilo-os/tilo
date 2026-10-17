@@ -413,6 +413,7 @@ portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
 portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
 portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
+portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
 portal-launcher-icon-compass = Tilo-Webkompass
 portal-background-title = Hintergrundaktivität erlauben?
 portal-background-resource = Die App kann weiterarbeiten, nachdem ihr Fenster geschlossen wurde.

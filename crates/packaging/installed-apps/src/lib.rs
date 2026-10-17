@@ -136,6 +136,21 @@ impl InstalledApp {
             .unwrap_or_default()
     }
 
+    /// Whether the signed manifest's `[capabilities]` lists `capability`
+    /// (a `tilo-caps` name such as `open-uri`), required or optional; never
+    /// for an unreadable manifest.
+    #[must_use]
+    pub fn declares_capability(&self, capability: &str) -> bool {
+        self.signed_manifest().is_some_and(|manifest| {
+            let declared = manifest.capabilities;
+            declared
+                .required
+                .iter()
+                .chain(&declared.optional)
+                .any(|name| name == capability)
+        })
+    }
+
     fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
         let source = std::fs::read_to_string(&self.manifest_path).ok()?;
         tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()
