@@ -580,6 +580,72 @@ mod tests {
         (tree, records, pane, record)
     }
 
+    /// An app whose content is the room's own document (Notes' notebook)
+    /// keeps it beside its records, announced as none: what was done in it,
+    /// by a person or an agent's task, is still part of the workspace's
+    /// history.
+    #[test]
+    fn an_apps_room_document_is_part_of_the_workspace_history() {
+        struct RoomDocuments {
+            room: tilo_desktop_model::RoomId,
+            id: RecordId,
+            document: Vec<u8>,
+        }
+        impl crate::activity::index::PersistedRecordHistory for RoomDocuments {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                (id == &self.id)
+                    .then(|| automerge::AutoCommit::load(&self.document).ok())
+                    .flatten()
+            }
+            fn room_documents(&self, room: tilo_desktop_model::RoomId) -> Vec<ui::RecordCheckout> {
+                if room == self.room {
+                    vec![ui::RecordCheckout::new(
+                        self.id.clone(),
+                        ui::RecordKind::new("document"),
+                    )]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "body", "Hallo").unwrap();
+        let context = ui::tilo_actions::ActionContext::for_resource(
+            "notes.notebook/pages/one",
+            "notes.page",
+            "Launch notes",
+        )
+        .with_app("so.tilo.notes", "Notes")
+        .with_group("task:translate", "Translate", "task");
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(20)
+                .with_message(context.change_message().unwrap()),
+        );
+        let local = RoomDocuments {
+            room,
+            id: RecordId::parse("uuid:5f0e9c1a-2b3d-4e5f-8a9b-0c1d2e3f4a5b").unwrap(),
+            document: doc.save(),
+        };
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        pane.refresh_records_with_local(&mut tree, &RecordStore::in_memory(), &local);
+        assert!(
+            pane.timeline.entries().iter().any(|entry| {
+                entry
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.group.as_ref())
+                    .is_some_and(|group| group.id == "task:translate")
+            }),
+            "the task's change in the room document is in the history"
+        );
+    }
+
     /// A persisted record that is not open here is read from disk once:
     /// later refreshes reuse what was read until the record's revision moves.
     #[test]

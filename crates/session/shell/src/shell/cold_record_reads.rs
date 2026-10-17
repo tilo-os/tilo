@@ -15,13 +15,14 @@
 //! loop, which takes the reads in and has Activity refresh again.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use tilo_desktop::activity::PersistedRecordHistory;
-use ui::record::RecordId;
+use tilo_desktop_model::RoomId;
+use ui::record::{RecordCheckout, RecordId, RecordKind};
 
 use crate::shell::room_records::LocalRecordReader;
 
@@ -61,13 +62,22 @@ enum Found {
 struct Pass {
     reader: LocalRecordReader,
     records: Vec<(RecordId, Option<u64>)>,
+    /// Rooms whose apps' room documents to list.
+    rooms: Vec<RoomId>,
     wake: std::task::Waker,
+}
+
+/// What one pass found: the records it looked at, and each listed room's
+/// app room documents.
+struct PassFound {
+    records: Vec<(RecordId, Found)>,
+    rooms: Vec<(RoomId, Vec<RecordCheckout>)>,
 }
 
 /// The worker thread and what it found.
 struct Worker {
     passes: mpsc::Sender<Pass>,
-    found: mpsc::Receiver<Vec<(RecordId, Found)>>,
+    found: mpsc::Receiver<PassFound>,
 }
 
 /// Persisted records as the worker last read them; see the module docs.
@@ -81,6 +91,10 @@ pub(crate) struct ColdRecordReads {
     reading: bool,
     passes: u64,
     last_pass: Option<Instant>,
+    /// Rooms Activity asked for the room documents of since the last pass.
+    asked_rooms: RefCell<BTreeSet<RoomId>>,
+    /// Each room's app room documents, as the worker last listed them.
+    room_documents: RefCell<BTreeMap<RoomId, Vec<RecordCheckout>>>,
 }
 
 impl PersistedRecordHistory for ColdRecordReads {
@@ -94,6 +108,17 @@ impl PersistedRecordHistory for ColdRecordReads {
     fn revision(&self, id: &RecordId) -> Option<u64> {
         self.asked.borrow_mut().insert(id.clone());
         self.read.borrow().get(id).map(|read| read.revision)
+    }
+
+    /// The room's app room documents as the worker last listed them. Never
+    /// reads the disk.
+    fn room_documents(&self, room: RoomId) -> Vec<RecordCheckout> {
+        self.asked_rooms.borrow_mut().insert(room);
+        self.room_documents
+            .borrow()
+            .get(&room)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -119,9 +144,18 @@ impl ColdRecordReads {
             }
         };
         self.reading = false;
-        let mut read = self.read.borrow_mut();
         let mut changed = false;
-        for (id, found) in found {
+        {
+            let mut listed = self.room_documents.borrow_mut();
+            for (room, documents) in found.rooms {
+                if listed.get(&room) != Some(&documents) {
+                    listed.insert(room, documents);
+                    changed = true;
+                }
+            }
+        }
+        let mut read = self.read.borrow_mut();
+        for (id, found) in found.records {
             match found {
                 Found::Unchanged => {}
                 Found::Read { revision, document } => {
@@ -158,7 +192,10 @@ impl ColdRecordReads {
             return;
         };
         let asked = std::mem::take(&mut *self.asked.borrow_mut());
-        if asked.is_empty() {
+        let rooms: Vec<RoomId> = std::mem::take(&mut *self.asked_rooms.borrow_mut())
+            .into_iter()
+            .collect();
+        if asked.is_empty() && rooms.is_empty() {
             return;
         }
         self.passes = self.passes.saturating_add(1);
@@ -188,6 +225,7 @@ impl ColdRecordReads {
                 .send(Pass {
                     reader,
                     records,
+                    rooms,
                     wake,
                 })
                 .is_ok()
@@ -213,10 +251,32 @@ impl ColdRecordReads {
                 .name("tilo-activity-records".into())
                 .spawn(move || {
                     for pass in received {
-                        let found = read_pass(&pass.reader, pass.records);
-                        let moved = found
+                        // Listed first: a room document is read under the
+                        // id the listing registers.
+                        let rooms: Vec<(RoomId, Vec<RecordCheckout>)> = pass
+                            .rooms
                             .iter()
-                            .any(|(_, found)| !matches!(found, Found::Unchanged));
+                            .map(|room| {
+                                let documents = pass
+                                    .reader
+                                    .room_documents(*room)
+                                    .into_iter()
+                                    .map(|document| {
+                                        RecordCheckout::new(
+                                            document.id,
+                                            RecordKind::new("document"),
+                                        )
+                                    })
+                                    .collect();
+                                (*room, documents)
+                            })
+                            .collect();
+                        let records = read_pass(&pass.reader, pass.records);
+                        let moved = !rooms.is_empty()
+                            || records
+                                .iter()
+                                .any(|(_, found)| !matches!(found, Found::Unchanged));
+                        let found = PassFound { records, rooms };
                         if report.send(found).is_err() {
                             break;
                         }
