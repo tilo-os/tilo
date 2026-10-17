@@ -1744,7 +1744,8 @@ struct LedgerEntry<T> {
 /// with the same caller and request returns the existing handle without
 /// starting anything; any other reuse of the id is a conflict. Only admitted
 /// invocations are remembered — a refused one ran nothing, so retrying it
-/// may be admitted later. The oldest entries are forgotten past `capacity`.
+/// may be admitted later. At `capacity`, the oldest entry whose admission
+/// completed is forgotten. In-flight reservations are never evicted.
 pub struct InvocationLedger<T> {
     entries: HashMap<InvocationId, LedgerEntry<T>>,
     order: VecDeque<InvocationId>,
@@ -1789,7 +1790,8 @@ impl<T> InvocationLedger<T> {
     /// # Errors
     ///
     /// Returns [`ActionHostError::InvocationConflict`] when the id was
-    /// admitted for another caller or request, or whatever `start` returns.
+    /// admitted for another caller or request, [`ActionHostError::Unavailable`]
+    /// when all slots are reserved, or whatever `start` returns.
     pub fn admit(
         &mut self,
         caller: &Caller,
@@ -1826,7 +1828,8 @@ impl<T> InvocationLedger<T> {
     ///
     /// Returns [`ActionHostError::InvocationConflict`] when the id belongs to
     /// another caller or request, and [`ActionHostError::Unavailable`] while
-    /// an earlier start of the same invocation is still in flight.
+    /// an earlier start of the same invocation is still in flight or every
+    /// slot is held by an in-flight reservation.
     pub fn reserve(
         &mut self,
         caller: &Caller,
@@ -1846,7 +1849,17 @@ impl<T> InvocationLedger<T> {
             };
         }
         while self.order.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
+            let oldest_completed = self.order.iter().position(|candidate| {
+                self.entries
+                    .get(candidate)
+                    .is_some_and(|entry| entry.handle.is_some())
+            });
+            let Some(index) = oldest_completed else {
+                return Err(ActionHostError::Unavailable {
+                    reason: "all invocation slots are still being admitted; retry".into(),
+                });
+            };
+            if let Some(oldest) = self.order.remove(index) {
                 self.entries.remove(&oldest);
             }
         }
@@ -2764,6 +2777,85 @@ mod tests {
 
     fn invoke_message(id: InvocationId) -> RemoteActionMessage {
         RemoteActionMessage::Invoke(archive(id))
+    }
+
+    #[test]
+    fn capacity_churn_preserves_in_flight_deduplication() {
+        let caller = alice();
+        let mut ledger = InvocationLedger::<u32>::with_capacity(3);
+        let pending = archive(InvocationId::new());
+        assert_eq!(ledger.reserve(&caller, &pending), Ok(Reservation::Reserved));
+        let mut completed = VecDeque::new();
+        for n in 0..8 {
+            let request = archive(InvocationId::new());
+            assert_eq!(
+                ledger.admit(&caller, &request, || Ok(n)),
+                Ok((&n, Admission::Started))
+            );
+            completed.push_back(request.invocation);
+            if completed.len() > 2 {
+                let evicted = completed.pop_front().unwrap();
+                assert_eq!(ledger.get(&caller, &evicted), None);
+            }
+            for id in &completed {
+                assert!(ledger.get(&caller, id).is_some());
+            }
+            assert!(matches!(
+                ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
+                Err(ActionHostError::Unavailable { .. })
+            ));
+            assert_eq!(
+                ledger.reserve(&mallory(), &pending),
+                Err(ActionHostError::InvocationConflict)
+            );
+        }
+        ledger.complete(&pending.invocation, 99);
+        assert_eq!(
+            ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
+            Ok((&99, Admission::Retried))
+        );
+        let next = archive(InvocationId::new());
+        assert_eq!(ledger.reserve(&caller, &next), Ok(Reservation::Reserved));
+        assert_eq!(ledger.get(&caller, &pending.invocation), None);
+    }
+
+    #[test]
+    fn capacity_churn_refuses_new_ids_when_every_slot_is_reserved() {
+        let caller = alice();
+        // Zero capacity is clamped to one, which must still protect its reservation.
+        for capacity in 0..=2 {
+            let mut ledger = InvocationLedger::<u32>::with_capacity(capacity);
+            let pending: Vec<_> = (0..capacity.max(1))
+                .map(|_| archive(InvocationId::new()))
+                .collect();
+            for request in &pending {
+                assert_eq!(ledger.reserve(&caller, request), Ok(Reservation::Reserved));
+            }
+            let refused = archive(InvocationId::new());
+            for _ in 0..4 {
+                assert!(matches!(
+                    ledger.admit(&caller, &refused, || panic!("dispatch at capacity")),
+                    Err(ActionHostError::Unavailable { .. })
+                ));
+                for request in &pending {
+                    assert!(matches!(
+                        ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                        Err(ActionHostError::Unavailable { .. })
+                    ));
+                }
+            }
+            for (n, request) in pending.iter().enumerate() {
+                ledger.complete(&request.invocation, n as u32);
+                assert_eq!(
+                    ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                    Ok((&(n as u32), Admission::Retried))
+                );
+            }
+            // Capacity refusals are not remembered and can be retried later.
+            assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+            ledger.abandon(&refused.invocation);
+            assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+        }
     }
 
     fn a_reservation_holds_the_id_until_the_start_completes() {
