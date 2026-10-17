@@ -763,7 +763,9 @@ mod tests {
             .with_current(room, |view| {
                 let before = view.peer().clone();
                 let mut candidate = before.clone();
-                candidate.put_governed_grants(&[cap], &key, now)?;
+                candidate
+                    .governance_mut()
+                    .put_governed_grants(&[cap], &key, now)?;
                 candidate.durable_mutation_messages(
                     &before,
                     &key,
@@ -844,7 +846,7 @@ mod tests {
                 let before = view.peer().clone();
                 let mut candidate = before.clone();
                 assert!(
-                    candidate.remove_governed_grants(
+                    candidate.governance_mut().remove_governed_grants(
                         &ids.iter()
                             .map(|id| tilo_action_policy::GrantId::new(id.clone()))
                             .collect::<Vec<_>>(),
@@ -1012,6 +1014,8 @@ mod tests {
             opens_extensions: vec![],
             opens_mime_types: vec![],
             opens_uri_schemes: vec![],
+            opens_secondary: false,
+            offers: vec![],
         };
         super::super::lock(&super::super::RETAINED_FILES).insert(
             other_room,
