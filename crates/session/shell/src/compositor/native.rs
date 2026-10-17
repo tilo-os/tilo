@@ -3016,6 +3016,33 @@ impl InvocationProgress for FrameInvocationProgress<'_> {
     }
 }
 
+/// A control request that held the loop this long is named in the session
+/// log, so a stall an agent or a test caused says which request it was.
+const SLOW_CONTROL_REQUEST: Duration = Duration::from_millis(20);
+
+/// Log `line`'s operation when handling it on the loop took `elapsed`. Only
+/// the `op` field is read: a request can carry a secret (a lock passcode).
+fn note_slow_control_request(line: &str, elapsed: Duration) {
+    // Every other field is skipped, never copied out of the zeroized line.
+    #[derive(serde::Deserialize)]
+    struct Op<'a> {
+        #[serde(borrow)]
+        op: Option<&'a str>,
+    }
+    if elapsed < SLOW_CONTROL_REQUEST {
+        return;
+    }
+    let op = serde_json::from_str::<Op<'_>>(line)
+        .ok()
+        .and_then(|request| request.op)
+        .unwrap_or_default();
+    // A measurement line for the session log, like SLOW-ITER.
+    eprintln!(
+        "SLOW-CONTROL op={op} loop_ms={:.1}",
+        elapsed.as_secs_f64() * 1000.0
+    );
+}
+
 /// The earliest a held-back invocation needs the loop again although
 /// nothing woke it (see [`ControlInvocation::recheck_at`]).
 fn control_invocation_deadline(conns: &[TestControlConn], now: Instant) -> Option<Instant> {
@@ -4146,7 +4173,9 @@ struct PendingClientSnapshot {
 /// How a screenshot's write went, shared between the deferred write and the
 /// request that asked for it: the request is answered only once the file at
 /// its path is complete, so a caller never reads a PNG still being written.
-type SnapshotOutcome = std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>>;
+/// Where a screenshot written off the loop reports how it went; the
+/// request's answer waits for it ([`pump_pending_test_control_conn`]).
+type SnapshotOutcome = std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>;
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
@@ -5159,12 +5188,9 @@ fn execute_planned_action(
                 ctx.deferred_snapshot_reply = Some(outcome);
             } else {
                 let drag = snapshot_drag(state.as_deref());
-                if let Err(message) = write_snapshot_png(fb, path, drag, ctx.snapshot_crop) {
-                    return Some(Err(InvokeFailure {
-                        code: "snapshot_failed".into(),
-                        message,
-                    }));
-                }
+                let outcome = SnapshotOutcome::default();
+                start_snapshot(fb, path, drag, ctx.snapshot_crop, &outcome);
+                ctx.deferred_snapshot_reply = Some(outcome);
             }
         }
         PlannedAction::InvokeAction {
@@ -5311,7 +5337,7 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
     std::sync::Mutex<Option<ui::offscreen::OffscreenRenderer>>,
 > = std::sync::OnceLock::new();
 
-/// How many `OffscreenRenderer`s [`write_snapshot_png`] has built: one per
+/// How many `OffscreenRenderer`s [`SnapshotJob::write`] has built: one per
 /// distinct viewport size, *not* per thread — what
 /// `snapshot_renderer_outlives_the_thread_that_built_it` asserts, since the
 /// abort a per-thread cache causes can't be observed from inside the binary it kills.
@@ -5357,8 +5383,7 @@ fn defer_client_snapshot(
     // A shot still waiting is the older one: it goes out now, as it is.
     if let Some(pending) = ctx.pending_snapshot.take() {
         let drag = snapshot_drag(Some(state));
-        let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
-        *pending.outcome.borrow_mut() = Some(written);
+        start_snapshot(fb, &pending.path, drag, pending.crop, &pending.outcome);
     }
     let surfaces = match ctx.snapshot_window {
         Some(window) => foreign::toplevel_surface(state, window)
@@ -5374,7 +5399,7 @@ fn defer_client_snapshot(
         path: path.to_path_buf(),
         crop: ctx.snapshot_crop,
         settle: crate::compositor::client_settle::Settle::begin(state, &surfaces, Instant::now()),
-        outcome: std::rc::Rc::clone(&outcome),
+        outcome: std::sync::Arc::clone(&outcome),
     });
     Some(outcome)
 }
@@ -5400,16 +5425,15 @@ fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, sta
         return;
     };
     let drag = snapshot_drag(Some(state));
-    let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
-    *pending.outcome.borrow_mut() = Some(written);
+    start_snapshot(fb, &pending.path, drag, pending.crop, &pending.outcome);
 }
 
-/// Re-paint the current scene into a cached `OffscreenRenderer` and encode
-/// it as a PNG at `path`. A bad viewport, missing adapter, or I/O or
-/// encoder failure is returned to the request that asked for the shot
-/// rather than taking the calloop pump down. Split out of `execute_planned_action` so unit tests
-/// can exercise it against a hand-built `FrameBuilder` directly.
-fn write_snapshot_png(
+/// Take a screenshot to `path`: the scene is drawn here, on the loop (it
+/// is the loop's state), and rendered, encoded and written on a worker
+/// that reports to `outcome` and wakes the loop. Rendering and encoding a
+/// 2944x1840 PNG took the live desktop's loop hundreds of milliseconds,
+/// during which no key and no frame got through.
+fn start_snapshot(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
     drag: Option<(
@@ -5417,7 +5441,47 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
     crop: Option<vello::kurbo::Rect>,
-) -> Result<(), String> {
+    outcome: &SnapshotOutcome,
+) {
+    let job = match prepare_snapshot(fb, path, drag, crop) {
+        Ok(job) => job,
+        Err(message) => {
+            *outcome.lock_recover() = Some(Err(message));
+            return;
+        }
+    };
+    let report = std::sync::Arc::clone(outcome);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-snapshot".into())
+        .spawn(move || {
+            let written = job.write();
+            *report.lock_recover() = Some(written);
+            crate::shell::wake_compositor();
+        });
+    if let Err(error) = spawned {
+        *outcome.lock_recover() =
+            Some(Err(format!("could not start the snapshot writer: {error}")));
+    }
+}
+
+/// A screenshot drawn on the loop, to be rendered and written off it.
+struct SnapshotJob {
+    scene: vello::Scene,
+    size: (u32, u32),
+    crop: Option<vello::kurbo::Rect>,
+    path: std::path::PathBuf,
+}
+
+/// The loop's part of a screenshot: the settled scene, as a capture sees it.
+fn prepare_snapshot(
+    fb: &mut FrameBuilder,
+    path: &std::path::Path,
+    drag: Option<(
+        vello::kurbo::Point,
+        crate::compositor::drag_feedback::DragVisual,
+    )>,
+    crop: Option<vello::kurbo::Rect>,
+) -> Result<SnapshotJob, String> {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -5456,67 +5520,86 @@ fn write_snapshot_png(
     // The snapshot leaves the display — to a script, a test or an agent — so
     // it sees protected windows and secret prompts as a capture does.
     let scene = fb.capture_scene(&scene).into_owned();
-    // The renderer is kept between snapshots, rebuilt only on viewport resize.
-    //
-    // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
-    // building one per call put a full pipeline build inside every snapshot:
-    // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
-    // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
+    Ok(SnapshotJob {
+        scene,
+        size: (w, h),
+        crop,
+        path: path.to_path_buf(),
+    })
+}
 
-    // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
-    // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
-    // happen — the `Result` is what
-    // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
-    // Failure isn't cached: the slot stays empty so a later snapshot retries.
-    let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
-    // The mutex only needs to guard the renderer slot; encoding the PNG and
-    // writing it to disk below are unrelated work and don't need it held, so
-    // the guard's scope ends here once `rgba` is copied out.
-    let rgba = {
-        // A panic elsewhere poisons the mutex without damaging what it guards
-        // (an intact renderer or empty slot) — recover rather than compound the failure.
-        let mut slot = cache.lock_recover();
-        let stale = match slot.as_ref() {
-            Some(renderer) => renderer.width != w || renderer.height != h,
-            None => true,
-        };
-        if stale {
-            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-                Ok(renderer) => {
-                    SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
-                    *slot = Some(renderer);
-                }
-                Err(e) => {
-                    *slot = None;
-                    return Err(format!("no offscreen renderer: {e}"));
+impl SnapshotJob {
+    /// Render, crop, encode and write the shot. Runs on any thread: the
+    /// renderer is the process-wide [`SNAPSHOT_RENDERER`].
+    fn write(self) -> Result<(), String> {
+        let Self {
+            scene,
+            size: (w, h),
+            crop,
+            path,
+        } = self;
+        // The renderer is kept between snapshots, rebuilt only on viewport resize.
+        //
+        // `OffscreenRenderer::try_new` initialises every vello shader pipeline, so
+        // building one per call put a full pipeline build inside every snapshot:
+        // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
+        // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
+
+        // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
+        // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
+        // happen — the `Result` is what
+        // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
+        // Failure isn't cached: the slot stays empty so a later snapshot retries.
+        let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
+        // The mutex only needs to guard the renderer slot; encoding the PNG and
+        // writing it to disk below are unrelated work and don't need it held, so
+        // the guard's scope ends here once `rgba` is copied out.
+        let rgba = {
+            // A panic elsewhere poisons the mutex without damaging what it guards
+            // (an intact renderer or empty slot) — recover rather than compound the failure.
+            let mut slot = cache.lock_recover();
+            let stale = match slot.as_ref() {
+                Some(renderer) => renderer.width != w || renderer.height != h,
+                None => true,
+            };
+            if stale {
+                match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+                    Ok(renderer) => {
+                        SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
+                        *slot = Some(renderer);
+                    }
+                    Err(e) => {
+                        *slot = None;
+                        return Err(format!("no offscreen renderer: {e}"));
+                    }
                 }
             }
-        }
-        // A shot is one render with no next frame to repair it, so it waits
-        // out Vello growing its buffers: one that did not fit drops the paths
-        // encoded last, and the scene draws every display in turn, so the
-        // second display came back empty while the first looked whole.
-        let Some(rendered) = slot.as_mut().map(|renderer| {
-            renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
-        }) else {
-            return Err("no offscreen renderer".to_string());
+            // A shot is one render with no next frame to repair it, so it waits
+            // out Vello growing its buffers: one that did not fit drops the paths
+            // encoded last, and the scene draws every display in turn, so the
+            // second display came back empty while the first looked whole.
+            let Some(rendered) = slot.as_mut().map(|renderer| {
+                renderer.try_render_resilient(&scene, vello::peniko::Color::TRANSPARENT)
+            }) else {
+                return Err("no offscreen renderer".to_string());
+            };
+            let rgba = rendered?;
+            // `rgba` is now an owned buffer with no tie to the renderer, so the
+            // mutex guard can go before the encode/write work below.
+            drop(slot);
+            rgba
         };
-        let rgba = rendered?;
-        // `rgba` is now an owned buffer with no tie to the renderer, so the
-        // mutex guard can go before the encode/write work below.
-        drop(slot);
-        rgba
-    };
-    let (w, h, rgba) = match crop {
-        Some(crop) => crop_rgba(&rgba, (w, h), crop),
-        None => (w, h, rgba),
-    };
-    if w == 0 || h == 0 {
-        return Err("the crop is empty, nothing to write".to_string());
+        let (w, h, rgba) = match crop {
+            Some(crop) => crop_rgba(&rgba, (w, h), crop),
+            None => (w, h, rgba),
+        };
+        if w == 0 || h == 0 {
+            return Err("the crop is empty, nothing to write".to_string());
+        }
+        let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
+        write_whole(&path, &png).map_err(|e| format!("write {}: {e}", path.display()))
     }
-    let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
-    write_whole(path, &png).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Write `bytes` to a sibling file and rename it over `path`, so a reader
@@ -5636,7 +5719,7 @@ fn pump_pending_test_control_conn(
         progress => return progress,
     }
     if let Some((outcome, response)) = conn.pending_snapshot.take() {
-        let written = outcome.borrow_mut().take();
+        let written = outcome.lock_recover().take();
         return match written {
             None => {
                 conn.pending_snapshot = Some((outcome, response));
@@ -6250,6 +6333,7 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Ok(Some(())) => {
+                let handling_started = Instant::now();
                 // A listing that waits: armed, and the action surface read,
                 // before the listing is — a change landing while it is read
                 // still counts.
@@ -6540,6 +6624,7 @@ fn pump_test_control_conn(
                         },
                     },
                 };
+                note_slow_control_request(&line, handling_started.elapsed());
                 match queue_test_control_response(conn, &resp) {
                     PendingConnectionProgress::Closed
                     | PendingConnectionProgress::OutputPending => return injected_input,
@@ -18172,14 +18257,23 @@ mod tests {
             writer
                 .write_all(format!("{line}\n").as_bytes())
                 .expect("write request");
-            pump_test_control_conn(
-                &mut conn,
-                &mut frame_builder,
-                &mut ctx,
-                &session,
-                &mut lock,
-                &mut state,
-            );
+            // A screenshot is written off the loop: its answer goes out on
+            // the pump after the writer reported.
+            let started = Instant::now();
+            loop {
+                pump_test_control_conn(
+                    &mut conn,
+                    &mut frame_builder,
+                    &mut ctx,
+                    &session,
+                    &mut lock,
+                    &mut state,
+                );
+                if conn.pending_snapshot.is_none() || started.elapsed() > Duration::from_secs(30) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
             let test_control::Response::Err { code: answered, .. } = socket_response(&mut reader)
             else {
                 panic!("{line} (locked: {locked}) must answer an error");
@@ -18565,6 +18659,14 @@ mod tests {
         ctx: &mut TestControlCtx,
     ) {
         super::execute_planned_action(action, fb, ctx, None);
+        // A screenshot is written off the loop; the tests read it as the
+        // request's answer would, once it is written.
+        if let Some(outcome) = ctx.deferred_snapshot_reply.take() {
+            let started = Instant::now();
+            while outcome.lock_recover().is_none() && started.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
     }
 
     #[test]
