@@ -2892,8 +2892,36 @@ impl ChatApp {
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
         let key = ChatApp::draft_presence_key(&self.active_channel);
+        // How a file being shared is doing, while the picker is closed: an
+        // upload under way, or why it was not shared.
+        let upload = self.attachment_status.as_deref().filter(|status| {
+            !self.attach_open
+                && (status.starts_with("Uploading")
+                    || status.starts_with("Not shared")
+                    || status.starts_with("Couldn't")
+                    || status.starts_with("The file chooser"))
+        });
         if let Some(reason) = &self.not_sent {
             Self::draw_not_sent(PaintCtx::new(scene, tf, tr, theme), rect, reason, hits);
+        } else if let Some(status) = upload {
+            let style = theme.text(TextRole::Caption);
+            let ink = if status.starts_with("Uploading") {
+                theme.text_dim
+            } else {
+                theme.tokens.colors.semantic.danger
+            };
+            let shown = elide(tr, status, &style, rect.width());
+            tr.draw_style(
+                scene,
+                &shown,
+                ink,
+                tf.pre_translate(vello::kurbo::Vec2::new(
+                    rect.x0,
+                    rect.y1 + f64::from(theme.tokens.spacing.s2),
+                )),
+                None,
+                &style,
+            );
         } else if self.direct_person.is_none() {
             Self::draw_draft_presence(&self.composer_main, &key, scene, tf, tr, theme, presence);
         }
@@ -3995,11 +4023,14 @@ impl ChatApp {
             .secondary("Ag")
             .leading(RowLeading::Icon(Icon::Image))
             .height(tr, &local);
-        let body_h = if rows.is_empty() {
-            title_h
-        } else {
-            rows.len() as f64 * row_h
-        };
+        // This device's files first; the workspace's, where there is one,
+        // under their own caption.
+        let body_h = row_h
+            + if rows.is_empty() {
+                0.0
+            } else {
+                caption_h + pad + rows.len() as f64 * row_h
+            };
         let more = self.attach_entries.len().saturating_sub(max_rows);
         let panel_h = pad
             + title_h
@@ -4037,7 +4068,9 @@ impl ChatApp {
         );
         y = title_band.y1;
         if let Some(status) = status {
-            let failed = status.contains("failed") || status.contains("cancelled");
+            let failed = status.starts_with("Not shared")
+                || status.starts_with("Couldn't")
+                || status.contains("cancelled");
             let ink = if failed {
                 local.tokens.colors.semantic.danger
             } else {
@@ -4055,22 +4088,29 @@ impl ChatApp {
             );
             y = band.y1 + pad;
         }
-        if rows.is_empty() {
-            let message = if self.attachment_picker_pending.is_some() {
-                "Loading files"
-            } else {
-                "No files to share yet"
-            };
-            let band = Rect::new(panel.x0, y, panel.x1, y + title_h);
+        let device = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
+        ListRowFace::new("Upload from this device")
+            .secondary("Files, pictures and videos up to 32 MiB")
+            .leading(RowLeading::Icon(Icon::Upload))
+            .interaction(ui::widget::Interaction {
+                hovered: self.hovered(device),
+                ..Default::default()
+            })
+            .paint(&mut ctx, device);
+        ChatApp::push_hit(hits, device, Hit::AttachDevice);
+        y = device.y1;
+        if !rows.is_empty() {
+            let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
             line_in(
                 &mut ctx,
-                message,
-                &local.text(TextRole::Body),
+                "From the workspace",
+                &local.text(TextRole::Caption),
                 local.text_dim,
                 inner_x,
                 band,
                 w - 2.0 * f64::from(sp.s4),
             );
+            y = band.y1;
         }
         for e in rows {
             let row = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);

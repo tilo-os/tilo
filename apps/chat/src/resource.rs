@@ -152,6 +152,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "attach",
     "attach-loading",
     "attach-error",
+    "attach-upload",
     "edit",
     "composer",
     "call",
