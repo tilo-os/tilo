@@ -45,7 +45,10 @@ use crate::model::{Addr, Attachment, Draft, Folder, Message};
 pub fn parse_addr_list(s: &str) -> Vec<Addr> {
     // Use the same mailbox grammar as incoming headers: punctuation inside
     // a quoted display name is not a recipient separator.
-    mail_parser::parsers::MessageStream::new(s.as_bytes())
+    // The header parser flushes the final token at a line ending, not EOF.
+    // Compose fields have no line ending, so supply it for a final bare address.
+    let header = format!("{s}\r\n");
+    mail_parser::parsers::MessageStream::new(header.as_bytes())
         .parse_address()
         .as_address()
         .map(|addresses| addresses.iter().map(addr_from_parsed).collect())

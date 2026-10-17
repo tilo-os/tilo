@@ -1075,13 +1075,31 @@ pub mod live {
             email: "sender@example.test".into(),
             ..Default::default()
         };
-        let draft = Draft {
-            bcc: "Hidden Person <hidden@example.test>".into(),
-            ..Default::default()
-        };
-        let envelope = build_envelope(&account, &draft).unwrap();
-        assert_eq!(envelope.to().len(), 1);
-        assert_eq!(envelope.to()[0].to_string(), "hidden@example.test");
+        for to in ["", "visible@example.test"] {
+            let draft = Draft {
+                to: to.into(),
+                cc: if to.is_empty() {
+                    String::new()
+                } else {
+                    "\"Copy, Person\" <copy@example.test>; other@example.test".into()
+                },
+                bcc: "Hidden Person <hidden@example.test>".into(),
+                ..Default::default()
+            };
+            let envelope = build_envelope(&account, &draft).unwrap();
+            let recipients: Vec<_> = envelope.to().iter().map(ToString::to_string).collect();
+            let expected = if to.is_empty() {
+                vec!["hidden@example.test"]
+            } else {
+                vec![
+                    "visible@example.test",
+                    "copy@example.test",
+                    "other@example.test",
+                    "hidden@example.test",
+                ]
+            };
+            assert_eq!(recipients, expected);
+        }
     }
 
     /// Construct the SMTP envelope (return-path + recipients) from the account
