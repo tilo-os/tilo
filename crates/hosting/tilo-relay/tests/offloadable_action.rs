@@ -1785,7 +1785,7 @@ async fn a_busy_room_never_backs_up_the_placement_session() {
                     })
                     .await
                     .unwrap();
-                if frame % 64 == 0 {
+                if frame.is_multiple_of(64) {
                     tokio::task::yield_now().await;
                 }
             }
