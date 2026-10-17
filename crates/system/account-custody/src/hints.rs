@@ -403,7 +403,7 @@ mod tests {
             provider: Provider::Nextcloud,
             email: "private-person@example.org".into(),
             server: "https://private-cloud.example.org".into(),
-            sources: Default::default(),
+            sources: HintSources::default(),
         }
     }
 
@@ -567,7 +567,7 @@ mod tests {
                     provider: h.provider.into(),
                     email: h.email.clone(),
                     server: h.server.clone(),
-                    sources: Default::default(),
+                    sources: HintSources::default(),
                 })
                 .collect(),
         };
@@ -591,7 +591,7 @@ mod tests {
                     provider: WireProvider::Google,
                     email: email.clone(),
                     server: server.clone(),
-                    sources: Default::default(),
+                    sources: HintSources::default(),
                 }],
             };
             assert!(
@@ -610,7 +610,7 @@ mod tests {
                         provider: Provider::Google,
                         email,
                         server,
-                        sources: Default::default(),
+                        sources: HintSources::default(),
                     }]
                 )
                 .is_err()
