@@ -1028,8 +1028,16 @@ impl AddAccountPanel {
             let mut sheet = self.sheet.borrow_mut();
             sheet.problem = Some(Problem { field, message });
             sheet.focus = None;
+            if field == FieldId::Period {
+                sheet.advanced_open = true;
+            }
         }
         self.rebuild();
+        if field == FieldId::Period
+            && let Some(dialog) = &mut self.dialog
+        {
+            dialog.content_mut().scroll_to_end();
+        }
     }
 
     // ---- account building / actions ------------------------------------
@@ -1509,6 +1517,53 @@ pub(crate) mod tests {
             .unwrap()
             .content_mut()
             .overflows));
+    }
+
+    #[test]
+    fn invalid_period_reveals_the_collapsed_field_and_error() {
+        fn error_rect(node: &ui::headless::InspectionNode, message: &str) -> Option<Rect> {
+            if node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(message) {
+                let [x, y, width, height] = node.rect;
+                return Some(Rect::new(x, y, x + width, y + height));
+            }
+            node.children
+                .iter()
+                .find_map(|child| error_rect(child, message))
+        }
+        for viewport in [(1280, 900), (800, 600)] {
+            let mut app = opened(viewport);
+            panel(&mut app, |p| {
+                p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&period=45");
+            });
+            settle(&mut app);
+            click(&mut app, "Advanced options");
+            assert!(!app.harness().targets().contains_key("totp-period"));
+            panel(&mut app, |p| p.values.period.set("4".into()));
+            click(&mut app, "Add account");
+            let field = rect(&mut app, "totp-period");
+            let body = panel(&mut app, |p| {
+                p.dialog
+                    .as_mut()
+                    .unwrap()
+                    .content_mut()
+                    .tree
+                    .content_viewport_rect()
+            });
+            assert!(
+                body.contains(field.center()),
+                "period field {field:?} outside {body:?}"
+            );
+            let bounds = error_rect(
+                &app.harness().inspection().root,
+                &t("totp-add-invalid-period"),
+            )
+            .expect("the actual form exposes the period error");
+            assert!(bounds.area() > 0.0, "period error has a visible layout");
+            assert!(
+                body.contains(bounds.center()),
+                "period error {bounds:?} outside {body:?}"
+            );
+        }
     }
 
     #[test]
