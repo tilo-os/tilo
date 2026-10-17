@@ -823,12 +823,7 @@ impl CapnpBrokerState {
                 return Ok(());
             }
         }
-        let ended = match &update {
-            runtime_collab::TaskRunUpdate::Succeeded { .. } => Some("completed"),
-            runtime_collab::TaskRunUpdate::Failed { .. } => Some("stopped"),
-            runtime_collab::TaskRunUpdate::Cancelled { .. } => Some("cancelled"),
-            _ => None,
-        };
+        let ended = ended_outcome(&update);
         let task_id = run.task_id.clone();
         if matches!(
             update,
@@ -933,5 +928,16 @@ impl CapnpBrokerState {
                 .and_then(|control| control.instruction.clone()),
             outcome: outcome.to_owned(),
         });
+    }
+}
+
+/// How a run that `update` ends ended, in a word history keeps; `None` for
+/// an update that does not end it.
+fn ended_outcome(update: &runtime_collab::TaskRunUpdate) -> Option<&'static str> {
+    match update {
+        runtime_collab::TaskRunUpdate::Succeeded { .. } => Some("completed"),
+        runtime_collab::TaskRunUpdate::Failed { .. } => Some("stopped"),
+        runtime_collab::TaskRunUpdate::Cancelled { .. } => Some("cancelled"),
+        _ => None,
     }
 }

@@ -101,7 +101,14 @@ impl CapnpBrokerState {
         };
         let digest = tilo_actions::draft::arguments_digest(&arguments);
         let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
-        let id = WorkspaceTaskConfirmation::id_for(resource, action, &digest);
+        // Named by the resource itself, not the window alias it is invoked
+        // through: a run resumed after a restart asks through a new window
+        // and must find the draft the person was already shown.
+        let id = WorkspaceTaskConfirmation::id_for(
+            &tilo_actions::selection::logical_resource_id(resource),
+            action,
+            &digest,
+        );
         let service = self
             .native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?;
