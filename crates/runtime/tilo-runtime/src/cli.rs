@@ -66,7 +66,9 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
     let args = daemon::parse_args(arguments)?;
     if matches!(
         args.mode,
-        daemon::Mode::Daemon | daemon::Mode::AdmissionDaemon { .. }
+        daemon::Mode::Daemon
+            | daemon::Mode::AdmissionDaemon { .. }
+            | daemon::Mode::OwnerAction { .. }
     ) {
         daemon::validate_profile(&args.profile)?;
         configure_profile(
@@ -87,6 +89,23 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
             daemon::serve_admission::<S>(&args.profile, owner_uid)
         }
         daemon::Mode::Connect => daemon::connect(&args.profile, args.standalone),
+        daemon::Mode::OwnerAction { request } => {
+            let receipt = owner_action::<S>(&args.profile, &request)?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).map_err(io::Error::other)?
+            );
+            if matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ) {
+                Ok(())
+            } else {
+                Err(io::Error::other(
+                    "owner action did not complete successfully",
+                ))
+            }
+        }
         daemon::Mode::Join { invitation } => daemon::join(&args.profile, &invitation),
         daemon::Mode::RunApp {
             app_id,
@@ -100,6 +119,56 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
             &executable,
             &app_args,
         ),
+    }
+}
+
+/// Invoke through the same registered action host, not a privileged backend
+/// shortcut. The profile lock and its sandbox-inaccessible directory are the
+/// owner boundary; same-account unconfined scripts are trusted owner callers.
+///
+/// # Errors
+/// Refuses a busy/foreign profile, malformed request or failed admission, and
+/// incomplete host answers. A terminal action failure is returned as a receipt.
+pub(crate) fn owner_action<S: RuntimeServices>(
+    profile: &Path,
+    json: &str,
+) -> io::Result<tilo_actions::remote::InvocationReceipt> {
+    use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest};
+    crate::daemon::validate_profile(profile)?;
+    if json.len() > 32 * 1024 {
+        return Err(io::Error::other(
+            "owner invocation exceeds the argument limit",
+        ));
+    }
+    let request: InvokeRequest = serde_json::from_str(json).map_err(io::Error::other)?;
+    let session = S::start_reporting(profile, &mut |_| {})?;
+    let host = session.action_host()?;
+    let caller = Caller::local_person(session.actor()).in_room(session.room());
+    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
+    let _entered = runtime.handle().enter();
+    let timeout = std::time::Duration::from_secs(125);
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| io::Error::other("owner action deadline overflow"))?;
+    host.invoke(&caller, request.clone())
+        .wait_timeout(timeout)
+        .map_err(|_| io::Error::other("owner action admission timed out"))?
+        .ok_or_else(|| io::Error::other("owner action admission stopped"))?
+        .map_err(io::Error::other)?;
+    loop {
+        let change = host.next_change(&caller, &request.invocation);
+        let state = host
+            .observe(&caller, &request.invocation)
+            .ok_or_else(|| io::Error::other("owner invocation unavailable"))?;
+        if state.is_terminal() {
+            return Ok(state.receipt());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        change
+            .ok_or_else(|| io::Error::other("owner action has no change signal"))?
+            .wait_timeout(remaining)
+            .map_err(|_| io::Error::other("owner action timed out; a partial import may remain"))?
+            .ok_or_else(|| io::Error::other("owner action stopped without an answer"))?;
     }
 }
 

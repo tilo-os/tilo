@@ -373,6 +373,29 @@ fn parent_pids_find_a_spawned_child() {
 }
 
 #[test]
+fn owner_action_is_bounded_and_exclusive_with_other_modes() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let parsed = args(&["--profile", "/run/example-profile", "--owner-action", "{}"]).unwrap();
+    assert_eq!(
+        parsed.mode,
+        Mode::OwnerAction {
+            request: "{}".into()
+        }
+    );
+    for invalid in [
+        vec!["--owner-action"],
+        vec!["--owner-action", ""],
+        vec!["--owner-action", "{}", "--daemon"],
+        vec!["--owner-action", "{}", "--connect"],
+        vec!["--owner-action", "{}", "--dev"],
+        vec!["--owner-action", "{}", "--standalone"],
+    ] {
+        assert!(args(&invalid).is_err(), "{invalid:?}");
+    }
+    assert!(args(&["--owner-action", &"x".repeat(32 * 1024 + 1)]).is_err());
+}
+
+#[test]
 fn dev_mode_is_an_explicit_daemon_flag() {
     let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
     let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
