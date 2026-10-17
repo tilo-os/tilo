@@ -426,7 +426,7 @@ after_publish = "bash tools/ci/publish/legacy-guest.sh pins {out}"
 run = "bash tools/ci/publish/legacy-guest.sh build {dir}/agent {out}"
 image = ""
 needs = ["legacy-guest-agent"]
-inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/external-assets/xwayland-satellite/**", "tools/ci/install-xwayland-satellite.sh", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
 requires = ["/dev/kvm", "disk-100g"]
 cpus = 8
 memory = "16G"
@@ -435,7 +435,7 @@ writable_sources = true
 timeout_secs = 9000
 
 [product.publish]
-inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**"]
+inputs = ["os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/external-assets/xwayland-satellite/**", "tools/ci/install-xwayland-satellite.sh", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**"]
 outputs = ["{out}/pins.env"]
 pointers = { legacy-guest = "{out}/pins.env" }
 
