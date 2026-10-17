@@ -221,14 +221,30 @@ impl SuspendedLocalControls {
             item.control_domain = Some(control.domain);
         }
     }
-    /// Name every held control not yet named, by what `name` finds its
-    /// action declared as.
-    pub(crate) fn name_items(
+    /// Read each newly held control's declaration: name it as declared,
+    /// and drop it when it is housekeeping. Only what a person asked for is
+    /// held for their review; housekeeping the app does on its own, and it
+    /// does it again once the person is back.
+    pub(crate) fn admit_declared(
         &mut self,
-        mut name: impl FnMut(&PendingControlOrigin, &ControlInvocation) -> Option<String>,
+        mut declared: impl FnMut(
+            &PendingControlOrigin,
+            &ControlInvocation,
+        ) -> Option<crate::bound_dispatch::ControlDeclaration>,
     ) {
-        for item in self.items.iter_mut().filter(|item| item.label.is_none()) {
-            item.label = name(&item.origin, &item.invocation);
+        let before = self.items.len();
+        self.items.retain_mut(|item| {
+            if item.label.is_some() {
+                return true;
+            }
+            let Some(declaration) = declared(&item.origin, &item.invocation) else {
+                return true;
+            };
+            item.label = declaration.label;
+            !declaration.housekeeping
+        });
+        if self.items.len() != before {
+            self.advance_generation();
         }
     }
 

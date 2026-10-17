@@ -799,11 +799,17 @@ impl HistoryHost {
         self.toolbar_dirty = true;
         true
     }
-    /// Name the held controls as their actions are declared, so the review
-    /// row says what each would do instead of showing internal addresses.
+    /// Admit the held controls by their declarations: each is named as its
+    /// action is declared, so the review row says what it would do instead
+    /// of showing internal addresses, and housekeeping is never held.
     fn name_pending_controls(&mut self, live: &dyn Widget, doc: &AutoCommit) {
-        self.pending_controls.name_items(|origin, invocation| {
-            crate::bound_dispatch::control_label(live, doc, &origin.target(), &invocation.address)
+        self.pending_controls.admit_declared(|origin, invocation| {
+            crate::bound_dispatch::control_declaration(
+                live,
+                doc,
+                &origin.target(),
+                &invocation.address,
+            )
         });
     }
     pub(crate) fn capture_embedded_pending_controls(

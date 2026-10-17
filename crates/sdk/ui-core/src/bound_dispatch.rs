@@ -2273,19 +2273,32 @@ pub(crate) fn control_witness_with_arguments(
     })
 }
 
-/// What the action a control invokes is called, as its declaration says
-/// ("Mark as read"), when `address` still resolves to one. Unlike a
-/// [`ControlWitness`] it proves nothing about the invocation: it only names
-/// it to people.
-pub(crate) fn control_label(
+/// What a control's action is declared as, for people: its name ("Mark as
+/// read") and whether it is housekeeping. Unlike a [`ControlWitness`] it
+/// proves nothing about the invocation.
+pub(crate) struct ControlDeclaration {
+    pub(crate) label: Option<String>,
+    pub(crate) housekeeping: bool,
+}
+
+/// [`ControlDeclaration`] of the action a control invokes, when `address`
+/// still resolves to one.
+pub(crate) fn control_declaration(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &legacy_document::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
-) -> Option<String> {
+) -> Option<ControlDeclaration> {
     let resources = resources_for_control_target(root, doc, target, address).ok()?;
     let (_, spec) = unique_control_spec(&resources, address).ok()?;
-    Some(spec.label.trim().to_owned()).filter(|label| !label.is_empty())
+    Some(ControlDeclaration {
+        label: Some(spec.label.trim().to_owned()).filter(|label| !label.is_empty()),
+        housekeeping: spec
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::HOUSEKEEPING_TAG),
+    })
 }
 
 fn resources_for_control_target(
