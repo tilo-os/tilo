@@ -3589,12 +3589,29 @@ pub struct PublishedInvocationBinding {
 }
 
 /// A retained server observation, including uncertainty independently of JSON.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PublishedInvocationResult {
     pub id: u64,
     pub update_json: String,
+    /// Host-private AdmissionEvidence JSON from an owner-authorized observation,
+    /// never a public stream. Empty wire fields decode as absent.
+    pub admission_json: Option<String>,
+    /// Host-private terminal evidence JSON with the same owner-only visibility.
+    pub terminal_json: Option<String>,
     pub uncertain: bool,
     pub cancellation_requested: bool,
+}
+
+impl std::fmt::Debug for PublishedInvocationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishedInvocationResult")
+            .field("id", &self.id)
+            .field("uncertain", &self.uncertain)
+            .field("cancellation_requested", &self.cancellation_requested)
+            .field("has_admission", &self.admission_json.is_some())
+            .field("has_terminal", &self.terminal_json.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// An absent result never authorizes a new UUID or changed invocation intent.
@@ -3711,14 +3728,24 @@ fn reliable_decode_observation(
         #[serde(borrow)]
         invocation: &'a str,
     }
-    reliable_size(o.total_size()?)?;
+    // Preserve the existing 256 KiB outcome budget plus two bounded evidence
+    // fields; adding evidence must not make a previously valid outcome unreadable.
+    let size = o.total_size()?;
+    if size.word_count > 321 * 1024 / 8 || size.cap_count != 0 {
+        return Err(reliable_error());
+    }
     if reliable_array::<16>(o.get_host()?)? != *host
         || reliable_array::<16>(o.get_invocation()?)? != *invocation
     {
         return Err(reliable_error());
     }
     let json = o.get_update_json()?.to_str()?;
-    if !reliable_text(json, 256 * 1024, true, false) {
+    let admission_json = o.get_admission_json()?.to_str()?;
+    let terminal_json = o.get_terminal_json()?.to_str()?;
+    if !reliable_text(json, 256 * 1024, true, false)
+        || !reliable_text(admission_json, 32 * 1024, true, false)
+        || !reliable_text(terminal_json, 32 * 1024, true, false)
+    {
         return Err(reliable_error());
     }
     let result = if o.get_found() {
@@ -3732,12 +3759,16 @@ fn reliable_decode_observation(
         Some(PublishedInvocationResult {
             id: o.get_id(),
             update_json: json.to_owned(),
+            admission_json: (!admission_json.is_empty()).then(|| admission_json.to_owned()),
+            terminal_json: (!terminal_json.is_empty()).then(|| terminal_json.to_owned()),
             uncertain: o.get_uncertain(),
             cancellation_requested: o.get_cancellation_requested(),
         })
     } else {
         if o.get_id() != 0
             || !json.is_empty()
+            || !admission_json.is_empty()
+            || !terminal_json.is_empty()
             || o.get_uncertain()
             || o.get_cancellation_requested()
         {

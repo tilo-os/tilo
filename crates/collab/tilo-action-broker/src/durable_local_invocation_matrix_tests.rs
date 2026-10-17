@@ -17,14 +17,44 @@ mod durable_local_matrix {
         control: crate::peer_actions::PolicyClockTestControl,
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
     }
+    struct ProvisionedEnvironment {
+        environment: Environment,
+        _identity_env: tilo_test_env::ScopedEnv,
+    }
+    impl std::ops::Deref for ProvisionedEnvironment {
+        type Target = Environment;
+        fn deref(&self) -> &Environment {
+            &self.environment
+        }
+    }
+    impl std::ops::DerefMut for ProvisionedEnvironment {
+        fn deref_mut(&mut self) -> &mut Environment {
+            &mut self.environment
+        }
+    }
     impl Environment {
-        fn new() -> Self {
+        #[expect(
+            clippy::new_ret_no_self,
+            reason = "the thread-bound identity guard stays separate from the Send broker fixture"
+        )]
+        fn new() -> ProvisionedEnvironment {
             Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
         }
         fn with_owner_initializer(
             initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
-        ) -> Self {
+        ) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
+            let mut identity_env = tilo_test_env::ScopedEnv::new();
+            identity_env
+                .set("XDG_CONFIG_HOME", root.path().join("config"))
+                .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
+                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                &root.path().join("config/tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(&root.path().join("identity")),
+                tilo_identity_host::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision real host receipt signer");
             let mut owner = initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = owner.signing_key().clone();
@@ -72,18 +102,21 @@ mod durable_local_matrix {
                 owner
             });
             let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
-            Self {
-                root,
-                cert,
-                key,
-                person,
-                route,
-                membership,
-                publisher,
-                authority,
-                origin,
-                control,
-                owner_task,
+            ProvisionedEnvironment {
+                environment: Self {
+                    root,
+                    cert,
+                    key,
+                    person,
+                    route,
+                    membership,
+                    publisher,
+                    authority,
+                    origin,
+                    control,
+                    owner_task,
+                },
+                _identity_env: identity_env,
             }
         }
     }
@@ -1110,6 +1143,7 @@ mod durable_local_matrix {
     include!("person_chat_selected_view_tests.rs");
     include!("private_draft_rpc_tests.rs");
     include!("admitted_local_host_tests.rs");
+    include!("dispatcher_receipt_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");

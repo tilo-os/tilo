@@ -97,7 +97,8 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                     // Existing ordinary-member private registration: no host promotion.
                     env.cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
                     env.cert.capabilities.foreign = true;
-                    tilo_user_identity::sign_device_cert(&mut env.cert, &env.person).unwrap();
+                    let person = env.person.clone();
+                    tilo_user_identity::sign_device_cert(&mut env.cert, &person).unwrap();
                     env.authority = CurrentHost::new(
                         &env.route,
                         &env.cert,

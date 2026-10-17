@@ -490,6 +490,11 @@ struct PublishedInvocationObservation {
   updateJson @4 :Text;
   uncertain @5 :Bool;
   cancellationRequested @6 :Bool;
+  # Host-private AdmissionEvidence JSON, returned only to the authorized owner
+  # through invocation observation; never included in public streams.
+  admissionJson @7 :Text;
+  # Host-private terminal evidence JSON, with the same owner-only visibility.
+  terminalJson @8 :Text;
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is

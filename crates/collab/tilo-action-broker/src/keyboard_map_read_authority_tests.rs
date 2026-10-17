@@ -51,6 +51,9 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     }])
                 })
             });
+            // The process environment lock remains on its owning test thread;
+            // only the Send broker fixture crosses to the blocking worker.
+            let ProvisionedEnvironment { environment: env, _identity_env: _identity } = env;
             tokio::task::spawn_blocking(move || {
             let mut env = env;
             let private = env.root.path().canonicalize().unwrap();

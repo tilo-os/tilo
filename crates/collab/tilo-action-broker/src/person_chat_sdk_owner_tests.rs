@@ -272,7 +272,7 @@ fn public_owner_bytes(
 }
 
 struct SdkContext {
-    env: Environment,
+    env: ProvisionedEnvironment,
     owner: tilo_joined_room::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     path: std::path::PathBuf,
