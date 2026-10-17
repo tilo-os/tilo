@@ -391,6 +391,15 @@ fn answer_open_uri(
     id: u64,
     uri: String,
 ) -> Reply {
+    // Opening links is a capability like any other the manifest names
+    // (`tilo-caps`'s `open-uri`); an app that never declared it opens none.
+    if !crate::shell::launcher::package_declares_capability(caller.app_id.as_str(), "open-uri") {
+        tracing::info!(app = %caller.app_id, "app link refused: open-uri is not declared");
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-open-uri-undeclared"),
+        };
+    }
     let (reply, outcome) = mpsc::channel();
     if links
         .send(LinkOpenRequest {
@@ -1398,35 +1407,49 @@ mod tests {
     /// Video Player's "Play more video and audio formats" and Camera's
     /// privacy link open Settings through the dispatcher the shell's search
     /// uses, never the desktop's opener, which has no `settings:` handler; a
-    /// link nothing in the session claims still goes to the desktop.
+    /// link nothing in the session claims still goes to the desktop, and an
+    /// app whose manifest does not declare `open-uri` opens nothing.
     #[test]
     #[serial_test::serial(process_env, launch_events)]
     fn an_app_link_opens_in_the_app_that_claims_its_scheme() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::launcher as shell_launcher;
         use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+        use std::fmt::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let apps = base.join("apps");
-        let payload = apps.join("payloads/so.tilo.settings");
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        let manifest = payload.join("manifest.toml");
-        std::fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/settings/tilo-app.toml"),
-            &manifest,
-        )
-        .unwrap();
-        std::fs::write(
-            apps.join("registry.toml"),
-            format!(
-                "[[entry]]\nid = 'so.tilo.settings'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+        // Settings claims `settings:`; Video Player and Camera declare
+        // `open-uri`; Calculator opens no links and declares nothing.
+        let mut registry = String::new();
+        for (package, app) in [
+            ("so.tilo.settings", "settings"),
+            ("so.tilo.video-player", "video-player"),
+            ("so.tilo.camera", "camera"),
+            ("so.tilo.calculator", "calculator"),
+        ] {
+            let payload = apps.join("payloads").join(package);
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../apps")
+                    .join(app)
+                    .join("tilo-app.toml"),
+                &manifest,
+            )
+            .unwrap();
+            write!(
+                registry,
+                "[[entry]]\nid = '{package}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
                 payload.display().to_string(),
                 manifest.display().to_string(),
-            ),
-        )
-        .unwrap();
+            )
+            .unwrap();
+        }
+        std::fs::write(apps.join("registry.toml"), registry).unwrap();
         let (data, config) = (base.join("data"), base.join("config"));
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&config).unwrap();
@@ -1540,6 +1563,22 @@ mod tests {
 
         assert_eq!(open(&player, "mailto:ada@example.test"), Ok(()));
         assert_eq!(*desktop.0.lock().unwrap(), ["mailto:ada@example.test"]);
+
+        let calculator = opener_of("so.tilo.calculator");
+        assert!(
+            open(&calculator, "settings://updates").is_err(),
+            "an app that never declared open-uri opens no links"
+        );
+        assert_eq!(
+            desktop.0.lock().unwrap().len(),
+            1,
+            "nor does the refusal send its link to the desktop's opener"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            2,
+            "Settings was not launched for it"
+        );
 
         shell_launcher::set_test_execution_program(None);
         shell_launcher::set_wayland_socket_path(None);

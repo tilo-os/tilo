@@ -65,7 +65,7 @@ crates = ["tilo-clipboard"]
 paths = ["ui::clipboard", "clipboard_copy", "clipboard_paste", "clipboard_paste_primary"]
 
 [uses."open-uri"]
-paths = ["portal::open_uri", "portal::send_open_uri", "portal::open_uri_with", "portal::open_uri_detached", "portal::LaunchRequest"]
+paths = ["portal::open_uri", "portal::send_open_uri", "portal::open_uri_with", "portal::open_uri_detached", "portal::LaunchRequest", "widget::open_external_url", "widget::try_open_external_url", "link::os_open", "link::try_os_open"]
 
 [uses.notifications]
 crates = ["tilo-notify"]
