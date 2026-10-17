@@ -22,9 +22,8 @@ The generated Containerfile installs normal Fedora Flatpak, OSTree, D-Bus,
 Polkit, UDisks, udev, Secret Service, PAM and storage dependencies. It retains
 the distribution's login/PAM/authselect configuration. It copies the actual
 firstboot, Home-seed, prepared-extractor, handoff and store-volume helpers;
-the account-consumer verifier and adjacent service module; Tilo unlock PAM,
-sysusers and tmpfiles configurations; and the committed registry runtime
-publisher root used by the normal OS image. It invokes the real sysusers
+Tilo unlock PAM, sysusers and tmpfiles configurations; and the committed
+registry runtime publisher root used by the normal OS image. It invokes the real sysusers
 configuration to create `tilo-identity`. It creates no login account,
 password, credential, fake authentication policy or migration receipt.
 

@@ -33,10 +33,6 @@ ASSETS = {
     **{f'os/usr/libexec/{name}': (f'usr/libexec/{name}', 0o755) for name in (
         'tilo-firstboot-user', 'tilo-store-volume',
     )},
-    'os/scripts/verify-account-consumer-capability.py':
-        ('usr/libexec/tilo-verify-account-consumer-capability', 0o755),
-    'os/scripts/service-consumer-capability.py':
-        ('usr/libexec/tilo-service-consumer-capability.py', 0o755),
     'os/etc/pam.d/tilo-unlock': ('etc/pam.d/tilo-unlock', 0o644),
     'os/usr/lib/sysusers.d/tilo-identity.conf':
         ('usr/lib/sysusers.d/tilo-identity.conf', 0o644),
