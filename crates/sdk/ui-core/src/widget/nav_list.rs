@@ -150,6 +150,64 @@ impl NavAction {
     }
 }
 
+/// Something a [`NavItem`] is also found by: a thing it holds, by its name
+/// and the other words for it, or words for the destination itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NavSearchTerm {
+    /// The name shown under the row's label when this term found it.
+    pub name: Option<String>,
+    /// Other words that find it; a word matches a query at a word start.
+    pub words: Vec<String>,
+}
+
+impl NavSearchTerm {
+    /// A thing the destination holds, found by `name`.
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            words: Vec::new(),
+        }
+    }
+
+    /// Words that find the destination itself; the row shows nothing more.
+    #[must_use]
+    pub fn words(words: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            name: None,
+            words: words.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// Also found by `words`.
+    #[must_use]
+    pub fn also(mut self, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.words.extend(words.into_iter().map(Into::into));
+        self
+    }
+
+    /// Whether `query` (folded) finds this term: at the start of a word of
+    /// its name or of one of its words, so "light" finds "Night light" and
+    /// "light mode" but not "flight mode".
+    fn matches(&self, query: &str) -> bool {
+        self.name
+            .iter()
+            .chain(&self.words)
+            .any(|text| matches_word_start(text, query))
+    }
+}
+
+/// Whether `query` occurs in `text` (both folded) where a word starts.
+fn matches_word_start(text: &str, query: &str) -> bool {
+    let text = crate::search::normalize_search_text(text);
+    let mut before: Option<char> = None;
+    text.char_indices().any(|(at, here)| {
+        let starts_word = before.is_none_or(|before| !before.is_alphanumeric());
+        before = Some(here);
+        starts_word && text.get(at..).is_some_and(|rest| rest.starts_with(query))
+    })
+}
+
 /// One destination. Every part but the label is optional; see
 /// `docs/ui-migration.md`, "Rows: what each part of a `NavItem` means".
 #[derive(Clone, Debug, PartialEq)]
@@ -185,6 +243,11 @@ pub struct NavItem {
     /// The key assistive technology and tests address the row by; the
     /// default is `nav:item:{id}`.
     pub semantic_key: Option<String>,
+    /// What else the row is found by when the list is filtered: the things
+    /// the destination holds ("Tap to click" on a touchpad page) and the
+    /// words people use for them. A row found by a term that has a name
+    /// shows that name under its label.
+    pub search_terms: Vec<NavSearchTerm>,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -223,7 +286,16 @@ impl NavItem {
             level: None,
             presence: Vec::new(),
             semantic_key: None,
+            search_terms: Vec::new(),
         }
+    }
+
+    /// Also found, when the list is filtered, by `terms`: what the
+    /// destination holds and the words people use for it.
+    #[must_use]
+    pub fn search_terms(mut self, terms: impl IntoIterator<Item = NavSearchTerm>) -> Self {
+        self.search_terms = terms.into_iter().collect();
+        self
     }
 
     #[must_use]
@@ -453,16 +525,28 @@ fn matches_query(label: &str, query: &str) -> bool {
 }
 
 /// `items` narrowed to what matches `query` (folded), keeping the parents
-/// of matching children, open.
+/// of matching children, open. A row found only by one of its
+/// [`NavItem::search_terms`] shows that term under its label.
 fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
     items
         .iter()
         .filter_map(|item| {
             let children = narrow(&item.children, query);
-            if children.is_empty() && !matches_query(&item.label, query) {
+            let by_label = matches_query(&item.label, query);
+            let by_term = if by_label {
+                None
+            } else {
+                item.search_terms.iter().find(|term| term.matches(query))
+            };
+            if children.is_empty() && !by_label && by_term.is_none() {
                 return None;
             }
             let mut kept = item.clone();
+            if let Some(name) = by_term.and_then(|term| term.name.clone())
+                && kept.secondary.is_none()
+            {
+                kept.secondary = Some(name);
+            }
             if !children.is_empty() {
                 kept.ensure_expanded = true;
                 kept.expanded = true;

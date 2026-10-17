@@ -336,6 +336,7 @@ icons! {
     AlignVerticalDistributeCenter => "align-vertical-distribute-center",
     AlignCenterHorizontal => "align-center-horizontal",
     AlignStartHorizontal => "align-start-horizontal",
+    Command => "command",
 }
 
 impl Icon {
@@ -1115,6 +1116,9 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             line_path(19.0, 8.0, 19.0, 14.0),
             line_path(22.0, 11.0, 16.0, 11.0),
         ],
+        Icon::Command => vec![path_from_d(
+            "M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3",
+        )],
         Icon::Hash => vec![
             line_path(4.0, 9.0, 20.0, 9.0),
             line_path(4.0, 15.0, 20.0, 15.0),
