@@ -2717,6 +2717,13 @@ onboarding-migration-cleanup-resume = Retry cleanup
 
 onboarding-migration-cleanup-running = Your things are ready in Tilo. Removing temporary files…
 
+# Why the first-use copy stopped, reported with its status.
+onboarding-copy-cleanup-unavailable = Temporary file cleanup is unavailable.
+onboarding-copy-cleanup-unconfirmed = Final cleanup could not be confirmed.
+onboarding-copy-cleanup-mismatch = The cleanup confirmation belongs to a different copy.
+onboarding-copy-receipt-mismatch = The copy confirmation belongs to a different copy.
+onboarding-copy-cleanup-confirmation-unavailable = Cleanup confirmation is unavailable.
+
 session-retained-retirement = Retained file cleanup
 session-retained-retirement-detail = Inspect this session’s retained file owners and observed cleanup.
 

@@ -1,6 +1,7 @@
 //! First-use Copy on the normal native app admission and private helper gate.
 use super::*;
 use crate::onboarding_migration::OriginalCopyRequest;
+use crate::shell::i18n::t;
 use launcher::retained_view::installed_copy::CopyOwnerEvent;
 use std::io;
 
@@ -153,7 +154,7 @@ fn run(
                         let event = if transfer_complete {
                             CopyOwnerEvent::CleanupPending {
                                 operation: operation.clone(),
-                                message: "Temporary file cleanup is unavailable.".into(),
+                                message: t("onboarding-copy-cleanup-unavailable"),
                                 resumable: false,
                             }
                         } else {
@@ -218,7 +219,7 @@ fn run(
                     cleanup_finished_at = None;
                     if !emit(CopyOwnerEvent::CleanupPending {
                         operation: operation.clone(),
-                        message: "Final cleanup could not be confirmed.".into(),
+                        message: t("onboarding-copy-cleanup-unconfirmed"),
                         resumable: false,
                     }) {
                         return;
@@ -229,7 +230,7 @@ fn run(
                     cleanup_finished_at = None;
                     if !emit(CopyOwnerEvent::CleanupPending {
                         operation: operation.clone(),
-                        message: "Final cleanup could not be confirmed.".into(),
+                        message: t("onboarding-copy-cleanup-unconfirmed"),
                         resumable: false,
                     }) {
                         return;
@@ -249,13 +250,13 @@ fn run(
                     let event = if transfer_complete {
                         CopyOwnerEvent::CleanupPending {
                             operation: operation.clone(),
-                            message: "Cleanup confirmation does not match this operation.".into(),
+                            message: t("onboarding-copy-cleanup-mismatch"),
                             resumable: false,
                         }
                     } else {
                         CopyOwnerEvent::Failed {
                             operation: operation.clone(),
-                            message: "Copy receipt does not match this operation".into(),
+                            message: t("onboarding-copy-receipt-mismatch"),
                         }
                     };
                     if !emit(event) {
@@ -276,7 +277,7 @@ fn run(
                         },
                     ).is_err() {
                         terminal = true;
-                        if !emit(event.clone()) || !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: "Temporary file cleanup is unavailable.".into(), resumable: false }) { return; }
+                        if !emit(event.clone()) || !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: t("onboarding-copy-cleanup-unavailable"), resumable: false }) { return; }
                         continue;
                     }
                 }
@@ -287,7 +288,7 @@ fn run(
                 {
                     if admitted.send_owner_command(&launcher::retained_view::installed_copy::CopyOwnerCommand::AcknowledgeCleanup { operation: operation.clone(), metadata_quarantined: *metadata_quarantined }).is_err() {
                         terminal = true;
-                        if !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: "Cleanup confirmation is unavailable.".into(), resumable: false }) { return; }
+                        if !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: t("onboarding-copy-cleanup-confirmation-unavailable"), resumable: false }) { return; }
                         continue;
                     }
                 }
@@ -310,7 +311,7 @@ fn run(
                 let event = if transfer_complete {
                     CopyOwnerEvent::CleanupPending {
                         operation: operation.clone(),
-                        message: "Temporary file cleanup is unavailable.".into(),
+                        message: t("onboarding-copy-cleanup-unavailable"),
                         resumable: false,
                     }
                 } else {
