@@ -276,7 +276,11 @@ pub fn consent_request(drive: &Drive, handle: String) -> DriveConsentRequest {
     };
     DriveConsentRequest {
         handle,
-        title: t_args("drives-consent-title", &[("drive", name.into())]),
+        title: match (drive.label.trim().is_empty(), drive.placement) {
+            (true, Placement::Internal) => t("drives-consent-title-unnamed-internal"),
+            (true, Placement::External) => t("drives-consent-title-unnamed-external"),
+            (false, _) => t_args("drives-consent-title", &[("drive", name.into())]),
+        },
         drive: where_,
         detail: if drive.remembered.is_some() && drive.placement == Placement::External {
             t("drives-consent-detail-known")
