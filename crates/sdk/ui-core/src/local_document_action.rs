@@ -25,12 +25,55 @@ pub struct PublishedInvocation {
 #[derive(Clone)]
 pub struct CapturedAction {
     pub invocation: uuid::Uuid,
+    /// Random identity generated once, before content binding; retained on retry.
+    pub capture_id: uuid::Uuid,
     pub revision: String,
     pub published: Option<PublishedInvocation>,
     pub encoded: EncodedAction,
     pub context: Option<ActionContext>,
     pub original_heads: Vec<[u8; 32]>,
     pub mutation_hashes: Vec<[u8; 32]>,
+}
+
+impl CapturedAction {
+    /// Compute the content-bound identity after the exact mutations are known.
+    /// # Errors
+    /// Refuses captures without an original published invocation.
+    pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
+        self.clone().into_report()?.bound_invocation()
+    }
+
+    pub(crate) fn into_report(self) -> Result<runtime_collab::LocalDocumentActionReport, String> {
+        let published = self
+            .published
+            .ok_or("local document action has no published invocation")?;
+        let argument = if published.arguments.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(published.arguments)
+            ))
+        };
+        Ok(runtime_collab::LocalDocumentActionReport {
+            version: 1,
+            invocation: self.invocation,
+            capture_id: self.capture_id,
+            revision: self.revision,
+            resource: published.resource,
+            action: published.action,
+            argument,
+            encoded: self.encoded,
+            group: self
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone()),
+            context: self.context,
+            original_heads: self.original_heads,
+            mutation_hashes: self.mutation_hashes,
+        })
+    }
 }
 
 impl std::fmt::Debug for PublishedInvocation {
@@ -342,8 +385,9 @@ impl Reservation {
             .collect::<Vec<_>>();
         mutation_hashes.sort_unstable();
         mutation_hashes.dedup();
-        let action = CapturedAction {
-            invocation: uuid::Uuid::new_v4(),
+        let mut action = CapturedAction {
+            invocation: uuid::Uuid::nil(),
+            capture_id: uuid::Uuid::new_v4(),
             revision: self.active.revision.clone(),
             published: self.published.clone(),
             encoded,
@@ -351,6 +395,8 @@ impl Reservation {
             original_heads,
             mutation_hashes,
         };
+        // Only the finalized mutation set can define the immutable invocation.
+        action.invocation = action.bound_invocation().map_err(ActionError::Refused)?;
         self.active.queue.0.borrow_mut().actions.push_back((
             action,
             Lease {
@@ -398,6 +444,7 @@ impl Drop for Lease {
 struct BudgetReport<'a> {
     version: u8,
     invocation: uuid::Uuid,
+    capture_id: uuid::Uuid,
     revision: &'a str,
     resource: &'a str,
     action: &'a str,
@@ -510,6 +557,7 @@ fn report_budget(
             version: 1,
             // UUIDs have fixed wire width; budgeting must not request randomness.
             invocation: uuid::Uuid::from_u128(1),
+            capture_id: uuid::Uuid::from_u128(1),
             revision,
             resource: &published.resource,
             action: &published.action,

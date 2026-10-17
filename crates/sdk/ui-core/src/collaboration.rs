@@ -1666,34 +1666,7 @@ impl CollaborationManager {
     fn local_document_action_report(
         capture: crate::local_document_action::CapturedAction,
     ) -> Result<runtime_collab::LocalDocumentActionReport, String> {
-        let published = capture
-            .published
-            .ok_or("local document action has no published invocation")?;
-        let argument = if published.arguments.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(published.arguments)
-            ))
-        };
-        let report = runtime_collab::LocalDocumentActionReport {
-            version: 1,
-            invocation: capture.invocation,
-            revision: capture.revision,
-            resource: published.resource,
-            action: published.action,
-            argument,
-            encoded: capture.encoded,
-            group: capture
-                .context
-                .as_ref()
-                .and_then(|context| context.group.clone()),
-            context: capture.context,
-            original_heads: capture.original_heads,
-            mutation_hashes: capture.mutation_hashes,
-        };
+        let report = capture.into_report()?;
         // Reads/no-ops retain their empty mutation sets. Never infer a published
         // action from the encoded Rust action type, or rebase a captured revision.
         report.encode()?;
@@ -2334,8 +2307,9 @@ mod local_document_report_tests {
     }
 
     fn capture() -> CapturedAction {
-        CapturedAction {
+        let mut capture = CapturedAction {
             invocation: uuid::Uuid::from_bytes([1; 16]),
+            capture_id: uuid::Uuid::from_bytes([5; 16]),
             revision: "captured-not-current".into(),
             published: Some(PublishedInvocation {
                 resource: "document/child".into(),
@@ -2361,7 +2335,9 @@ mod local_document_report_tests {
             }),
             original_heads: vec![],
             mutation_hashes: vec![],
-        }
+        };
+        capture.invocation = capture.bound_invocation().unwrap();
+        capture
     }
 
     #[test]
@@ -2393,6 +2369,8 @@ mod local_document_report_tests {
             let report: runtime_collab::LocalDocumentActionReport =
                 serde_json::from_slice(bytes).unwrap();
             assert_eq!(report.invocation, captured.invocation);
+            assert_eq!(report.capture_id, captured.capture_id);
+            assert_eq!(report.bound_invocation().unwrap(), captured.invocation);
             assert_eq!(report.revision, captured.revision);
             assert_eq!(report.encoded, captured.encoded);
             assert_eq!(report.context, captured.context);

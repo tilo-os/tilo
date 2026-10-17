@@ -182,6 +182,46 @@ mod tests {
     }
 
     #[test]
+    fn sdk_report_and_broker_request_bind_the_same_complete_capture() {
+        let original = report();
+        for field in original.as_object().unwrap().keys() {
+            let mut changed = original.clone();
+            changed[field] = match field.as_str() {
+                "capture_id" | "invocation" => serde_json::json!(uuid::Uuid::new_v4()),
+                "version" => serde_json::json!(1),
+                "original_heads" | "mutation_hashes" => serde_json::json!([]),
+                "encoded" => serde_json::json!({
+                    "payload": b"{ \"z\": 1, \"a\": 2 }".to_vec(),
+                    "type_id": "test.other"
+                }),
+                "context" => serde_json::json!(
+                    tilo_actions::ActionContext::default()
+                        .with_purpose("private purpose")
+                        .with_group("gesture", "Edit", "edit")
+                ),
+                "group" => serde_json::json!({"kind": "edit", "label": "Edit", "id": "g"}),
+                _ => serde_json::json!("different"),
+            };
+            let mut sdk: runtime_collab::LocalDocumentActionReport =
+                serde_json::from_value(changed).unwrap();
+            sdk.invocation = sdk.bound_invocation().unwrap();
+            let bytes = sdk.encode().unwrap();
+            let broker = Request::decode(&bytes).unwrap();
+            assert_eq!(broker.capture_id, sdk.capture_id, "{field}");
+            assert_eq!(
+                broker.bound_invocation().unwrap(),
+                sdk.invocation,
+                "{field}"
+            );
+            assert_eq!(serde_json::to_vec(&broker).unwrap(), bytes, "{field}");
+            let roundtrip: runtime_collab::LocalDocumentActionReport =
+                serde_json::from_slice(&serde_json::to_vec(&broker).unwrap()).unwrap();
+            assert_eq!(roundtrip.bound_invocation().unwrap(), sdk.invocation);
+            assert_eq!(roundtrip.encode().unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn typed_report_refuses_undeclared_and_untyped_arguments() {
         let mut request = Request::decode(&serde_json::to_vec(&report()).unwrap()).unwrap();
         assert!(request.typed_arguments(&[]).is_err());
