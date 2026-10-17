@@ -3043,6 +3043,29 @@ impl ShellOverlayHost {
             })
     }
 
+    /// Whether the pointer is on a notification banner, or a click begun on
+    /// one still owns its release. Banners hang over application windows;
+    /// were the window under one given the pointer, a click on the banner
+    /// would land in the app and the banner could be neither opened nor
+    /// dismissed.
+    pub(crate) fn notification_banner_captures_pointer(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        if chrome.borrow().notifications().is_empty() {
+            return false;
+        }
+        self.notification_stack.wants_pointer_capture()
+            || self
+                .last_cursor
+                .is_some_and(|p| self.notification_stack.rect().contains(p))
+    }
+
+    /// Where the notification banners were last drawn.
+    pub fn notification_banners_rect(&self) -> Rect {
+        self.notification_stack.rect()
+    }
+
     /// Test hook: as if the person had turned "hide the top bar" on or off.
     pub fn set_hide_top_bar_for_tests(&mut self, hide: bool) {
         let mut config = self.desktop_controls.config();
