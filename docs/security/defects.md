@@ -884,7 +884,9 @@ string. Held by `os/tests/kernel_hardening_invariants.sh`.
 `registry.tilo.so/tilo/tilo` and `code.tilo.so/tilo/tilo` each hold nothing but `sigstoreSigned`
 requirements on `/usr/share/tilo/cosign.pub` with a repository-bound `signedIdentity`, and every
 more specific scope under either Tilo namespace is that or `reject`. An unreadable, malformed or
-duplicate-keyed policy fails. `os/tests/kernel_hardening_invariants.sh` runs it against the
+duplicate-keyed policy fails. (Since P2-6 the requirement is the transparency-logged release
+signature, from the pinned key or through the release root, and the default is `reject`; the
+invariant's weakened copies changed with it.) `os/tests/kernel_hardening_invariants.sh` runs it against the
 shipped policy and eighteen weakened copies (each Tilo scope accepting anything, another key,
 `signedBy`, a remapped identity, extra key material, a tag override, a removed scope, a removed
 legacy-guest or development scope that leaves it to the permissive default, a permissive
@@ -899,35 +901,22 @@ old pattern.
 `os/etc/containers/policy.json:2-4`. Signature enforcement covers the official Tilo
 repositories only; every other image reference is unverified by the policy.
 
-**Still open: awaiting the owner's decision to accept or tighten.** The default is still
-`insecureAcceptAnything`. Current source requires a `sigstoreSigned` signature for
-`code.tilo.so/tilo/tilo`, `registry.tilo.so/tilo/tilo` and `registry.tilo.so/tilo/legacy-guest`,
-and rejects the `tilo-vm`, `tilo-ci` and `tilo-dev` repositories on both registries.
-`tilo-image-policy-check` now also judges the legacy guest and those development repositories by
-their *effective* rule, so removing one's scope (handing it to the permissive default) or adding
-a permissive `registry.tilo.so/tilo` namespace scope fails the boot audit.
-
-What the permissive default reaches, as of this entry:
-
-- **No Tilo OS image path depends on it.** The installer installs the booted medium's image from
-  local container storage, and the offline target verifies the cosign signature, docker reference
-  and provenance itself before importing with `skopeo --insecure-policy`. The recorded update
-  origin is restricted to `registry.tilo.so/tilo/tilo` or `code.tilo.so/tilo/tilo`
-  (`os/dev/hardware_profile.py`), production `tilo os upgrade` refuses `--to`, and the legacy guest
-  is fetched only by a compiled-in digest of `registry.tilo.so/tilo/legacy-guest`
-  (`crates/runtime/legacy-vm/src/image.rs`). `tilo-install` does not pass bootc's
-  `--enforce-container-sigpolicy`.
-- **Only root can point bootc at another reference**; there is no polkit rule for bootc or
-  rpm-ostree, and the wheel update unit takes fixed arguments.
-- **Rootless podman, skopeo and distrobox** read `~/.config/containers/policy.json` first, which the
-  user can write anyway, so the system default grants a session nothing it lacks.
-- **Features that would break under a default `reject`:** the Containers app's `podman pull`,
-  distrobox (the runtime portal's container shell), `tinker base add`, the local-model
-  `podman load`, dev images' `tilo os upgrade --to`, and possibly the installer's
-  `containers-storage` handoff. A tightened default therefore needs a root/user split (a
-  `reject` system default plus a per-user permissive policy) and an install scenario run.
-- **One uncovered Tilo origin:** the operator-built host image (`os/build-host.sh`) records
-  `localhost/tilo-host:latest`, which no scope covers.
+**Resolved.** The default is `reject`. `tools/signing/release_trust.py` generates the
+policy, and each reference it admits says why: the OS and legacy-guest repositories require a
+transparency-logged release signature (the release key until the root ceremony, then an
+operational certificate chaining to the offline release root, `keys/README.md`); the `tilo-vm`,
+`tilo-ci` and `tilo-dev` repositories are refused by name; the public registries a person pulls
+from by choice (Docker Hub, Quay, GHCR, GCR, MCR, ECR Public, Fedora, Red Hat, GitLab) are
+admitted for the Containers app, distrobox and `tinker base add`; and the local transports
+(`containers-storage`, `dir`, `docker-archive`, `oci`, `oci-archive`) are admitted because they
+fetch nothing, which keeps the installer's `containers-storage` handoff and the local-model
+`podman load` working. Rootless podman reads `~/.config/containers/policy.json` first, so a
+person adds another registry for their own pulls there; the system's update path never reads it.
+The operator-built host image updates from local storage
+(`bootc switch --transport containers-storage localhost/tilo-host`). `tilo-image-policy-check`
+fails the boot audit for any other admitted reference, a permissive default, or a missing
+transparency-log requirement; `os/tests/test_container_signature_policy.py` holds the shipped
+policy to the generator, and `os/tests/release_trust_chain_native.py` runs it through skopeo.
 
 ## P1-10 — The filesystem daemon's SELinux domain is permissive
 

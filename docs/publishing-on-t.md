@@ -78,6 +78,15 @@ then also enters the signature in the public transparency log (Rekor) and keeps 
 `bundle.json`, which `oci-publish.sh` attaches with the signature, since such a verification
 requires a log entry. The signing check still needs no registry access.
 
+Repositories installed systems verify through their container policy (the OS image and the
+legacy guest, `device_verified` in `lib.sh`) need more once the release root exists
+(`keys/release/root.crt`, see `keys/README.md`): their policy accepts only a signature whose log
+entry names an operational certificate the root issued. `cosign sign-blob` cannot log a
+certificate, so `oci-sign.sh` also signs once per certificate in `keys/operational/` through
+`tools/signing/sign-blob-certified.sh`, which enters the certificate in Rekor itself and keeps
+`certified/N.{sig,bundle,crt,epoch}`; `oci-publish.sh` attaches each with its certificate and the
+root, and verifies it through the chain as installed systems do.
+
 ## Products
 
 Every container image Tilo publishes runs the same chain, so a product is a few lines of data in
