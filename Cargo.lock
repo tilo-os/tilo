@@ -7143,6 +7143,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-actions",
+ "tilo-advisory-lock",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-desktop-model",

@@ -432,8 +432,8 @@ fn acquire_target_write_lock(
     imager_backend::write::acquire_target_write_lock(target)
 }
 /// Keep the privileged writer lock through reviewed mounted output.
-#[cfg(target_os = "linux")]
-pub(crate) fn with_locked_media_root<T>(
+#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+fn with_locked_media_root<T>(
     target: &TargetDrive,
     callback: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
@@ -921,7 +921,8 @@ fn relay_cancellation(control: &JobControl, cancel_path: &Path, sent: &mut bool)
     imager_backend::write::helper::relay_cancellation(&|| control.is_cancelled(), cancel_path, sent)
 }
 
-pub(crate) fn revalidate_target(target: &TargetDrive) -> io::Result<()> {
+#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+fn revalidate_target(target: &TargetDrive) -> io::Result<()> {
     imager_backend::write::revalidate_target(target)
 }
 #[cfg(test)]

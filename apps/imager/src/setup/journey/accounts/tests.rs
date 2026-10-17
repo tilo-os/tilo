@@ -1646,7 +1646,7 @@ fn encrypted_account_checkpoint_survives_drop_and_restores_exact_grants_and_remo
     );
     assert!(checkpoint::restore(&checkpoint_root, &receipt, b"wrong previous password").is_err());
     let mut foreign_fields = serde_json::to_value(&receipt).unwrap();
-    foreign_fields["group"] = serde_json::json!([8; 32]);
+    foreign_fields["group"] = serde_json::json!(vec![8_u8; 32]);
     let mut foreign = serde_json::from_value(foreign_fields).unwrap();
     assert!(checkpoint::restore(&checkpoint_root, &foreign, password).is_err());
     let mut foreign_fields = serde_json::to_value(&receipt).unwrap();

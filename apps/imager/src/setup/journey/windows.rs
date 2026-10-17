@@ -1,7 +1,7 @@
 //! Windows prepares selected local data and private sign-in suggestions only.
 //! Identity enrollment and account authorization happen later in the live OS.
 use super::*;
-use crate::setup::windows_inventory::{Decision, Inventory, RootRole, SelectedRoot};
+use crate::setup::windows_inventory::{Decision, RootRole, SelectedRoot};
 use std::path::Path;
 
 enum Discovery {
@@ -805,6 +805,7 @@ use imager_backend::windows_preparation::export;
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::setup::windows_inventory::Inventory;
     use InstallerPreviewEffect::*;
 
     thread_local! {

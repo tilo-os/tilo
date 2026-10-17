@@ -170,9 +170,10 @@ impl PreparedMedia {
 mod tests {
     use super::*;
     use crate::setup::{
-        account_transfer, browser_profiles,
+        account_transfer,
         journey::{browser::SelectedSources, prepared_media::MediaSelections},
     };
+    use imager_backend::setup::browser_profiles;
     use std::{fs, path::PathBuf};
     const PASSWORD: &str = "a sufficiently long transport password";
 

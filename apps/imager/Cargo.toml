@@ -93,6 +93,7 @@ rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 launcher = { path = "../../crates/packaging/launcher" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../crates/system/advisory-lock" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
