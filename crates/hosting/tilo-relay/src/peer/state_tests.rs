@@ -2448,7 +2448,11 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
 
 #[tokio::test]
 async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
-    // A full queue exercises admission; one free slot exercises the receipt.
+    // Keep both owner queue occupancies for the successful replay's boundary:
+    // a full queue requires admission; one free slot permits a queued receipt.
+    // First-batch preparation is detached from that queue, so only the explicit
+    // batch-ready gate below orders private reply delivery and session replacement
+    // before batch authorization. The reply does not prove owner queue admission.
     for (queued_count, replace_session) in [(32, false), (31, false), (32, true)] {
         let fixture = Arc::new(Fixture::new());
         let device = fixture.recipient.device_public_key;
@@ -2461,6 +2465,8 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             )
             .unwrap();
         let ticket = fixture.subscribe_ticket().await;
+        let (release_batch, batch_reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "replay-first-batch-ready");
         let owner = crate::persistence::handle(&fixture.workspace).await;
         let (release, reached) =
             crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
@@ -2537,6 +2543,11 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             Some(reply)
         );
         assert!(!task.is_finished());
+        // Reach preparation while the original session is still current;
+        // otherwise its initial authorization can refuse before reaching this gate.
+        tilo_test_env::within("first replay batch did not reach its gate", batch_reached)
+            .await
+            .unwrap();
         if replace_session {
             let (replacement, _rx) = mpsc::channel(32);
             fixture.workspace.lock().await.add_subscriber(Subscriber {
@@ -2546,6 +2557,9 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 disconnect: fixture.source.disconnect.clone(),
             });
         }
+        // The original session is fenced before the prepared batch can pass
+        // its write-side authority recheck or write any state frame.
+        drop(release_batch);
         drop(release);
         tilo_test_env::within("admitted owner queue did not drain", async {
             for receipt in queued {

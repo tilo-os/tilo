@@ -133,7 +133,10 @@ async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        // Invitations pin the wildcard-bound relay's regular interface address,
+        // not loopback. Allow this endpoint to reach that signed enrollment route
+        // as well as the private protocol endpoints used below.
+        .bind_addr((std::net::Ipv4Addr::UNSPECIFIED, 0))
         .unwrap()
         .bind()
         .await
