@@ -559,6 +559,15 @@ pub fn clipboard_history(store: &SharedSelection) -> Vec<ClipboardHistorySnapsho
         .unwrap_or_default()
 }
 
+/// Whether a clipboard the compositor took over (a history item chosen to
+/// paste) is still waiting to be offered to Wayland clients: a paste asked
+/// for before then would read the previous clipboard.
+pub fn clipboard_publication_pending(store: &SharedSelection) -> bool {
+    store
+        .lock()
+        .is_ok_and(|store| store.clipboard.publish_pending || store.clipboard.clear_pending)
+}
+
 /// The text of retained item `id`, for pasting it into the focused field
 /// once the person chose it (Super+V). `None` for an item without text (an
 /// image, a file list) or invalid UTF-8; those are only made the clipboard.

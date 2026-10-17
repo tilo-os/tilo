@@ -4,8 +4,12 @@
 //!
 //! There is exactly one way text reaches a field without being typed:
 //! `zwp_input_method_v2.commit_string`, which the compositor turns into the
-//! field's `zwp_text_input_v3.commit_string` + `done`. Nothing here
-//! synthesises key events. Who performs the commit follows the seat's
+//! field's `zwp_text_input_v3.commit_string` + `done`. Text is never typed
+//! as synthesised key events. The one key chord sent from here is a paste
+//! of a clipboard history item that has no text (an image, a file list):
+//! the window's own paste shortcut, through the seat, so it reads the
+//! clipboard over the ordinary Wayland transfer
+//! ([`State::request_clipboard_paste`]). Who performs the commit follows the seat's
 //! input-method arbitration ([`super::input_method`]):
 //!
 //! * **A trusted input method owns the seat** (the on-screen keyboard, or
@@ -62,6 +66,34 @@ use super::state::{ClientState, State};
 
 /// How long a request waits for the focused field to take text.
 pub const DELIVERY_WINDOW: Duration = Duration::from_secs(2);
+
+/// evdev keycodes of the paste shortcut's keys, and `XK_v`, which the active
+/// layout may put on another key than `KEY_V`.
+const KEY_LEFTCTRL: u32 = 29;
+const KEY_LEFTSHIFT: u32 = 42;
+const KEY_V: u32 = 47;
+const KEYSYM_V: u32 = 0x76;
+
+/// Whether the app with `app_id` is a terminal, whose paste shortcut is
+/// Ctrl+Shift+V (Ctrl+V types a literal ^V there).
+fn pastes_with_shift(app_id: &str) -> bool {
+    let id = app_id.to_ascii_lowercase();
+    [
+        "terminal",
+        "kitty",
+        "alacritty",
+        "foot",
+        "wezterm",
+        "konsole",
+        "xterm",
+        "ghostty",
+        "tilix",
+        "terminator",
+        "ptyxis",
+    ]
+    .iter()
+    .any(|name| id.contains(name))
+}
 
 /// `zwp_text_input_v3.content_purpose` values whose text is a secret. Digits
 /// count: the on-screen keyboard treats a digits field as a PIN pad too.
@@ -349,6 +381,10 @@ struct Pending {
 #[derive(Default)]
 pub struct TextCommit {
     pending: Option<Pending>,
+    /// A clipboard history item without text (an image, a file list) was
+    /// chosen to paste: until this deadline, the focused window is asked to
+    /// paste the clipboard once it has the keyboard back.
+    paste_until: Option<Instant>,
     delivered: Vec<DeliveredText>,
     pub(crate) dictation: super::dictation::Dictation,
 }
@@ -383,6 +419,67 @@ impl State {
             .pending
             .as_ref()
             .map(|pending| pending.deadline)
+            .into_iter()
+            .chain(self.text_commit.paste_until)
+            .min()
+    }
+
+    /// Paste the clipboard into the window that gets the keyboard back, the
+    /// way the person would: its own paste shortcut, so it reads every
+    /// format the clipboard offers (an image, a file list) through the same
+    /// Wayland transfer any paste uses. Text goes through
+    /// [`Self::request_remote_text_commit`] instead, which needs no shortcut.
+    pub fn request_clipboard_paste(&mut self, now: Instant) {
+        self.text_commit.paste_until = Some(now.checked_add(DELIVERY_WINDOW).unwrap_or(now));
+        self.advance_clipboard_paste(now);
+    }
+
+    /// Deliver a requested paste once a window has the keyboard and the
+    /// chosen item is the clipboard Wayland clients see; give up after
+    /// [`DELIVERY_WINDOW`].
+    pub fn advance_clipboard_paste(&mut self, now: Instant) {
+        let Some(until) = self.text_commit.paste_until else {
+            return;
+        };
+        if now >= until {
+            self.text_commit.paste_until = None;
+            tracing::debug!(target: "tilo::input_method", "no window took the paste in time");
+            return;
+        }
+        let Some(target) = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+        else {
+            return;
+        };
+        if super::selection::clipboard_publication_pending(&self.selection_store()) {
+            return;
+        }
+        self.text_commit.paste_until = None;
+        let terminal = smithay::wayland::compositor::with_states(&target, |states| {
+            states
+                .data_map
+                .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok()?.app_id.clone())
+        })
+        .is_some_and(|app_id| pastes_with_shift(&app_id));
+        let v = self.keysym_to_keycode(KEYSYM_V).unwrap_or(KEY_V);
+        let mut chord = vec![KEY_LEFTCTRL];
+        if terminal {
+            chord.push(KEY_LEFTSHIFT);
+        }
+        chord.push(v);
+        let time =
+            u32::try_from(self.start_time.elapsed().as_millis() % (1u128 << 32)).unwrap_or(0);
+        for &key in &chord {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            let _ = self.inject_seat_key(key, true, serial, time);
+        }
+        for &key in chord.iter().rev() {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            let _ = self.inject_seat_key(key, false, serial, time);
+        }
     }
 
     /// What has reached a field since the last call.
@@ -526,10 +623,14 @@ pub fn relay(
     // A clipboard history item chosen to paste goes in the same way, and is
     // not an emoji to remember.
     for id in host.take_clipboard_pastes() {
-        if let Some(text) = super::selection::history_item_text(&state.selection_store(), id) {
-            state.request_remote_text_commit(text, now);
+        match super::selection::history_item_text(&state.selection_store(), id) {
+            Some(text) => state.request_remote_text_commit(text, now),
+            // An image or a file list: the window pastes the clipboard it
+            // now holds, as its own paste shortcut would.
+            None => state.request_clipboard_paste(now),
         }
     }
+    state.advance_clipboard_paste(now);
     state.advance_text_commit(now);
     let delivered = state.take_delivered_text();
     for text in &delivered {
@@ -789,6 +890,22 @@ delegate_noop!(LentState: ignore zwp_input_method_manager_v2::ZwpInputMethodMana
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminals_paste_with_ctrl_shift_v_and_other_apps_with_ctrl_v() {
+        for id in [
+            "so.tilo.terminal",
+            "kitty",
+            "org.gnome.Ptyxis",
+            "foot",
+            "Alacritty",
+        ] {
+            assert!(pastes_with_shift(id), "{id}");
+        }
+        for id in ["so.tilo.notes", "org.mozilla.firefox", "so.tilo.mail"] {
+            assert!(!pastes_with_shift(id), "{id}");
+        }
+    }
 
     #[test]
     fn secrets_are_the_protocol_secret_purposes_and_hints() {

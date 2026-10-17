@@ -4297,7 +4297,13 @@ impl State {
     /// Deliver a Linux evdev keycode press/release to the seat keyboard. Shared by
     /// the `RemoteDesktop` and personal-fabric paths. Convert to Smithay's XKB
     /// keycode convention by adding eight, as the other remote input paths do.
-    fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
+    pub(crate) fn inject_seat_key(
+        &mut self,
+        keycode: u32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
@@ -4321,7 +4327,7 @@ impl State {
     /// layout, so `NotifyKeyboardKeysym` can be delivered even though
     /// smithay's injection API is keycode-oriented. Scans the evdev/xkb
     /// keycode range for a key whose level-0 symbol matches; `None` when the layout can't produce the keysym (caller should fall back to `NotifyKeyboardKeycode`).
-    fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
+    pub(crate) fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
         use smithay::input::keyboard::{Keycode, Keysym};
         let keyboard = self.seat.get_keyboard()?;
         let target = Keysym::new(target);
