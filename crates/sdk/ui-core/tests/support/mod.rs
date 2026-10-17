@@ -131,14 +131,7 @@ pub fn pump(relay: &mut MemoryRelay) {
     for (from, req) in pending {
         match req {
             CollabRequest::Document { mutation, .. } => {
-                let mutation = match mutation {
-                    tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
-                        collab_types::DocumentMutation::Incremental(data)
-                    }
-                    tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
-                        collab_types::DocumentMutation::Snapshot(data)
-                    }
-                };
+                let mutation = relay_mutation(mutation);
                 let event = document_event(&mutation, &from);
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
@@ -230,6 +223,19 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.
             }
+        }
+    }
+}
+
+fn relay_mutation(
+    mutation: tilo_ui::collaboration::DocumentMutation,
+) -> collab_types::DocumentMutation {
+    match mutation {
+        tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
+            collab_types::DocumentMutation::Incremental(data)
+        }
+        tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
+            collab_types::DocumentMutation::Snapshot(data)
         }
     }
 }
