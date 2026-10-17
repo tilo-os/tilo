@@ -135,6 +135,12 @@ impl StoredPendingEnrollment {
     pub fn status(&self) -> PendingEnrollmentStatus {
         self.status
     }
+    /// The local workspace slot the enrollment rebinds, where the host has
+    /// slots.
+    #[must_use]
+    pub fn target_workspace(&self) -> Option<WorkspaceId> {
+        self.target.as_ref().map(|target| target.workspace)
+    }
 }
 
 /// Opaque byte fields of a room record: base64 text in a human-readable
