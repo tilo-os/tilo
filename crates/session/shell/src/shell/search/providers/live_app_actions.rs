@@ -520,6 +520,7 @@ enum AuxiliaryEntry {
         subtitle: String,
         cancel: bool,
         actor: String,
+        lifecycle: crate::shell::certified_action_session::ActionLifecycle,
     },
     Directory {
         root: ActionDirectoryRoot,
@@ -1585,9 +1586,8 @@ impl LiveAppActionsProvider {
         if ctx.chrome.search_resource_scope.is_none()
             && (needle.is_empty() || "jobs status progress".contains(needle))
         {
-            for (id, update) in self
-                .broker
-                .statuses(&actor)
+            for (id, update, lifecycle) in self
+                .owned_jobs(ctx)
                 .into_iter()
                 .take(MAX_JOB_ROWS_PER_QUERY)
             {
@@ -1600,13 +1600,15 @@ impl LiveAppActionsProvider {
                     subtitle: subtitle.clone(),
                     cancel: false,
                     actor: actor.clone(),
+                    lifecycle: lifecycle.clone(),
                 });
-                if self.broker.can_cancel(id, &actor) && entries.len() < root_limit {
+                if lifecycle.can_cancel(id) && entries.len() < root_limit {
                     entries.push(AuxiliaryEntry::Job {
                         id,
                         subtitle,
                         cancel: true,
                         actor: actor.clone(),
+                        lifecycle: lifecycle.clone(),
                     });
                 }
             }
@@ -1780,13 +1782,57 @@ impl LiveAppActionsProvider {
         });
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the broker handle is cloned once per callback; each clone moves into its own closure"
-    )]
-    fn job_result(&self, id: u64, subtitle: &str, cancel: bool, actor: &str) -> SearchResult {
+    fn job_lifecycles(
+        &self,
+        ctx: &SearchContext<'_>,
+    ) -> Vec<crate::shell::certified_action_session::ActionLifecycle> {
+        let actor = ctx.chrome.active_local_user();
+        ctx.chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                self.action_sessions
+                    .open(&workspace.room.to_string(), Some(&actor))
+                    .ok()?
+                    .lifecycle()
+                    .ok()
+            })
+            .collect()
+    }
+
+    fn owned_jobs(
+        &self,
+        ctx: &SearchContext<'_>,
+    ) -> Vec<(
+        u64,
+        tilo_actions::InvocationUpdate,
+        crate::shell::certified_action_session::ActionLifecycle,
+    )> {
+        // Keep the global Jobs ordering while each room independently verifies
+        // its selected identity. Duplicate room projections name one job.
+        let mut jobs = std::collections::BTreeMap::new();
+        for lifecycle in self.job_lifecycles(ctx) {
+            for (id, update) in lifecycle.statuses() {
+                jobs.entry(id)
+                    .or_insert_with(|| (update, lifecycle.clone()));
+            }
+        }
+        jobs.into_iter()
+            .map(|(id, (update, lifecycle))| (id, update, lifecycle))
+            .collect()
+    }
+
+    fn job_result(
+        id: u64,
+        subtitle: &str,
+        cancel: bool,
+        actor: &str,
+        lifecycle: crate::shell::certified_action_session::ActionLifecycle,
+    ) -> SearchResult {
         if cancel {
-            let broker = self.broker.clone();
+            let broker = lifecycle;
             let actor = actor.to_string();
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
@@ -1806,17 +1852,15 @@ impl LiveAppActionsProvider {
                     if chrome.borrow().active_local_user() != actor {
                         return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
                     }
-                    broker.cancel(id, &actor).map_err(ActionError::Refused)
+                    broker.cancel(id).map_err(ActionError::Refused)
                 }),
                 on_invoke: Some(std::rc::Rc::new(move |_, _, chrome, _| {
                     if chrome.borrow().active_local_user() != invoke_actor {
                         return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
                     }
-                    invoke_broker
-                        .cancel(id, &invoke_actor)
-                        .map_err(ActionError::Refused)?;
+                    invoke_broker.cancel(id).map_err(ActionError::Refused)?;
                     let update = invoke_broker
-                        .status_for_actor(id, &invoke_actor)
+                        .status(id)
                         .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                     Ok(ActionReceipt {
                         broker_invocation_id: Some(id),
@@ -1826,7 +1870,7 @@ impl LiveAppActionsProvider {
                 on_begin_invoke: None,
             };
         }
-        let status_broker = self.broker.clone();
+        let status_broker = lifecycle;
         let actor = actor.to_string();
         SearchResult {
             shortcut: None,
@@ -1846,7 +1890,7 @@ impl LiveAppActionsProvider {
                     return Err(ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()));
                 }
                 let update = status_broker
-                    .status_for_actor(id, &actor)
+                    .status(id)
                     .ok_or_else(|| ActionError::Refused(JOB_UNAVAILABLE_MESSAGE.into()))?;
                 Ok(ActionReceipt {
                     broker_invocation_id: Some(id),
@@ -1876,13 +1920,17 @@ impl LiveAppActionsProvider {
         if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
             return page;
         }
-        let Some(update) = self.broker.status_for_actor(id, &actor) else {
+        let Some((lifecycle, update)) = self
+            .job_lifecycles(ctx)
+            .into_iter()
+            .find_map(|lifecycle| lifecycle.status(id).map(|update| (lifecycle, update)))
+        else {
             return page;
         };
-        if cancel && !self.broker.can_cancel(id, &actor) {
+        if cancel && !lifecycle.can_cancel(id) {
             return page;
         }
-        let row = self.job_result(id, &job_subtitle(&update), cancel, &actor);
+        let row = Self::job_result(id, &job_subtitle(&update), cancel, &actor, lifecycle);
         let bytes = row
             .title
             .len()
@@ -2720,66 +2768,22 @@ impl SearchProvider for LiveAppActionsProvider {
         if self.projection.get() != QueryProjection::LocalOnly
             && (needle.is_empty() || "jobs status progress".contains(&needle))
         {
-            for (id, update) in self.broker.statuses(&actor) {
-                let status_broker = self.broker.clone();
-                results.push(SearchResult {
-                    shortcut: None,
-                    kind: ResourceKind::Custom("action-job".into()),
-                    operation_kind: tilo_actions::OperationKind::View,
-                    provider_id: PROVIDER_ID.into(),
-                    id: job_status_id(id),
-                    title: t_args("search-app-job", &[("id", id.to_string().into())]),
-                    subtitle: Some(job_subtitle(&update)),
-                    badge: None,
-                    score: -10,
-                    params: Vec::new(),
-                    contract: None,
-                    on_open: std::rc::Rc::new(|_, _, _, _| Ok(())),
-                    on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
-                        let update = status_broker
-                            .status(id)
-                            .ok_or_else(|| ActionError::Refused("unknown invocation id".into()))?;
-                        Ok(ActionReceipt {
-                            broker_invocation_id: Some(id),
-                            update,
-                        })
-                    })),
-                    on_begin_invoke: None,
-                });
-                if self.broker.can_cancel(id, &actor) {
-                    let broker = self.broker.clone();
-                    let actor = actor.clone();
-                    let invoke_broker = broker.clone();
-                    let invoke_actor = actor.clone();
-                    results.push(SearchResult {
-                        shortcut: None,
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Effect,
-                        provider_id: PROVIDER_ID.into(),
-                        id: job_cancel_id(id),
-                        title: t_args("search-app-job-cancel", &[("id", id.to_string().into())]),
-                        subtitle: Some(t("search-app-job-cancel-detail")),
-                        badge: None,
-                        score: 5,
-                        params: Vec::new(),
-                        contract: None,
-                        on_open: std::rc::Rc::new(move |_, _, _, _| {
-                            broker.cancel(id, &actor).map_err(ActionError::Refused)
-                        }),
-                        on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
-                            invoke_broker
-                                .cancel(id, &invoke_actor)
-                                .map_err(ActionError::Refused)?;
-                            let update = invoke_broker.status(id).ok_or_else(|| {
-                                ActionError::Refused("unknown invocation id".into())
-                            })?;
-                            Ok(ActionReceipt {
-                                broker_invocation_id: Some(id),
-                                update,
-                            })
-                        })),
-                        on_begin_invoke: None,
-                    });
+            for (id, update, lifecycle) in self.owned_jobs(&ctx) {
+                results.push(Self::job_result(
+                    id,
+                    &job_subtitle(&update),
+                    false,
+                    &actor,
+                    lifecycle.clone(),
+                ));
+                if lifecycle.can_cancel(id) {
+                    results.push(Self::job_result(
+                        id,
+                        &job_subtitle(&update),
+                        true,
+                        &actor,
+                        lifecycle,
+                    ));
                 }
             }
         }
@@ -3258,13 +3262,14 @@ impl SearchProvider for LiveAppActionsProvider {
                         subtitle,
                         cancel,
                         actor,
+                        lifecycle,
                     } => {
                         if !ctx.wanted.is_empty() && !ctx.wanted.contains(&ResourceKind::Action) {
                             position = position.saturating_add(1);
                             work = work.saturating_add(1);
                             continue;
                         }
-                        self.job_result(*id, subtitle, *cancel, actor)
+                        Self::job_result(*id, subtitle, *cancel, actor, lifecycle.clone())
                     }
                     AuxiliaryEntry::Directory {
                         root,

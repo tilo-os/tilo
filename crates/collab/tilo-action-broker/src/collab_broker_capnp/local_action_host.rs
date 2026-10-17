@@ -195,6 +195,21 @@ impl CapnpBrokerState {
         Ok(self.checked_local_host(caller, presentation)?)
     }
 
+    /// Retain the exact certificate owner for the native Jobs projection.
+    /// Every read and control revalidates the original session admission.
+    ///
+    /// # Errors
+    /// Refuses the same invalid or expired custody as `certified_local_action_host`.
+    pub fn certified_action_lifecycle(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<CertifiedActionLifecycle, String> {
+        Ok(CertifiedActionLifecycle(
+            self.checked_local_host(caller, presentation)?,
+        ))
+    }
+
     /// [`Self::certified_local_action_host`] handed to agent `agent` by the
     /// person's own device (an MCP client): the session stays the person's
     /// admission, every action through it is the agent's, acting for the
@@ -255,6 +270,91 @@ impl CapnpBrokerState {
         host.check_lease(caller)
             .map_err(|error| error.to_string())?;
         Ok(host)
+    }
+}
+
+/// Owner-aware lifecycle access under an existing certified session.
+#[derive(Clone)]
+pub struct CertifiedActionLifecycle(Arc<CertifiedLocalActionHost>);
+
+impl CertifiedActionLifecycle {
+    pub fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        let Ok(admitted) = self.0.check(&self.0.caller) else {
+            return Vec::new();
+        };
+        self.0
+            .state
+            .invocation_statuses_for_owner(&self.0.admission.owner())
+            .into_iter()
+            .filter(|(id, update)| self.permitted_job(*id, update.invocation(), &admitted))
+            .collect()
+    }
+
+    pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
+        let admitted = self.0.check(&self.0.caller).ok()?;
+        let update = self
+            .0
+            .state
+            .invocation_status_for_owner(id, &self.0.admission.owner())?;
+        self.permitted_job(id, update.invocation(), &admitted)
+            .then_some(update)
+    }
+
+    pub fn can_cancel(&self, id: u64) -> bool {
+        self.status(id).is_some()
+            && self
+                .0
+                .state
+                .can_cancel_for_owner(id, &self.0.admission.owner())
+    }
+
+    /// # Errors
+    /// Refuses revoked custody, foreign ownership and non-cancellable jobs.
+    pub fn cancel(&self, id: u64) -> Result<(), String> {
+        self.status(id)
+            .ok_or("the invocation is unavailable in this session")?;
+        self.0
+            .state
+            .request_cancellation_for_owner(id, &self.0.admission.owner())
+    }
+
+    fn permitted_job(
+        &self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+        admitted: &super::AdmittedJoinIdentity,
+    ) -> bool {
+        let Ok(guard) = self.0.state.journal.lock() else {
+            return false;
+        };
+        let Ok(Some(journal)) = guard.as_ref() else {
+            return false;
+        };
+        let key = super::InvocationKey {
+            host: journal.host(),
+            room: self.0.admission.room.clone(),
+            owner: self.0.admission.owner(),
+            invocation,
+        };
+        let in_room = journal
+            .lookup(&key)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.wire_id == id);
+        drop(guard);
+        in_room
+            && self
+                .0
+                .state
+                .authorize_checkpoint_job(
+                    &self.0.admission.room,
+                    admitted
+                        .certificate
+                        .as_ref()
+                        .filter(|_| admitted.agent_id.is_none()),
+                    id,
+                )
+                .is_ok()
     }
 }
 

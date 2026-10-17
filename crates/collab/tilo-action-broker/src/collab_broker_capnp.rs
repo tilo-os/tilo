@@ -2215,7 +2215,7 @@ mod launchable;
 mod local_action_host;
 mod witness;
 mod workspace_open;
-pub use local_action_host::CertifiedPersonContext;
+pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 
 pub use launchable::launchable_provider;
 #[path = "peer_action_broker.rs"]
@@ -6528,6 +6528,15 @@ impl CapnpBrokerState {
     }
 
     pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        self.invocation_statuses_for_owner(&InvocationOwner::Local {
+            actor: actor.into(),
+        })
+    }
+
+    fn invocation_statuses_for_owner(
+        &self,
+        owner: &InvocationOwner,
+    ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.expire_stale_invocations();
         let mut jobs = self
             .pending_invocations
@@ -6535,7 +6544,7 @@ impl CapnpBrokerState {
             .map(|pending| {
                 pending
                     .iter()
-                    .filter(|(_, job)| matches!(&job.owner, InvocationOwner::Local { actor: owner } if owner == actor))
+                    .filter(|(_, job)| &job.owner == owner)
                     .map(|(id, job)| (*id, job.update.clone()))
                     .collect::<Vec<_>>()
             })
@@ -6544,7 +6553,7 @@ impl CapnpBrokerState {
             jobs.extend(
                 completed
                     .iter()
-                    .filter(|(_, (owner, _))| matches!(owner, InvocationOwner::Local { actor: owner } if owner == actor))
+                    .filter(|(_, (retained, _))| retained == owner)
                     .map(|(id, (_, update))| (*id, update.clone())),
             );
         }
@@ -6606,6 +6615,15 @@ impl CapnpBrokerState {
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+        self.can_cancel_for_owner(
+            id,
+            &InvocationOwner::Local {
+                actor: actor.into(),
+            },
+        )
+    }
+
+    fn can_cancel_for_owner(&self, id: u64, owner: &InvocationOwner) -> bool {
         self.expire_stale_invocations();
         self.pending_invocations
             .lock()
@@ -6613,7 +6631,7 @@ impl CapnpBrokerState {
             .and_then(|pending| {
                 pending
                     .get(&id)
-                    .map(|job| job.cancellable && matches!(&job.owner, InvocationOwner::Local { actor: owner } if owner == actor))
+                    .map(|job| job.cancellable && &job.owner == owner)
             })
             .unwrap_or(false)
     }
