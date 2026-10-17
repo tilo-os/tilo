@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -148,7 +149,15 @@ class Wiring(unittest.TestCase):
         last_mutation = max(i for i, line in enumerate(lines[:split]) if mutation.search(line))
         self.assertLess(last_mutation, gate)
         self.assertLess(gate, split)
-        self.assertIn('/usr/local/bin/verify-no-cisco-openh264.sh \\', lines[gate + 2])
+        # Other final-rootfs gates may run before cleanup. Observe the removal
+        # command itself, not its distance in lines from the codec check.
+        tail = '\n'.join(line for line in lines[gate + 1:split]
+                         if not line.lstrip().startswith('#'))
+        commands = tail.replace('\\\n', ' ').split('&&')
+        cleanup = [shlex.split(command.strip()) for command in commands
+                   if command.strip().startswith('rm -f ')]
+        self.assertTrue(any('/usr/local/bin/verify-no-cisco-openh264.sh' in command[2:]
+                            for command in cleanup), 'finished rootfs must remove the gate script')
 
     def test_no_shipped_image_requests_ciscos_packages(self):
         sources = load_fingerprint().parser.SOURCES
