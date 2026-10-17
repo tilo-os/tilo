@@ -102,6 +102,12 @@ impl SystemStatus {
 
     /// For the tray's accessible name and tests asserting on meaning.
     pub fn summary(&self) -> String {
+        self.reading().unwrap_or_else(|| t("status-summary-empty"))
+    }
+
+    /// The readings the machine has, joined, or `None` while it has none:
+    /// for a surface that would rather show nothing than a stand-in line.
+    pub fn reading(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         match &self.link {
             Some(l) if l.kind == LinkKind::Wired => parts.push(l.name.clone().map_or_else(
@@ -132,11 +138,7 @@ impl SystemStatus {
                 t_args("status-battery", &[("percent", pct.into())])
             });
         }
-        if parts.is_empty() {
-            t("status-summary-empty")
-        } else {
-            parts.join(" · ")
-        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
 
@@ -525,6 +527,7 @@ mod tests {
             assert!(!s.battery_is_low());
             assert!(!s.audio_is_silent(), "unknown volume is not silence");
             assert_eq!(s.summary(), "System status");
+            assert_eq!(s.reading(), None, "nothing read means nothing to show");
         }
 
         // Phase `a_machine_with_no_battery_draws_no_battery`.
