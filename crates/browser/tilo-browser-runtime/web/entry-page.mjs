@@ -24,6 +24,8 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspac
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
+import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
+import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
 import {followRefusal, refusalText, rejoinedName, retryRejoin} from './session-refusal.mjs';
@@ -124,34 +126,156 @@ function askName(current = '', save = async typed => typed.trim() || null) {
   });
 }
 
-/**
- * A link the clipboard refused, over the page where the person can copy it
- * themselves: selected in a read-only field, so Ctrl+C or a long press
- * copies it. Gone once copied (`copied()` is called) or closed.
- */
-function revealLink(link, copied = () => {}) {
-  document.querySelector('[data-card="reveal-link"]')?.remove();
+/** A pairing card over the page: `data-card` names it, `title` heads it. */
+function pairCard(kind, title, role = 'dialog') {
+  document.querySelector(`[data-card="${kind}"]`)?.remove();
   const card = document.createElement('div');
-  card.className = 'tilo-entry-card';
-  card.dataset.card = 'reveal-link';
-  card.setAttribute('role', 'dialog');
-  card.setAttribute('aria-label', 'Pairing link');
-  const label = document.createElement('label');
-  label.textContent = 'Pairing link: copy it, then open it on your new device';
+  card.className = 'tilo-entry-card tilo-pair';
+  card.dataset.card = kind;
+  card.setAttribute('role', role);
+  card.setAttribute('aria-label', title);
+  const heading = document.createElement('h2');
+  heading.textContent = title;
+  card.append(heading);
+  return card;
+}
+
+const paragraph = (text, className) => {
+  const element = document.createElement('p');
+  element.textContent = text;
+  if (className) element.className = className;
+  return element;
+};
+
+/**
+ * The sheet that pairs a new device: the link as a QR code for a phone's
+ * camera, as text to open or paste, and a Copy button (a click, which the
+ * clipboard honours). `copy()` resolves whether the link was copied; where
+ * it was not, the link is selected for the person to copy. Closing the
+ * sheet leaves the link working: its device is still asked about here.
+ */
+function pairLinkSheet({link, copy}) {
+  const card = pairCard('pair-link', 'Pair a new device');
+  const code = document.createElement('img');
+  Object.assign(code, {className: 'tilo-pair-qr', alt: 'QR code of the pairing link', width: 240, height: 240,
+    src: `data:image/svg+xml,${encodeURIComponent(qrSvg(link))}`});
   const input = document.createElement('input');
   Object.assign(input, {name: 'pairing-link', value: link, readOnly: true, spellcheck: false, autocomplete: 'off'});
-  label.append(input);
+  input.setAttribute('aria-label', 'Pairing link');
+  const actions = document.createElement('div');
+  actions.className = 'tilo-entry-actions';
+  const copyButton = document.createElement('button');
+  copyButton.type = 'button';
+  copyButton.className = 'tilo-entry-primary';
+  copyButton.textContent = 'Copy link';
   const close = document.createElement('button');
   close.type = 'button';
   close.textContent = 'Close';
+  const copied = () => { copyButton.textContent = 'Copied'; };
+  copyButton.addEventListener('click', async () => {
+    if (await copy()) copied();
+    else { input.focus(); input.select(); }
+  });
+  input.addEventListener('copy', copied);
   const done = () => card.remove();
-  input.addEventListener('copy', () => { done(); copied(); });
   close.addEventListener('click', done);
   card.addEventListener('keydown', event => { if (event.key === 'Escape') done(); });
-  card.append(label, close);
+  actions.append(copyButton, close);
+  card.append(code,
+    paragraph('On a phone, scan this code with the camera. In a browser, open the link. On another Tilo computer, paste the link into Join a workspace…'),
+    input,
+    paragraph('This device asks you before anything is let in, and shows the code your new device shows. The link works once, for 10 minutes.', 'tilo-pair-note'),
+    actions);
   document.body.append(card);
-  input.focus();
-  input.select();
+  copyButton.focus();
+  return {close: done};
+}
+
+/**
+ * The ask about a device that answered this page's pairing link: what the
+ * host saw of it (its label, when it asked, from where) and the code it
+ * shows, with Approve and Decline. `decide(approved)` answers; the card
+ * then says what came of it and goes. Decline has the focus, so a stray
+ * Enter lets nothing in.
+ */
+function pairingAsk(request, decide) {
+  const card = pairCard('pair-ask', 'A device asks to be you', 'alertdialog');
+  const details = document.createElement('dl');
+  details.className = 'tilo-pair-device';
+  const detail = (term, value) => {
+    const name = document.createElement('dt');
+    name.textContent = term;
+    const text = document.createElement('dd');
+    text.textContent = value;
+    details.append(name, text);
+    return text;
+  };
+  detail('Device', request.label || 'A browser');
+  const when = detail('Asked', '');
+  // In the card's own language, which is English for now.
+  const country = countryName(request.country, {locale: 'en'});
+  if (country) detail('From', country);
+  const tick = () => { when.textContent = whenRequested(request.requestedAtMs, {locale: 'en'}); };
+  tick();
+  const timer = setInterval(tick, 15_000);
+  const error = paragraph('', 'tilo-entry-error');
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  const actions = document.createElement('div');
+  actions.className = 'tilo-entry-actions';
+  const approve = document.createElement('button');
+  approve.type = 'button';
+  approve.className = 'tilo-entry-primary';
+  approve.textContent = `Approve ${request.pairingCode}`;
+  const decline = document.createElement('button');
+  decline.type = 'button';
+  decline.textContent = 'Decline';
+  actions.append(approve, decline);
+  const close = () => { clearInterval(timer); card.remove(); };
+  const answer = async approved => {
+    approve.disabled = decline.disabled = true;
+    error.hidden = true;
+    let result;
+    try {
+      result = await decide(approved);
+    } catch (failure) {
+      error.textContent = `That did not reach the host: ${failure?.message ?? failure}. Try again.`;
+      error.hidden = false;
+      approve.disabled = decline.disabled = false;
+      return;
+    }
+    clearInterval(timer);
+    const label = result.label || 'The device';
+    card.replaceChildren();
+    if (result.approved) {
+      card.classList.add('tilo-pair-done');
+      const check = document.createElement('span');
+      check.className = 'tilo-pair-check';
+      check.setAttribute('aria-hidden', 'true');
+      card.append(check, paragraph(`${label} is now one of your devices`, 'tilo-pair-said'));
+    } else {
+      card.append(paragraph(`Declined. ${label} was not let in.`, 'tilo-pair-said'));
+    }
+    setTimeout(close, 4000);
+  };
+  approve.addEventListener('click', () => answer(true));
+  decline.addEventListener('click', () => answer(false));
+  card.append(details, paragraph('Approve only if your new device shows this code:'),
+    paragraph(request.pairingCode, 'tilo-pair-digits'), paragraph('Approving lets it act as you.'), error, actions);
+  document.body.append(card);
+  decline.focus();
+  return {close};
+}
+
+/** Said on a new device while the person's other device decides on it:
+ * the code that device shows beside its ask. */
+function pairingWait(code) {
+  document.documentElement.dataset.pairingCode = code;
+  const card = pairCard('pair-wait', 'Waiting for approval on your other device…', 'status');
+  card.append(paragraph('Approve there if it shows this code:'), paragraph(code, 'tilo-pair-digits'),
+    paragraph('This page goes on by itself once you approve.', 'tilo-pair-note'));
+  document.body.append(card);
+  return () => card.remove();
 }
 
 /**
@@ -593,10 +717,20 @@ export async function startEntryPage({mode}) {
       return peer;
     },
     onInvite: () => { void workspaceActions?.perform(INVITE.id); },
-    pairDevice: ({origin, room, userPublicKey, workspace}) => {
+    pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? randomDisplayName();
-      return pairViaHost({origin, room, userPublicKey, workspace, runtime, displayName, label: deviceLabel(),
-        onPairingCode: showPairingCode});
+      let waiting = () => {};
+      try {
+        return await pairViaHost({origin, room, userPublicKey, invite, workspace, runtime, displayName,
+          label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
+      } catch (error) {
+        // The host's answer, said as what to do next; anything else as any failure.
+        const said = pairingFailure(error);
+        if (said) throw new AdmissionError('pairing', said);
+        throw error;
+      } finally {
+        waiting();
+      }
     },
     readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
@@ -1032,7 +1166,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
-    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', revealLink,
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', showPairLink: pairLinkSheet, askPairing: pairingAsk,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
@@ -1072,24 +1206,19 @@ function inputPause() {
 
 /**
  * Pairing another device of `identity` through the host `peer` is in: the
- * link that opens this workspace there as a new device of this person, and
- * the host's requests waiting for this root to approve them.
+ * link that opens this workspace there as a new device of this person,
+ * answering `invite`, and the host's requests waiting for this root to
+ * approve them.
  */
 function pairingOf({peer, identity, runtime, link}) {
   if (!peer?.origin || !peer.room || !runtime?.pendingPairings || !link) return null;
   const post = httpsPost(peer.origin);
   return {
-    link: () => {
+    link: invite => {
       const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.room}}});
-      return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${identity.userPublicKey}`;
+      return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await runtime.pendingPairings(post, identity)),
     answer: (digest, approved) => runtime.answerPairing(post, identity, digest, approved),
   };
-}
-
-/** What a new device is called where the person approves it. */
-function deviceLabel() {
-  const platform = navigator.userAgentData?.platform || navigator.platform || '';
-  return platform ? `Browser on ${platform}`.slice(0, 64) : 'Browser';
 }

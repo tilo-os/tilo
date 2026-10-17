@@ -90,7 +90,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         let https = https.clone();
         let key = browser_key.clone();
         async move {
-            certify(&https, user, "Browser on Cloud", &key, |code| {
+            certify(&https, user, "Browser on Cloud", [0; 16], &key, |code| {
                 let _ = code_tx.send(code.to_string());
             })
             .await

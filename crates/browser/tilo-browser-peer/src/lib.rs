@@ -24,7 +24,6 @@
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 
-pub mod carrier;
 mod channels;
 mod clock;
 pub mod custody;
@@ -40,11 +39,10 @@ pub mod transport;
 pub mod voice;
 mod watching;
 
-pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use channel_crypto::ChannelContentKeys;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
-    certify, certify_with_root, issue_device_cert, pending_pairings,
+    certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,
 };
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument, claimed_changes, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
@@ -53,5 +51,6 @@ pub use session::{
     Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
     PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
+pub use tilo_relay_client::https::{HttpClient, HttpFuture, HttpsLink, LinkError, host_info};
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

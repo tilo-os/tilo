@@ -284,6 +284,20 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     if let Some(entry) = &persistent.web_entry {
         command.arg("--web-entry").arg(entry);
     }
+    if let Some(header) = &persistent.country_header {
+        // The relay's peers are the ingress (the trusted proxies) or, behind
+        // this service's TLS front, this machine.
+        let mut proxies = persistent.trusted_proxies.to_string();
+        if !proxies.is_empty() {
+            proxies.push(',');
+        }
+        proxies.push_str("127.0.0.0/8,::1");
+        command
+            .arg("--country-header")
+            .arg(header)
+            .arg("--country-proxies")
+            .arg(proxies);
+    }
     command
         .arg("--persistent")
         .arg(&persistent.name)

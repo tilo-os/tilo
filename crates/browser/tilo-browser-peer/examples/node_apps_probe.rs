@@ -233,7 +233,7 @@ async fn main() {
     let root =
         tilo_user_identity::persist::read_owned_signing_key(&args.root_key).expect("the root key");
     let http = https::DevHttps::new(args.addr, &args.cert_sha256);
-    let host_cert = tilo_browser_peer::carrier::host_info(&*http)
+    let host_cert = tilo_browser_peer::host_info(&*http)
         .await
         .expect("the node answers /host")
         .host_cert;
