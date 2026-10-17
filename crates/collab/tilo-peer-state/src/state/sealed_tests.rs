@@ -525,3 +525,36 @@ fn a_keyless_owner_keeps_custody_of_its_own_sealed_write_without_renewing_it() {
         "no recovery is reserved for history nobody here can read"
     );
 }
+
+/// A sealed history's durable parts are the whole encoding cut apart: the
+/// record's parts are encoded once per state of it, and the parts restore
+/// what the whole bytes restore.
+#[test]
+fn sealed_durable_parts_are_the_whole_encoding_and_restore_the_same() {
+    let (mut host, _, b, now) = host();
+    for seq in 1..=(3 * 64 + 5) {
+        let write = sealed(&host, &b, seq, format!("sealed write {seq}").as_bytes());
+        host.receive_from(origin(&b), write, now).unwrap();
+    }
+    let whole = host.durable_whole().unwrap();
+    assert_eq!(whole[0], 6);
+    assert_eq!(host.durable().unwrap(), whole);
+    let before = host.durable_parts().unwrap();
+    assert_eq!(before.concat(), whole);
+    let again = host.durable_parts().unwrap();
+    assert!(
+        before
+            .iter()
+            .zip(&again)
+            .filter(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+            .count()
+            >= 3,
+        "the record, its sealed history and the settled index are encoded once"
+    );
+    let write = sealed(&host, &b, 3 * 64 + 6, b"one more");
+    host.receive_from(origin(&b), write, now).unwrap();
+    assert_eq!(host.durable().unwrap(), host.durable_whole().unwrap());
+    let restored = restore_bytes(&host, &host.durable_parts().unwrap().concat(), now).unwrap();
+    assert_eq!(held(&restored), held(&host));
+    assert_eq!(held(&restored).len(), 3 * 64 + 6);
+}

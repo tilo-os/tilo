@@ -584,7 +584,7 @@ mod tests {
         let alice = member(&mut room, &key, 31);
         let bob = member(&mut room, &key, 41);
         let charlie = member(&mut room, &key, 51);
-        room.record.peer = room.peer.durable().unwrap();
+        room.store_peer().unwrap();
         room.persist().unwrap();
         let alice_key = hex::encode(alice.user_public_key);
         let bob_key = hex::encode(bob.user_public_key);
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(member.role, collab_types::Role::Editor);
         assert_eq!(foreign.user_public_key, alice.user_public_key);
         assert!(room.peer.certificates().contains(&foreign));
-        room.record.peer = room.peer.durable().unwrap();
+        room.store_peer().unwrap();
         room.persist().unwrap();
         let before = std::fs::read(room.private_path()).unwrap();
         let reopened = GovernedRoom::open(room.path.clone(), &governor, &key).unwrap();

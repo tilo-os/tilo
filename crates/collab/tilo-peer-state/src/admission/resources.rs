@@ -30,53 +30,42 @@ impl BoundedExactAdmissions {
     }
 }
 
-/// An index's entries as their canonical wire map.
-pub(super) struct WireEntries<'a>(pub(super) &'a ExactAdmissions);
-impl Serialize for WireEntries<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize_entries(serializer)
+/// Decodes one entry map of the wire index into `index`: its settled
+/// entries, or its recent ones. Every entry is checked against the whole
+/// index so far, so no key is in both maps and the bounds hold for both.
+struct EntriesInto<'a> {
+    index: &'a mut ExactAdmissions,
+    settled: bool,
+}
+impl<'de> serde::de::DeserializeSeed<'de> for EntriesInto<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
     }
 }
-
-/// A whole index as its canonical wire tuple: entries, then marks.
-pub(super) struct WireIndexRef<'a>(pub(super) &'a ExactAdmissions);
-impl Serialize for WireIndexRef<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.serialize_index(serializer)
+impl<'de> serde::de::Visitor<'de> for EntriesInto<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("bounded exact admissions")
     }
-}
-
-// The entries visitor is used by legacy restore and the limited decoder.
-struct Entries(ExactAdmissions);
-impl<'de> Deserialize<'de> for Entries {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = Entries;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("bounded exact admissions")
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Entries, A::Error> {
-                use serde::de::Error;
-                if map.size_hint().is_some_and(|n| n > MAX_EXACT_ADMISSIONS) {
-                    return Err(A::Error::custom("exact admission count exceeds limit"));
-                }
-                let mut value = ExactAdmissions::default();
-                while let Some((key, operation_id)) = map.next_entry::<AdmissionKey, [u8; 32]>()? {
-                    if value.get(&key).is_some() {
-                        return Err(A::Error::custom("duplicate exact admission key"));
-                    }
-                    let admission = DocumentAdmission { key, operation_id };
-                    let bytes = value.check(&admission).map_err(A::Error::custom)?;
-                    value.add(admission.key, admission.operation_id, bytes);
-                }
-                Ok(Entries(value))
-            }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        use serde::de::Error;
+        if map
+            .size_hint()
+            .is_some_and(|n| n.saturating_add(self.index.len()) > MAX_EXACT_ADMISSIONS)
+        {
+            return Err(A::Error::custom("exact admission count exceeds limit"));
         }
-        deserializer.deserialize_map(Visitor)
+        while let Some((key, operation_id)) = map.next_entry::<AdmissionKey, [u8; 32]>()? {
+            if self.index.get(&key).is_some() {
+                return Err(A::Error::custom("duplicate exact admission key"));
+            }
+            let admission = DocumentAdmission { key, operation_id };
+            let bytes = self.index.check(&admission).map_err(A::Error::custom)?;
+            self.index
+                .add_decoded(self.settled, admission.key, admission.operation_id, bytes);
+        }
+        Ok(())
     }
 }
 
@@ -88,13 +77,35 @@ impl Serialize for WireIndex {
 }
 impl<'de> Deserialize<'de> for WireIndex {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-        let (Entries(entries), marks) =
-            <(Entries, std::collections::BTreeMap<WriterKey, u64>)>::deserialize(deserializer)?;
-        entries
-            .with_marks(marks)
-            .map(WireIndex)
-            .map_err(D::Error::custom)
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = WireIndex;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an exact admission index")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<WireIndex, A::Error> {
+                use serde::de::Error;
+                let missing = || A::Error::custom("exact admission index is incomplete");
+                let mut index = ExactAdmissions::default();
+                for settled in [true, false] {
+                    seq.next_element_seed(EntriesInto {
+                        index: &mut index,
+                        settled,
+                    })?
+                    .ok_or_else(missing)?;
+                }
+                let marks: std::collections::BTreeMap<WriterKey, u64> =
+                    seq.next_element()?.ok_or_else(missing)?;
+                index
+                    .with_marks(marks)
+                    .map(WireIndex)
+                    .map_err(A::Error::custom)
+            }
+        }
+        deserializer.deserialize_tuple(3, Visitor)
     }
 }
 impl crate::resources::outer::EncodeSchema for WireIndex {}

@@ -135,7 +135,7 @@ pub(in crate::state) fn restore(
         metadata.tree::<Route, PeerDocument<BoundedNative>>()?;
         admitted_documents.insert(
             document.route,
-            PeerDocument {
+            super::StoredDocument::from(PeerDocument {
                 doc,
                 channel,
                 encryption_required: document.encryption_required,
@@ -144,7 +144,7 @@ pub(in crate::state) fn restore(
                     .covered_snapshot
                     .map(|original| NativeCheckpoint { original }),
                 sealed: super::SealedLog::default(),
-            },
+            }),
         );
     }
     let mut core = PeerCore::<BoundedNative> {
@@ -152,12 +152,12 @@ pub(in crate::state) fn restore(
         authority: stored_authority,
         certificates,
         revocations,
-        receipts,
+        receipts: receipts.into(),
         room_doc,
-        documents: admitted_documents,
+        documents: admitted_documents.into(),
         pending,
         pending_bytes,
-        checkpoint_times: BTreeMap::new(),
+        checkpoint_times: crate::shared::Shared::default(),
         exact_admissions: exact,
         admission_v5: version >= 5,
         native_cut_publisher: None,
