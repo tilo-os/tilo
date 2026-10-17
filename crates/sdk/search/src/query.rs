@@ -27,8 +27,10 @@ pub(crate) const FIELD_BASE: Score = 1000.0;
 /// Scale applied to body BM25, keeping it well below one rank step.
 const BM25_SCALE: Score = 0.001;
 
-/// Shortest word matched with one typo, and with two.
-const ONE_TYPO_SCALARS: usize = 5;
+/// Shortest word matched with one typo, and with two. Four letters take one:
+/// "nots" is "notes" mistyped, and a fast typist drops a letter as often in a
+/// short word as in a long one.
+const ONE_TYPO_SCALARS: usize = 4;
 const TWO_TYPOS_SCALARS: usize = 9;
 
 type BoxQuery = Box<dyn Query>;
@@ -75,8 +77,51 @@ fn prefix_query(prefix: Term) -> BoxQuery {
     Box::new(query)
 }
 
+/// Fewest letters a query needs before it matches inside a word. "not" is
+/// not looking for "another", and "s" is not looking for every word with an
+/// "s" in it; a word start is where a person's query begins until it is long
+/// enough to be a fragment they remember.
+pub const MIN_INFIX_SCALARS: usize = 4;
+
+/// Whether `scalar` belongs to a script written without spaces between words
+/// (Han, kana, Hangul, Thai and the like). There a word start is not marked
+/// in the text, so a short query must still match inside a run.
+fn unspaced_script(scalar: char) -> bool {
+    matches!(u32::from(scalar),
+        0x0E00..=0x0EFF // Thai, Lao
+        | 0x1000..=0x109F // Myanmar
+        | 0x1780..=0x17FF // Khmer
+        | 0x2E80..=0x9FFF // CJK radicals, kana, Han
+        | 0xA960..=0xA97F
+        | 0xAC00..=0xD7FF // Hangul
+        | 0xF900..=0xFAFF
+        | 0xFF66..=0xFF9F // half-width kana
+        | 0x20000..=0x3FFFF)
+}
+
+/// Whether the folded `query` may match inside a word: it is long enough to
+/// be a remembered fragment, or written in a script without word spaces.
+pub(crate) fn infix_allowed(query: &[char]) -> bool {
+    let letters = query
+        .iter()
+        .filter(|scalar| scalar.is_alphanumeric())
+        .count();
+    letters >= MIN_INFIX_SCALARS || query.iter().copied().any(unspaced_script)
+}
+
+/// [`infix_allowed`] for typed text: whether `query` may match inside a word
+/// ([`MatchTier::Contains`]) rather than only at word starts.
+#[must_use]
+pub fn matches_inside_words(query: &str) -> bool {
+    let scalars: Vec<char> = query.chars().collect();
+    infix_allowed(&scalars)
+}
+
 /// The marked sequence a field tier looks for, if the query can match it.
 pub(crate) fn tier_sequence(tier: MatchTier, query: &[char]) -> Option<Vec<char>> {
+    if tier == MatchTier::Contains && !infix_allowed(query) {
+        return None;
+    }
     let is_word = |scalar: Option<&char>| scalar.is_some_and(|scalar| scalar.is_alphanumeric());
     let starts_word = is_word(query.first());
     let ends_word = is_word(query.last());
@@ -260,6 +305,60 @@ fn typo_queries(
     .collect()
 }
 
+/// Every chunk of the query in some field, as a substring or by the typos of
+/// its words in a title or keyword: spread words with a typo among them.
+/// `None` when a chunk can match neither way.
+fn spanning_typo_query(
+    fields: &Fields,
+    slots: &[usize],
+    used: Used,
+    typos: &Typos,
+    chunks: &[&str],
+    query_words: &[String],
+) -> Option<BoxQuery> {
+    let last = query_words.len().checked_sub(1)?;
+    let vocabularies: Vec<(Field, &Vocabulary)> = [
+        (0, fields.title_words, &typos.title),
+        (KEYWORD_SLOT, fields.keyword_words, &typos.keyword),
+    ]
+    .into_iter()
+    .filter(|(slot, ..)| used.slots.get(*slot).copied().unwrap_or(false))
+    .map(|(_, field, vocabulary)| (field, vocabulary))
+    .collect();
+    let mut at = 0usize;
+    let mut every = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let marked_chunk = marked(chunk, false);
+        let mut either: Vec<BoxQuery> = slots
+            .iter()
+            .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &marked_chunk))
+            .collect();
+        let held = words(chunk);
+        let range = at..at.saturating_add(held.len());
+        at = range.end;
+        if !held.is_empty() {
+            let by_typo: Option<Vec<BoxQuery>> = range
+                .map(|word_at| {
+                    let word = query_words.get(word_at)?;
+                    any_of(
+                        vocabularies
+                            .iter()
+                            .filter_map(|(field, vocabulary)| {
+                                fuzzy_word(*field, vocabulary, word, word_at == last)
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            if let Some(by_typo) = by_typo {
+                either.push(all_of(by_typo));
+            }
+        }
+        every.push(any_of(either)?);
+    }
+    (at == query_words.len()).then(|| all_of(every))
+}
+
 /// The query for typed `text`, or `None` when nothing can match. An empty
 /// query browses every record.
 pub(crate) fn compile(
@@ -327,6 +426,14 @@ pub(crate) fn compile(
     let query_words = words(text);
     if matching.typos {
         ranked.extend(typo_queries(fields, used, ranks, typos, &query_words));
+        if matching.spanning
+            && chunks.len() > 1
+            && let Some(found) =
+                spanning_typo_query(fields, &slots, used, typos, &chunks, &query_words)
+            && let Some(rank) = ranks(MatchTier::Typo, FieldWeight::KEYWORD)
+        {
+            ranked.push(constant(found, rank));
+        }
     }
     let mut parts = Vec::new();
     if !ranked.is_empty() {

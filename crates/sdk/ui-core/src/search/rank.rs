@@ -15,7 +15,8 @@ use tilo_search::fold;
 pub use tilo_search::{FieldWeight, MatchTier};
 
 /// The tier at which folded `query` meets folded `text`, if it occurs:
-/// exact, prefix, a later word start, or anywhere.
+/// exact, prefix, a later word start, or (once the query is long enough to
+/// be a remembered fragment) anywhere.
 #[must_use]
 pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
     if query.is_empty() {
@@ -38,7 +39,7 @@ pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
             return Some(MatchTier::WordPrefix);
         }
     }
-    found.then_some(MatchTier::Contains)
+    (found && tilo_search::matches_inside_words(query)).then_some(MatchTier::Contains)
 }
 
 /// Points one rank step is worth when merging, so a tier outweighs a
@@ -73,7 +74,9 @@ mod tests {
             Some(MatchTier::WordPrefix)
         );
         assert_eq!(match_tier("dune", "redundant"), None);
-        assert_eq!(match_tier("dun", "redundant"), Some(MatchTier::Contains));
+        assert_eq!(match_tier("dunda", "redundant"), Some(MatchTier::Contains));
+        // Too short to be a remembered fragment: only word starts count.
+        assert_eq!(match_tier("dun", "redundant"), None);
         assert_eq!(match_tier("", "anything"), None);
         // A later word-start occurrence wins over an earlier infix one.
         assert_eq!(

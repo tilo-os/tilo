@@ -59,7 +59,7 @@ pub use fold::{fold, fold_char};
 pub use highlight::locate;
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};
 pub use list::ListIndex;
-pub use query::Matching;
+pub use query::{MIN_INFIX_SCALARS, Matching, matches_inside_words};
 /// The engine's error, for callers opening a [`DiskIndex`].
 pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
