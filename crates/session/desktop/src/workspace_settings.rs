@@ -3137,7 +3137,6 @@ fn service_member_detail(service: &ServiceMember) -> String {
     } else {
         "read"
     };
-    let device = hex::encode(service.device.as_bytes().get(..4).unwrap_or_default());
     let until = service.expires_at.map_or_else(
         || t("workspace-settings-service-until-removed"),
         |deadline| {
@@ -3157,11 +3156,7 @@ fn service_member_detail(service: &ServiceMember) -> String {
     );
     t_args(
         "workspace-settings-service-member",
-        &[
-            ("access", access.into()),
-            ("until", until.into()),
-            ("device", device.into()),
-        ],
+        &[("access", access.into()), ("until", until.into())],
     )
 }
 

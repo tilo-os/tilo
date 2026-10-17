@@ -3,7 +3,7 @@
 chat-contacts-section = Contacts
 chat-person-chat-private = Private conversation
 chat-person-chat-placeholder = Write a private message
-chat-person-chat-unavailable = Private conversation unavailable. Choose a certified person in this workspace.
+chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.
 chat-person-chat-empty-conversation = Messages here are private to you and this person.
 chat-header-search = Search

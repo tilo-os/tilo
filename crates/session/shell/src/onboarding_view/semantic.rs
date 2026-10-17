@@ -264,7 +264,7 @@ impl Provider {
 }
 
 fn unavailable() -> ActionError {
-    ActionError::Refused(t("onboarding-semantic-unavailable"))
+    ActionError::Explained(t("onboarding-semantic-unavailable"))
 }
 
 impl Provider {
@@ -679,7 +679,7 @@ fn poll_queued(
     if operation == "prepared.import" {
         match state.prepared {
             Some("busy") => return Ok(None),
-            Some(_) => return Err(ActionError::Refused(t("onboarding-semantic-failed"))),
+            Some(_) => return Err(ActionError::Explained(t("onboarding-semantic-failed"))),
             None if state.identity_ready => {}
             None => return Err(unavailable()),
         }
@@ -767,14 +767,14 @@ fn poll(
         return Ok(None);
     }
     if (state.failed && checked.is_none()) || state.phase == "closed" {
-        return Err(ActionError::Refused(t("onboarding-semantic-failed")));
+        return Err(ActionError::Explained(t("onboarding-semantic-failed")));
     }
     if operation == KEY_CODECS_INSTALL {
         if matches!(state.codec_completion, CodecCompletion::Running) {
             return Ok(None);
         }
         if !matches!(state.codec_completion, CodecCompletion::Succeeded) {
-            return Err(ActionError::Refused(t("onboarding-semantic-failed")));
+            return Err(ActionError::Explained(t("onboarding-semantic-failed")));
         }
     } else if !effect_observed(&state, operation, previous_tour, checked) {
         // The normal reducer ran, but did not perform this requested effect.

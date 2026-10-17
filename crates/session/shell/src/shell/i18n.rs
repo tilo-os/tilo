@@ -108,8 +108,6 @@ mod tests {
             "tab-closed-toast",
             "tab-closed-group-toast",
             "tab-closed-undo",
-            "tab-closed-undo-hint",
-            "tab-closed-undo-hint-unbound",
             "overview-windows-title",
             "overview-windows-description",
             "overview-window-move-failed",

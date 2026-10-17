@@ -1218,7 +1218,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         let guide = root
             .children
             .iter()
-            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .find(|node| node.name.as_deref() == Some("Keyboard shortcuts"))
             .expect("guide dialog semantics");
         let description = guide.description.as_deref().expect("guide description");
         assert!(description.contains("workspaces with"));
@@ -1254,7 +1254,7 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
             .expect("shell semantics")
             .children
             .iter()
-            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .find(|node| node.name.as_deref() == Some("Keyboard shortcuts"))
             .and_then(|guide| guide.description.clone())
             .expect("guide description")
     };

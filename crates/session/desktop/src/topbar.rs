@@ -1865,13 +1865,10 @@ impl TopBarChrome {
                             })
                             .map(|tab| (workspace, tab))
                     })
+                    // A window the tree does not list has no name a person
+                    // knows; its surface number would mean nothing to them.
                     .map_or_else(
-                        || {
-                            t_args(
-                                "topbar-sharing-surface",
-                                &[("surface", surface.to_string().into())],
-                            )
-                        },
+                        || t("topbar-sharing-unknown-window"),
                         |(workspace, tab)| {
                             if workspace.id == tree.active {
                                 tab.title.clone()
@@ -8074,6 +8071,30 @@ mod tests {
         );
     }
 
+    /// A strip whose windows show the given foreign surfaces under the
+    /// given titles, so sharing disclosure can name them.
+    fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
+        let mut strip = Strip::new(tilo_desktop_model::StripId(2), "Main");
+        for (surface, title) in surfaces {
+            strip.window_groups.push(WindowGroup {
+                id: surface.saturating_add(1000),
+                tabs: vec![Tab {
+                    id: *surface,
+                    title: (*title).into(),
+                    tile: TileContent::Foreign {
+                        app_id: "so.tilo.editor".into(),
+                        surface_id: *surface,
+                    },
+                }],
+                active_tab: *surface,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        }
+        strip
+    }
+
     #[test]
     fn live_share_is_persistent_visible_named_and_accessible() {
         let mut tree = DesktopTree {
@@ -8088,6 +8109,9 @@ mod tests {
         tree.workspaces[0]
             .collaborators
             .push(tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7));
+        tree.workspaces[0]
+            .strips
+            .push(shared_windows(&[(42, "Budget")]));
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome
             .borrow_mut()
@@ -8107,7 +8131,7 @@ mod tests {
         assert!(node.children.iter().any(|child| {
             child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
                 && child.name.as_deref().is_some_and(|name| {
-                    name.contains("visible to Ada (person): can control surface 42")
+                    name.contains("visible to Ada (person): can control Budget")
                 })
         }));
     }
@@ -8124,6 +8148,11 @@ mod tests {
             tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7),
             tilo_desktop_model::Collaborator::new("lin", "Lin").with_session(9),
         ]);
+        tree.workspaces[0].strips.push(shared_windows(&[
+            (42, "Notes"),
+            (43, "Budget"),
+            (44, "Slides"),
+        ]));
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().set_active_exposures(vec![
             crate::chrome::ActiveExposure {
@@ -8145,15 +8174,15 @@ mod tests {
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
         let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
         assert!(
-            disclosure.contains("Ada (person): can control surface 44; view only surface 42"),
+            disclosure.contains("Ada (person): can control Slides; view only Notes"),
             "{disclosure}"
         );
         assert!(
-            disclosure.contains("Lin (person): can control surface 43"),
+            disclosure.contains("Lin (person): can control Budget"),
             "{disclosure}"
         );
-        assert!(!disclosure.contains("Ada (person): can control surface 43"));
-        assert!(!disclosure.contains("Lin (person): can control surface 42"));
+        assert!(!disclosure.contains("Ada (person): can control Budget"));
+        assert!(!disclosure.contains("Lin (person): can control Notes"));
     }
 
     #[test]
@@ -8191,13 +8220,13 @@ mod tests {
 
         let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
         assert!(
-            name.contains("Release Notes Agent (agent): view only surface 42"),
+            name.contains("Release Notes Agent (agent): view only a window"),
             "{name}"
         );
         assert!(!name.contains("Release Notes Agent (person"), "{name}");
         assert_eq!(
             bar.sharing_label().as_deref(),
-            Some("AGENT VIEWING · Release Notes Agent"),
+            Some("Agent watching: Release Notes Agent"),
             "critical privacy state must precede the elidable display name"
         );
     }

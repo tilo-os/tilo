@@ -54,12 +54,12 @@ impl PickerActions {
             .as_ref()
             .is_none_or(|current| current.id != subject)
         {
-            return Err(ActionError::Refused(crate::shell::i18n::t(
+            return Err(ActionError::Explained(crate::shell::i18n::t(
                 "file-picker-expired",
             )));
         }
         if bridge.commands.len() >= 16 {
-            return Err(ActionError::Refused(crate::shell::i18n::t(
+            return Err(ActionError::Explained(crate::shell::i18n::t(
                 "file-picker-busy",
             )));
         }

@@ -2131,7 +2131,8 @@ impl ChromeState {
                 "workspace-deleted-toast",
                 &[("name", workspace.name.clone().into())],
             ),
-            t("workspace-deleted-toast-hint"),
+            // The Undo button says what selecting the toast does.
+            String::new(),
         )
         .with_severity(NotificationSeverity::Info)
         .with_icon_kind(NotificationIconKind::Generic);

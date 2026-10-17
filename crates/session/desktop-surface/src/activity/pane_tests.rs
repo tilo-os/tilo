@@ -5449,11 +5449,7 @@ mod morning_source_tests {
         );
         let accessible = pane.access_control(&focus).unwrap();
         assert!(accessible.description.contains("5 min ago"));
-        assert!(
-            accessible
-                .description
-                .contains("external freshness unknown")
-        );
+        assert!(accessible.description.contains("may be out of date"));
     }
 
     #[test]
@@ -5493,11 +5489,7 @@ mod morning_source_tests {
                 let accessible = pane.access_control(&focus).unwrap();
                 assert!(accessible.description.contains("Weather"));
                 assert!(accessible.description.contains("5 min ago"));
-                assert!(
-                    accessible
-                        .description
-                        .contains("external freshness unknown")
-                );
+                assert!(accessible.description.contains("may be out of date"));
                 pane.keyboard_focus = Some(focus.clone());
                 let outcome = pane.activate_focus(&mut tree, None);
                 assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
