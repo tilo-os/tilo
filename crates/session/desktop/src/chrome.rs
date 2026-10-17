@@ -89,13 +89,6 @@ impl Default for ClockSnapshot {
         }
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TelemetrySnapshot {
-    pub cpu_percent: Option<u8>,
-    pub ram_percent: Option<u8>,
-    pub temperature_celsius: Option<i16>,
-    pub cpu_history: Vec<u8>,
-}
 /// The small piece of the room's history passive chrome shows. The history
 /// document stays authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -123,45 +116,6 @@ pub struct ActivityFocus {
     pub resource_version: Option<[u8; 16]>,
 }
 
-/// A widget the top bar's centre selector can show.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TopBarWidget {
-    Clock,
-    SystemMonitor,
-    Calendar,
-}
-
-impl TopBarWidget {
-    pub const ALL: [Self; 3] = [Self::Clock, Self::SystemMonitor, Self::Calendar];
-}
-
-/// The person's ordered choice of centre widgets: never empty, never
-/// repeating. The host persists it; the bar edits it through
-/// [`ChromeIntent::SetTopBarWidgets`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TopBarWidgets {
-    pub widgets: Vec<TopBarWidget>,
-}
-
-impl Default for TopBarWidgets {
-    fn default() -> Self {
-        Self {
-            widgets: TopBarWidget::ALL.to_vec(),
-        }
-    }
-}
-
-impl TopBarWidgets {
-    #[must_use]
-    pub fn normalised(mut self) -> Self {
-        let mut seen = std::collections::BTreeSet::new();
-        self.widgets.retain(|widget| seen.insert(*widget));
-        if self.widgets.is_empty() {
-            self.widgets.push(TopBarWidget::Clock);
-        }
-        self
-    }
-}
 #[derive(Clone, Default)]
 pub struct ChromeOverlays {
     pub overview: bool,
@@ -215,7 +169,6 @@ pub struct DesktopChromeSnapshot {
     pub revision: u64,
     pub status: SystemStatus,
     pub clock: ClockSnapshot,
-    pub telemetry: TelemetrySnapshot,
     pub overlays: ChromeOverlays,
     pub fullscreen: bool,
     pub notification_badge: u32,
@@ -226,8 +179,6 @@ pub struct DesktopChromeSnapshot {
     pub viewport_size: Option<(f64, f64)>,
     pub clock_activity: Option<ClockActivity>,
     pub active_exposures: Vec<ActiveExposure>,
-    /// The person's centre widgets; `None` until the host has read them.
-    pub topbar_widgets: Option<TopBarWidgets>,
     /// The active workspace's strips as named places with who is in each;
     /// `None` keeps the bar from showing a strip switcher.
     pub strip_places: Option<StripPlaces>,
@@ -314,14 +265,15 @@ pub enum ChromeIntent {
         command: String,
         activity_id: Option<String>,
     },
-    /// Persist the person's reordered or edited centre widgets.
-    SetTopBarWidgets(TopBarWidgets),
     /// Focus the tab another of this person's devices offered, here.
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
     /// Move to another strip of the active workspace.
     SwitchStrip(tilo_desktop_model::StripId),
+    /// Show the active workspace's strips to choose from: a click on the
+    /// strip's name in the workspace pill.
+    ShowStrips,
     /// Add a strip with this name to the active workspace and move to it.
     AddStrip {
         name: String,
@@ -392,10 +344,6 @@ pub trait DesktopChromeSource {
     fn tree(&self) -> DesktopTree;
     /// Returns whether the host accepted the request, never proof of a shared mutation.
     fn intent(&self, intent: ChromeIntent) -> bool;
-    /// Consume an automation request to open the primary bar's editor.
-    fn take_topbar_editor_request(&self) -> bool {
-        false
-    }
     fn settings_anchor(&self, _rect: Rect) {}
     /// The live offer to continue a tab from another of this person's
     /// devices, as the label the bar shows ("Continue Notes from Laptop").

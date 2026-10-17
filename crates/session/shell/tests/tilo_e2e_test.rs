@@ -14,7 +14,7 @@
 
 use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::state::{Collaborator, WorkspaceTree};
-use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
+use shell::shell::topbar_chrome::TopBarChrome;
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
 
 use ui::widget::Widget;
@@ -147,27 +147,6 @@ fn chrome_state_is_shared_defaults_sensibly_and_mutates_through_chrome() {
         }
         assert!(chrome.borrow().overlays.collaborators);
         assert!(chrome.borrow().overlays.quick_settings);
-    }
-
-    // Phase `center_widget_cycles_forward_and_backward`.
-    {
-        // Forward scroll cycles Clock → SystemMonitor → Calendar → Clock.
-        assert_eq!(CenterWidget::Clock.next(), CenterWidget::SystemMonitor);
-        assert_eq!(CenterWidget::SystemMonitor.next(), CenterWidget::Calendar);
-        assert_eq!(CenterWidget::Calendar.next(), CenterWidget::Clock);
-        assert_eq!(CenterWidget::Clock.prev(), CenterWidget::Calendar);
-        assert_eq!(CenterWidget::Calendar.prev(), CenterWidget::SystemMonitor);
-        assert_eq!(CenterWidget::SystemMonitor.prev(), CenterWidget::Clock);
-        // Dot-click hit-test maps 0→Clock, 1→SystemMonitor, 2→Calendar; wraps on 3+.
-        assert_eq!(CenterWidget::from_index(0), CenterWidget::Clock);
-        assert_eq!(CenterWidget::from_index(1), CenterWidget::SystemMonitor);
-        assert_eq!(CenterWidget::from_index(2), CenterWidget::Calendar);
-        assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
-        let tree = WorkspaceTree::bootstrap_default();
-        assert_eq!(
-            TopBarChrome::from_tree(&tree.desktop).center_widget(),
-            CenterWidget::Clock
-        );
     }
 }
 

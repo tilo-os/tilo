@@ -45,7 +45,9 @@ fn edge_from_label(label: &str) -> Result<DockEdge, String> {
 }
 
 impl AppearancePane {
-    /// Music and Team: on the desk or not, when each shows, which edge.
+    /// Every desk widget (music, the people here, the calendar, the system
+    /// monitor): on the desk or not, when each shows, which edge. The one
+    /// place widgets are chosen; the top bar has none of its own.
     pub(super) fn desk_widgets_card(&self) -> SettingsSection {
         let prefs = self.desk.get();
         let mut body: Vec<Item> = Vec::new();
@@ -62,6 +64,18 @@ impl AppearancePane {
                     DeskWidgetsPrefs::paths().team.enabled,
                     DeskWidgetsPrefs::paths().team.show,
                     DeskWidgetsPrefs::paths().team.edge,
+                ),
+                WidgetId::Calendar => (
+                    &prefs.calendar,
+                    DeskWidgetsPrefs::paths().calendar.enabled,
+                    DeskWidgetsPrefs::paths().calendar.show,
+                    DeskWidgetsPrefs::paths().calendar.edge,
+                ),
+                WidgetId::SystemMonitor => (
+                    &prefs.system_monitor,
+                    DeskWidgetsPrefs::paths().system_monitor.enabled,
+                    DeskWidgetsPrefs::paths().system_monitor.show,
+                    DeskWidgetsPrefs::paths().system_monitor.edge,
                 ),
             };
             body.extend(self.widget_rows(id, widget, (enabled, show, edge)));
@@ -83,6 +97,8 @@ impl AppearancePane {
         let (name, key) = match id {
             WidgetId::Music => (t("settings-desk-music"), "desk.music"),
             WidgetId::Team => (t("settings-desk-team"), "desk.team"),
+            WidgetId::Calendar => (t("settings-desk-calendar"), "desk.calendar"),
+            WidgetId::SystemMonitor => (t("settings-desk-system-monitor"), "desk.system-monitor"),
         };
         let mut items = vec![
             self.cx

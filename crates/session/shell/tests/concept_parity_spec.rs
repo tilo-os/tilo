@@ -46,7 +46,7 @@ use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::WorkspaceTree;
-use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
+use shell::shell::topbar_chrome::TopBarChrome;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -759,46 +759,6 @@ fn render_quick_settings_open(
     let presence = PresenceCtx::default();
     host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     (collect_solid_colors(&scene).len(), chrome)
-}
-
-/// The concept tinted the system monitor's labels green, blue and amber.
-/// Those are status hues (HIG 9.4: status only, never decoration) and made a
-/// resting readout the most colourful thing in the bar, so the labels and
-/// the sparkline are secondary ink: the drawn bar paints the ink and none of
-/// the status hues.
-#[test]
-fn topbar_system_monitor_labels_and_sparkline_are_ink_not_status_colour() {
-    let tree = WorkspaceTree::bootstrap_demo();
-    let mut chrome = TopBarChrome::from_tree(&tree.desktop);
-    chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
-
-    let theme = Theme::dark();
-    lay_out(&mut chrome, 1280.0, 48.0);
-    let mut tr = TextRenderer::new();
-    let mut scene = Scene::new();
-    let presence = PresenceCtx::default();
-    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-    let fills = collect_solid_colors(&scene);
-    let rgb = |c: vello::peniko::Color| {
-        let c = c.to_rgba8();
-        (c.r, c.g, c.b)
-    };
-    let colors = &theme.tokens.colors;
-    assert!(
-        contains_color_close(&fills, rgb(colors.text_dim), 4),
-        "the metric labels paint in secondary ink; observed fills: {fills:?}"
-    );
-    for (name, hue) in [
-        ("success", colors.semantic.success),
-        ("info", colors.semantic.info),
-        ("warning", colors.semantic.warning),
-    ] {
-        assert!(
-            !contains_color_close(&fills, rgb(hue), 4),
-            "the system monitor paints the status hue `{name}`; observed fills: {fills:?}"
-        );
-    }
 }
 
 /// Audit `concept-coverage.md:20,114-123,377-381` (`WindowFrame.tsx:114-123`):

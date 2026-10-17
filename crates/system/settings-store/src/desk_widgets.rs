@@ -2,7 +2,9 @@
 //! and which edge of the display it waits at.
 //!
 //! A widget is something the person added (music, the people in this
-//! workspace). It is never pushed at them: while they type it is away, and
+//! workspace, a calendar, the system monitor). This is the one place widgets
+//! are chosen: the top bar keeps only the time, and has no widgets of its
+//! own. A widget is never pushed at them: while they type it is away, and
 //! it comes back in a quiet edge form when they pause, when they reach for
 //! its edge, or when they ask (Super). Each widget carries one choice of
 //! when it shows ([`ShowMode`]) and one edge ([`DockEdge`]).
@@ -14,7 +16,9 @@
 //! ```json
 //! "desk_widgets": {
 //!   "music": { "enabled": true, "show": "pause", "edge": "bottom_right", "always_on_strips": [] },
-//!   "team":  { "enabled": true, "show": "pause", "edge": "right", "always_on_strips": [] }
+//!   "team":  { "enabled": true, "show": "pause", "edge": "right", "always_on_strips": [] },
+//!   "calendar": { "enabled": false, "show": "pause", "edge": "right", "always_on_strips": [] },
+//!   "system_monitor": { "enabled": false, "show": "ask", "edge": "bottom_left", "always_on_strips": [] }
 //! }
 //! ```
 
@@ -34,10 +38,14 @@ pub enum WidgetId {
     /// The people in this workspace: who they are, what they say they are
     /// doing and where they are.
     Team,
+    /// Today's date at a glance; the month around it when open.
+    Calendar,
+    /// How busy the machine is: processor, memory and temperature.
+    SystemMonitor,
 }
 
 impl WidgetId {
-    pub const ALL: [Self; 2] = [Self::Music, Self::Team];
+    pub const ALL: [Self; 4] = [Self::Music, Self::Team, Self::Calendar, Self::SystemMonitor];
 
     /// The widget's leaf in [`SECTION`].
     #[must_use]
@@ -45,17 +53,39 @@ impl WidgetId {
         match self {
             Self::Music => "music",
             Self::Team => "team",
+            Self::Calendar => "calendar",
+            Self::SystemMonitor => "system_monitor",
         }
     }
 
-    /// The edge a widget waits at until the person moves it. Neither uses
-    /// the top edge: the top bar and a maximized window's revealed bar live
+    /// The edge a widget waits at until the person moves it. None uses the
+    /// top edge: the top bar and a maximized window's revealed bar live
     /// there.
     #[must_use]
     pub const fn default_edge(self) -> DockEdge {
         match self {
             Self::Music => DockEdge::BottomRight,
-            Self::Team => DockEdge::Right,
+            Self::Team | Self::Calendar => DockEdge::Right,
+            Self::SystemMonitor => DockEdge::BottomLeft,
+        }
+    }
+
+    /// Whether a person who never chose has this widget on their desk.
+    /// Music and the people here come only when there is something to show;
+    /// a calendar or the machine's load is there all the time, so the
+    /// person adds those themselves.
+    #[must_use]
+    pub const fn on_by_default(self) -> bool {
+        matches!(self, Self::Music | Self::Team)
+    }
+
+    /// When a widget nobody has configured shows itself. The machine's load
+    /// is something to look up, not to be shown at every pause.
+    #[must_use]
+    pub const fn default_show(self) -> ShowMode {
+        match self {
+            Self::SystemMonitor => ShowMode::Ask,
+            Self::Music | Self::Team | Self::Calendar => ShowMode::Pause,
         }
     }
 }
@@ -154,8 +184,8 @@ impl WidgetPrefs {
     #[must_use]
     pub fn default_for(id: WidgetId) -> Self {
         Self {
-            enabled: true,
-            show: ShowMode::Pause,
+            enabled: id.on_by_default(),
+            show: id.default_show(),
             edge: id.default_edge(),
             always_on_strips: Vec::new(),
         }
@@ -177,6 +207,14 @@ pub const MUSIC: Key<WidgetPrefs> = Key::new(SECTION, "music", || {
 /// The Team widget's choices.
 pub const TEAM: Key<WidgetPrefs> =
     Key::new(SECTION, "team", || WidgetPrefs::default_for(WidgetId::Team));
+/// The Calendar widget's choices.
+pub const CALENDAR: Key<WidgetPrefs> = Key::new(SECTION, "calendar", || {
+    WidgetPrefs::default_for(WidgetId::Calendar)
+});
+/// The System monitor widget's choices.
+pub const SYSTEM_MONITOR: Key<WidgetPrefs> = Key::new(SECTION, "system_monitor", || {
+    WidgetPrefs::default_for(WidgetId::SystemMonitor)
+});
 
 /// The key holding `id`'s choices.
 #[must_use]
@@ -184,6 +222,8 @@ pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
     match id {
         WidgetId::Music => &MUSIC,
         WidgetId::Team => &TEAM,
+        WidgetId::Calendar => &CALENDAR,
+        WidgetId::SystemMonitor => &SYSTEM_MONITOR,
     }
 }
 
@@ -192,6 +232,8 @@ pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
 pub struct DeskWidgetPrefs {
     pub music: WidgetPrefs,
     pub team: WidgetPrefs,
+    pub calendar: WidgetPrefs,
+    pub system_monitor: WidgetPrefs,
 }
 
 impl Default for DeskWidgetPrefs {
@@ -199,6 +241,8 @@ impl Default for DeskWidgetPrefs {
         Self {
             music: WidgetPrefs::default_for(WidgetId::Music),
             team: WidgetPrefs::default_for(WidgetId::Team),
+            calendar: WidgetPrefs::default_for(WidgetId::Calendar),
+            system_monitor: WidgetPrefs::default_for(WidgetId::SystemMonitor),
         }
     }
 }
@@ -211,6 +255,8 @@ impl DeskWidgetPrefs {
         Self {
             music: MUSIC.from_document(document),
             team: TEAM.from_document(document),
+            calendar: CALENDAR.from_document(document),
+            system_monitor: SYSTEM_MONITOR.from_document(document),
         }
     }
 
@@ -219,6 +265,8 @@ impl DeskWidgetPrefs {
         match id {
             WidgetId::Music => &self.music,
             WidgetId::Team => &self.team,
+            WidgetId::Calendar => &self.calendar,
+            WidgetId::SystemMonitor => &self.system_monitor,
         }
     }
 
@@ -226,6 +274,8 @@ impl DeskWidgetPrefs {
         match id {
             WidgetId::Music => &mut self.music,
             WidgetId::Team => &mut self.team,
+            WidgetId::Calendar => &mut self.calendar,
+            WidgetId::SystemMonitor => &mut self.system_monitor,
         }
     }
 }
@@ -251,6 +301,33 @@ mod tests {
             DeskWidgetPrefs::from_document(&serde_json::Map::new()),
             DeskWidgetPrefs::default()
         );
+    }
+
+    /// The calendar and the system monitor, once the top bar's own
+    /// widgets, are desk widgets the person adds: off until chosen, then
+    /// read and written like any other.
+    #[test]
+    fn the_calendar_and_system_monitor_are_desk_widgets_the_person_adds() {
+        let prefs = DeskWidgetPrefs::default();
+        assert!(prefs.music.enabled && prefs.team.enabled);
+        assert!(!prefs.calendar.enabled, "added by the person");
+        assert!(!prefs.system_monitor.enabled, "added by the person");
+        assert_eq!(prefs.system_monitor.show, ShowMode::Ask);
+        let document = serde_json::json!({
+            "desk_widgets": {
+                "calendar": { "enabled": true, "show": "always", "edge": "left" },
+                "system_monitor": { "enabled": true, "edge": "bottom" }
+            }
+        });
+        let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
+        assert!(prefs.calendar.enabled);
+        assert_eq!(prefs.calendar.show, ShowMode::Always);
+        assert_eq!(prefs.calendar.edge, DockEdge::Left);
+        assert!(prefs.system_monitor.enabled);
+        assert_eq!(prefs.system_monitor.edge, DockEdge::Bottom);
+        for id in WidgetId::ALL {
+            assert_eq!(prefs_key(id).name(), id.key());
+        }
     }
 
     #[test]

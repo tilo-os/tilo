@@ -697,13 +697,36 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
         );
     }
 
-    /// A room that shares nothing still gets a line, because "nothing
-    /// leaves this room" is an answer the screen exists to give.
-    fn a_room_that_shares_nothing_still_gets_a_row() {
+    /// A room that shares nothing has no "Shared out of here" section at
+    /// all: no caption, no empty row, no height. Sharing something brings
+    /// the section, and the panel grows by exactly its caption and row.
+    fn a_room_that_shares_nothing_has_no_share_section() {
         let tree = WorkspaceTree::bootstrap_default();
         let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert!(card.shares.is_empty());
-        assert_eq!(ShellOverlayHost::overview_share_rows(card), 1);
+        assert_eq!(ShellOverlayHost::overview_share_rows(card), 0);
+        let quiet = host_with(tree.clone());
+        assert_eq!(quiet.overview_shares_height(), 0.0);
+
+        let mut shared = tree;
+        shared.desktop.workspaces[0]
+            .sandbox
+            .push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath("/var/workspace/doc".into()),
+                Access::Read,
+            ));
+        let sharing = host_with(shared);
+        let m = sharing.overview_metrics;
+        assert_eq!(
+            sharing.overview_shares_height(),
+            m.caption_h + m.share_row_h,
+            "one share: the caption and one row"
+        );
+        assert_eq!(
+            sharing.overview_here_block_height() - quiet.overview_here_block_height(),
+            m.caption_h + m.share_row_h,
+        );
     }
 
     opening_seeds_the_selection_from_the_room_you_are_in();
@@ -711,7 +734,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     a_private_room_says_so_on_its_row();
     faces_come_from_membership_not_from_the_collaborator_list();
     the_share_list_collapses_rather_than_growing_without_bound();
-    a_room_that_shares_nothing_still_gets_a_row();
+    a_room_that_shares_nothing_has_no_share_section();
 }
 
 /// Fixture-only pixels make the native preview branch observable without

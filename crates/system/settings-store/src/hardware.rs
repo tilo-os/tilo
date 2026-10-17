@@ -2015,66 +2015,6 @@ pub struct QuickSettingsConfig {
     pub controls: Vec<QuickSettingsControl>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TopBarWidget {
-    Clock,
-    SystemMonitor,
-    Calendar,
-}
-
-impl TopBarWidget {
-    pub const ALL: [Self; 3] = [Self::Clock, Self::SystemMonitor, Self::Calendar];
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TopBarWidgetsConfig {
-    pub widgets: Vec<TopBarWidget>,
-}
-
-impl Default for TopBarWidgetsConfig {
-    fn default() -> Self {
-        Self {
-            widgets: TopBarWidget::ALL.to_vec(),
-        }
-    }
-}
-
-impl TopBarWidgetsConfig {
-    #[must_use]
-    pub fn normalised(mut self) -> Self {
-        let mut seen = BTreeSet::new();
-        self.widgets.retain(|widget| seen.insert(*widget));
-        if self.widgets.is_empty() {
-            self.widgets.push(TopBarWidget::Clock);
-        }
-        self
-    }
-
-    pub fn load() -> Self {
-        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
-            "top_bar_widgets",
-        )))
-        .unwrap_or_default()
-        .normalised()
-    }
-
-    /// Persist the ordered top-bar widget selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the configuration cannot be serialized or written.
-    pub fn save(&self) -> std::io::Result<()> {
-        let value =
-            serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
-        super::update_section(
-            "top_bar_widgets",
-            value.as_object().cloned().unwrap_or_default(),
-        )
-    }
-}
-
 impl Default for QuickSettingsConfig {
     fn default() -> Self {
         Self {
@@ -2213,24 +2153,6 @@ mod logical_extent_tests {
         assert_eq!(
             logical_extent((1920, 1080), f64::NAN, OutputTransform::Normal),
             (1920, 1080)
-        );
-    }
-}
-
-#[cfg(test)]
-mod top_bar_widgets_tests {
-    use super::{TopBarWidget, TopBarWidgetsConfig};
-
-    #[test]
-    fn top_bar_widgets_deduplicate_and_never_become_empty() {
-        let config = TopBarWidgetsConfig {
-            widgets: vec![TopBarWidget::Calendar, TopBarWidget::Calendar],
-        }
-        .normalised();
-        assert_eq!(config.widgets, vec![TopBarWidget::Calendar]);
-        assert_eq!(
-            TopBarWidgetsConfig { widgets: vec![] }.normalised().widgets,
-            vec![TopBarWidget::Clock]
         );
     }
 }

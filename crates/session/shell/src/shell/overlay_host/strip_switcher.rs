@@ -467,6 +467,17 @@ impl StripSwitcher {
         self.selected = Some(Row::Strip(self.model.focused));
     }
 
+    /// Open the card for choosing, as a menu: on the focused strip, taking
+    /// the keyboard, and staying until a choice, Escape or a press
+    /// elsewhere. Already open, it stays as it is.
+    pub(crate) fn open_for_choosing(&mut self, now: Instant) {
+        if self.open.is_some() {
+            return;
+        }
+        self.open_at(now, true);
+        self.selected = Some(Row::Strip(self.model.focused));
+    }
+
     /// The pointer moved to `p`; `zone` is the ribbon's pointer band. Returns
     /// whether anything visible changed.
     pub(crate) fn pointer_moved(&mut self, p: Point, now: Instant, zone: Rect) -> bool {
@@ -1402,6 +1413,14 @@ impl super::ShellOverlayHost {
             .is_some_and(|chrome| chrome.borrow_mut().take_strip_rename_request());
         if rename {
             self.rename_focused_strip_in_switcher();
+            dirty = true;
+        }
+        let show = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_strip_switcher_request());
+        if show && self.strip_switcher_offered() {
+            self.strip_switcher.open_for_choosing(now);
             dirty = true;
         }
         if !self.strip_switcher_offered() && self.strip_switcher.is_open() {

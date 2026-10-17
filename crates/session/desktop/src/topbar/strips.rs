@@ -152,6 +152,99 @@ impl TopBarChrome {
             .or_else(|| self.strips.strips.first().map(|(id, _)| *id));
     }
 
+    /// The shown strip's name, when the bar names it after the workspace
+    /// pill ("Home ⌄ › Research"): whenever no strip chips stand there (the
+    /// native desktop, or a single desk), and only for a strip with a name.
+    pub(super) fn strip_name(&self) -> Option<&str> {
+        if self.shown_places().is_some() {
+            return None;
+        }
+        let active = self.strips.active?;
+        self.strips
+            .strips
+            .iter()
+            .find(|(id, _)| *id == active)
+            .map(|(_, name)| name.trim())
+            .filter(|name| !name.is_empty())
+    }
+
+    /// The gap either side of the separator before the strip's name.
+    fn strip_name_gap(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.s1)
+    }
+
+    /// The width the strip's name takes after the pill at its natural
+    /// length: the separator, its gaps and the name; zero when the bar
+    /// names no strip.
+    fn strip_name_natural_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        let Some(name) = self.strip_name() else {
+            return 0.0;
+        };
+        let style = Self::strip_text_style(theme);
+        let separator = text_renderer
+            .measure_style(super::STRIP_SEPARATOR, None, &style)
+            .0;
+        let name = text_renderer.measure_style(name, None, &style).0;
+        f64::from(separator + name) + 2.0 * Self::strip_name_gap(theme)
+    }
+
+    /// Paint the shown strip's name between `x0` and `x1`, after the
+    /// workspace pill: the separator dim, the name elided to the room left.
+    /// The separator and the name are one target, which opens the strip
+    /// switcher ([`ChromeIntent::ShowStrips`]).
+    pub(super) fn draw_strip_name(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        span: (f64, f64),
+    ) {
+        self.ws_strip_rect = Rect::ZERO;
+        let Some(name) = self.strip_name().map(str::to_owned) else {
+            return;
+        };
+        let (x0, x1) = span;
+        let style = Self::strip_text_style(theme);
+        let gap = Self::strip_name_gap(theme);
+        let (separator_w, separator_h) =
+            text_renderer.measure_style(super::STRIP_SEPARATOR, None, &style);
+        let name_x = x0 + gap + f64::from(separator_w) + gap;
+        if x1 - name_x < BAR_CONTROL_PX {
+            return;
+        }
+        let name =
+            text_renderer.elide_to_width_style(&name, ui::num::f32_of_f64(x1 - name_x), &style);
+        let (name_w, name_h) = text_renderer.measure_style(&name, None, &style);
+        let colors = &theme.tokens.colors;
+        text_renderer.draw_style(
+            scene,
+            super::STRIP_SEPARATOR,
+            colors.text_dim,
+            at(
+                transform,
+                (x0 + gap, center_y - f64::from(separator_h) / 2.0),
+            ),
+            None,
+            &style,
+        );
+        text_renderer.draw_style(
+            scene,
+            &name,
+            colors.text_primary,
+            at(transform, (name_x, center_y - f64::from(name_h) / 2.0)),
+            None,
+            &style,
+        );
+        self.ws_strip_rect = Rect::new(
+            x0,
+            center_y - BAR_CONTROL_PX / 2.0,
+            name_x + f64::from(name_w) + gap,
+            center_y + BAR_CONTROL_PX / 2.0,
+        );
+    }
+
     pub(super) fn strips_key(&self) -> StripsKey {
         let Some(places) = self.strip_places() else {
             return StripsKey::default();
@@ -231,7 +324,7 @@ impl TopBarChrome {
         theme: &Theme,
     ) -> f64 {
         let Some(places) = self.shown_places() else {
-            return 0.0;
+            return self.strip_name_natural_width(text_renderer, theme);
         };
         if self.strips.naming.is_some() {
             return FIELD_MAX_PX + BAR_CONTROL_PX;

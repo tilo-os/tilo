@@ -123,14 +123,12 @@ Launcher recovery #3277 merged normally at 4e2c99589a8d669e2626018a0f7b30a7183cf
 
 The live full-loop example now positively checks painted query pixels within the named input bounds. An actual nonblank closed-desktop capture is rejected; the production private search/Escape journey passes all existing and new assertions. [Qualification](evidence/headless-palette-visibility/README.md) distinguishes this observability improvement from an unproven animation failure.
 
-## Top-bar editor increment
+## Top-bar editor (removed)
 
-The editor adopts shared ButtonFace and ListRowFace, measured title/hint/rows and
-wrapped Add controls. Actual production regressions qualify drag cancellation,
-release activation, stable keyboard focus and submit ownership; theme changes
-invalidate the retained scene. [Qualification](evidence/topbar-editor/README.md).
-Primary chrome at 320px still collides above the editor and remains the next
-independent increment alongside status/device/offline and live window states.
+The top bar no longer has widgets of its own, and so no editor: it keeps one
+fixed place for the time, and the calendar and system monitor are desk widgets
+chosen in Settings → Appearance → Desk widgets, beside music and the people
+here.
 
 The action catalogue uses dedicated shell English/German Fluent entries; CI's
 all-action catalogue regression is retained and strengthened across both locales.
@@ -262,10 +260,7 @@ The combined PR3386/3446 delivery preserves both authored heads and all 23
 original regression assertions, and composes the measured shared-face editor
 with the constrained primary Toolbar. The historical 320px collision above is
 addressed by this combined source. Current main placement helpers and locale
-catalogue entries are retained. Editor semantic opening, pointer cancellation
-and focus trapping compose with Toolbar overflow ownership rather than losing
-either original surface. Qualification and historical-source distinctions are
-recorded in [top-bar editor evidence](evidence/topbar-editor/README.md).
+catalogue entries are retained. The editor itself has since been removed (see above).
 
 ## Constrained picker and shared scroll lifecycle (2026-10-11)
 

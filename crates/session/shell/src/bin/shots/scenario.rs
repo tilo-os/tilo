@@ -1854,7 +1854,10 @@ fn desk_widgets_scenario() -> Scenario {
             Action::Snapshot("10-closed"),
             Action::Super(SuperGesture::Peek),
             Action::Wait(14),
-            Action::Snapshot("11-super-peek"),
+            Action::Snapshot("11-super-peek-quiet-stage"),
+            Action::Super(SuperGesture::PeekFull),
+            Action::Wait(14),
+            Action::Snapshot("11b-super-peek-grown"),
             Action::Super(SuperGesture::PeekReleased),
             Action::SnapshotSequence {
                 prefix: "12-peek-released",
