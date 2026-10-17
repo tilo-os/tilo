@@ -983,6 +983,17 @@ fn read_conversation(
             }));
         }
     }
+    for presentation in control.presentations.values() {
+        turns.push(serde_json::json!({
+            "task_id": task.id, "run_epoch": query.run_epoch,
+            "revision": presentation.sequence,
+            "id": format!("{}:{}:{}", task.id, query.run_epoch, presentation.run),
+            "kind": "agent-output", "text": presentation.text,
+            "presentation": presentation,
+            "received_at": presentation.received_at.unwrap_or(task.updated_at),
+            "author": format!("agent:{}", task.assigned_agent.as_deref().unwrap_or_default()),
+        }));
+    }
     Ok(serde_json::json!({"task_id": task.id, "run_epoch": query.run_epoch, "turns": turns}))
 }
 

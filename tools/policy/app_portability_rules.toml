@@ -189,7 +189,9 @@ severity = "warn"
 # unless the package or its directory is listed here.
 # `runtime-dylib` is the optional backend of the app-level `thin` feature
 # that `tilo-app dev` reloads through; no web or release build links it.
-allowed-packages = ["tilo-app", "runtime-dylib"]
+# `provider-settings-ui` is the SDK's portable host-capability control panel,
+# shared by Settings and the standalone provider app; it owns no native service.
+allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
 # `crates/runtime/engines/*` are engine libraries beside the runtime,

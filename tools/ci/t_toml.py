@@ -236,6 +236,15 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**",
                    "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**"],
     },
+    # The portable provider panel in the production single-app browser runtime.
+    "model-providers-web": {
+        "packages": lambda packages, root: {"model-providers", "tilo-app-cli", "tilo-browser-runtime"},
+        "dev": False,
+        "inputs": ["apps/model-providers/web/**", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
+                   "apps/*/src/lib.rs", "crates/browser/tilo-web-desktop/**",
+                   "crates/agent/agent-participant/src/web_apps.rs", "scripts/moq-browser/**",
+                   "tools/ci/**", "tools/web/**"],
+    },
     # The release desktop bundle and the image worker it qualifies.
     "sdk-web-size": {
         "packages": lambda packages, root: {"tilo-app-cli", "calculator", "tilo-web-desktop",

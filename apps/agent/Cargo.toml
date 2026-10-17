@@ -36,7 +36,7 @@ tilo-automation = { path = "../../crates/collab/automation" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
+tilo-model-gateway = { default-features = false, path = "../../crates/agent/model-gateway" }
 tilo-content = { path = "../../crates/system/content", features = ["device"] }
 serde_json.workspace = true
 uuid.workspace = true

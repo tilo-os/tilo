@@ -66,22 +66,26 @@ fn save_case_config(case: &str) -> ProviderProtocol {
     }
     let protocol = profile.protocol;
     ProviderConfig {
-        profiles: vec![profile],
+        profiles: vec![profile.clone()],
         default_profile: None,
     }
     .save()
     .unwrap();
-    if !case.ends_with("missing-key") {
-        let mut vault = SecretVault::open();
-        vault.put(
-            &vault_id("test-provider").unwrap(),
-            &Secret::password(match case {
-                "empty-key" => "",
-                "invalid-key" | "invalid-key-anthropic" => "fabricated\ninvalid-key",
-                _ => "fabricated-test-key",
-            }),
-        );
-        vault.save();
+    if !case.ends_with("missing-key") && !matches!(case, "empty-key" | "invalid-url") {
+        // The subprocess has a disposable, explicit test root, not a live
+        // Secret Service session. Opt into local test custody deliberately.
+        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+        let (reference, authorization) = credential_binding(&profile).unwrap();
+        ServiceCredentials::open_in(&root)
+            .store(
+                &reference,
+                &authorization,
+                match case {
+                    "invalid-key" | "invalid-key-anthropic" => "fabricated\ninvalid-key",
+                    _ => "fabricated-test-key",
+                },
+            )
+            .unwrap();
     }
     protocol
 }
@@ -202,7 +206,7 @@ fn run_case(test: &str, case: &str) -> Outcome {
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            &format!("selection_tests::{test}"),
+            &format!("service::selection_tests::{test}"),
             "--nocapture",
         ])
         .env_clear()

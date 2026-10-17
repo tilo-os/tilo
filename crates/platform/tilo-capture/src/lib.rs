@@ -13,7 +13,9 @@
 //! [`CaptureState::Starting`], and the state moves to
 //! [`CaptureState::Live`] or [`CaptureState::Failed`]. The UI drains
 //! [`VideoCapture::take_latest`] (the newest picture only, never a queue) or
-//! [`AudioCapture::read`] once per frame.
+//! [`AudioCapture::read`] once per frame. Where the backend can say,
+//! [`VideoCapture::notify`] wakes the caller when the state moves, so a UI
+//! waiting for the person's answer sleeps rather than looking every frame.
 //!
 //! A native build without a capability's feature answers
 //! [`CaptureError::Unsupported`] for it; the web serves every capability
@@ -193,10 +195,19 @@ pub struct VideoCapture {
     inner: Box<dyn VideoSource>,
 }
 
+/// Called from the thread a capture's state changed on.
+pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// One backend's video capture.
 trait VideoSource {
     fn state(&mut self) -> CaptureState;
     fn take_latest(&mut self) -> Option<Frame>;
+    /// Call `wake` whenever the state changes; false where this backend
+    /// cannot say.
+    fn notify(&mut self, wake: Wake) -> bool {
+        let _ = wake;
+        false
+    }
 }
 
 impl VideoCapture {
@@ -229,6 +240,17 @@ impl VideoCapture {
     /// The newest picture since the last call, if any.
     pub fn take_latest(&mut self) -> Option<Frame> {
         self.inner.take_latest()
+    }
+
+    /// Call `wake`, from any thread, whenever [`Self::state`] changes: the
+    /// person answered the permission prompt, the capture failed or ended.
+    /// New pictures do not call it; a live capture is drained per frame.
+    ///
+    /// Returns false where this backend cannot say; the caller then keeps
+    /// looking at [`Self::state`]. Ask for the state after this returns: a
+    /// change that landed before it is seen there, any later one wakes.
+    pub fn notify(&mut self, wake: impl Fn() + Send + Sync + 'static) -> bool {
+        self.inner.notify(std::sync::Arc::new(wake))
     }
 }
 

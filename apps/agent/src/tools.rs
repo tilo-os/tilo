@@ -63,6 +63,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use agent_provider_config::protocol::{ToolCall, ToolDefinition};
 use serde_json::{Value, json};
 
 use crate::plan;
@@ -88,6 +89,35 @@ pub const PLAN: &str = "plan";
 /// it in order.
 pub fn invoke_independent(input: &Value) -> bool {
     input.get(INVOKE_STANDALONE).and_then(Value::as_bool) == Some(true)
+}
+
+/// Validate a whole plan-mode batch before any discovery or control dispatch.
+/// A terminal plan must be alone: accepting the first plan in a mixed batch
+/// would silently discard calls and change the model's declared order.
+///
+/// # Errors
+///
+/// Rejects malformed or duplicate calls, invalid discovery arguments, unknown
+/// planning tools, and batches mixing a terminal plan with other calls.
+pub fn validate_plan_calls(calls: &[ToolCall]) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    for call in calls {
+        call.validate().map_err(|error| error.to_string())?;
+        if !ids.insert(&call.id) {
+            return Err("duplicate tool call id".into());
+        }
+        validate_discovery_input(&call.name, &call.input)?;
+        if !matches!(
+            call.name.as_str(),
+            LIST_APPLICATIONS | LIST_OPERATIONS | DESCRIBE_OPERATION | PLAN
+        ) {
+            return Err(format!("There is no planning tool called {}.", call.name));
+        }
+    }
+    if calls.len() > 1 && calls.iter().any(|call| call.name == PLAN) {
+        return Err("plan must be the only tool call in its turn".into());
+    }
+    Ok(())
 }
 
 /// How many operations one listing returns.
@@ -417,33 +447,33 @@ pub fn bound_reply(reply: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// The [`LIST_APPLICATIONS`] tool definition.
-fn list_applications_definition() -> Value {
-    json!({
-        "name": LIST_APPLICATIONS,
-        "description":
-            "Every application in this room. Says which are open and which are not, \
+fn list_applications_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: LIST_APPLICATIONS.into(),
+        description: ("Every application in this room. Says which are open and which are not, \
              and how many operations each is exporting right now. An application \
              exporting nothing has nothing open in it yet — opening it onto \
              something is an ordinary step, and what it does is put that \
              application's own operations on the list. Call this first when the \
-             request might involve an application you have not seen.",
-        "input_schema": { "type": "object", "properties": {}, "additionalProperties": false }
-    })
+             request might involve an application you have not seen.")
+            .into(),
+        input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+    }
 }
 
 /// The [`LIST_OPERATIONS`] tool definition.
-fn list_operations_definition() -> Value {
-    json!({
-        "name": LIST_OPERATIONS,
-        "description":
-            "What can be done in this room, right now. Every filter is optional and \
+fn list_operations_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: LIST_OPERATIONS.into(),
+        description: ("What can be done in this room, right now. Every filter is optional and \
              they combine; with none of them you get everything, capped. Use `kind` \
              to ask what may be done to a kind of thing in any application at all \
              (`files.entry`, `word_processor.section`), `resource` for one named \
              thing, `application` for one application, and `search` to match the \
              applications' own words. The ids that come back, like those already \
-             listed with the request, are the ones `plan` and `invoke` accept.",
-        "input_schema": {
+             listed with the request, are the ones `plan` and `invoke` accept.")
+            .into(),
+        input_schema: json!({
             "type": "object",
             "properties": {
                 "application": {
@@ -464,24 +494,24 @@ fn list_operations_definition() -> Value {
                 }
             },
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 /// The [`DESCRIBE_OPERATION`] tool definition.
-fn describe_operation_definition() -> Value {
-    json!({
-        "name": DESCRIBE_OPERATION,
-        "description":
-            "One operation in full: what the application says it does, what it does \
+fn describe_operation_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: DESCRIBE_OPERATION.into(),
+        description: ("One operation in full: what the application says it does, what it does \
              it to, whether performing it needs an argument, and — when it does — \
              the application's own prompt for that argument and its own example of \
              one. Also what the publishing resource says about itself, which is \
              where an application states a fact it has no operation to hang on. \
              Call this before planning an operation whose arguments its listed \
              signature leaves unclear — the example and the facts are what make the \
-             value computable rather than guessed.",
-        "input_schema": {
+             value computable rather than guessed.")
+            .into(),
+        input_schema: json!({
             "type": "object",
             "properties": {
                 "operation": {
@@ -491,18 +521,18 @@ fn describe_operation_definition() -> Value {
             },
             "required": ["operation"],
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 /// The [`PLAN`] tool definition. Byte-stable across turns and tasks (no
 /// per-conversation enum), so the provider's prompt cache keeps the whole
 /// tool prefix; [`read_plan`] refuses an id nothing in the conversation
 /// showed, and the refusal goes back to the model.
-fn plan_definition(most_steps: usize) -> Value {
-    json!({
-        "name": PLAN,
-        "description": format!(
+fn plan_definition(most_steps: usize) -> ToolDefinition {
+    ToolDefinition {
+        name: PLAN.into(),
+        description: format!(
             "The answer. The operations to perform, in the order the request asks \
              for them — one for a request that asks for one thing, which is most of \
              them, and at most {most_steps}. Call this exactly once, when you know \
@@ -510,7 +540,7 @@ fn plan_definition(most_steps: usize) -> Value {
              already do it. Every `operation` must be an id exactly as that list or a \
              listing showed it; any other id is refused."
         ),
-        "input_schema": {
+        input_schema: json!({
             "type": "object",
             "properties": {
                 // First, so it streams before the steps and a live reply can
@@ -563,19 +593,24 @@ fn plan_definition(most_steps: usize) -> Value {
             },
             "required": ["steps", "why", "then"],
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 /// The plan tool set as the API is told about it. A function of `most_steps`
 /// alone, so it is byte-identical on every turn of a conversation.
 pub fn definitions(most_steps: usize) -> Value {
-    json!([
+    json!(typed_definitions(most_steps))
+}
+
+/// Provider-neutral, byte-stable plan schemas.
+pub fn typed_definitions(most_steps: usize) -> Vec<ToolDefinition> {
+    vec![
         list_applications_definition(),
         list_operations_definition(),
         describe_operation_definition(),
         plan_definition(most_steps),
-    ])
+    ]
 }
 
 /// The mark of an operation the person is asked about before it runs: its
@@ -595,20 +630,20 @@ const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described
     needs confirmation asks the person when you invoke it, and only they answer.";
 
 /// The [`INVOKE`] tool definition.
-fn invoke_definition() -> Value {
+fn invoke_definition() -> ToolDefinition {
     // Byte-stable across turns and tasks (no per-conversation enum), so the
     // provider's prompt cache keeps the whole tool prefix; `read_invoke`
     // refuses an id no tool showed.
-    json!({
-        "name": INVOKE,
-        "description":
-            "Perform one listed operation now, as a person using the application would. \
+    ToolDefinition {
+        name: INVOKE.into(),
+        description: ("Perform one listed operation now, as a person using the application would. \
              Returns the result, how your own view changed and which operations became \
              available. Several invokes in one turn run in order as soon as each is \
              written; after a failure the rest of the turn is skipped, except invokes \
              marked `standalone`, which may also run alongside the ones before them. \
-             Put your reply on the last invoke of the task to finish in the same turn.",
-        "input_schema": {
+             Put your reply on the last invoke of the task to finish in the same turn.")
+            .into(),
+        input_schema: json!({
             "type": "object",
             // Sorted maps on the wire: `operation` precedes `parameters` (its
             // text is attributable while it streams), and `reply` comes last.
@@ -646,22 +681,22 @@ fn invoke_definition() -> Value {
             },
             "required": ["operation", INVOKE_PARAMETERS],
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 /// The loop's terminal [`PLAN`]: the reply that finishes the task.
-fn finish_definition() -> Value {
-    json!({
-        "name": PLAN,
-        "description":
-            "Finish the task with your reply to the person (shown in your agent panel \
+fn finish_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: PLAN.into(),
+        description: ("Finish the task with your reply to the person (shown in your agent panel \
              only) when no invoke carried it: alone, or in the same turn as your last \
              invokes (it takes effect only if they all succeed and every part is done). \
              `done` is false only when the request cannot be completed with the \
              operations available; say why in the reply and list those parts under \
-             `unable`.",
-        "input_schema": {
+             `unable`.")
+            .into(),
+        input_schema: json!({
             "type": "object",
             "properties": {
                 // First, so the reply streams as it is written.
@@ -678,8 +713,8 @@ fn finish_definition() -> Value {
             },
             "required": ["reply", "done"],
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 /// The property listing the request's parts (first invoke or plan).
@@ -767,14 +802,19 @@ pub fn read_unable(input: &Value) -> Vec<String> {
 
 /// The loop tool set: discovery, [`INVOKE`], and the terminal [`PLAN`].
 pub fn loop_definitions() -> Value {
-    json!([
+    json!(typed_loop_definitions())
+}
+
+/// Provider-neutral loop schemas; the legacy JSON API is an adapter only.
+pub fn typed_loop_definitions() -> Vec<ToolDefinition> {
+    vec![
         list_applications_definition(),
         list_operations_definition(),
         describe_operation_definition(),
         invoke_definition(),
         crate::pages::read_result_definition(),
         finish_definition(),
-    ])
+    ]
 }
 
 /// What the loop's terminal [`PLAN`] said.
@@ -1148,6 +1188,9 @@ fn nothing_found(what: &str) -> String {
 /// `revealed` grows with every address this puts in front of the model, and
 /// only with those.
 pub fn answer(name: &str, input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> String {
+    if let Err(error) = validate_discovery_input(name, input) {
+        return error;
+    }
     match name {
         LIST_APPLICATIONS => applications(catalogue, revealed),
         LIST_OPERATIONS => operations(input, catalogue, revealed),
@@ -1157,6 +1200,59 @@ pub fn answer(name: &str, input: &Value, catalogue: &Catalogue, revealed: &mut R
         // because a name is untrusted input like everything else here.
         other => format!("There is no tool called {other}."),
     }
+}
+
+/// One structural gate for discovery, regardless of transport or dispatcher.
+fn validate_discovery_input(name: &str, input: &Value) -> Result<(), String> {
+    let definition = match name {
+        LIST_APPLICATIONS => list_applications_definition(),
+        LIST_OPERATIONS => list_operations_definition(),
+        DESCRIBE_OPERATION => describe_operation_definition(),
+        _ => return Ok(()),
+    };
+    definition
+        .validate_input(input)
+        .map_err(|error| error.to_string())
+}
+
+/// Validate a whole task-loop batch before any action runs. Terminal `plan`
+/// may follow invokes, but no call after it may be silently discarded.
+///
+/// # Errors
+///
+/// Rejects malformed or duplicate calls, invalid tool arguments, unknown tools,
+/// and batches containing calls after a terminal plan.
+pub fn validate_loop_calls(calls: &[ToolCall]) -> Result<(), String> {
+    let mut ids = BTreeSet::new();
+    for (index, call) in calls.iter().enumerate() {
+        call.validate().map_err(|error| error.to_string())?;
+        if !ids.insert(&call.id) {
+            return Err("duplicate tool call id".into());
+        }
+        validate_discovery_input(&call.name, &call.input)?;
+        match call.name.as_str() {
+            LIST_APPLICATIONS | LIST_OPERATIONS | DESCRIBE_OPERATION => {}
+            INVOKE => {
+                // Preserve the documented legacy alias and nullary form.
+                let mut input = call.input.clone();
+                let object = input.as_object_mut().ok_or("invoke needs an object")?;
+                let arguments = object.remove("arguments");
+                let parameters = object
+                    .entry(INVOKE_PARAMETERS)
+                    .or_insert_with(|| arguments.unwrap_or_else(|| json!({})));
+                if parameters.is_null() {
+                    *parameters = json!({});
+                }
+                invoke_definition()
+                    .validate_input(&input)
+                    .map_err(|error| error.to_string())?;
+            }
+            PLAN if index + 1 == calls.len() => {}
+            PLAN => return Err("plan must be the last call in its turn".into()),
+            _ => return Err(format!("There is no tool called {}.", call.name)),
+        }
+    }
+    Ok(())
 }
 
 /// What is running, and what could be opened.
@@ -1595,6 +1691,63 @@ mod tests {
     use tilo_actions::{Collects, ExecutionLocus, InputSpec};
 
     const STEPS: usize = 4;
+
+    #[test]
+    fn typed_tools_are_stable_and_validate_whole_batches() {
+        let definitions = typed_definitions(STEPS);
+        assert_eq!(definitions[3].name, PLAN);
+        assert!(
+            definitions[3].input_schema["properties"]["steps"]["items"]["properties"]["operation"]
+                .get("enum")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::to_value(&definitions).unwrap(),
+            super::definitions(STEPS)
+        );
+        let loops = typed_loop_definitions();
+        assert_eq!(serde_json::to_value(&loops).unwrap(), loop_definitions());
+        assert_eq!(
+            loops[3].input_schema["properties"][INVOKE_STANDALONE]["type"],
+            "boolean"
+        );
+        let call = |id: &str, name: &str, input: Value| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input,
+            extra_content: None,
+        };
+        assert!(
+            validate_plan_calls(&[
+                call("a", LIST_APPLICATIONS, json!({})),
+                call("b", PLAN, json!({}))
+            ])
+            .is_err()
+        );
+        assert!(validate_plan_calls(&[call("a", PLAN, json!({}))]).is_ok());
+        assert!(
+            validate_loop_calls(&[
+                call("a", LIST_APPLICATIONS, json!({})),
+                call("a", LIST_OPERATIONS, json!({}))
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_loop_calls(&[call(
+                "a",
+                INVOKE,
+                json!({"operation": "shown", "parameters": {}, "standalone": true})
+            )])
+            .is_ok()
+        );
+        assert!(
+            validate_loop_calls(&[
+                call("a", INVOKE, json!({"operation": "shown", "parameters": {}})),
+                call("b", LIST_OPERATIONS, json!({"application": false}))
+            ])
+            .is_err()
+        );
+    }
 
     fn offer(
         app: &'static str,
@@ -2224,7 +2377,7 @@ mod tests {
     #[test]
     fn a_plan_reply_is_optional_first_and_kept() {
         let definition = plan_definition(STEPS);
-        let schema = &definition["input_schema"];
+        let schema = &definition.input_schema;
         let first = schema["properties"]
             .as_object()
             .unwrap()

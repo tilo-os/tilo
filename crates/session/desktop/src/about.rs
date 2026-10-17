@@ -194,6 +194,10 @@ pub struct TiloMenu {
     about: ModalDialog<Column>,
     /// Set by the sheet's close control, Escape or a click outside it.
     dismissed: Rc<Cell<bool>>,
+    /// The menu offers Feedback: the host has a destination for it.
+    offers_feedback: bool,
+    /// Feedback was chosen and the host has not yet opened it.
+    feedback: bool,
     rect: Rect,
 }
 
@@ -209,8 +213,28 @@ impl TiloMenu {
                 .with_max_width(440.0)
                 .on_dismiss(move || dismiss.set(true)),
             dismissed,
+            offers_feedback: false,
+            feedback: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Offer Feedback as the menu's second entry, for a host that has
+    /// somewhere to send it.
+    #[must_use]
+    pub fn with_feedback(mut self) -> Self {
+        self.offers_feedback = true;
+        self.menu.set_items(vec![
+            MenuItem::action(t("tilo-menu-about"), || {}),
+            MenuItem::action(t("tilo-menu-feedback"), || {}),
+        ]);
+        self
+    }
+
+    /// Whether Feedback was chosen since the last call; the host opens it
+    /// about the window in front.
+    pub fn take_feedback(&mut self) -> bool {
+        std::mem::take(&mut self.feedback)
     }
 
     /// Open the menu under `anchor` (the mark) within `viewport`, or close
@@ -247,9 +271,17 @@ impl TiloMenu {
     /// changed.
     pub fn settle(&mut self) -> bool {
         let mut changed = false;
-        if self.menu.take_selection() == Some(0) {
-            self.show_about();
-            changed = true;
+        match self.menu.take_selection() {
+            Some(0) => {
+                self.show_about();
+                changed = true;
+            }
+            Some(1) if self.offers_feedback => {
+                self.menu.close();
+                self.feedback = true;
+                changed = true;
+            }
+            _ => {}
         }
         if self.dismissed.replace(false) {
             self.about.set_open(false);
@@ -394,5 +426,25 @@ mod tests {
         menu.dismissed.set(true);
         assert!(menu.settle());
         assert!(!menu.is_open());
+        assert!(
+            !menu.take_feedback(),
+            "a menu without feedback never asks for it"
+        );
+    }
+
+    #[test]
+    fn choosing_feedback_closes_the_menu_and_asks_the_host_once() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()).with_feedback();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
+        menu.menu.click_item(1);
+        assert!(menu.settle());
+        assert!(
+            !menu.is_open(),
+            "feedback opens as a window, not over the menu"
+        );
+        assert!(menu.take_feedback());
+        assert!(!menu.take_feedback());
     }
 }

@@ -815,6 +815,56 @@ plus a pairing code; `retryPersistence`, `actionsV1/V2` and `mediaV1` are
 not here yet (milestone 7). Agent control, the agent half of the qOS
 `agentsV1`, is `peer.agents` (see "Agents").
 
+## Host-scoped model and provider access
+
+A mount needs no model credentials to open. For inference, the authenticated
+embedding host can supply a short-lived **host session token**, never a provider
+API key:
+
+```js
+import {mountDesktop} from './host.mjs';
+
+const desktop = await mountDesktop(target, {
+  models: {endpoint: 'https://machine.example/model/rpc', sessionToken},
+});
+```
+
+Omitting both `profileId` and `modelId` selects the backend's user default. Existing
+explicit selections remain supported by supplying both fields; a partial or empty
+pair is rejected. Native hosts use the same default-selection route through
+`ui::models::Models::from_launcher()`.
+
+Provider administration is a separate grant, not an inference permission:
+
+```js
+const providers = await mountDesktop(providersTarget, {
+  app: 'so.tilo.model-providers',
+  providerManagement: {
+    endpoint: 'https://machine.example/model/rpc',
+    sessionToken: providerAdministrationSessionToken,
+  },
+});
+```
+
+Model Providers is the registered portable control panel, backed by the host's
+provider service; it does not run an OS system service or store provider secrets.
+The whole Personal Settings application remains Tilo-OS-only. The same
+`providerManagement` option on a desktop mount is loaned only to tabs registered
+as `so.tilo.model-providers` or `so.tilo.settings`. Other standalone applications,
+including lookalike IDs and ordinary Chat, are rejected if given this capability;
+the host checks the application's registered metadata, not its title.
+The backend still authorizes every operation. No profile or model selection is
+needed for administration, and `models.sessionToken` is never reused implicitly.
+Provider API keys are entered through Model Providers (or the native Settings pane)
+and kept by the backend credential broker, not in JavaScript bootstrap configuration.
+
+Rust hosts inject `ui::models::ProviderAdministration::new(Arc<dyn ProviderAdmin>)`
+with `HostContext::provide_provider_admin`; framework views borrow that typed
+capability. Native launchers can supply it with
+`ProviderAdministration::from_launcher()`. Unavailable hosts return a model
+`Unavailable` error. Clones retain their own host's session: opening another mount
+cannot replace or discover it.
+
 ## Agents
 
 Agents work in a room the way a person's device does. They are not a side

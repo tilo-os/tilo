@@ -2723,6 +2723,9 @@ pub struct TaskRunEnvelope {
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
+    /// Host supports bounded typed presentation on authenticated progress reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_version: Option<u16>,
     /// Only the broker may mint a policy from the native task owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
@@ -2768,6 +2771,8 @@ pub enum TaskRunPlanning {
     Model,
 }
 
+pub use collab_types::task_presentation::{TaskPresentation, TaskPresentationFinish};
+
 /// Agent lifecycle information the broker may project into the shared Task
 /// Center audit.  There is no free-form status mutation: terminal direction is
 /// explicit and all messages are bounded by the broker.
@@ -2781,6 +2786,11 @@ pub enum TaskRunUpdate {
     },
     Progress {
         message: String,
+        /// Private full model-turn snapshot. With `Some`, the native owner
+        /// coalesces by `run` instead of appending `message` to public audit.
+        /// Omission retains the original public progress behavior.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        presentation: Option<TaskPresentation>,
     },
     Succeeded {
         message: String,

@@ -16,9 +16,9 @@
 //!   needs no discovery turn at all;
 //! * the model may call several tools in one turn, and the terminal `plan`
 //!   in the same turn as its last `invoke` calls;
-//! * the turn streams on its own thread ([`crate::model::TurnTransport`]):
-//!   each `invoke` runs the moment its call is complete, while the model is
-//!   still writing the next one;
+//! * the turn streams on its own thread ([`crate::model::TurnTransport`]);
+//!   previews are inert until the complete response validates, so failed,
+//!   truncated or malformed turns cannot dispatch tools;
 //! * an `invoke` the model marks `standalone` (independent of the steps
 //!   before it) is started without waiting for them to settle in their applications when
 //!   it acts on another record than every step still running
@@ -69,9 +69,9 @@ const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(30);
 /// on every token. The broker remains the authority for the exact run/lease.
 const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
 /// After a view operation, the most the loop keeps listening for the
-/// catalogue the new view unlocks — and only while the model turn in flight
-/// has given it nothing else to do, so the listening never delays a step or
-/// a turn ([`Session::settle_view`]).
+/// catalogue the new view unlocks — only when no further call is ready to
+/// run. A complete tool-only turn can need this republication for its next
+/// observation too ([`Session::settle_view`]).
 const VIEW_SETTLE: Duration = Duration::from_millis(400);
 /// Most newly available operations one observation lists.
 const MOST_NEWLY_AVAILABLE: usize = 16;
@@ -147,6 +147,10 @@ pub(super) struct ActiveTurn {
     /// Calls whose `tool_call` frame arrived and that are not handled yet.
     ready: VecDeque<StreamedCall>,
     finished: Option<Result<String, String>>,
+    presentation: agent_provider_config::protocol::StreamState,
+    presentation_run: String,
+    published_presentation: Option<runtime_collab::TaskPresentation>,
+    published_at: ui::time::Instant,
     /// Completed calls seen (`tool_call` frames): calls below this index
     /// are complete.
     completed: usize,
@@ -160,6 +164,10 @@ impl ActiveTurn {
             rx,
             ready: VecDeque::new(),
             finished: None,
+            presentation: agent_provider_config::protocol::StreamState::default(),
+            presentation_run: String::new(),
+            published_presentation: None,
+            published_at: ui::time::now(),
             completed: 0,
             begun: HashSet::new(),
         }
@@ -167,7 +175,18 @@ impl ActiveTurn {
 
     /// Fold one event in.
     fn absorb(&mut self, event: TurnEvent) {
+        if self.finished.is_some() {
+            return;
+        }
         match event {
+            TurnEvent::Neutral(event) => {
+                self.presentation.apply(&event);
+                if let Some(error) = &self.presentation.error {
+                    self.finished = Some(Err(
+                        self.retained_failure(&format!("{error} {}", error.recovery().guidance()))
+                    ));
+                }
+            }
             TurnEvent::Frame { event, output } => {
                 if event == tilo_model_gateway::EVENT_TOOL_CALL_DELTA {
                     if let Ok(frame) = serde_json::from_str::<Value>(&output)
@@ -186,8 +205,25 @@ impl ActiveTurn {
                     self.ready.push_back(call);
                 }
             }
-            TurnEvent::Finished(result) => self.finished = Some(result),
+            TurnEvent::Finished(result) => {
+                self.finished = Some(result.map_err(|error| self.retained_failure(&error)));
+            }
         }
+    }
+
+    /// Failure reports are saved in task history; retain incomplete output
+    /// explicitly labelled rather than discarding it with the transport.
+    fn retained_failure(&self, error: &str) -> String {
+        let mut detail = error.to_owned();
+        if !self.presentation.text.is_empty() {
+            detail.push_str("\nPartial answer (not completed):\n");
+            detail.push_str(&self.presentation.text);
+        }
+        if !self.presentation.reasoning.is_empty() {
+            detail.push_str("\nProvider-exposed summary:\n");
+            detail.push_str(&self.presentation.reasoning);
+        }
+        detail
     }
 }
 
@@ -915,7 +951,11 @@ impl Session {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!("{}The request:\n\n{request}", self.memory.render()),
         };
-        let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
+        let mut conversation = if self.chooser.uses_neutral_protocol() {
+            Conversation::neutral_first(LOOP_SYSTEM, &first)
+        } else {
+            Conversation::new(protocol, &model, LOOP_SYSTEM, &first)
+        };
         for turn in 0..MAX_LOOP_TURNS {
             let left = total_budget.saturating_sub(began.elapsed());
             if left.is_zero() {
@@ -971,7 +1011,121 @@ impl Session {
         format!("{label} {arguments} → {outcome}")
     }
 
-    /// One model turn: stream it, execute its calls as they complete, record
+    /// Publish only provider-exposed presentation, never argument previews or
+    /// hidden reasoning. Bound host round trips while keeping final deltas.
+    fn publish_turn_presentation(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        use agent_provider_config::protocol::StreamStatus;
+        use runtime_collab::TaskPresentationFinish as Finish;
+
+        let Some(turn) = &mut self.turn else {
+            return Ok(());
+        };
+        if turn.finished.is_none()
+            && (run.presentation_version != Some(1)
+                || turn.published_at.elapsed() < Duration::from_millis(100))
+        {
+            return Ok(());
+        }
+        // Retention truncation is terminal for this presentation, not for the
+        // inference or its independently validated action batch.
+        if turn
+            .published_presentation
+            .as_ref()
+            .is_some_and(|p| p.finish.is_some())
+        {
+            return Ok(());
+        }
+        let finish = match turn.presentation.status {
+            StreamStatus::Streaming | StreamStatus::Completed => match &turn.finished {
+                Some(Ok(_)) => Some(Finish::Complete),
+                Some(Err(_)) => Some(Finish::Failed),
+                None => None,
+            },
+            StreamStatus::Truncated => Some(Finish::Truncated),
+            StreamStatus::Refused => Some(Finish::Refused),
+            StreamStatus::Cancelled => Some(Finish::Cancelled),
+            StreamStatus::Failed => Some(Finish::Failed),
+        };
+        let mut presentation = runtime_collab::TaskPresentation {
+            run: turn.presentation_run.clone(),
+            received_at: None,
+            sequence: turn
+                .published_presentation
+                .as_ref()
+                .map_or(1, |p| p.sequence + 1),
+            text: turn.presentation.text.clone(),
+            reasoning: turn.presentation.reasoning.clone(),
+            finish,
+            detail: turn
+                .presentation
+                .error
+                .as_ref()
+                .map_or_else(String::new, |e| format!("{e} {}", e.recovery().guidance())),
+        }
+        .bounded()
+        .map_err(anyhow::Error::msg)?;
+        if let Some(previous) = &turn.published_presentation {
+            presentation.sequence = previous.sequence;
+            if &presentation == previous {
+                return Ok(());
+            }
+            presentation.sequence += 1;
+        } else if presentation.text.is_empty()
+            && presentation.reasoning.is_empty()
+            && presentation.detail.is_empty()
+            && matches!(presentation.finish, None | Some(Finish::Complete))
+        {
+            return Ok(());
+        }
+        // Old hosts receive the same readable, bounded progress lane, without
+        // an unknown JSON field their strict decoder would reject.
+        let readable = if !presentation.text.is_empty() {
+            presentation.text.as_str()
+        } else if !presentation.reasoning.is_empty() {
+            presentation.reasoning.as_str()
+        } else if !presentation.detail.is_empty() {
+            presentation.detail.as_str()
+        } else {
+            "Model turn completed"
+        };
+        let message: String = readable.chars().take(280).collect();
+        turn.published_presentation = Some(presentation.clone());
+        turn.published_at = ui::time::now();
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message,
+                presentation: (run.presentation_version == Some(1)).then_some(presentation),
+            },
+        )
+    }
+
+    fn interrupt_turn_presentation(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        reason: &str,
+        cancelled: bool,
+    ) -> Result<String> {
+        if let Some(turn) = &mut self.turn {
+            use agent_provider_config::protocol::{ErrorKind, ModelError};
+            turn.presentation.fail(ModelError {
+                kind: if cancelled {
+                    ErrorKind::Cancelled
+                } else {
+                    ErrorKind::TimedOut
+                },
+                message: reason.into(),
+            });
+            turn.finished = Some(Err(reason.into()));
+        }
+        self.publish_turn_presentation(run)?;
+        Ok(self
+            .turn
+            .take()
+            .map_or_else(|| reason.to_owned(), |turn| turn.retained_failure(reason)))
+    }
+
+    /// One model turn: stream it, validate its complete batch, execute and record
     /// the results. `Some` ends the loop. A turn that ends early (cancelled,
     /// out of time, a broken model turn) asks the host to stop every
     /// independent invoke it left running.
@@ -1009,13 +1163,15 @@ impl Session {
             }
             self.incorporate_native_directions(run, conversation)?;
         }
-        let body = conversation.body(&tools::loop_definitions());
+        let body = conversation.body(&tools::typed_loop_definitions());
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
         let rx = self.chooser.start_turn(body, timeout, turn);
-        self.turn = Some(ActiveTurn::new(rx));
+        let mut active = ActiveTurn::new(rx);
+        active.presentation_run = format!("{}:{turn}", run.run_id);
+        self.turn = Some(active);
         self.poll_cancellation(run)?;
         if self.cancellation_known()? {
             self.turn = None;
@@ -1038,18 +1194,23 @@ impl Session {
         // a turn whose transport stopped answering. Time spent running steps
         // does not count against the model.
         let mut stepping = Duration::ZERO;
+        let mut validated = false;
         let body = loop {
             if self.task_budget_expired() {
-                self.turn = None;
-                return Ok(Some(LoopEnd::Failed(
-                    "The explicit task time budget expired".into(),
-                )));
+                let message = self.interrupt_turn_presentation(
+                    run,
+                    "The explicit task time budget expired",
+                    false,
+                )?;
+                return Ok(Some(LoopEnd::Failed(message)));
             }
             self.pump_turn_waiting(Duration::from_millis(50));
+            self.publish_turn_presentation(run)?;
             self.absorb_catalogue_updates();
             if self.cancellation_known()? {
-                self.turn = None;
-                return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
+                let message =
+                    self.interrupt_turn_presentation(run, "Cancelled while thinking", true)?;
+                return Ok(Some(LoopEnd::Cancelled(message)));
             }
             if self
                 .native_task
@@ -1058,13 +1219,35 @@ impl Session {
             {
                 // New directions take the next turn. Steps already running
                 // settle first, as a step in progress always has.
-                self.turn = None;
+                self.interrupt_turn_presentation(run, "Superseded by new directions", true)?;
                 if let Some(message) = self.drain_in_flight(run, state, &mut failed)? {
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
                 return Ok(None);
             }
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
+            // Streamed calls are presentation only. Dispatch the complete batch,
+            // in order, only after validating every call and the terminal status.
+            if !validated && let Some(active) = &mut self.turn {
+                active.ready.clear();
+                if let Some(Ok(body)) = &active.finished {
+                    match conversation.calls(body) {
+                        Ok((_, calls)) => {
+                            active.completed = calls.len();
+                            active.ready.extend(calls.into_iter().enumerate().map(
+                                |(index, call)| StreamedCall {
+                                    index,
+                                    id: call.id,
+                                    name: call.name,
+                                    input: call.input,
+                                },
+                            ));
+                            validated = true;
+                        }
+                        Err(error) => active.finished = Some(Err(active.retained_failure(&error))),
+                    }
+                }
+            }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
                     self.turn = None;
@@ -1079,7 +1262,7 @@ impl Session {
                 if let Some(message) =
                     cancelled.or_else(|| settle(handled, &call.id, &mut results, &mut finish))
                 {
-                    self.turn = None;
+                    self.interrupt_turn_presentation(run, &message, true)?;
                     return Ok(Some(LoopEnd::Cancelled(message)));
                 }
             }
@@ -1093,10 +1276,12 @@ impl Session {
                 break finished;
             }
             if turn_began.elapsed().saturating_sub(stepping) > timeout + Duration::from_secs(5) {
-                self.turn = None;
-                return Ok(Some(LoopEnd::Failed(
-                    "The model turn did not finish in time".into(),
-                )));
+                let message = self.interrupt_turn_presentation(
+                    run,
+                    "The model turn did not finish in time",
+                    false,
+                )?;
+                return Ok(Some(LoopEnd::Failed(message)));
             }
         };
         self.turn = None;
@@ -1250,7 +1435,9 @@ impl Session {
                 )
             })
             .collect();
-        conversation.push(assistant, ordered);
+        conversation
+            .push(assistant, ordered)
+            .map_err(anyhow::Error::msg)?;
         match finish {
             Some(Finishing { said, .. }) if !failed => {
                 self.chooser
@@ -1759,24 +1946,22 @@ impl Session {
         Ok(cancelled.or(folded))
     }
 
-    /// Whether the model turn in flight has given the loop nothing to do
-    /// yet: no complete call waiting, no later call begun, the turn not
-    /// finished. Waiting then costs the task nothing.
+    /// Whether there is no next call to run. Tools execute only after the
+    /// complete turn validates, so its final view call must also be allowed
+    /// to receive a late republication before recording its observation.
     fn turn_idle(&self) -> bool {
-        self.turn.as_ref().is_some_and(|turn| {
-            turn.ready.is_empty()
-                && turn.finished.is_none()
-                && !turn.begun.contains(&turn.completed)
-        })
+        self.turn
+            .as_ref()
+            .is_some_and(|turn| turn.ready.is_empty() && !turn.begun.contains(&turn.completed))
     }
 
     /// After a view step, take up the catalogue republication it caused —
     /// on the event, never on a timer. One the broker already delivered
     /// (with or before the step's reply) is taken at once. Beyond that the
-    /// loop listens only while the model turn in flight has given it nothing
-    /// else to do ([`Self::turn_idle`]), at most `most`, so listening never
-    /// delays a step or the next turn. A view that changes no operation
-    /// publishes nothing, and nothing is waited for.
+    /// loop listens only when no next call is ready ([`Self::turn_idle`]),
+    /// at most `most`. In particular a terminal plan or another invoke is
+    /// never held up; a tool-only turn waits for the observation it needs
+    /// to make its next decision.
     fn settle_view(&mut self, since: u64, most: Duration) -> Result<()> {
         let deadline = ui::time::now() + most;
         let mut deferred = Vec::new();
@@ -2011,6 +2196,203 @@ mod tests {
     use ui::collaboration::CollabRequest;
     use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
     use uuid::Uuid;
+
+    #[test]
+    fn neutral_truncation_retains_output_without_dispatching_calls() {
+        use agent_provider_config::protocol::{
+            Content, Message, ModelResponse, Role, StopReason, StreamEvent, Usage,
+        };
+        let response = ModelResponse {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![Content::ToolCall(crate::model::ToolCall {
+                    id: "a".into(),
+                    name: tools::INVOKE.into(),
+                    input: invoke("type-text", &serde_json::json!({"text": "Do not write"})).1,
+                    extra_content: None,
+                })],
+            },
+            stop_reason: StopReason::OutputLimit,
+            usage: Usage::default(),
+        };
+        let mut f = fixture(
+            "write hello",
+            World::default(),
+            vec![vec![
+                TurnEvent::Neutral(StreamEvent::TextDelta {
+                    text: "Partial answer".into(),
+                }),
+                TurnEvent::Neutral(StreamEvent::ReasoningDelta {
+                    text: "Provider summary".into(),
+                }),
+                TurnEvent::Neutral(StreamEvent::Finished {
+                    response: response.clone(),
+                }),
+                TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
+            ]],
+        );
+        f.session.chooser =
+            Chooser::scripted_neutral(Duration::from_secs(5), Arc::new(Scripted(f.script.clone())));
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(matches!(terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message }
+                if message.contains("Partial answer") && message.contains("Provider summary")));
+        let sent = f.sent.borrow();
+        let snapshots = sent
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportTaskRun {
+                    run_id,
+                    lease,
+                    update:
+                        runtime_collab::TaskRunUpdate::Progress {
+                            presentation: Some(p),
+                            ..
+                        },
+                    ..
+                } => {
+                    assert_eq!(*run_id, f.run.run_id);
+                    assert_eq!(lease, &f.run.lease);
+                    Some(p)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let final_snapshot = snapshots
+            .last()
+            .expect("production report carries typed output");
+        assert_eq!(final_snapshot.text, "Partial answer");
+        assert_eq!(final_snapshot.reasoning, "Provider summary");
+        assert_eq!(
+            final_snapshot.finish,
+            Some(runtime_collab::TaskPresentationFinish::Truncated)
+        );
+        assert!(
+            !serde_json::to_string(final_snapshot)
+                .unwrap()
+                .contains("Do not write")
+        );
+        assert!(
+            snapshots
+                .windows(2)
+                .all(|pair| pair[0].run == pair[1].run && pair[0].sequence < pair[1].sequence)
+        );
+    }
+
+    #[test]
+    fn presentation_reports_coalesce_bound_output_and_fall_back_for_old_hosts() {
+        let mut f = fixture("say hello", World::default(), Vec::new());
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut active = ActiveTurn::new(rx);
+        active.presentation_run = "7:0".into();
+        active.presentation.text = "hello".into();
+        f.session.turn = Some(active);
+        // A hundred rapid tokens do not make a hundred host round trips.
+        for _ in 0..100 {
+            f.session.publish_turn_presentation(&f.run).unwrap();
+        }
+        assert!(f.sent.borrow().is_empty());
+        let active = f.session.turn.as_mut().unwrap();
+        active.presentation.text = "é".repeat(40 * 1024);
+        active.finished = Some(Err("stream lost".into()));
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        let CollabRequest::ReportTaskRun {
+            update:
+                runtime_collab::TaskRunUpdate::Progress {
+                    presentation: Some(p),
+                    ..
+                },
+            ..
+        } = &sent[0]
+        else {
+            panic!("typed output report")
+        };
+        assert_eq!(
+            p.text.len(),
+            runtime_collab::TaskPresentation::MAX_TEXT_BYTES
+        );
+        assert_eq!(
+            p.finish,
+            Some(runtime_collab::TaskPresentationFinish::Truncated)
+        );
+        drop(sent);
+        f.run.presentation_version = None;
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut active = ActiveTurn::new(rx);
+        active.presentation_run = "7:1".into();
+        active.presentation.text = "Readable answer".into();
+        active.finished = Some(Ok(String::new()));
+        f.session.turn = Some(active);
+        f.session.publish_turn_presentation(&f.run).unwrap();
+        let sent = f.sent.borrow();
+        let CollabRequest::ReportTaskRun { update, .. } = sent.last().unwrap() else {
+            panic!("legacy progress report")
+        };
+        let json = serde_json::to_value(update).unwrap();
+        assert_eq!(json["message"], "Readable answer");
+        assert!(
+            json.get("presentation").is_none(),
+            "strict old host can decode this report"
+        );
+    }
+
+    #[test]
+    fn completed_stream_frames_cannot_dispatch_before_a_failed_final_response() {
+        let mut events = turn(
+            &[invoke(
+                "type-text",
+                &serde_json::json!({"text": "Do not write"}),
+            )],
+            6,
+        );
+        events.pop();
+        events.push(TurnEvent::Finished(Err("provider stream reset".into())));
+        let mut f = fixture("write hello", World::default(), vec![events]);
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(
+            !f.sent
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+        );
+        assert!(matches!(terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message } if message.contains("provider stream reset")));
+    }
+
+    #[test]
+    fn malformed_later_calls_prevent_the_entire_batch_from_dispatching() {
+        let mut f = fixture(
+            "write hello",
+            World::default(),
+            vec![turn(
+                &[
+                    invoke("type-text", &serde_json::json!({"text": "Do not write"})),
+                    (
+                        tools::LIST_OPERATIONS,
+                        serde_json::json!({"application": false}),
+                    ),
+                ],
+                6,
+            )],
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert!(f.world.borrow().steps.is_empty());
+        assert!(
+            !f.sent
+                .borrow()
+                .iter()
+                .any(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+        );
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { .. }
+        ));
+    }
 
     // -- A scripted model ------------------------------------------------
 
@@ -3082,6 +3464,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
+            presentation_version: Some(1),
             execution_budget: budget,
             action_context: serde_json::Value::Null,
         };
@@ -3507,10 +3890,9 @@ mod tests {
         ));
     }
 
-    /// While the model is still streaming the rest of its turn, a view step
-    /// listens for its republication only until the model gives the loop
-    /// something to do: here the next call begins at once, so the step costs
-    /// nothing beyond the stream itself.
+    /// Once the complete turn validates, a view step does not wait for a
+    /// republication when the next call is ready. Here the terminal plan
+    /// follows the read, so the step costs nothing beyond the stream itself.
     #[test]
     fn a_view_step_stops_listening_when_the_model_moves_on() {
         let world = World {
@@ -3541,8 +3923,9 @@ mod tests {
     }
 
     /// A republication that reaches the agent after the view step's reply is
-    /// still taken up while the model has nothing for the loop to do, so
-    /// what the view unlocked is reported with the step.
+    /// still taken up when the model has no next call for the loop to run,
+    /// so what the view unlocked is reported with the step. The step waits
+    /// for full-turn validation, not merely its streamed call preview.
     #[test]
     fn a_late_republication_is_taken_while_the_model_is_still_busy() {
         let world = World {
@@ -3553,14 +3936,16 @@ mod tests {
             republish_after_polls: 10,
             ..World::default()
         };
+        let selection_turn = turn(
+            &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
+            128,
+        );
+        let selection_finished_at = selection_turn.len() - 1;
         let mut f = paced_fixture(
             "make the second paragraph bold",
             world,
             vec![
-                turn(
-                    &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
-                    128,
-                ),
+                selection_turn,
                 turn(
                     &[
                         invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
@@ -3573,6 +3958,10 @@ mod tests {
         );
         f.session.run_task(&f.run).unwrap();
         assert_eq!(f.world.borrow().bold, ["p2"]);
+        assert!(
+            f.world.borrow().steps_at[0] >= selection_finished_at,
+            "the selection must not execute from a partial model turn"
+        );
         let bodies = f.script.bodies.lock().unwrap().clone();
         let observation = last_observation(&bodies[1]);
         assert!(
@@ -3791,7 +4180,7 @@ mod tests {
         assert!(
             sent.iter()
                 .any(|request| matches!(request, CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::Progress { message }, ..
+                update: runtime_collab::TaskRunUpdate::Progress { message, .. }, ..
             } if message == "Reviewing the permission-filtered action catalogue")),
             "the progress line is still reported, in order"
         );
@@ -4049,12 +4438,10 @@ mod tests {
         ));
     }
 
-    /// With Anthropic streamed like the `OpenAI` dialect, a call runs the
-    /// moment its `tool_use` block closes, while Claude still writes the
-    /// next one; the assembled body's pass then skips every call that ran
-    /// (same `toolu_` id), and each result goes back under its call's id.
+    /// Both dialects wait for the validated final batch, execute each call
+    /// exactly once and return each result under the original call id.
     #[test]
-    fn an_anthropic_call_runs_as_its_block_closes_and_only_once() {
+    fn anthropic_calls_wait_for_the_complete_turn_and_run_only_once() {
         let first = anthropic_turn(
             &[
                 invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
@@ -4062,12 +4449,9 @@ mod tests {
             ],
             8,
         );
-        let second_call = first
+        let turn_complete = first
             .iter()
-            .position(|event| {
-                matches!(event, TurnEvent::Frame { event, output }
-                    if event == tilo_model_gateway::EVENT_TOOL_CALL && output.contains("toolu_01"))
-            })
+            .position(|event| matches!(event, TurnEvent::Finished(_)))
             .unwrap();
         let mut f = paced_fixture(
             "write hello",
@@ -4075,9 +4459,6 @@ mod tests {
             vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
             Some(Duration::from_millis(4)),
         );
-        // A call that runs as its block closes lands before the next call
-        // is written; one that waits for the turn's end never does.
-        f.script.hold_before.set(second_call).unwrap();
         f.session.chooser = Chooser::scripted(
             Duration::from_secs(5),
             agent_provider_config::ProviderProtocol::Anthropic,
@@ -4098,8 +4479,8 @@ mod tests {
             "each call ran once"
         );
         assert!(
-            world.steps_at[0] <= second_call,
-            "the first call ran at event {} while the second was still being written ({second_call})",
+            world.steps_at[0] >= turn_complete,
+            "the first call ran at event {} before the final response ({turn_complete})",
             world.steps_at[0]
         );
         let bodies = f.script.bodies.lock().unwrap().clone();

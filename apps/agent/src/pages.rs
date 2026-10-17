@@ -207,15 +207,16 @@ fn slice_chars(text: &str, from: usize, to: usize) -> &str {
 
 /// The [`READ_RESULT`] tool definition.
 #[must_use]
-pub fn read_result_definition() -> Value {
-    json!({
-        "name": READ_RESULT,
-        "description":
+pub fn read_result_definition() -> agent_provider_config::protocol::ToolDefinition {
+    agent_provider_config::protocol::ToolDefinition {
+        name: READ_RESULT.into(),
+        description:
             "Read on in a long result. An invoke whose result did not fit shows its first \
              page and a `continues` with the result's id and where to go on from; this \
              returns the next page and where the one after it starts (`next`, null at the \
-             end). Read on only as far as the request needs.",
-        "input_schema": {
+             end). Read on only as far as the request needs."
+                .into(),
+        input_schema: json!({
             "type": "object",
             "properties": {
                 "result": {
@@ -230,8 +231,8 @@ pub fn read_result_definition() -> Value {
             },
             "required": ["result", "from"],
             "additionalProperties": false
-        }
-    })
+        }),
+    }
 }
 
 #[cfg(test)]

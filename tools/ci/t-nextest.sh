@@ -41,6 +41,13 @@ done
 [[ $tested == " " && -n ${T_NEXTEST_PACKAGES:-} ]] && tested=" $T_NEXTEST_PACKAGES "
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
+if (( nextest )); then
+    # Package-qualified features: never enable inference for client-only apps.
+    feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
+    read -r -a features <<<"$feature_flags"
+    arguments+=("${features[@]}")
+fi
+
 # Only the NTFS helper's own tests read the native images, which take minutes to build.
 if tests tilo-ntfs-helper; then export TILO_TEST_NTFS_FIXTURES=1; else export TILO_TEST_NTFS_FIXTURES=0; fi
 

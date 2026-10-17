@@ -224,6 +224,8 @@ containerfile="$repo/os/Containerfile"
 # (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
+# The gateway's HTTP adapter is installed alongside the socket daemon at
+# /usr/bin/tilo-model-http (one new model-gateway component row).
 # The desktop's wallpapers and their credits arrive from the os-wallpapers
 # stage, which fetches the files the tilo-wallpapers catalog pins: two
 # intentional payload rows, /usr/share/backgrounds/tilo and
@@ -232,9 +234,12 @@ containerfile="$repo/os/Containerfile"
 # sender's rows are gone: its source tree, its wrapper and the wpa_supplicant
 # D-Bus policy only it used.
 # Prepared setup and migration runtime artifacts remain alongside the native
-# helper components above. This digest is derived from the merged source's
-# expanded rootfs COPY mappings, including every manifest output.
-expected_contract=473492a7678824d6c569710df9f7160056e615d2be9e34f42157d5b67f01783d
+# helper components above. xwayland-satellite is built from patched source
+# (xwayland-satellite-builder): its binary and license directory are two new
+# rows in place of the RPM. The digest covers every expanded manifest output.
+# Relay metadata is owned only by its component, not a second rootfs COPY:
+# the same six files and 0644 modes are staged for component assembly below.
+expected_contract=02715ea8918fe056cd64264c9ad0a1a7b010df30ceef551a00b2fefeda64ce11
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -341,6 +346,31 @@ for path in \
     ' \
     || { echo "$path lost its enforced 0755 installed mode" >&2; exit 1; }
 done
+
+# Component metadata must actually enter the assembly stage: a manifest-only
+# dry run cannot prove that the build context supplies the installed bytes.
+for path in \
+  usr/lib/tilo/node-relay.toml \
+  usr/lib/sysusers.d/tilo-relay.conf \
+  usr/lib/systemd/system/tilo-node-relay@.service \
+  usr/lib/systemd/system/tilo-node-session-key@.service \
+  usr/lib/systemd/system/tilo-node-session@.service \
+  usr/lib/systemd/system/tilo-node-session@.path; do
+  containerfile_copy_contract "$containerfile" component-files |
+    awk -F '\t' -v source="os/$path" -v destination="/tilo-components/$path" '
+      $1 == "context" && $2 == source && $3 == destination { n++ }
+      END { exit n != 1 }' || {
+        echo "relay component input is not staged exactly once: $path" >&2
+        exit 1
+      }
+done
+python3 "$repo/os/scripts/install-components.py" relay --dry-run --format json |
+  python3 -c 'import json,sys
+rows = [row for row in json.load(sys.stdin) if row["from"].startswith("@manifest/")]
+assert len(rows) == 6, rows
+for row in rows:
+    assert row["from"] == "@manifest" + row["to"], row
+    assert row["mode"] == "0644" and not row["optional"], row'
 
 echo "rootfs COPY contract unchanged; $instructions-instruction layer budget satisfied"
 

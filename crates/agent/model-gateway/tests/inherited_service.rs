@@ -108,6 +108,7 @@ fn run_child(test: &str, case: &str) {
                     configured: Some(true),
                     output: None,
                     error: None,
+                    model_error: None,
                     event: None,
                 },
             )

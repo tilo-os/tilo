@@ -20,6 +20,8 @@ extern "C" {
     fn get_secret(app: &str, key: &str) -> Promise;
     #[wasm_bindgen(js_name = putSecret)]
     fn put_secret(app: &str, key: &str, bytes: &[u8]) -> Promise;
+    #[wasm_bindgen(js_name = getOrCreateSecret)]
+    fn get_or_create_secret(app: &str, key: &str, bytes: Option<Uint8Array>) -> Promise;
     #[wasm_bindgen(js_name = deleteSecret)]
     fn delete_secret(app: &str, key: &str) -> Promise;
     #[wasm_bindgen(js_name = loadSecrets)]
@@ -28,6 +30,98 @@ extern "C" {
     fn queue_secret(app: &str, key: &str, bytes: Option<Uint8Array>);
     #[wasm_bindgen(js_name = flushSecrets)]
     fn flush_secrets() -> Promise;
+    #[wasm_bindgen(catch, js_name = acknowledgedSeal)]
+    fn acknowledged_seal(app: &str, key: &str, bytes: &[u8]) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = acknowledgedSecret)]
+    fn acknowledged_secret(app: &str, bytes: &[u8]) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = acknowledgedMerge)]
+    fn acknowledged_merge(
+        app: &str,
+        key: &str,
+        baseline: &str,
+        changes: &str,
+    ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = pendingAcknowledgements)]
+    fn pending_acknowledgements() -> bool;
+}
+
+/// Read or durably initialize custody under the browser's app lock.
+/// `None` forbids creation (for an existing encrypted vault). Concurrent
+/// creators receive the same committed value, never their losing candidate.
+///
+/// # Errors
+/// Returns storage, crypto, or missing-custody errors.
+pub async fn get_or_create(
+    app: &str,
+    key: &str,
+    candidate: Option<&[u8]>,
+) -> Result<Secret, SecretError> {
+    let value = JsFuture::from(get_or_create_secret(
+        app,
+        key,
+        candidate.map(Uint8Array::from),
+    ))
+    .await
+    .map_err(|e| failed(&e))?;
+    let bytes = Uint8Array::new(&value).to_vec();
+    remember(app, key, Some(&bytes))?;
+    Ok(Secret::new(bytes))
+}
+
+/// Whether a synchronous consumer must retry a durable operation.
+pub fn pending() -> bool {
+    pending_acknowledgements()
+}
+
+/// Start an immutable credential write and acknowledge its id only after commit.
+/// None means pending: keep the credential local and retry on a later frame.
+/// Storage failures are returned without publishing a reference. A matching
+/// retry consumes the result once; calling again starts a new credential write.
+///
+/// # Errors
+/// Returns a storage error if durable custody or the in-memory mirror is unavailable.
+pub fn seal_blocking(app: &str, bytes: &[u8]) -> Result<Option<String>, SecretError> {
+    let value = acknowledged_secret(app, bytes).map_err(|e| failed(&e))?;
+    let id = value.as_string();
+    if let Some(id) = &id {
+        remember(app, id, Some(bytes))?;
+    }
+    Ok(id)
+}
+
+pub(crate) fn seal_at_blocking(
+    app: &str,
+    key: &str,
+    bytes: &[u8],
+) -> Result<Option<String>, SecretError> {
+    let value = acknowledged_seal(app, key, bytes).map_err(|e| failed(&e))?;
+    let id = value.as_string();
+    if let Some(id) = &id {
+        remember(app, id, Some(bytes))?;
+    }
+    Ok(id)
+}
+
+/// Serialize reload/compare/merge/write of a JSON inventory in durable custody.
+/// Changes map entry ids to [original, replacement], with null for absence.
+/// False is explicitly pending, not success. Retry with the same arguments
+/// until the committed result or error is consumed. A later identical change
+/// starts a fresh durable merge rather than replaying the previous result.
+///
+/// # Errors
+/// Returns a storage error on conflicting edits, failed persistence, or unavailable custody.
+pub fn merge_json_blocking(
+    app: &str,
+    key: &str,
+    baseline: &str,
+    changes: &str,
+) -> Result<bool, SecretError> {
+    let value = acknowledged_merge(app, key, baseline, changes).map_err(|e| failed(&e))?;
+    let Some(json) = value.as_string() else {
+        return Ok(false);
+    };
+    remember(app, key, Some(json.as_bytes()))?;
+    Ok(true)
 }
 
 type Mirror = HashMap<(String, String), Secret>;
@@ -69,7 +163,9 @@ pub async fn mirror() -> Result<(), SecretError> {
 ///
 /// # Errors
 ///
-/// The latest write the browser refused.
+/// A write the browser refused. Queued mirror-write failures remain latched
+/// until page reload; explicit seal/merge failures remain until their matching
+/// synchronous retry consumes them. Neither failure acknowledges persistence.
 pub async fn flush() -> Result<(), SecretError> {
     JsFuture::from(flush_secrets())
         .await
@@ -142,6 +238,8 @@ fn failed(error: &JsValue) -> SecretError {
 }
 
 pub(crate) async fn get(app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
+    // Do not present staged blocking writes as durable async reads.
+    flush().await?;
     if mirrored() {
         return crate::SecretBackend::get(&MirrorBackend, app, key);
     }
@@ -155,21 +253,23 @@ pub(crate) async fn get(app: &str, key: &str) -> Result<Option<Secret>, SecretEr
 }
 
 pub(crate) async fn put(app: &str, key: &str, value: &[u8]) -> Result<(), SecretError> {
+    flush().await?;
+    JsFuture::from(put_secret(app, key, value))
+        .await
+        .map_err(|e| failed(&e))?;
     if mirrored() {
         remember(app, key, Some(value))?;
     }
-    JsFuture::from(put_secret(app, key, value))
-        .await
-        .map(drop)
-        .map_err(|e| failed(&e))
+    Ok(())
 }
 
 pub(crate) async fn delete(app: &str, key: &str) -> Result<(), SecretError> {
+    flush().await?;
+    JsFuture::from(delete_secret(app, key))
+        .await
+        .map_err(|e| failed(&e))?;
     if mirrored() {
         remember(app, key, None)?;
     }
-    JsFuture::from(delete_secret(app, key))
-        .await
-        .map(drop)
-        .map_err(|e| failed(&e))
+    Ok(())
 }

@@ -240,7 +240,20 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
         .collect();
     trace.sort_by(|a, b| a.sequence.cmp(&b.sequence).then_with(|| a.id.cmp(&b.id)));
     Some(AgentWork {
-        state: transition.state.clone(),
+        stream: work
+            .stream
+            .as_ref()
+            .map(crate::record::ProviderStream::output),
+        // Older records stored terminal provider output beside a stale Taken
+        // claim. Project the outcome without rewriting their operation trace.
+        state: work
+            .stream
+            .as_ref()
+            .and_then(|stream| stream.finish.0)
+            .map_or_else(
+                || transition.state.clone(),
+                |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
+            ),
         since: transition.since,
         reasoning: work.reasoning.0.clone(),
         trace,

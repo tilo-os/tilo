@@ -253,6 +253,8 @@ impl Identified for Person {
 /// An agent's record of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
+    /// Incremental provider output; independent of the agent's public rationale.
+    pub stream: Option<ProviderStream>,
     /// Where it is, and since when: one authored claim, never mixed with
     /// another's time.
     pub state: Json<Option<Transition>>,
@@ -260,6 +262,30 @@ pub struct Work {
     pub reasoning: Json<Option<crate::model::AgentReasoning>>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
+}
+
+/// Received provider output, stored as fields and CRDT text, not a JSON snapshot.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ProviderStream {
+    pub run: String,
+    pub sequence: u64,
+    pub reasoning: String,
+    pub progress: String,
+    pub finish: Json<Option<crate::agent_stream::AgentFinish>>,
+    pub detail: String,
+}
+
+impl ProviderStream {
+    pub(crate) fn output(&self) -> crate::agent_stream::AgentStream {
+        crate::agent_stream::AgentStream {
+            run: self.run.clone(),
+            sequence: self.sequence,
+            reasoning: self.reasoning.clone(),
+            progress: self.progress.clone(),
+            finish: self.finish.0,
+            detail: self.detail.clone(),
+        }
+    }
 }
 
 /// One state of an agent's work and when it entered it.
@@ -321,7 +347,7 @@ pub struct Triage {
 /// What an agent records of its work, as a verb takes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkUpdate {
-    /// `taken`, `waiting`, `doing`, `done` or `refused`.
+    /// `taken`, `waiting`, `doing`, `done`, `refused`, or a `provider_` terminal outcome.
     pub state: String,
     /// The app waited on (`waiting`).
     #[serde(default)]
@@ -1562,6 +1588,96 @@ impl Chat {
         Ok(())
     }
 
+    /// Record ordered provider output, never executable model actions.
+    ///
+    /// The invoker owns the reply; another author cannot append to it.
+    /// Retrying requires a fresh reply and run, keeping partial answers intact.
+    #[action(item = channels)]
+    pub fn stream_output(
+        &mut self,
+        cx: &mut ActionCx,
+        channel: &Id,
+        reply: String,
+        name: Option<String>,
+        event: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        use crate::agent_stream::{AgentOutput, AgentStream, AgentStreamEvent};
+        let event: AgentStreamEvent = serde_json::from_value(event)
+            .map_err(|_| Refusal::new("invalid provider output event"))?;
+        if name
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty() || name.len() > MAX_AGENT_NAME_BYTES)
+        {
+            return Err(Refusal::new("provider display name is empty or too long"));
+        }
+        let me = author(cx)?;
+        let id = Id::from_raw(reply);
+        let existing = self.messages.get(&id);
+        if let Some(row) = existing {
+            own(cx, row)?;
+            if row.channel != *channel {
+                return Err(Refusal::new("reply belongs to another channel"));
+            }
+        }
+        let prior = existing.and_then(|row| row.work.as_ref()?.stream.as_ref());
+        let stream = prior.map_or_else(|| AgentStream::start(&event.run), ProviderStream::output);
+        if !stream.accepts(&event)
+            || (prior.is_none() && existing.is_some_and(|row| !row.text.is_empty()))
+            || matches!(&event.event, AgentOutput::TextDelta { text }
+                if existing.map_or(0, |row| row.text.len()) + text.len() > MAX_MESSAGE_TEXT_BYTES)
+        {
+            return Err(Refusal::new(
+                "out-of-order, terminal or oversized provider output",
+            ));
+        }
+        if existing.is_none() {
+            self.append(
+                id.clone(),
+                channel,
+                me,
+                seconds(cx),
+                Posting {
+                    appearance: name.map(|name| tilo_actions::Appearance {
+                        name,
+                        avatar: None,
+                        persona: None,
+                    }),
+                    ..Posting::default()
+                },
+            )?;
+        }
+        let row = self
+            .messages
+            .get_mut(&id)
+            .ok_or_else(|| Refusal::new("there is no such reply"))?;
+        let work = row.work.get_or_insert_with(Work::default);
+        if work.state.0.is_none() {
+            work.state = Json(Some(Transition {
+                state: crate::model::AgentWorkState::Taken,
+                since: seconds(cx),
+            }));
+        }
+        let record = work.stream.get_or_insert_with(|| ProviderStream {
+            run: event.run.clone(),
+            ..ProviderStream::default()
+        });
+        match &event.event {
+            AgentOutput::TextDelta { text } => row.text.push_str(text),
+            AgentOutput::ReasoningDelta { text } => record.reasoning.push_str(text),
+            AgentOutput::Progress { label } => record.progress.clone_from(label),
+            AgentOutput::Finished { outcome, detail } => {
+                record.finish = Json(Some(*outcome));
+                record.detail.clone_from(detail);
+                work.state = Json(Some(Transition {
+                    state: crate::model::AgentWorkState::ProviderFinished { outcome: *outcome },
+                    since: seconds(cx),
+                }));
+            }
+        }
+        record.sequence = event.sequence;
+        Ok(())
+    }
+
     /// Submit feedback.
     ///
     /// A reviewed report, posted in the channel and kept with its triage.
@@ -1646,5 +1762,7 @@ impl Chat {
     }
 }
 
+#[cfg(test)]
+mod terminal_tests;
 #[cfg(test)]
 mod tests;

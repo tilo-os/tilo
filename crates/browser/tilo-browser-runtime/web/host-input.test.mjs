@@ -30,7 +30,7 @@ class Node {
  replaceChildren(){this.children=[];}
 }
 const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-async function fixture({standalone=false,legacy=false}={}){
+async function fixture({standalone=false,legacy=false,models,providerManagement,app}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.fetch=async url=>{
@@ -39,7 +39,8 @@ async function fixture({standalone=false,legacy=false}={}){
  };
  let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
  // Winit's web backend reports the canvas's own focus and blur as the window's.
- const runtime={mount(canvas,_config,_assets,_entries,callback){update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ const runtime={mount(canvas,_config,_assets,_entries,callback){this.config=JSON.parse(_config);update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},close:()=>[],refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},load_application:async()=>true,flush_files:async()=>{},storage_write_hook(){},provide_settings:()=>false,drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,searchToggles:0,desktop_search_toggle(){this.searchToggles++;},
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
  };
@@ -51,9 +52,49 @@ async function fixture({standalone=false,legacy=false}={}){
   .replace("import {acquireStorage} from './storage.mjs';","const acquireStorage=async()=>globalThis.__hostFixture.storage;")
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
- const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:standalone?'writer':'desktop'});await tick();
+ const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:app??(standalone?'writer':'desktop'),models,providerManagement});await tick();
  return {host,runtime,document,delivered,deliveredOwners,windowFocus,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
+test('model bootstrap stays mount scoped and forwards only its transport binding',async()=>{
+ const models={endpoint:'https://models.example.test',sessionToken:'mount-one',profileId:'profile-one',modelId:'model-one',extra:'not a transport field'};
+ const first=await fixture({models});
+ assert.deepEqual(first.runtime.config.models,{endpoint:models.endpoint,sessionToken:'mount-one',profileId:'profile-one',modelId:'model-one'});
+ await first.host.cleanup();
+ const second=await fixture({models:{...models,sessionToken:'mount-two'}});
+ assert.equal(second.runtime.config.models.sessionToken,'mount-two');
+ await second.host.cleanup();
+ const unbound=await fixture();
+ assert.equal(unbound.runtime.config.models,undefined);
+ await unbound.host.cleanup();
+});
+
+test('administration bootstrap is explicit, mount-local and separate from inference',async()=>{
+ const models={endpoint:'https://models.example.test/model/rpc',sessionToken:'inference-only'};
+ const providerManagement={endpoint:models.endpoint,sessionToken:'settings-one',apiKey:'must-not-forward',profileId:'not-needed'};
+ const first=await fixture({app:'so.tilo.model-providers',models,providerManagement});
+ assert.deepEqual(first.runtime.config.models,models,'omitting both selection fields uses the user default');
+ assert.deepEqual(first.runtime.config.providerManagement,{endpoint:models.endpoint,sessionToken:'settings-one'});
+ const second=await fixture({providerManagement:{endpoint:models.endpoint,sessionToken:'settings-two'}});
+ assert.equal(second.runtime.config.app,'desktop','desktop control-panel tabs receive the same explicit grant');
+ assert.equal(second.runtime.config.providerManagement.sessionToken,'settings-two');
+ assert.equal(first.runtime.config.providerManagement.sessionToken,'settings-one','a second mount cannot replace the first session');
+ const inferenceOnly=await fixture({models});
+ assert.equal(inferenceOnly.runtime.config.providerManagement,undefined,'never reuse an inference token implicitly');
+ const missingToken=await fixture({providerManagement:{endpoint:models.endpoint},models});
+ assert.deepEqual(missingToken.runtime.config.providerManagement,{endpoint:models.endpoint},'a missing management token remains missing for Rust validation');
+ await first.host.cleanup();await second.host.cleanup();await inferenceOnly.host.cleanup();await missingToken.host.cleanup();
+});
+
+test('standalone control-panel bootstraps preserve both exact application IDs',async()=>{
+ for(const app of ['so.tilo.model-providers','so.tilo.settings']){
+  const mounted=await fixture({app,providerManagement:{endpoint:'https://models.example.test/model/rpc',sessionToken:'admin-'+app}});
+  assert.equal(mounted.runtime.config.app,app);
+  assert.equal(mounted.runtime.config.providerManagement.sessionToken,'admin-'+app);
+  assert.equal(mounted.runtime.config.models,undefined,'administration does not require an inference selection or token');
+  await mounted.host.cleanup();
+ }
+});
+
 test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
  const f=await fixture();
  const keys=[];f.host.canvas.addEventListener('keydown',event=>keys.push(event.key));f.host.canvas.addEventListener('keyup',event=>keys.push(event.key));
@@ -204,6 +245,24 @@ test('desktop search chords follow the platform command key',async()=>{
  assert.equal(isDesktopSearchShortcut({key:'j',metaKey:true},true),false);
 });
 
+
+test('persistence flushes credential custody before publishing document writes',async()=>{
+ const f=await fixture();const order=[];
+ const storage=globalThis.__hostFixture.storage;
+ storage.status={pendingWrites:1};
+ storage.commit=async()=>{order.push('document');};
+ storage.flush=async()=>{order.push('document-flush');};
+ f.runtime.flush_files=async()=>{order.push('custody');throw Error('quota exceeded');};
+ f.runtime.pending_writes=()=>[{revision:1n,key:'dependent-reference'}];
+ await assert.rejects(f.host.flush(),/quota exceeded/);
+ assert.deepEqual(order,['custody'],'failed custody must prevent document commit');
+ order.length=0;f.runtime.flush_files=async()=>{order.push('custody');};
+ await f.host.flush();
+ assert.deepEqual(order,['custody','custody','document']);
+ order.length=0;f.runtime.close=()=>[{revision:2n,key:'closing-reference'}];
+ await f.host.cleanup();
+ assert.deepEqual(order,['custody','custody','document'],'close must also persist custody first');
+});
 test('mounted semantic watch latches with pixels and preserves input through disposal',async()=>{
  const f=await fixture({standalone:true});const requests=[];f.runtime.close=()=>[];
  f.runtime.request_component_locus=(_id,target,observe)=>requests.push({target:JSON.parse(target),observe});

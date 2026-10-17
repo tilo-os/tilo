@@ -69,6 +69,16 @@ pub(crate) fn video_call_unavailable_reason() -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
+    /// Ask the device's model about the latest message.
+    #[effect(device_only, row, returns, item = channels)]
+    ModelControl {
+        channel: String,
+        #[param("Model command", choices = ["ask", "stop", "retry", "continue"])]
+        command: String,
+    },
+    /// Show or hide reasoning actually supplied by the provider.
+    #[effect(view, row, item = messages)]
+    ShowAgentReasoning { message: String, expanded: bool },
     /// Open workspace
     #[effect(view, row, item = workspaces)]
     OpenWorkspace { workspace: String },
@@ -235,6 +245,12 @@ impl ChatApp {
     /// Answer `effect` for this window.
     pub(crate) fn answer_effect(&mut self, effect: ChatEffect) -> EffectAnswer {
         match effect {
+            ChatEffect::ModelControl { channel, command } => {
+                return self.model_command(&channel, &command).map(Effected::value);
+            }
+            ChatEffect::ShowAgentReasoning { message, expanded } => {
+                self.show_agent_reasoning(message, expanded)?;
+            }
             ChatEffect::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
                 self.reselect();
@@ -278,17 +294,7 @@ impl ChatApp {
                 return self.read_message(&message).map(Effected::value);
             }
             ChatEffect::AttachFile { channel, path } => self.attach_file_effect(&channel, &path)?,
-            ChatEffect::ShareLiveContext => {
-                if !self.channels.iter().any(|channel| {
-                    channel.id == self.active_channel
-                        && channel.kind == ChannelKind::Text
-                        && !channel.archived
-                }) {
-                    return Err("Open a conversation before sharing its context".into());
-                }
-                self.sharing_context = true;
-                self.request_relayout();
-            }
+            ChatEffect::ShareLiveContext => self.share_live_context_effect()?,
             ChatEffect::StopSharingLiveContext => {
                 self.sharing_context = false;
                 self.request_relayout();
@@ -324,15 +330,51 @@ impl ChatApp {
             ChatEffect::StartCall => self.start_call(None)?,
             ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
             ChatEffect::SelectInput { channel, input } => {
-                self.native_voice_command(
-                    &channel,
-                    Command::SelectInput {
-                        input_id: input.trim().into(),
-                    },
-                )?;
+                self.select_voice_input(&channel, &input)?;
             }
         }
         Ok(Effected::done())
+    }
+
+    fn share_live_context_effect(&mut self) -> Result<(), String> {
+        if !self.channels.iter().any(|channel| {
+            channel.id == self.active_channel
+                && channel.kind == ChannelKind::Text
+                && !channel.archived
+        }) {
+            return Err("Open a conversation before sharing its context".into());
+        }
+        self.sharing_context = true;
+        self.request_relayout();
+        Ok(())
+    }
+
+    fn select_voice_input(&mut self, channel: &str, input: &str) -> Result<(), String> {
+        self.native_voice_command(
+            channel,
+            Command::SelectInput {
+                input_id: input.trim().into(),
+            },
+        )
+    }
+
+    fn show_agent_reasoning(&mut self, message: String, expanded: bool) -> Result<(), String> {
+        if !self.search_messages.iter().any(|m| {
+            m.id == message
+                && m.work
+                    .as_ref()
+                    .and_then(|work| work.stream.as_ref())
+                    .is_some_and(|stream| !stream.reasoning.is_empty())
+        }) {
+            return Err("provider reasoning is unavailable".into());
+        }
+        self.thread_follow = false;
+        if expanded {
+            self.expanded_reasoning.insert(message);
+        } else {
+            self.expanded_reasoning.remove(&message);
+        }
+        Ok(())
     }
 
     fn attach_file_effect(&mut self, channel: &str, path: &str) -> Result<(), String> {
@@ -900,6 +942,16 @@ impl ChatApp {
                     .with_primary(true),
             )
         };
+        let mut row = row;
+        if !self.model_controls(id).is_empty() {
+            row = row.operation(
+                ChatEffect::ModelControl {
+                    channel: id.to_owned(),
+                    command: String::new(),
+                }
+                .bound_asking(&["command"]),
+            );
+        }
         Some(if channel.kind == ChannelKind::Voice {
             row.row(
                 LiveRow::new(
@@ -937,24 +989,39 @@ impl ChatApp {
 
     fn message_row(&self, id: &str) -> Option<LiveRow> {
         let message = self.search_messages.iter().find(|item| item.id == id)?;
-        let author = self.author_name(&message.author);
-        let agent = self.agent_authors.contains_key(&message.author)
+        let author = if self.is_provider_output(message) {
+            self.message_author_label(message)
+        } else {
+            self.author_name(&message.author)
+        };
+        let agent = self.is_provider_output(message)
+            || self.agent_authors.contains_key(&message.author)
             || message
                 .author
                 .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX);
-        Some(
-            LiveRow::new(
-                item_row_id("messages", id),
-                "chat.workspace.messages",
-                self.message_label(message),
-            )
-            // Who wrote it, beside the message's own words.
-            .presentation(ui::tilo_actions::ResourcePresentation {
-                detail: Some(author.chars().take(80).collect()),
-                badge: agent.then(|| "agent".to_owned()),
-                preview: None,
-            }),
+        let mut row = LiveRow::new(
+            item_row_id("messages", id),
+            "chat.workspace.messages",
+            self.message_label(message),
         )
+        // Who wrote it, beside the message's own words.
+        .presentation(ui::tilo_actions::ResourcePresentation {
+            detail: Some(author.chars().take(80).collect()),
+            badge: agent.then(|| "agent".to_owned()),
+            preview: None,
+        });
+        if message
+            .work
+            .as_ref()
+            .and_then(|work| work.stream.as_ref())
+            .is_some_and(|stream| !stream.reasoning.is_empty())
+        {
+            row = row.effect(&ChatEffect::ShowAgentReasoning {
+                message: id.to_owned(),
+                expanded: !self.expanded_reasoning.contains(id),
+            });
+        }
+        Some(row)
     }
 
     fn person_row(&self, id: &str) -> Option<LiveRow> {
@@ -988,7 +1055,11 @@ impl ChatApp {
 
     /// What a message's row is called: who wrote it and how it begins.
     fn message_label(&self, message: &crate::model::Message) -> String {
-        let author = self.author_name(&message.author);
+        let author = if self.is_provider_output(message) {
+            self.message_author_label(message)
+        } else {
+            self.author_name(&message.author)
+        };
         let said = if message.text.is_empty() {
             message
                 .attachment

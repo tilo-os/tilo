@@ -47,6 +47,7 @@
 )]
 
 mod agent_conversation_surface;
+pub mod agent_stream;
 mod agent_tasks;
 pub mod app;
 pub mod body;
@@ -59,6 +60,7 @@ pub mod events;
 mod external;
 pub mod feedback;
 pub mod geometry;
+mod host_model;
 pub mod i18n;
 pub mod identity;
 pub mod images;
@@ -81,12 +83,49 @@ mod shared_resources;
 
 pub use app::ChatApp;
 
+impl ChatApp {
+    /// Bind a mount-local model capability supplied by the host.
+    #[must_use]
+    pub fn with_models(mut self, models: ui::models::Models) -> Self {
+        self.host_model.models = models;
+        self
+    }
+}
+
 #[cfg(test)]
 mod component_tests;
+#[cfg(all(test, unix))]
+mod native_models_tests;
 #[cfg(test)]
 mod testing;
 
 mod local_view;
 pub use resource::{Chat, ChatShell};
 
-ui::dev_reload_entry!(ChatShell);
+// The framework lends the mounting host's model capability to the live view.
+// Keep its reload entry points and standard capture adapter.
+mod framework_entry {
+    ui::dev_reload_entry!(super::ChatShell);
+}
+
+/// The standard Chat resource component, with this mount's host model capability.
+#[must_use]
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    framework_entry::definition()
+}
+
+thread_local! {
+    static STANDALONE_MODELS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Permit only the standalone binary's live root to adopt its launcher descriptor.
+pub fn enable_standalone_models() {
+    STANDALONE_MODELS.set(true);
+}
+
+pub(crate) fn standalone_models() -> Option<ui::models::Models> {
+    if STANDALONE_MODELS.replace(false) {
+        return Some(ui::models::Models::from_launcher().unwrap_or_default());
+    }
+    None
+}

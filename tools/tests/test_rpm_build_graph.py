@@ -65,6 +65,14 @@ class RpmBuildGraphTest(unittest.TestCase):
         bins = {
             support[i + 1] for i, value in enumerate(support[:-1]) if value == "--bin"
         }
+        selected_features = {
+            feature
+            for i, value in enumerate(support[:-1])
+            if value == "--features"
+            for feature in support[i + 1].split(",")
+        }
+        self.assertIn("tilo-model-gateway/local-models", selected_features)
+        self.assertIn("tilo-model-http", bins)
         expected = {
             "imager",
             "fs",
@@ -85,6 +93,11 @@ class RpmBuildGraphTest(unittest.TestCase):
                 seen.add(package["name"])
                 features = manifest.get("features", {})
                 active = set(features.get("default", []))
+                active.update(
+                    feature.split("/", 1)[1]
+                    for feature in selected_features
+                    if feature.startswith(package["name"] + "/")
+                )
                 pending = list(active)
                 while pending:
                     for feature in features.get(pending.pop(), []):
@@ -135,6 +148,75 @@ class RpmBuildGraphTest(unittest.TestCase):
                 "--no-default-features",
             ],
         )
+
+    def test_http_binary_is_staged_and_owned_by_rpm(self):
+        driver = (ROOT / "dist/rpm/build-rpm.sh").read_text()
+        self.assertIn(
+            'install -pm 0755 "$rel/tilo-model-http" '
+            '"$app_stage/bin/tilo-model-http"',
+            driver,
+        )
+        spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
+        self.assertIn(
+            "install -Dpm 0755 apps/bin/tilo-model-http "
+            "%{buildroot}%{_bindir}/tilo-model-http",
+            spec,
+        )
+        self.assertIn(
+            "%{_bindir}/tilo-model-http",
+            spec.split("%files apps\n")[1].splitlines(),
+        )
+
+    def test_model_gateway_component_build_and_install_plan(self):
+        installer = ROOT / "os/scripts/install-components.py"
+        result = subprocess.run(
+            [
+                "python3", str(installer), "model-gateway",
+                "--dry-run", "--format", "cargo",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(
+            result.stdout.split(),
+            [
+                "-p", "tilo-model-gateway",
+                "--bin", "tilo-model-gateway",
+                "--bin", "tilo-model-http",
+                "--features", "tilo-model-gateway/local-models",
+            ],
+        )
+        # Install only the declared executables: HTTP admission/session inputs
+        # belong to the caller, never to the image or development extension.
+        with tempfile.TemporaryDirectory(prefix="model-gateway-package-") as temporary:
+            root = Path(temporary)
+            outputs = root / "outputs"
+            outputs.mkdir()
+            for name in (
+                "tilo-model-gateway", "tilo-model-http",
+                "sessions.json", "credentials.json",
+            ):
+                (outputs / name).write_text(name)
+            destination = root / "extension"
+            subprocess.run(
+                [
+                    "python3", str(installer), "model-gateway", "--from", str(outputs),
+                    "--dest", str(destination), "--quiet",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(
+                {
+                    p.relative_to(destination).as_posix()
+                    for p in destination.rglob("*") if p.is_file()
+                },
+                {"usr/bin/tilo-model-gateway", "usr/bin/tilo-model-http"},
+            )
+            for binary in (destination / "usr/bin").iterdir():
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
 
 
 if __name__ == "__main__":

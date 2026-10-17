@@ -34,7 +34,7 @@ fn through(
     stamp: Option<SourceStamp>,
     now: Instant,
     key: &str,
-) -> Result<ResolvedProfile, String> {
+) -> Result<ResolvedProfile, ModelError> {
     cache.resolve(("p", "m"), stamp, now, || {
         let mut profile = ProviderProfile::local_vllm();
         profile.id = "p".into();
@@ -49,7 +49,7 @@ fn minted(
     now: Instant,
     token: &str,
     until: Instant,
-) -> Result<ResolvedProfile, String> {
+) -> Result<ResolvedProfile, ModelError> {
     cache.resolve(("p", "m"), Some(stamp(1)), now, || {
         let mut profile = ProviderProfile::google_vertex("p-1", "global", "m");
         profile.id = "p".into();
@@ -198,9 +198,15 @@ fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
         through(&cache, None, start, "unstamped").unwrap();
         assert_eq!(reads(&cache), 3);
         let failed = cache.resolve(("p", "m"), Some(stamp(1)), start, || {
-            Err("provider is not enabled".into())
+            Err(resolution_error(
+                ErrorKind::InvalidRequest,
+                "provider is not enabled",
+            ))
         });
-        assert_eq!(failed.unwrap_err(), "provider is not enabled");
+        assert_eq!(
+            failed.unwrap_err(),
+            resolution_error(ErrorKind::InvalidRequest, "provider is not enabled")
+        );
         assert_eq!(kept(&cache), 0);
     }
 }
@@ -224,6 +230,7 @@ fn save_profile(enabled: bool) {
 fn planned_key() -> Result<String, String> {
     plan_profile("test-provider", "test-model")
         .map(|(_, key)| key.map(|key| key.as_str().to_owned()).unwrap_or_default())
+        .map_err(|error| error.message)
 }
 
 fn holds(profile_id: &str) -> bool {
@@ -238,9 +245,55 @@ fn holds(profile_id: &str) -> bool {
 /// settings document nor the vault; a key set or removed through this
 /// gateway, a vault rewritten by another writer, and a settings change all
 /// reach the next turn; a removed key is not held.
+fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(rig_adapter::complete(
+            &provider_client().unwrap(),
+            &PlanCall {
+                profile_id,
+                model_id,
+                timeout: Duration::from_secs(1),
+                stream: false,
+                deltas: false,
+                trace: None,
+            },
+            agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+            &mut |_| true,
+        ))
+        .unwrap_err()
+}
+
 fn child_follows_settings_and_vault() {
     let reads = || PLAN_PROFILES.reads.load(Ordering::Relaxed);
     save_profile(true);
+    assert_eq!(
+        plan_profile("missing", "test-model").unwrap_err().kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        plan_profile("test-provider", "missing").unwrap_err().kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        complete_error("missing", "test-model").kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        complete_error("test-provider", "missing").kind,
+        ErrorKind::InvalidRequest
+    );
+    // Establish local test custody explicitly, never use an ambient keyring.
+    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+    let profile = configured_profile("test-provider").unwrap();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    ServiceCredentials::open_in(&root)
+        .store(&reference, &authorization, "seed-key")
+        .unwrap();
     set_key("test-provider", "first-key".into()).unwrap();
 
     // Phase: the first turn reads; the next reuses without touching a file.
@@ -264,17 +317,27 @@ fn child_follows_settings_and_vault() {
     remove_key("test-provider").unwrap();
     assert!(!holds("test-provider"));
     assert_eq!(planned_key().unwrap_err(), "API key is not configured");
+    assert_eq!(
+        plan_profile("test-provider", "test-model")
+            .unwrap_err()
+            .kind,
+        ErrorKind::Authentication
+    );
     assert!(!holds("test-provider"));
+
+    assert_eq!(
+        complete_error("test-provider", "test-model").kind,
+        ErrorKind::Authentication
+    );
 
     // Phase: a vault another writer rewrote is read again.
     set_key("test-provider", "third-key".into()).unwrap();
     assert_eq!(planned_key().unwrap(), "third-key");
-    let mut vault = SecretVault::open();
-    vault.put(
-        &vault_id("test-provider").unwrap(),
-        &Secret::password("fourth-key"),
-    );
-    vault.try_save().unwrap();
+    let profile = credential_profile("test-provider").unwrap();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    ServiceCredentials::open()
+        .store(&reference, &authorization, "fourth-key")
+        .unwrap();
     assert_eq!(planned_key().unwrap(), "fourth-key");
 
     // Phase: a settings change reaches the next turn. `ProviderConfig`
@@ -282,7 +345,23 @@ fn child_follows_settings_and_vault() {
     // (nothing stamped) or this (a stale reading) fails.
     save_profile(false);
     assert_eq!(planned_key().unwrap_err(), "provider is not enabled");
+    assert_eq!(
+        plan_profile("test-provider", "test-model")
+            .unwrap_err()
+            .kind,
+        ErrorKind::InvalidRequest
+    );
     assert!(!holds("test-provider"));
+    save_profile(true);
+    fs::write(
+        accounts::vault_dir_in(&root).join("vault.enc"),
+        b"invalid encrypted vault",
+    )
+    .unwrap();
+    assert_eq!(
+        complete_error("test-provider", "test-model").kind,
+        ErrorKind::Unavailable
+    );
 }
 
 #[test]
@@ -297,7 +376,7 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
         child
             .args([
                 "--exact",
-                "profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
+                "service::profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
                 "--nocapture",
             ])
             // No ambient credentials, settings path, or secret-tool.
@@ -365,7 +444,7 @@ fn child_mints_from_custody() {
     signed_in(false);
     assert_eq!(
         plan_profile("vertex-provider", &model).unwrap_err(),
-        SIGN_IN_AGAIN
+        resolution_error(ErrorKind::Authentication, SIGN_IN_AGAIN)
     );
 
     // Phase: a sealed grant yields its access token, kept between turns.
@@ -378,15 +457,23 @@ fn child_mints_from_custody() {
     );
     assert!(profile.signs_in_with_google());
     assert!(holds("vertex-provider"));
-    let api_key = SecretVault::open().get(&vault_id("vertex-provider").unwrap());
-    assert!(api_key.is_none(), "a sign-in never writes the API-key slot");
+    let store = ServiceCredentials::open();
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    assert!(
+        !store.status(&reference, &authorization).unwrap(),
+        "a sign-in never writes the bound API-key slot"
+    );
+    assert!(
+        !store.legacy_agent_provider_status(&profile.id).unwrap(),
+        "a sign-in never writes the legacy API-key slot"
+    );
 
     // Phase: a revoked grant (custody keeps it empty) means sign in again.
     seal_grant("vertex-provider", "");
     signed_in(false);
     assert_eq!(
         plan_profile("vertex-provider", &model).unwrap_err(),
-        SIGN_IN_AGAIN
+        resolution_error(ErrorKind::Authentication, SIGN_IN_AGAIN)
     );
     assert!(!holds("vertex-provider"));
 }
@@ -401,13 +488,15 @@ fn a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "profile_tests::a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again",
+            "service::profile_tests::a_google_sign_in_is_minted_by_custody_and_reports_sign_in_again",
             "--nocapture",
         ])
         // No ambient credentials, settings path, or secret-tool.
         .env_clear()
         .env("PATH", root.path())
         .env("XDG_CONFIG_HOME", root.path())
+        // Use an isolated credential backend rather than the login keyring.
+        .env("TILO_SECRETS_DIR", root.path().join("secrets"))
         .env("PROFILE_TEST_CHILD", "1")
         .output()
         .unwrap();

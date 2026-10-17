@@ -124,8 +124,15 @@ impl KeyValue {
 
 /// Authentication scheme applied to a request. The variants mirror the
 /// Auth tab's mode selector.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 pub enum Auth {
+    /// An opaque, device-local secret-store key. Safe to collaborate.
+    SecretRef {
+        id: String,
+        /// Public scheme label; never credential material.
+        #[serde(default)]
+        scheme: String,
+    },
     None,
     /// `Authorization: Bearer <token>`.
     Bearer {
@@ -143,23 +150,54 @@ pub enum Auth {
     },
 }
 
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl Serialize for Auth {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::None => serializer.serialize_str("None"),
+            Self::SecretRef { id, scheme } => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(
+                    "SecretRef",
+                    &serde_json::json!({ "id": id, "scheme": scheme }),
+                )?;
+                map.end()
+            }
+            _ => Err(serde::ser::Error::custom(
+                "authentication must be sealed before persistence",
+            )),
+        }
+    }
+}
+
 impl Auth {
     /// Stable label for the Auth-mode selector.
     pub fn label(&self) -> &'static str {
         match self {
-            Auth::None => "No auth",
-            Auth::Bearer { .. } => "Bearer token",
-            Auth::Basic { .. } => "Basic auth",
-            Auth::ApiKey { .. } => "API key",
+            Auth::SecretRef { scheme, .. } => match scheme.as_str() {
+                "Bearer Token" => "Bearer Token",
+                "Basic Auth" => "Basic Auth",
+                "API Key" => "API Key",
+                _ => "Stored Authentication",
+            },
+            Auth::None => "No Auth",
+            Auth::Bearer { .. } => "Bearer Token",
+            Auth::Basic { .. } => "Basic Auth",
+            Auth::ApiKey { .. } => "API Key",
         }
     }
 
     pub const LABELS: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
-
     /// The credential of this scheme: the token, the password, the key.
     pub fn secret(&self) -> Option<&str> {
         match self {
-            Auth::None => None,
+            Auth::None | Auth::SecretRef { .. } => None,
             Auth::Bearer { token } => Some(token),
             Auth::Basic { password, .. } => Some(password),
             Auth::ApiKey { value, .. } => Some(value),
@@ -171,6 +209,7 @@ impl Auth {
     pub fn with_secret(&self, secret: &str) -> Self {
         let secret = secret.to_owned();
         match self {
+            Auth::SecretRef { .. } => self.clone(),
             Auth::None => Auth::None,
             Auth::Bearer { .. } => Auth::Bearer { token: secret },
             Auth::Basic { username, .. } => Auth::Basic {

@@ -592,6 +592,8 @@ impl TubeApp {
     /// an offline state and Home explains that no live catalogue is available.
     #[must_use]
     pub fn online(mut self) -> Self {
+        // Device sync starts at framework attachment, using that host's secret
+        // store and paired-device settings rather than opening a second store.
         self.online = true;
         // The online app starts with an empty catalogue and populates it from
         // live results. The bundled `sample` catalogue is reserved for the

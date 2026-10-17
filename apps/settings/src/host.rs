@@ -98,6 +98,46 @@ pub struct PaneCx {
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
+    pub(crate) provider_admin: ui::models::ProviderAdministration,
+}
+
+/// Retype portable panel bindings without changing public Settings action ids.
+struct ProviderBinding<B>(B);
+impl<I, B: ui::tilo_resource::Binds<provider_settings_ui::ProviderEffect, I>>
+    ui::tilo_resource::Binds<SettingsEffect, I> for ProviderBinding<B>
+{
+    fn action_id(&self) -> &'static str {
+        self.0.action_id()
+    }
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        self.0.arguments(input)
+    }
+}
+impl provider_settings_ui::PanelBindings for PaneCx {
+    fn offline_metadata(&self) -> bool {
+        true
+    }
+    fn bind<I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        binding: impl ui::tilo_resource::Binds<provider_settings_ui::ProviderEffect, I>,
+    ) -> C {
+        self.bind(control, ProviderBinding(binding))
+    }
+    fn bind_invocation<C: ActionControl<()>>(
+        &self,
+        control: C,
+        effect: provider_settings_ui::ProviderEffect,
+    ) -> C {
+        use ui::tilo_resource::Effect;
+        match crate::panes::agent_models::AgentModelsEffect::decode(
+            effect.id(),
+            &effect.arguments(),
+        ) {
+            Ok(effect) => self.bind_invocation(control, effect),
+            Err(_) => control.unavailable(),
+        }
+    }
 }
 
 impl PaneCx {
@@ -112,6 +152,7 @@ impl PaneCx {
             mode: RunMode::Capture,
             scene: None,
             radios: crate::radios::Radios::unread(),
+            provider_admin: ui::models::ProviderAdministration::default(),
         }
     }
 
@@ -128,6 +169,15 @@ impl PaneCx {
 
     /// The panes of the surface attached through `cx`.
     pub(crate) fn attached(cx: &ui::framework::SurfaceCx<Settings>) -> Self {
+        let launcher_admin = crate::take_launcher_provider_admin();
+        let mut provider_admin = if cx.mode().is_live() {
+            launcher_admin
+        } else {
+            ui::models::ProviderAdministration::default()
+        };
+        while let Some(loan) = cx.take_lent::<ui::models::ProviderAdministration>() {
+            provider_admin = loan;
+        }
         let mut attached = Self {
             door: Some(Door {
                 actions: cx.actions(),
@@ -137,6 +187,7 @@ impl PaneCx {
             storage: cx.storage().clone(),
             mode: cx.mode(),
             scene: cx.fixture::<crate::scenarios::CaptureScene>(),
+            provider_admin,
             radios: crate::radios::Radios::unread(),
         };
         if attached.reaches_devices() {

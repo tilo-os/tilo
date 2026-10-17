@@ -61,6 +61,8 @@ screencast = "via-host"
 collab = "optional@1"
 tilo-fs = "optional@1"
 shell-ui = "optional@1"
+# Conversation inference uses the launcher-authenticated gateway, never provider keys.
+model-gateway = "optional@1"
 
 [actions]
 query = true

@@ -9320,6 +9320,11 @@ pub fn run() {
         size => size,
     };
     let peer_sync_requested = crate::compositor::parse_peer_sync_from_args();
+    // A device enrolled without the root (a node's session) completes its
+    // side of the join first, so the store below finds the person it holds.
+    if let Err(error) = crate::shell::identity_provisioning::complete_enrolled_device() {
+        tracing::warn!(%error, "the enrolled device could not take up its identity");
+    }
     let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {
@@ -9367,11 +9372,8 @@ pub fn run() {
     let identity_recovery =
         std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
             .is_some_and(|value| value == "1");
-    // A device enrolled without the root (a node's session) has its
-    // identity already; nobody sits at it to set one up.
     let identity_missing =
-        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
-            && !crate::shell::identity_provisioning::enrolled_device_ready();
+        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
     // The normal admin socket remains the real seat's. An owner can request
     // a separate semantic endpoint for headless work without enabling the
     // development input socket or changing first-use and lock handling.

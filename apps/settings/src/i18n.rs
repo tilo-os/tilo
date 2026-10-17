@@ -5,7 +5,26 @@
 //! render, a unit test and a live session resolve the same copy. The locale
 //! follows the usual POSIX variables and falls back per message to `en-US`.
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+
+/// Native Settings copy takes precedence; shared provider copy fills missing keys.
+pub fn t(key: &str) -> String {
+    let local = CATALOG.t(key);
+    if local == key {
+        provider_settings_ui::i18n::t(key)
+    } else {
+        local
+    }
+}
+
+pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    let local = CATALOG.t_args(key, args);
+    if local == key {
+        provider_settings_ui::i18n::t_args(key, args)
+    } else {
+        local
+    }
+}
 
 /// The English names of a `(label, value)` table, as an effect's or verb's
 /// choices.
@@ -41,6 +60,21 @@ mod tests {
             .collect();
         vars.sort_unstable();
         vars
+    }
+
+    #[test]
+    fn native_agent_copy_precedes_shared_fallback() {
+        assert_eq!(t("agent-vertex-title"), CATALOG.t("agent-vertex-title"));
+        assert_ne!(t("agent-vertex-title"), "agent-vertex-title");
+        assert_eq!(
+            t("agent-sign-in-custody"),
+            provider_settings_ui::i18n::t("agent-sign-in-custody")
+        );
+        let args = [("error", "diagnostic".into())];
+        assert_eq!(
+            t_args("agent-sign-in-forget-err", &args),
+            CATALOG.t_args("agent-sign-in-forget-err", &args)
+        );
     }
 
     #[test]

@@ -511,10 +511,12 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
+ordered-float = { version = "5" }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -544,10 +546,12 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
+ordered-float = { version = "5" }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -577,10 +581,12 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
+ordered-float = { version = "5" }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -610,10 +616,12 @@ naga = { version = "29", default-features = false, features = ["glsl-out", "hlsl
 nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "process", "socket", "user"] }
 nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
+ordered-float = { version = "5" }
 profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
+serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

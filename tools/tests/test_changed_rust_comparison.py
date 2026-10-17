@@ -71,6 +71,50 @@ class ChangedRustComparisonTests(unittest.TestCase):
             command = ["bash", str(CI / "check-changed-rustfmt.sh"), base, before]
         return subprocess.run(command, env=env, text=True, capture_output=True)
 
+    def test_changed_file_deleted_after_head_is_not_audited(self):
+        for deletion in ("worktree", "index", "commit"):
+            with self.subTest(deletion=deletion):
+                self.doCleanups()
+                self.setUp()
+                path = self.origin / "deleted file.rs"
+                path.write_text("#[allow(dead_code)]\nfn deleted() {}\n")
+                self.commit("add a Rust file changed since the comparison base")
+                (self.origin / "kept.rs").write_text("#[allow(dead_code)]\nfn kept() {}\n")
+                self.commit("add a file that must still be audited")
+                if deletion == "worktree":
+                    path.unlink()
+                else:
+                    self.git(self.origin, "rm", "deleted file.rs")
+                    if deletion == "commit":
+                        self.commit("delete the changed file")
+                result = self.check("allows", self.origin, self.base)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("kept.rs:1:", result.stderr)
+                self.assertNotIn("deleted file.rs", result.stderr)
+                (self.origin / "kept.rs").write_text("fn kept() {}\n")
+                result = self.check("allows", self.origin, self.base)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unexpected_missing_file_fails_closed(self):
+        path = self.origin / "disappearing.rs"
+        path.write_text("fn disappearing() {}\n")
+        self.commit("add changed Rust file")
+        real_git = shutil.which("git")
+        stub = self.bin / "git"
+        # Remove the file only after Git has reported a clean working tree.
+        stub.write_text(
+            '#!/bin/sh\nif [ "$1" = status ]; then\n'
+            f'  "{real_git}" "$@" || exit $?\n'
+            f'  rm "{path}"\n  exit 0\nfi\n'
+            f'exec "{real_git}" "$@"\n'
+        )
+        stub.chmod(0o755)
+        result = self.check("allows", self.origin, self.base)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Rust allow-reason check failed:", result.stderr)
+        self.assertIn("disappearing.rs", result.stderr)
+        self.assertNotIn("allow reasons OK", result.stdout)
+
     def test_inner_allows_require_reasons_in_commit_and_staged_checks(self):
         for staged in (False, True):
             source = self.origin / ("inner_staged.rs" if staged else "inner.rs")

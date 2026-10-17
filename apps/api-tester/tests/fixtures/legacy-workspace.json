@@ -1,0 +1,47 @@
+{
+  "url": {"$text": "https://example.org/draft?keep=yes"},
+  "body": {"$text": "{\"draft\":true}"},
+  "api_tester_request": {
+    "id": "\"draft-id\"",
+    "name": "\"Unsaved draft\"",
+    "method": "\"Post\"",
+    "auth": "{\"Basic\":{\"username\":\"ada\",\"password\":\"old-draft-password\"}}",
+    "body_mode": "\"Json\""
+  },
+  "api_tester_request_key_values": {
+    "headers:header-id": "{\"section\":\"headers\",\"value\":{\"id\":\"header-id\",\"key\":\"X-Draft\",\"value\":\"preserved\",\"enabled\":false}}"
+  },
+  "api_tester_collection_fields": {
+    "collection-id": {"name": {"$text": "Saved collection"}}
+  },
+  "api_tester_saved_request_fields": {
+    "saved-id": {
+      "collection_id": "\"collection-id\"",
+      "name": "\"Saved request\"",
+      "method": "\"Put\"",
+      "url": {"$text": "https://example.org/saved"},
+      "body": {"$text": "saved body"},
+      "body_mode": "\"Raw\"",
+      "auth": "{\"ApiKey\":{\"header\":\"X-Access\",\"value\":\"old-saved-key\"}}",
+      "params": {
+        "param-id": "{\"id\":\"param-id\",\"key\":\"page\",\"value\":\"2\",\"enabled\":true}"
+      }
+    }
+  },
+  "api_tester_environment_fields": {
+    "environment-id": {"name": {"$text": "Local"}}
+  },
+  "active_env": "environment-id",
+  "api_tester_environment_variables": {
+    "variable-id": {
+      "environment_id": {"$text": "environment-id"},
+      "id": {"$text": "variable-id"},
+      "key": {"$text": "host"},
+      "value": {"$text": "example.org"},
+      "enabled": true
+    }
+  },
+  "api_tester_history": {
+    "history-id": "{\"id\":\"history-id\",\"method\":\"Get\",\"url\":\"https://example.org/previous\",\"status\":201,\"duration_ms\":17}"
+  }
+}

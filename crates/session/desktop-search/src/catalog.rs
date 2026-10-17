@@ -600,6 +600,23 @@ pub(super) const APPS: &[CatalogApp] = &[
         ],
     },
     CatalogApp {
+        id: "so.tilo.model-providers",
+        name: "Model Providers",
+        category: "System",
+        platforms: &["tilo-os", "linux", "macos", "web"],
+        keywords: &[
+            "model providers",
+            "AI",
+            "API keys",
+            "credentials",
+            "inference",
+            "Modellanbieter",
+            "KI",
+            "API-Schlüssel",
+            "Zugangsdaten",
+        ],
+    },
+    CatalogApp {
         id: "so.tilo.monitor",
         name: "System Monitor",
         category: "System",

@@ -115,8 +115,10 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
     let store = AccountStore::load_in(destination.path());
     assert_eq!(store.all().len(), 1);
     assert_eq!(store.get(&id).unwrap().config["use_files"], true);
-    let projection =
-        crate::AccountStore::from_store(&store, &SecretVault::open_in(destination.path()));
+    let projection = crate::AccountStore::from_store(
+        &store,
+        &accounts::AccountCredentials::open_in(destination.path()).unwrap(),
+    );
     assert_eq!(projection.accounts.len(), 1);
     let adopted = &projection.accounts[0];
     assert_eq!(adopted.calendars.len(), 1);

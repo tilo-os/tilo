@@ -86,6 +86,19 @@ the native mount has no collaboration manager. Closing discards an unapproved
 review, while the approved outbox remains owned by the profile. A controller
 permits only one mounted editor at a time.
 
+Feedback is opened about the window in front. Native desktops offer the
+palette action `feedback.open` (`tilo-control actions invoke actions
+feedback.open`); the browser desktop offers Give feedback in the Tilo menu when
+the page holds a destination. Both name the focused window's app as the
+report's `Subject` (`tilo_desktop::feedback::focused`) and bring back the one
+open composer rather than a second. Only the app's id and its own display name
+are used: tile labels can be window titles and are never read. The composer
+shows what the report is about and offers "Include which app this is about"
+only while it has a subject; consent adds that one public context field to the
+review, and changing the subject discards an earlier review. Hosts that cannot
+take a screenshot (`FeedbackHost::offers_screenshots`) do not show the
+screenshot choice; a screenshot requested anyway is refused, not dropped.
+
 `tilo_desktop::feedback::PrivateFeedback` binds an already-admitted host adapter
 to the profile's durable store. Its outbox is a private package key pinned to
 the exact destination. Native hosts install it through
@@ -260,8 +273,8 @@ another profile person/device and replacement are refused. The browser's Rust
 host hook `register_feedback_startup(peer, startup)` requires an existing
 certified peer, rejects replacement and is consumed by actual desktop mounting.
 Peer close retires unused custody. URL/JSON launch options have no authority
-fields. `NoCapture` explicitly supports description-only review until a qualified
-focused-surface capture/context adapter is supplied; opt-in capture then refuses.
+fields. `NoCapture` reads nothing from any surface: a review carries the description
+and, with consent, the subject's app identity; it offers no screenshot.
 The canonical service refuses screenshot-bearing acknowledgments until a durable
 content witness is integrated; Saved report metadata alone cannot confirm an
 attachment.
@@ -292,7 +305,7 @@ cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
 cargo test --locked -p tilo-app --lib feedback_composer::tests
 cargo test --locked -p shell --lib shell::in_process::feedback_tests::
-cargo test --locked -p tilo-desktop --lib feedback::transport::tests::
+cargo test --locked -p tilo-desktop --lib feedback::
 cargo check --locked -p tilo-browser-runtime --target wasm32-unknown-unknown
 cargo test --locked -p chat --lib feedback::
 cargo clippy --locked -p tilo-feedback -p tilo-desktop -p chat --all-targets -- -D warnings

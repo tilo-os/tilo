@@ -40,10 +40,12 @@ pub async fn mirror_files(profile: String) -> Result<(), JsValue> {
 /// The latest change OPFS refused.
 #[wasm_bindgen]
 pub async fn flush_files() -> Result<(), JsValue> {
-    tilo_files::web::flush(&tilo_paths::default_profile())
-        .await
-        .map_err(|e| error(&e))?;
+    // A file may publish a credential reference. Custody must commit first,
+    // and a failed secret write must prevent the dependent file flush.
     tilo_secrets::web::flush()
         .await
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    tilo_files::web::flush(&tilo_paths::default_profile())
+        .await
+        .map_err(|e| error(&e))
 }

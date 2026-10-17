@@ -64,6 +64,8 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
+# Descriptor fixtures exercise the real gateway backend injected into the SDK.
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false, features = ["runtime-client"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

@@ -157,6 +157,10 @@ pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
 pub(crate) const SCENARIOS: &[&str] = &[
+    "agent-streaming",
+    "agent-failed",
+    "agent-reasoning",
+    "agent-long-thread",
     "agent-work",
     "bridged",
     "agent-task",
@@ -214,7 +218,19 @@ impl ResourceApp for ChatShell {
             ChatRuntime::Unavailable
         };
         let identity = LocalIdentity::for_participant(&me);
-        let app = ChatApp::new(identity, runtime, content);
+        let models = if live {
+            // The host supplies its default capability before any explicit
+            // mount-local loans. The most recent loan is authoritative, even
+            // when it deliberately withdraws model access.
+            let mut models = None;
+            while let Some(loan) = cx.take_lent::<ui::models::Models>() {
+                models = Some(loan);
+            }
+            crate::standalone_models().or(models).unwrap_or_default()
+        } else {
+            ui::models::Models::default()
+        };
+        let app = ChatApp::new(identity, runtime, content).with_models(models);
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         cx.surface(if live && ui::local_identity::bound().is_some() {
@@ -242,6 +258,18 @@ impl ResourceApp for ChatShell {
     /// `agent-work` is the demo conversation and an agent's reply, each
     /// change written by whoever made it.
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
+        if let Some(
+            scenario @ ("agent-streaming" | "agent-failed" | "agent-reasoning"
+            | "agent-long-thread"),
+        ) = fixture.scenario()
+        {
+            for invoke in demo_invokes()
+                .into_iter()
+                .chain(provider_stream_scenario(scenario))
+            {
+                fixture.version(crate::model::ME, crate::demo::NOW * 1000, invoke);
+            }
+        }
         if fixture.scenario() == Some("agent-work") {
             for (author, invoke) in agent_work_scenario() {
                 fixture.version(author, crate::demo::NOW * 1000, invoke);
@@ -253,7 +281,10 @@ impl ResourceApp for ChatShell {
     /// every other scenario, both read by the capture's own person.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
         match name {
-            Some("agent-work") => Vec::new(),
+            Some(
+                "agent-work" | "agent-streaming" | "agent-failed" | "agent-reasoning"
+                | "agent-long-thread",
+            ) => Vec::new(),
             Some("starter") => {
                 let you = LocalIdentity::demo();
                 vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
@@ -309,6 +340,51 @@ impl ResourceApp for ChatShell {
             color: u32::try_from(creator.color_idx).unwrap_or_default(),
         })]
     }
+}
+
+/// Provider output fixtures use the same durable action as a live host stream.
+pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<Chat>> {
+    use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
+    let mut events = vec![
+        AgentOutput::Progress { label: "Reading the selected document".into() },
+        AgentOutput::ReasoningDelta { text: "The provider shared this summary: compare the selected sections before proposing changes.".into() },
+        AgentOutput::TextDelta { text: "The document describes two approaches. The first preserves the existing layout; the second changes how the sections are grouped.".into() },
+    ];
+    if scenario == "agent-long-thread" {
+        events.push(AgentOutput::ReasoningDelta {
+            text: "\nCompare the evidence, preserve the source, and check each conclusion before presenting the result.\n".repeat(40),
+        });
+        events.push(AgentOutput::TextDelta {
+            text: "\n\nThe complete answer includes the evidence and the practical next step. Keep the original document and review changes before applying them.\n".repeat(30),
+        });
+        events.push(AgentOutput::Finished {
+            outcome: AgentFinish::Complete,
+            detail: "All sections reviewed.".into(),
+        });
+    }
+    if scenario == "agent-failed" {
+        events.push(AgentOutput::Finished {
+            outcome: AgentFinish::Failed,
+            detail: "Connection interrupted. Check connectivity and provider settings.".into(),
+        });
+    }
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| {
+            Chat::STREAM_OUTPUT.with(chat::StreamOutput {
+                channel: Id::from_raw("c_crit"),
+                reply: "shot_agent_stream".into(),
+                name: Some(crate::i18n::t("chat-model-author")),
+                event: serde_json::to_value(AgentStreamEvent {
+                    run: "shot_run".into(),
+                    sequence: index as u64 + 1,
+                    event,
+                })
+                .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 /// The demo conversation, read by [`crate::model::ME`], as a scenario

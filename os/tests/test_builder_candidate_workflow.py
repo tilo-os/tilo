@@ -110,6 +110,8 @@ class BuilderCandidates(unittest.TestCase):
             (root / 'tools/ci').mkdir(parents=True)
             script = root / 'tools/ci/t-nextest.sh'
             script.write_text(wrapper.read_text())
+            (root / 'tools/ci/package_features.py').write_text(
+                (ROOT / 'tools/ci/package_features.py').read_text())
             # Stand in only for the downstream environment/command. The real
             # wrapper must pass the browser through to the test invocation.
             (root / 'tools/test-env.sh').write_text('printf "%s\\n" "${CHROME-unset}"\n')

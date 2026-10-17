@@ -36,6 +36,13 @@ fields = [
   { path = "messages.*.attachment", type = "Json<Option<crate::model::Attachment>>", readonly = true },
   { path = "messages.*.pinned", type = "bool" },
   { path = "messages.*.work", type = "Option<Work>", readonly = true, stored = "record" },
+  { path = "messages.*.work.stream", type = "Option<ProviderStream>", stored = "record" },
+  { path = "messages.*.work.stream.run", type = "String" },
+  { path = "messages.*.work.stream.sequence", type = "u64" },
+  { path = "messages.*.work.stream.reasoning", type = "String" },
+  { path = "messages.*.work.stream.progress", type = "String" },
+  { path = "messages.*.work.stream.finish", type = "Json<Option<crate::agent_stream::AgentFinish>>" },
+  { path = "messages.*.work.stream.detail", type = "String" },
   { path = "messages.*.work.state", type = "Json<Option<Transition>>" },
   { path = "messages.*.work.reasoning", type = "Json<Option<crate::model::AgentReasoning>>" },
   { path = "messages.*.work.trace", type = "Keyed<Step>", stored = "keyed" },
@@ -305,6 +312,16 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "stream-output"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "reply", required = true, schema = { type = "string" } },
+  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "event", required = true, schema = {} },
+]
+
+[[resources.verbs]]
 id = "submit-feedback"
 field = "comments"
 kind = "undoable"
@@ -320,4 +337,3 @@ params = [
   { name = "report", required = true, schema = { type = "string" } },
   { name = "update", required = true, schema = {} },
 ]
-

@@ -58,6 +58,8 @@ rqrr.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# A brokered camera whose permission prompt a test answers.
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner", "test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]

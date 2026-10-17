@@ -1,15 +1,15 @@
 //! Real Plan dispatch tests. Each subprocess owns disposable configuration and
 //! a fabricated vault key; the HTTP peer counts fully received requests.
 use super::*;
+use crate::EVENT_TOOL_CALL_DELTA;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_model_gateway::{EVENT_TOOL_CALL_DELTA, MAX_DELTA_EVENTS};
 
-const OUTPUT: &str = r#"{"choices":[{"message":{"content":"nothing-fits"}}]}"#;
-const ANTHROPIC_OUTPUT: &str = r#"{"content":[{"type":"text","text":"nothing-fits"}]}"#;
+const OUTPUT: &str = r#"{"choices":[{"message":{"role":"assistant","content":"nothing-fits"},"finish_reason":"stop"}]}"#;
+const ANTHROPIC_OUTPUT: &str = r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"nothing-fits"}],"stop_reason":"end_turn"}"#;
 
 struct TemporaryConfig(PathBuf);
 
@@ -82,6 +82,41 @@ fn read_request(stream: &mut TcpStream) -> String {
     headers
 }
 
+fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
+    if case != "unavailable-storage" {
+        // The subprocess has a disposable, explicit test root, not a live
+        // Secret Service session. Opt into local test custody deliberately.
+        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+        let (reference, authorization) = credential_binding(profile).unwrap();
+        ServiceCredentials::open_in(&root)
+            .store(
+                &reference,
+                &authorization,
+                if case == "invalid-key" {
+                    "fabricated\ninvalid-key"
+                } else {
+                    "fabricated-test-key"
+                },
+            )
+            .unwrap();
+        if case == "missing-key" {
+            // An absent key is meaningful only after custody was established.
+            // Removing the disposable entry leaves a valid empty sealed vault.
+            assert!(
+                ServiceCredentials::open_in(&root)
+                    .remove(&reference, &authorization)
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            ServiceCredentials::open()
+                .status(&reference, &authorization)
+                .unwrap(),
+            case != "missing-key"
+        );
+    }
+}
+
 fn child_profile(case: &str) -> ProviderProfile {
     let mut profile = ProviderProfile::local_vllm();
     profile.id = "test-provider".into();
@@ -144,32 +179,26 @@ fn child_profile(case: &str) -> ProviderProfile {
 fn child_plan(case: &str) {
     let profile = child_profile(case);
     ProviderConfig {
-        profiles: vec![profile],
+        profiles: vec![profile.clone()],
         default_profile: None,
     }
     .save()
     .unwrap();
     if !matches!(
         case,
-        "missing-key" | "local-unauthenticated" | "local-nonloopback" | "local-dns-name"
+        "local-unauthenticated" | "local-nonloopback" | "local-dns-name"
     ) {
-        let mut vault = SecretVault::open();
-        vault.put(
-            &vault_id("test-provider").unwrap(),
-            &Secret::password(if case == "invalid-key" {
-                "fabricated\ninvalid-key"
-            } else {
-                "fabricated-test-key"
-            }),
-        );
-        vault.save();
-        assert!(
-            SecretVault::open()
-                .get(&vault_id("test-provider").unwrap())
-                .is_some()
-        );
+        prepare_plan_credentials(case, &profile);
     }
     if case == "local-unauthenticated" {
+        // Establish disposable custody before querying an empty vault.
+        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+        let (reference, authorization) = credential_binding(&profile).unwrap();
+        let store = ServiceCredentials::open_in(&root);
+        store
+            .store(&reference, &authorization, "temporary-test-key")
+            .unwrap();
+        store.remove(&reference, &authorization).unwrap();
         assert!(
             selection_configured(
                 "test-provider",
@@ -178,11 +207,7 @@ fn child_plan(case: &str) {
             )
             .is_ok()
         );
-        assert!(
-            SecretVault::open()
-                .get(&vault_id("test-provider").unwrap())
-                .is_none()
-        );
+        assert!(!secret_status("test-provider").unwrap());
     }
     let body = match case {
         "limits-cap" => serde_json::json!({"max_completion_tokens":4096}),
@@ -228,8 +253,37 @@ fn child_plan(case: &str) {
     .unwrap();
 }
 
-fn child_request(case: &str, body: serde_json::Value) -> Request {
-    if case.ends_with("transform") {
+fn child_request(case: &str, mut body: serde_json::Value) -> Request {
+    if matches!(case, "stream" | "stream-deltas" | "anthropic-stream") {
+        body["tools"] = if case == "anthropic-stream" {
+            serde_json::json!([
+                {"name":"list_operations", "input_schema":{"type":"object"}},
+                {"name":"plan", "input_schema":{"type":"object"}}
+            ])
+        } else {
+            serde_json::json!([
+                {"type":"function", "function":{"name":"list_operations", "parameters":{"type":"object"}}},
+                {"type":"function", "function":{"name":"plan", "parameters":{"type":"object"}}}
+            ])
+        };
+    }
+    if case.starts_with("complete-") {
+        let mut request = agent_provider_config::protocol::Conversation::new("system", "hello")
+            .request(Vec::new(), 64);
+        if case == "complete-image" {
+            request.messages[1].content = vec![agent_provider_config::protocol::Content::Image {
+                media_type: "image/unsupported".into(),
+                base64: "secret-never-echo".into(),
+            }];
+        }
+        Request::Complete {
+            profile_id: "test-provider".into(),
+            model_id: "test-model".into(),
+            request,
+            timeout_ms: 10_000,
+            stream: false,
+        }
+    } else if case.ends_with("transform") {
         Request::Transform {
             profile_id: "test-provider".into(),
             model_id: "test-model".into(),
@@ -357,17 +411,50 @@ fn refusal(case: &str) -> String {
     )
 }
 
-fn run_case(test: &str, case: &str) -> Option<Observed> {
-    if let Ok(child_case) = std::env::var("PLAN_TEST_CASE") {
-        child_plan(&child_case);
-        return None;
+fn completion_error_reply(case: &str) -> String {
+    match case {
+        "complete-billing" => {
+            let body = r#"{"error":{"code":"insufficient_quota","message":"secret-never-echo"}}"#;
+            format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+        "complete-context" => {
+            let body =
+                r#"{"error":{"code":"context_length_exceeded","message":"secret-never-echo"}}"#;
+            format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+        "complete-malformed" => {
+            let body = r#"{"choices":[{"message":{"role":"assistant","content":"secret-never-echo"},"finish_reason":"unknown"}]}"#;
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+        _ => panic!("unknown completion fixture: {case}"),
     }
+}
+
+fn temporary_config(test: &str, case: &str) -> TemporaryConfig {
     let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
         "tilo-plan-{test}-{case}-{}-{nonce}",
         std::process::id()
     )));
     fs::create_dir(&temp.0).unwrap();
+    temp
+}
+
+fn run_case(test: &str, case: &str) -> Option<Observed> {
+    if let Ok(child_case) = std::env::var("PLAN_TEST_CASE") {
+        child_plan(&child_case);
+        return None;
+    }
+    let temp = temporary_config(test, case);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -398,6 +485,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                     "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{partial"
                         .into()
                 }
+                case if case.starts_with("complete-") => completion_error_reply(case),
                 "stream" | "stream-deltas" => STREAM_REPLY.into(),
                 "anthropic-stream" => ANTHROPIC_STREAM_REPLY.into(),
                 "400detail" => format!(
@@ -431,7 +519,11 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     });
     let began = Instant::now();
     let child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", &format!("plan_tests::{test}"), "--nocapture"])
+        .args([
+            "--exact",
+            &format!("service::plan_tests::{test}"),
+            "--nocapture",
+        ])
         // No ambient credentials, proxy settings, settings path, or secret-tool.
         .env_clear()
         .env("PATH", &temp.0)
@@ -459,6 +551,31 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         events,
         stderr: String::from_utf8(child.stderr).unwrap(),
     })
+}
+
+#[test]
+fn completion_service_preserves_typed_failures_without_replay_or_message_leaks() {
+    use agent_provider_config::protocol::{ErrorKind, ModelError};
+    for (case, kind, requests) in [
+        ("complete-billing", ErrorKind::CreditsExhausted, 1),
+        ("complete-context", ErrorKind::ContextLimit, 1),
+        ("complete-malformed", ErrorKind::InvalidResponse, 1),
+        ("complete-image", ErrorKind::InvalidRequest, 0),
+    ] {
+        let Some(observed) = run_case(
+            "completion_service_preserves_typed_failures_without_replay_or_message_leaks",
+            case,
+        ) else {
+            return;
+        };
+        assert_eq!(observed.requests.len(), requests, "{case}");
+        assert!(!observed.response.ok, "{case}");
+        let error = observed.response.failure_error().model_error();
+        assert_eq!(error, ModelError::new(kind), "{case}");
+        let wire = serde_json::to_string(&observed.response).unwrap();
+        assert!(!wire.contains("secret-never-echo"), "{case}");
+        assert_eq!(observed.response.model_error, Some(error));
+    }
 }
 
 fn assert_unknown(observed: Observed) {
@@ -581,7 +698,7 @@ fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
     assert_eq!(observed.requests.len(), 1);
     assert!(!observed.response.ok);
     let error = observed.response.error.unwrap();
-    assert!(error.contains("insufficient_quota"), "{error}");
+    assert!(error.contains("provider credits are exhausted"), "{error}");
     assert!(error.contains("request was not retried"), "{error}");
 }
 
@@ -593,6 +710,7 @@ struct Sending {
 
 fn refused(status: Option<u16>, unprocessed: bool, asked_for: Option<Duration>) -> ProviderFailure {
     ProviderFailure {
+        model_error: crate::openai::Failure::from_http(status.unwrap_or(0), "", None).model_error(),
         why: status.map_or_else(
             || "provider transport failed".into(),
             |status| format!("provider returned HTTP {status}"),
@@ -730,13 +848,14 @@ fn only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed() {
     let mut profile = ProviderProfile::local_vllm();
     profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
     let http = provider_client().unwrap();
-    let failure = tilo_rt::block_on(send_provider(
+    let failure = tilo_rt::block_on(rig_adapter::legacy(
         &http,
         &profile,
-        &provider_url(&profile),
         None,
-        &serde_json::json!({"model": "test-model"}),
+        serde_json::json!({"model": "test-model"}),
         Duration::from_secs(5),
+        None,
+        true,
     ))
     .unwrap()
     .err()
@@ -827,7 +946,11 @@ fn plan_dispatch_preserves_success_and_protocol_credentials() {
             return;
         };
         assert_eq!(observed.requests.len(), 1);
-        assert!(observed.response.ok);
+        assert!(
+            observed.response.ok,
+            "{case}: {:?}",
+            observed.response.error
+        );
         assert!(observed.response.error.is_none());
         let request = &observed.requests[0];
         if case == "anthropic" {
@@ -856,6 +979,10 @@ fn plan_dispatch_validation_failures_send_nothing() {
         ("disabled", "provider is not enabled"),
         ("missing-model", "model is not configured for this provider"),
         ("missing-key", "API key is not configured"),
+        (
+            "unavailable-storage",
+            "provider credential storage is unavailable; restore vault access and retry",
+        ),
         ("invalid-key", "provider transport failed"),
         (
             "unauthorized",
@@ -976,10 +1103,11 @@ fn plan_dispatch_reports_bounded_provider_error_identifiers_only() {
     let error = observed.response.error.unwrap();
     assert!(error.contains("provider returned HTTP 400"), "{error}");
     assert!(
-        error.contains("type=invalid_request_error code=unsupported_parameter param=max_tokens"),
+        error.contains("check model and provider settings"),
         "{error}"
     );
     assert!(!error.contains("test instruction"), "{error}");
+    assert!(!error.contains("param=max_tokens"), "{error}");
     assert!(!error.contains("fabricated-test-key"), "{error}");
 }
 
@@ -1011,8 +1139,8 @@ fn plan_dispatch_streams_argument_deltas_only_when_asked() {
         kinds,
         [
             EVENT_TOOL_CALL_DELTA,
-            EVENT_TOOL_CALL,
             EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL,
             EVENT_TOOL_CALL
         ]
     );
@@ -1020,266 +1148,32 @@ fn plan_dispatch_streams_argument_deltas_only_when_asked() {
         events[0].1,
         serde_json::json!({"index": 0, "id": "call_a", "name": "list_operations", "delta": r#"{"search":"x"}"#})
     );
-    assert_eq!(events[2].1["index"], 1);
-    assert_eq!(events[2].1["name"], "plan");
-    assert_eq!(events[2].1["delta"], "{}");
+    assert_eq!(
+        events[1].1,
+        serde_json::json!({"index":1,"id":"call_b","name":"plan","delta":"{}"})
+    );
+    assert_eq!(
+        events[2].1,
+        serde_json::json!({"id":"call_a","name":"list_operations","arguments":r#"{"search":"x"}"#})
+    );
+    assert_eq!(
+        events[3].1,
+        serde_json::json!({"id":"call_b","name":"plan","arguments":"{}"})
+    );
     // The final body is unchanged by deltas.
     let assembled: serde_json::Value =
         serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
-    assert_eq!(
-        assembled["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
-        r#"{"search":"x"}"#
-    );
+    let calls = assembled["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["id"], "call_a");
+    assert_eq!(calls[0]["function"]["arguments"], r#"{"search":"x"}"#);
+    assert_eq!(calls[1]["id"], "call_b");
+    assert_eq!(calls[1]["function"]["arguments"], "{}");
 }
 
 /// SSE text for a list of `chat.completion.chunk` values.
-fn sse(chunks: &[serde_json::Value]) -> String {
-    let mut text = String::new();
-    for chunk in chunks {
-        text.push_str("data: ");
-        text.push_str(&chunk.to_string());
-        text.push_str("\n\n");
-    }
-    text.push_str("data: [DONE]\n\n");
-    text
-}
-
-fn args_chunk(
-    index: usize,
-    id: Option<&str>,
-    name: Option<&str>,
-    arguments: &str,
-) -> serde_json::Value {
-    let mut call = serde_json::json!({"index": index, "function": {"arguments": arguments}});
-    if let Some(id) = id {
-        call["id"] = id.into();
-    }
-    if let Some(name) = name {
-        call["function"]["name"] = name.into();
-    }
-    serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]})
-}
-
-fn finish_chunk() -> serde_json::Value {
-    serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
-}
-
-/// Every frame a stream emitted, as (event, output).
-type Frames = Vec<(String, serde_json::Value)>;
-
-/// Run `protocol`'s SSE core over `text`, delivered in transport pieces of
-/// at most `piece` bytes (cut anywhere, mid-line and mid-character alike);
-/// the clock reads `times_ms` (one per data line) from a fixed base.
-/// Returns every emitted frame and the assembled body or why it failed.
-fn run_sse(
-    protocol: ProviderProtocol,
-    text: &str,
-    piece: usize,
-    times_ms: &[u64],
-    deltas: bool,
-) -> (Frames, Result<String, String>) {
-    let base = Instant::now();
-    let mut times = times_ms.iter().copied();
-    let mut clock = move || {
-        base.checked_add(Duration::from_millis(times.next().unwrap_or(u64::MAX / 4)))
-            .unwrap()
-    };
-    let mut frames = Vec::new();
-    let mut timing = PlanTiming::start();
-    let pieces = text.as_bytes().chunks(piece).collect::<Vec<_>>();
-    let body = read_sse(
-        SseReader::new(protocol, deltas),
-        &pieces,
-        &mut |event| {
-            frames.push((
-                event.event.clone().unwrap(),
-                serde_json::from_str(event.output.as_deref().unwrap()).unwrap(),
-            ));
-            true
-        },
-        &mut timing,
-        &mut clock,
-    )
-    .map_err(|failure| failure.why);
-    (frames, body)
-}
-
-/// Run the OpenAI-compatible SSE core over `chunks`; the clock reads
-/// `times_ms` (one per data line) from a fixed base.
-fn feed(chunks: &[serde_json::Value], times_ms: &[u64], deltas: bool) -> (Frames, String) {
-    let (frames, body) = run_sse(
-        ProviderProtocol::OpenAiCompatible,
-        &sse(chunks),
-        usize::MAX,
-        times_ms,
-        deltas,
-    );
-    (frames, body.unwrap_or_else(|why| panic!("{why}")))
-}
-
-#[test]
-fn streamed_reasoning_is_preserved_for_history_without_visible_delta_frames() {
-    let chunks = [
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"provider "}}]}),
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"thought"}}]}),
-        args_chunk(0, Some("call_1"), Some("list_operations"), "{}"),
-        finish_chunk(),
-    ];
-    let (frames, body) = feed(&chunks, &[0, 10, 20, 30], true);
-    let completion: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        completion["choices"][0]["message"]["reasoning_content"],
-        "provider thought"
-    );
-    assert_eq!(
-        completion["choices"][0]["message"]["content"],
-        serde_json::Value::Null
-    );
-    assert!(
-        frames
-            .iter()
-            .all(|(_, value)| !value.to_string().contains("provider thought"))
-    );
-    let replay = tilo_model_gateway::openai::read_turn(&completion).unwrap();
-    assert_eq!(replay.message["reasoning_content"], "provider thought");
-    assert_eq!(replay.calls[0].name, "list_operations");
-    assert!(replay.text.is_none());
-}
-
-#[test]
-fn malformed_streamed_reasoning_is_a_provider_failure() {
-    let text = sse(&[
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":{"wrong":"type"}}}]}),
-        finish_chunk(),
-    ]);
-    let (frames, result) = run_sse(
-        ProviderProtocol::OpenAiCompatible,
-        &text,
-        usize::MAX,
-        &[],
-        false,
-    );
-    assert!(result.is_err());
-    assert!(frames.is_empty());
-}
-
-#[test]
-fn deltas_are_coalesced_by_window_and_size() {
-    let big = "y".repeat(300);
-    let chunks = [
-        args_chunk(0, Some("call_p"), Some("plan"), "{\"re"),
-        args_chunk(0, None, None, "ply"),
-        args_chunk(0, None, None, "\":\"h"),
-        args_chunk(0, None, None, "i"),
-        args_chunk(0, None, None, &big),
-        args_chunk(0, None, None, "\"}"),
-        finish_chunk(),
-    ];
-    // 0: first frame; 10, 20: inside the window; 45: window over;
-    // 50: 300 buffered bytes force a frame; 60: buffered until the call ends.
-    let (frames, body) = feed(&chunks, &[0, 10, 20, 45, 50, 60, 70], true);
-    let deltas = frames
-        .iter()
-        .filter(|(kind, _)| kind == EVENT_TOOL_CALL_DELTA)
-        .map(|(_, output)| output["delta"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        deltas,
-        ["{\"re", "ply\":\"hi", big.as_str(), "\"}"],
-        "coalesced at 40 ms / 256 bytes, flushed before the call"
-    );
-    let (kind, call) = frames.last().unwrap();
-    assert_eq!(kind, EVENT_TOOL_CALL);
-    assert_eq!(call["arguments"].as_str().unwrap(), deltas.concat());
-    for (_, output) in &frames[..frames.len() - 1] {
-        assert_eq!(output["index"], 0);
-        assert_eq!(output["id"], "call_p");
-        assert_eq!(output["name"], "plan");
-    }
-    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
-        deltas.concat()
-    );
-}
-
-#[test]
-fn every_delta_of_a_call_precedes_its_tool_call() {
-    let chunks = [
-        args_chunk(0, Some("a"), Some("list_operations"), "{\"search\""),
-        args_chunk(0, None, None, ":\"x\"}"),
-        args_chunk(1, Some("b"), Some("plan"), "{\"why\""),
-        args_chunk(1, None, None, ":\"z\"}"),
-        finish_chunk(),
-    ];
-    // Everything lands inside one window after the first frame of each call.
-    let (frames, _) = feed(&chunks, &[0, 1, 2, 3, 4], true);
-    let summary = frames
-        .iter()
-        .map(|(kind, output)| {
-            let text = if kind == EVENT_TOOL_CALL {
-                output["arguments"].as_str().unwrap()
-            } else {
-                output["delta"].as_str().unwrap()
-            };
-            (kind.as_str(), text.to_owned())
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        summary,
-        [
-            (EVENT_TOOL_CALL_DELTA, "{\"search\"".to_owned()),
-            (EVENT_TOOL_CALL_DELTA, ":\"x\"}".to_owned()),
-            (EVENT_TOOL_CALL, "{\"search\":\"x\"}".to_owned()),
-            (EVENT_TOOL_CALL_DELTA, "{\"why\"".to_owned()),
-            (EVENT_TOOL_CALL_DELTA, ":\"z\"}".to_owned()),
-            (EVENT_TOOL_CALL, "{\"why\":\"z\"}".to_owned()),
-        ]
-    );
-    // A delta frame for a call without an id carries null.
-    let (frames, _) = feed(
-        &[args_chunk(0, None, Some("plan"), "{}"), finish_chunk()],
-        &[0, 1],
-        true,
-    );
-    assert_eq!(frames[0].1["id"], serde_json::Value::Null);
-}
-
-#[test]
-fn delta_frames_have_their_own_bound() {
-    let mut chunks = (0..MAX_DELTA_EVENTS + 100)
-        .map(|_| args_chunk(0, Some("a"), Some("plan"), "x"))
-        .collect::<Vec<_>>();
-    chunks.push(finish_chunk());
-    // Each chunk arrives a full window after the previous one.
-    let times = (0..chunks.len() as u64).map(|i| i * 50).collect::<Vec<_>>();
-    let (frames, _) = feed(&chunks, &times, true);
-    let deltas = frames
-        .iter()
-        .filter(|(kind, _)| kind == EVENT_TOOL_CALL_DELTA)
-        .count();
-    assert_eq!(deltas, MAX_DELTA_EVENTS);
-    let (kind, call) = frames.last().unwrap();
-    assert_eq!(kind, EVENT_TOOL_CALL, "the tool call still follows");
-    assert_eq!(
-        call["arguments"].as_str().unwrap().len(),
-        MAX_DELTA_EVENTS + 100
-    );
-}
-
-#[test]
-fn no_delta_frames_without_the_flag() {
-    let chunks = [
-        args_chunk(0, Some("a"), Some("plan"), "{\"reply\""),
-        args_chunk(0, None, None, ":\"hi\"}"),
-        finish_chunk(),
-    ];
-    let (frames, _) = feed(&chunks, &[0, 100, 200], false);
-    assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0].0, EVENT_TOOL_CALL);
-    assert_eq!(frames[0].1["arguments"], "{\"reply\":\"hi\"}");
-}
-
 #[test]
 fn old_plan_requests_decode_without_deltas_and_never_serialize_it() {
     let old = serde_json::json!({
@@ -1301,51 +1195,6 @@ fn old_plan_requests_decode_without_deltas_and_never_serialize_it() {
     })
     .unwrap();
     assert!(encoded.get("deltas").is_none());
-}
-
-#[test]
-fn content_free_stream_progress_survives_unfinished_reasoning_response() {
-    let mut reader = SseReader::new(ProviderProtocol::OpenAiCompatible, false);
-    let mut timing = PlanTiming::start();
-    let mut emit = |_event: &Response| true;
-    let mut clock = Instant::now;
-    for chunk in [
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"private"}}]}),
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"💡"}}]}),
-    ] {
-        let line = format!("data: {chunk}\n");
-        assert_eq!(
-            reader
-                .line(line.as_bytes(), &mut emit, &mut timing, &mut clock)
-                .unwrap_or_else(|_| panic!("valid SSE fixture must parse")),
-            Flow::More
-        );
-    }
-    let last_reasoning = timing.last_reasoning;
-    for chunk in [
-        serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":""}}]}),
-        serde_json::json!({"choices":[{"index":1,"delta":{"reasoning_content":"foreign"}}]}),
-        serde_json::json!({"usage":{"completion_tokens":17},"choices":[]}),
-    ] {
-        let line = format!("data: {chunk}\n");
-        reader
-            .line(line.as_bytes(), &mut emit, &mut timing, &mut clock)
-            .unwrap_or_else(|_| panic!("valid SSE fixture must parse"));
-    }
-    assert!(reader.finish(&mut emit, &mut timing).is_err());
-    assert_eq!(timing.stream_chunks, 5);
-    assert_eq!(timing.reasoning_chunks, 2);
-    assert_eq!(timing.reasoning_bytes, 11);
-    assert_eq!(timing.last_reasoning, last_reasoning);
-    assert!(timing.first_reasoning.is_some());
-    assert!(timing.last_stream >= timing.last_reasoning);
-    // Missing terminal usage stays unknown; chunk/byte counts are not tokens.
-    assert!(timing.completion_tokens.is_none());
-    let fields = timing.progress_log_fields();
-    assert!(fields.contains("reasoning_chunks=2 reasoning_bytes=11"));
-    for private in ["private", "💡", "foreign", "reasoning_content"] {
-        assert!(!fields.contains(private));
-    }
 }
 
 #[test]
@@ -1386,20 +1235,24 @@ fn plan_dispatch_streams_anthropic_tool_calls_then_the_message_body() {
             EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL,
-            EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL
-        ]
+        ],
+        "{events:?}"
     );
     assert_eq!(
         events[2].1,
         serde_json::json!({"id": "toolu_a", "name": "list_operations", "arguments": "{\"search\": \"x\"}"})
     );
-    // A call streamed without input carries the block's own empty input.
+    // Deltas precede completion, but no completed call authorizes work until
+    // Rig has validated the whole turn's authoritative finish.
     assert_eq!(
-        events[3].1,
+        events[1].1,
         serde_json::json!({"index": 1, "id": "toolu_b", "name": "plan", "delta": "{}"})
     );
-    assert_eq!(events[4].1["arguments"], "{}");
+    assert_eq!(
+        events[3].1,
+        serde_json::json!({"id": "toolu_b", "name": "plan", "arguments": "{}"})
+    );
     // The final frame is the Messages body a non-streamed Plan returns.
     let assembled: serde_json::Value =
         serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
@@ -1545,37 +1398,31 @@ fn anthropic_events(
     events
 }
 
-/// One clock reading per data line, each a full coalescing window apart.
-fn windows(events: usize) -> Vec<u64> {
-    (0..events as u64)
-        .map(|line| line.saturating_mul(50))
-        .collect()
-}
-
-#[test]
-fn anthropic_stream_rebuilds_the_non_streamed_message_however_it_is_cut() {
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_stream_rebuilds_the_non_streamed_message_however_it_is_cut() {
     let message = anthropic_message();
     for cut in [1, 2, 3, 7, 1000] {
         let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], cut);
-        let text = anthropic_sse(&events);
-        // Transport pieces cut lines, escapes and UTF-8 sequences anywhere.
         for piece in [1, 2, 3, 5, 64, usize::MAX] {
-            let (frames, body) = run_sse(
+            let (result, frames, timing) = rig_adapter::stream_tests::test_stream(
+                anthropic_sse(&events).into_bytes(),
                 ProviderProtocol::Anthropic,
-                &text,
                 piece,
-                &windows(events.len()),
                 true,
-            );
-            let body: serde_json::Value =
-                serde_json::from_str(&body.unwrap_or_else(|why| panic!("{why}"))).unwrap();
-            assert_eq!(body, message, "cut {cut}, piece {piece}");
+                true,
+            )
+            .await;
+            let response = result.unwrap_or_else(|why| panic!("cut {cut}, piece {piece}: {why}"));
+            assert_eq!(response.raw, message, "cut {cut}, piece {piece}");
+            assert_eq!(response.usage.output_tokens, Some(503));
+            assert_eq!(response.usage.cached_input_tokens, Some(1800));
+            assert!(timing.first_reasoning.is_some() && timing.reasoning_chunks > 0);
+            assert!(timing.first_token.is_some() && timing.plan_call.is_some());
             let calls = frames
                 .iter()
-                .filter(|(kind, _)| kind == EVENT_TOOL_CALL)
-                .map(|(_, call)| call)
+                .filter(|frame| frame.event.as_deref() == Some(EVENT_TOOL_CALL))
                 .collect::<Vec<_>>();
-            assert_eq!(calls.len(), 2, "cut {cut}, piece {piece}");
+            assert_eq!(calls.len(), 2);
             for (index, (call, (id, name, input))) in calls
                 .iter()
                 .zip([
@@ -1584,174 +1431,70 @@ fn anthropic_stream_rebuilds_the_non_streamed_message_however_it_is_cut() {
                 ])
                 .enumerate()
             {
+                let call: serde_json::Value =
+                    serde_json::from_str(call.output.as_deref().unwrap()).unwrap();
                 assert_eq!(call["id"], id);
                 assert_eq!(call["name"], name);
-                assert_eq!(call["arguments"], input, "the input exactly as written");
-                let deltas = frames
-                    .iter()
-                    .filter(|(kind, delta)| {
-                        kind == EVENT_TOOL_CALL_DELTA && delta["index"] == index
-                    })
-                    .map(|(_, delta)| {
-                        assert_eq!(delta["id"], id);
-                        delta["delta"].as_str().unwrap()
-                    })
-                    .collect::<String>();
-                assert_eq!(
-                    deltas, input,
-                    "every delta of call {index} precedes its call"
-                );
-            }
-            // Thoughts and text never leave the gateway as frames.
-            for (_, frame) in &frames {
-                let frame = frame.to_string();
-                assert!(
-                    !frame.contains("Read, then") && !frame.contains("Writing"),
-                    "{frame}"
-                );
+                assert_eq!(call["arguments"], input);
+                let mut delta = String::new();
+                let mut completed = false;
+                for frame in &frames {
+                    let value: serde_json::Value =
+                        serde_json::from_str(frame.output.as_deref().unwrap()).unwrap();
+                    if frame.event.as_deref() == Some(EVENT_TOOL_CALL) && value["id"] == id {
+                        completed = true;
+                    }
+                    if frame.event.as_deref() == Some(EVENT_TOOL_CALL_DELTA)
+                        && value["index"] == index
+                    {
+                        assert!(!completed, "all deltas precede authorization");
+                        assert_eq!(value["id"], id);
+                        delta.push_str(value["delta"].as_str().unwrap());
+                    }
+                    assert!(
+                        !value.to_string().contains("Read, then")
+                            && !value.to_string().contains("Writing")
+                    );
+                }
+                assert_eq!(delta, input);
             }
         }
     }
 }
 
-#[test]
-fn an_anthropic_tool_call_is_reported_at_its_own_block_stop() {
-    let message = anthropic_message();
-    let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], 4);
-    let mut sse = SseReader::new(ProviderProtocol::Anthropic, false);
-    let mut timing = PlanTiming::start();
-    let mut reported = Vec::new();
-    for (position, event) in events.iter().enumerate() {
-        let text = anthropic_sse(std::slice::from_ref(event));
-        let flow = sse
-            .feed(
-                text.as_bytes(),
-                &mut |frame| {
-                    assert_eq!(frame.event.as_deref(), Some(EVENT_TOOL_CALL));
-                    let call: serde_json::Value =
-                        serde_json::from_str(frame.output.as_deref().unwrap()).unwrap();
-                    reported.push((position, call["id"].as_str().unwrap().to_owned()));
-                    true
-                },
-                &mut timing,
-                &mut Instant::now,
-            )
-            .unwrap_or_else(|failure| panic!("{}", failure.why));
-        assert_eq!(flow == Flow::Done, position + 1 == events.len());
-    }
-    let at = |kind: &str, index: usize| {
-        events
-            .iter()
-            .position(|event| event["type"] == kind && event["index"] == index)
-            .unwrap()
-    };
-    assert_eq!(
-        reported,
-        [
-            (at("content_block_stop", 2), "toolu_01".to_owned()),
-            (at("content_block_stop", 4), "toolu_02".to_owned()),
-        ],
-        "each call is reported the moment its block closes"
-    );
-    let message_delta = events
-        .iter()
-        .position(|event| event["type"] == "message_delta")
-        .unwrap();
-    assert!(reported[0].0 < at("content_block_start", 3));
-    assert!(reported[1].0 < message_delta);
-    assert!(timing.first_reasoning.is_some() && timing.reasoning_chunks > 0);
-    assert!(timing.first_token.is_some() && timing.plan_call.is_some());
-    let body = sse
-        .finish(
-            &mut |_| -> bool { panic!("every call was already reported") },
-            &mut timing,
-        )
-        .unwrap_or_else(|failure| panic!("{}", failure.why));
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&body).unwrap(),
-        message
-    );
-    assert_eq!(timing.tool_calls, 2);
-    assert_eq!(timing.completion_tokens, Some(503));
-    assert_eq!(timing.cached_tokens, Some(1800));
-    assert_eq!(timing.cache_write_tokens, Some(0));
-}
-
-#[test]
-fn anthropic_stream_failures_are_provider_failures() {
-    let message = anthropic_message();
-    let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], 5);
+#[tokio::test(flavor = "current_thread")]
+async fn anthropic_errors_and_eof_never_authorize_even_closed_tool_blocks() {
+    let events = anthropic_events(&anthropic_message(), &[INVOKE_INPUT, PLAN_INPUT], 5);
     let first_stop = events
         .iter()
         .position(|event| event["type"] == "content_block_stop" && event["index"] == 2)
         .unwrap();
-    let run = |events: &[serde_json::Value], tail: &str| {
-        let text = anthropic_sse(events) + tail;
-        run_sse(ProviderProtocol::Anthropic, &text, 7, &[], false)
-    };
-    let calls = |frames: &Frames| {
-        frames
-            .iter()
-            .map(|(_, call)| call["id"].as_str().unwrap().to_owned())
-            .collect::<Vec<_>>()
-    };
-
-    // An `error` event after a 200: only its type is passed on.
-    let overloaded = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded near test instruction\"}}\n\n";
-    let (frames, result) = run(&events[..=first_stop], overloaded);
-    let why = result.unwrap_err();
-    assert_eq!(why, "provider stream failed (type=overloaded_error)");
-    assert_eq!(
-        calls(&frames),
-        ["toolu_01"],
-        "a call completed before it stands"
-    );
-
-    // A stream that stops before `message_stop`, between or inside blocks.
-    for (end, reported) in [
-        (events.len() - 1, 2),
-        (first_stop + 1, 1),
-        (first_stop - 1, 0),
-        (1, 0),
-    ] {
-        let (frames, result) = run(&events[..end], "");
-        assert_eq!(
-            result.unwrap_err(),
-            "provider stream ended early",
-            "end {end}"
-        );
-        assert_eq!(
-            calls(&frames).len(),
-            reported,
-            "only finished calls, end {end}"
-        );
+    let mut broken = Vec::new();
+    for end in [events.len() - 1, first_stop + 1, first_stop - 1, 1] {
+        broken.push(anthropic_sse(&events[..end]));
     }
-    // A connection cut in the middle of a data line.
+    broken.push(anthropic_sse(&events[..=first_stop]) + "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"private-provider-content\"}}\n\n");
     let text = anthropic_sse(&events);
-    let cut = text.rfind("\"usage\"").unwrap();
-    let cut = text.get(..cut).unwrap();
-    let (frames, result) = run_sse(ProviderProtocol::Anthropic, cut, 3, &[], false);
-    assert_eq!(result.unwrap_err(), "provider stream was unreadable");
-    assert_eq!(calls(&frames), ["toolu_01", "toolu_02"]);
-
-    // Malformed streams: input that is not JSON when its block closes, a
-    // delta for a block never opened, a block before the message, a second
-    // message.
-    let mut broken = events[..first_stop].to_vec();
-    broken.push(serde_json::json!({"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"tail\":"}}));
-    broken.extend_from_slice(&events[first_stop..]);
-    let (frames, result) = run(&broken, "");
-    assert_eq!(result.unwrap_err(), "provider tool input was not JSON");
-    assert!(frames.is_empty());
-    for stray in [
-        serde_json::json!({"type": "content_block_delta", "index": 9, "delta": {"type": "text_delta", "text": "x"}}),
-        events[0].clone(),
-    ] {
-        let mut broken = events[..3].to_vec();
-        broken.push(stray);
-        let (_, result) = run(&broken, "");
-        assert_eq!(result.unwrap_err(), "provider stream was unreadable");
+    broken.push(text.get(..text.rfind("\"usage\"").unwrap()).unwrap().into());
+    let mut invalid_input = events[..first_stop].to_vec();
+    invalid_input.push(serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"tail\":"}}));
+    invalid_input.extend_from_slice(&events[first_stop..]);
+    broken.push(anthropic_sse(&invalid_input));
+    for body in broken {
+        let (result, frames, _) = rig_adapter::stream_tests::test_stream(
+            body.into_bytes(),
+            ProviderProtocol::Anthropic,
+            3,
+            true,
+            true,
+        )
+        .await;
+        let why = result.expect_err("a block stop is not a successful turn");
+        assert!(!why.contains("private-provider-content"));
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.event.as_deref() != Some(EVENT_TOOL_CALL))
+        );
     }
-    let (_, result) = run(&events[2..], "");
-    assert_eq!(result.unwrap_err(), "provider stream was unreadable");
 }

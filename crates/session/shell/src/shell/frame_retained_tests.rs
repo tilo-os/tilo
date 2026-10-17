@@ -1689,8 +1689,19 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     let dense_scene = frame.paint();
     assert_layer_cpu_pixels_match(&shown.scene, &dense_scene, SIZE);
 
+    assert_layers_yield_to_the_dense_path_when_not_exact(&mut frame, SIZE);
+}
+
+/// A presenter that composites layers still gets the dense path when it has no
+/// live capability, when a pan lands between pixels, when the scene is changed
+/// externally, and when the output is wider than the layer budget.
+#[cfg(target_os = "linux")]
+fn assert_layers_yield_to_the_dense_path_when_not_exact(
+    frame: &mut PopulatedShellFixture,
+    size: (u32, u32),
+) {
     frame.set_retained_layer_width(Some(8192));
-    let mut independent = PopulatedShellFixture::new(SIZE, Theme::dark().with_reduce_motion(true));
+    let mut independent = PopulatedShellFixture::new(size, Theme::dark().with_reduce_motion(true));
     independent.relayout();
     assert!(
         independent.paint_with_damage().cache.is_none(),
@@ -1707,7 +1718,7 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     // As above: the indicators show from the frame after the pan's rest.
     let fractional = frame.paint_with_damage();
     let dense_scene = frame.paint();
-    assert_layer_cpu_pixels_match(&fractional.scene, &dense_scene, SIZE);
+    assert_layer_cpu_pixels_match(&fractional.scene, &dense_scene, size);
 
     frame.host_mut().set_strip_scroll_for_test(121.0);
     frame.relayout();

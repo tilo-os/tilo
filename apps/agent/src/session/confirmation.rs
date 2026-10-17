@@ -57,6 +57,7 @@ impl Session {
             run,
             runtime_collab::TaskRunUpdate::Progress {
                 message: format!("Waiting for your confirmation: {}", action.label),
+                presentation: None,
             },
         )?;
         let outcome = loop {

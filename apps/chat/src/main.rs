@@ -7,4 +7,4 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-ui::main!(chat::ChatShell);
+ui::main!(chat::ChatShell, init = chat::enable_standalone_models);

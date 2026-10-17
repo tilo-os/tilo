@@ -108,7 +108,7 @@ impl HostedTileInputs {
                 NativeAppRegistration {
                     package_id: tilo_desktop::feedback::PACKAGE,
                     display_name: tilo_desktop::feedback::definition().title,
-                    kind: AppKind::Other("Feedback".into()),
+                    kind: AppKind::Other(tilo_desktop::feedback::KIND.into()),
                     opens_extensions: &[],
                     opens_mime_types: &[],
                 },

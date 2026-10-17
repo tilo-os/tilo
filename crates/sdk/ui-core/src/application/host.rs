@@ -92,6 +92,14 @@ impl NativeProcessHost {
         })
     }
 
+    /// Opt in to a model capability owned by this process host. Opening a
+    /// generic host must not also consume a legacy Agent client's descriptor.
+    #[must_use]
+    pub fn with_models(mut self, models: crate::models::Models) -> Self {
+        self.host.models = models;
+        self
+    }
+
     pub fn host_mut(&mut self) -> &mut ApplicationHost {
         &mut self.host
     }
@@ -548,6 +556,7 @@ pub struct ApplicationHost {
     /// definition may open records through this host. Explicit/capture hosts
     /// take the app id from the definition passed to `records_for`.
     package_id: Option<String>,
+    models: crate::models::Models,
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -560,6 +569,15 @@ pub struct ApplicationHost {
 }
 
 impl ApplicationHost {
+    /// Use the model capability authorized for this host's authenticated session.
+    /// Every subsequently prepared component receives the same session, without
+    /// installing a process-wide client.
+    #[must_use]
+    pub fn with_models(mut self, models: crate::models::Models) -> Self {
+        self.models = models;
+        self
+    }
+
     /// Keep a host-owned profile resource (such as a temporary capture directory)
     /// alive through record writers and failed record or presentation save retries.
     /// The resource must own the supplied profile root for its entire lifetime.
@@ -633,6 +651,7 @@ impl ApplicationHost {
         );
         Ok(Self {
             package_id: None,
+            models: crate::models::Models::default(),
             person: RecordOwners::with_store(Rc::clone(&store)),
             owners: RecordOwners::with_store(store),
             views,
@@ -767,7 +786,7 @@ impl ApplicationHost {
             let target = definition
                 .unsaved_target(&records)
                 .map_err(LaunchError::Record)?;
-            let context = HostContext::prepare(
+            let mut context = HostContext::prepare(
                 definition,
                 HostContextInputs {
                     records,
@@ -780,6 +799,7 @@ impl ApplicationHost {
                 },
                 &target,
             )?;
+            context.provide_models(self.models.clone());
             // Every window shares the room's record, but each keeps its own
             // presentation: this instance reopens where it was left (the
             // note it showed), when what it saved is of the room's record.
@@ -903,7 +923,7 @@ impl ApplicationHost {
                 Err(error) => return Err(LaunchError::Record(error)),
             }
         };
-        let context = if matches!(target, LaunchTarget::New) {
+        let mut context = if matches!(target, LaunchTarget::New) {
             HostContext::prepare_new_record(
                 definition,
                 HostContextInputs {
@@ -932,6 +952,7 @@ impl ApplicationHost {
                 &target,
             )?
         };
+        context.provide_models(self.models.clone());
         let restore = saved
             .or_else(|| {
                 initial_view.map(|application| context.envelope(View::default(), Some(application)))

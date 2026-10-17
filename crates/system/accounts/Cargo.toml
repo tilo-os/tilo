@@ -30,6 +30,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
 # `zeroize` wipes decrypted plaintext from the heap, including the secrets a
@@ -50,8 +51,21 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional 
 [features]
 person = ["dep:tilo-resource"]
 
+[[example]]
+name = "account_storage_probe"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Password generation must work without another browser crate enabling entropy.
+getrandom = { workspace = true, features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

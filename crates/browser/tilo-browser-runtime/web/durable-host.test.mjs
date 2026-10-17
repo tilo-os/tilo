@@ -125,3 +125,19 @@ test('host settings seed only a profile without stored settings',async()=>{
   await again.release();await storage.release();
   assert.deepEqual(h.stored(),{},'a provided document is not written back until it changes');
 });
+
+
+test('automatic document writes cannot outrun failed credential custody',async()=>{
+  const h=harness();const storage=await h.host.open('p','d');
+  h.runtime.flush_files=async()=>{throw Error('credential quota exceeded');};
+  h.runtime.write('p','d','doc','opaque credential reference');
+  await settle();
+  assert.equal(storage.status.persistence,'failed');
+  assert.match(h.runtime.log.acks.at(-1)[1],/credential quota exceeded/);
+  assert.deepEqual(h.stored(),{},'the write hook cannot commit dependent documents');
+  await assert.rejects(storage.flush(),/credential quota exceeded/);
+  h.runtime.flush_files=async()=>{};
+  await storage.flush();
+  assert.deepEqual(h.stored(),{doc:'opaque credential reference'});
+  await storage.release();
+});

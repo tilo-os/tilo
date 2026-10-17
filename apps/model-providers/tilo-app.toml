@@ -1,0 +1,54 @@
+# The portable provider control panel. The host owns configuration and secrets.
+[package]
+id = "so.tilo.model-providers"
+name = "Model Providers"
+category = "System"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+platforms = ["tilo-os", "linux", "macos", "web"]
+
+[package.names]
+de = "Modellanbieter"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[capabilities]
+optional = ["threads"]
+
+[resources]
+kinds = ["model-providers.root"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor = "tilo-demo/2026.07"
+claim = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+model-gateway = "optional@1"
+
+[entrypoint]
+bin = "bin/model-providers"
+type = "gui"
+splash-segments = ["bin/model-providers[0x0:0x400000]"]
+splash-budget = 250
+
+[providers]
+mime = []
+ext = []
