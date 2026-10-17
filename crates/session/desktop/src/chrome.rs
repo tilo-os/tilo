@@ -233,6 +233,18 @@ pub struct DesktopChromeSnapshot {
     pub watching: u32,
     /// Docked, or hidden and shown over the windows.
     pub top_bar: TopBarPresence,
+    /// The person at this desktop as everyone here sees them, for the
+    /// bar's own avatar; `None` paints none.
+    pub own: Option<OwnChip>,
+}
+
+/// The person at this desktop, as their own avatar in the bar shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnChip {
+    /// Their name as everyone here sees it, numbered when shared.
+    pub name: String,
+    /// Their colour.
+    pub rgb: (u8, u8, u8),
 }
 
 /// Which people are on which strip of the active workspace.
@@ -311,10 +323,21 @@ pub enum ChromeIntent {
     AddStrip {
         name: String,
     },
+    /// Give the active workspace this name.
+    RenameWorkspace {
+        name: String,
+    },
     /// Open or close the menu behind the bar's Tilo mark
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
     ToggleTiloMenu,
+    /// Open or close the menu behind the workspace name
+    /// ([`crate::topbar::TopBarChrome::with_workspace_menu`]), under
+    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`].
+    ToggleWorkspaceMenu,
+    /// Open or close the card behind the person's own avatar, under
+    /// [`crate::topbar::TopBarChrome::own_avatar_rect`].
+    ToggleProfile,
     /// Deliver a click to a running application's tray item.
     AppTray {
         key: String,

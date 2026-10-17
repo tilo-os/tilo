@@ -5282,6 +5282,7 @@ async fn spawn_context_stream(
                         colour: Collaborator::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
+                        joined_at: Collaborator::joined_at_from_packed(collaborator.joined_at_ms),
                     })
                     .collect();
                 if !tx.send_durable(CollabEvent::Context {

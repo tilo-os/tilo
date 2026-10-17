@@ -576,6 +576,8 @@ pub struct Avatar {
     dirty: bool,
 }
 
+// The photo type comes from runtime-identity, which only `local-daemons`
+// builds link; portable builds (the browser's) show initials or an image.
 #[cfg(feature = "local-daemons")]
 pub(super) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::ImageData {
     peniko::ImageData {
@@ -640,8 +642,8 @@ impl Avatar {
 
     /// Render the validated public photo carried by canonical identity metadata.
     /// Pixels are already normalized; this opens no files and decodes no image.
-    #[must_use]
     #[cfg(feature = "local-daemons")]
+    #[must_use]
     pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
         self.with_image(profile_image(photo))
     }

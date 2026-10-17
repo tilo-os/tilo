@@ -250,7 +250,9 @@ containerfile="$repo/os/Containerfile"
 # hands it to a booted guest, and the Files contract is bind-mounted.
 # tilo-uki-cmdline is tilo-esp-write's link from the esp-write component, not a
 # COPY of the Python UKI editor.
-expected_contract=17b812aa79eecf5d0018ad00ba6f95f3072f8a23dd12589378735b73de9a276e
+# The installed consumer capability producers are tilo-prepared-setup modes
+# now, so their six Python script rows are gone.
+expected_contract=28fa67fe1a1572d95230fce47a02857832194d2dd360bf40aaa8dc310f2e742e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

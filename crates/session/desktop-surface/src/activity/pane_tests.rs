@@ -1275,7 +1275,11 @@ mod tests {
             "Unknown collaborator · 01234567"
         );
         unidentified.created_by = pane.local_user();
-        assert_eq!(pane.task_creator_label(&unidentified), "You");
+        assert_eq!(
+            pane.task_creator_label(&unidentified),
+            pane.local_user(),
+            "the reader is named like anyone else, never \"You\""
+        );
     }
 
     #[test]

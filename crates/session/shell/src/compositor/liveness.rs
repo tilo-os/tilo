@@ -48,7 +48,11 @@
 //! that is running, faulting in a page, or allocating is reported by its state
 //! and wait channel alone, and the heartbeat does not dump at all while the
 //! main thread is still working. A thread that does not answer within
-//! [`DUMP_WAIT`] is reported as such rather than waited for.
+//! [`DUMP_WAIT`] is reported as such rather than waited for. A main thread
+//! initially observed running is sampled again within that same deadline:
+//! reporting its later epoll wait without the stack would hide which loop it
+//! entered. Development heartbeat failures also snapshot a fixed-size wake
+//! trace before any capture signal can disturb the sequence being diagnosed.
 
 use std::backtrace::Backtrace;
 use std::fmt::Write as _;
@@ -62,6 +66,10 @@ use std::time::{Duration, Instant};
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{self, LoopHandle};
+
+mod wake_trace;
+
+pub(super) use wake_trace::record as trace_wake;
 
 use super::native::UnlinkOnDrop;
 use super::state::State;
@@ -170,6 +178,9 @@ impl Answer {
 struct Beat {
     /// Heartbeats asked for; each is a ping to the loop.
     requested: AtomicU64,
+    /// Highest request whose calloop ping write has returned. Diagnostic only:
+    /// acknowledgement still depends on the registered main-loop callback.
+    sent: AtomicU64,
     /// Wakes the loop has acknowledged; with `acked`'s condvar the answering
     /// thread waits on it.
     acked: Mutex<u64>,
@@ -184,6 +195,7 @@ impl Beat {
             let mut acked = self.acked.lock();
             *acked = (*acked).max(upto);
         }
+        trace_wake("acknowledged", upto);
         self.wake.notify_all();
     }
 
@@ -194,19 +206,40 @@ impl Beat {
             .requested
             .fetch_add(1, Ordering::SeqCst)
             .saturating_add(1);
+        trace_wake("ping-requested", want);
         ping.ping();
+        self.sent.fetch_max(want, Ordering::SeqCst);
+        trace_wake("ping-returned", want);
         let deadline = started.checked_add(budget)?;
         let mut acked = self.acked.lock();
         while *acked < want {
             if self.wake.wait_until(&mut acked, deadline).timed_out() && *acked < want {
+                trace_wake("heartbeat-timeout", want);
                 return None;
             }
         }
+        trace_wake("heartbeat-complete", want);
         Some(started.elapsed())
     }
 
     fn ticks(&self) -> u64 {
         *self.acked.lock()
+    }
+}
+
+/// Kept in the registered callback, so source destruction is observable even
+/// while a connection still holds a sender and successfully writes its eventfd.
+struct LoopBeat(Arc<Beat>);
+
+impl LoopBeat {
+    fn acknowledge(&self) {
+        self.0.acknowledge();
+    }
+}
+
+impl Drop for LoopBeat {
+    fn drop(&mut self) {
+        trace_wake("source-dropped", self.0.ticks());
     }
 }
 
@@ -229,10 +262,11 @@ pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Serv
     };
     let beat = Arc::new(Beat {
         requested: AtomicU64::new(0),
+        sent: AtomicU64::new(0),
         acked: Mutex::new(0),
         wake: Condvar::new(),
     });
-    let on_loop = Arc::clone(&beat);
+    let on_loop = LoopBeat(Arc::clone(&beat));
     if let Err(error) = handle.insert_source(source, move |(), (), _| on_loop.acknowledge()) {
         eprintln!("tilo compositor: liveness source: {error}");
         return None;
@@ -245,6 +279,8 @@ pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Serv
         }
     };
     let unlink = UnlinkOnDrop(path.clone());
+    wake_trace::enable();
+    trace_wake("source-registered", 0);
     install_capture_handler();
     let spawned = std::thread::Builder::new()
         .name("tilo-liveness".into())
@@ -304,6 +340,9 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
     // Before the dump: it takes time of its own.
     let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
     let main_thread_starved_ms = main_thread_starved_ms().saturating_sub(starved_before);
+    // Snapshot before dumping: capture signals themselves can wake epoll and
+    // must not overwrite the sequence that led to the failed heartbeat.
+    let wake_trace = wake_trace::render();
     let mut answer = Answer::Stalled {
         budget_ms: u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
         ticks: beat.ticks(),
@@ -324,7 +363,11 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
     {
         *listed = threads;
     }
-    eprintln!("tilo compositor: main loop stalled\n{}", render(&answer));
+    eprintln!(
+        "tilo compositor: main loop stalled\n{}\n{}",
+        render(&answer),
+        wake_trace
+    );
     answer
 }
 
@@ -378,6 +421,7 @@ fn capture_signal() -> libc::c_int {
 /// Backtraces the handler left, by thread. Reserved before the signals are
 /// sent so the handler never grows it.
 static CAPTURED: Mutex<Vec<(i32, Backtrace)>> = Mutex::new(Vec::new());
+static ONE_DUMP_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub(super) fn gettid() -> i32 {
     // SAFETY: `gettid` takes no arguments and cannot fail.
@@ -560,8 +604,7 @@ fn report(tid: i32, backtrace: String) -> ThreadReport {
 /// its backtrace.
 pub(super) fn dump_threads() -> Vec<ThreadReport> {
     // One dump at a time: they share the capture slot.
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-    let _one = ONE_AT_A_TIME.lock();
+    let _one = ONE_DUMP_AT_A_TIME.lock();
 
     // SAFETY: `getpid` takes no arguments and cannot fail.
     let pid = unsafe { libc::getpid() };
@@ -602,9 +645,7 @@ pub(super) fn dump_threads() -> Vec<ThreadReport> {
     let deadline = Instant::now()
         .checked_add(DUMP_WAIT)
         .unwrap_or_else(Instant::now);
-    while CAPTURED.lock().len() < signalled && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_captures(pid, &mut signalled, &mut left_alone, deadline);
     let captured = std::mem::take(&mut *CAPTURED.lock());
     let mut own = Some(own);
 
@@ -630,6 +671,47 @@ pub(super) fn dump_threads() -> Vec<ThreadReport> {
             )
         })
         .collect()
+}
+
+/// Revisit a main thread initially observed running while other threads were
+/// being signalled. It can already be asleep by the time their stacks arrive.
+/// Keep the same allocator exclusions and the existing overall dump deadline.
+fn wait_for_captures(
+    main: i32,
+    signalled: &mut usize,
+    left_alone: &mut Vec<(i32, String)>,
+    deadline: Instant,
+) {
+    while Instant::now() < deadline {
+        if let Some(index) = left_alone.iter().position(|(tid, _)| *tid == main) {
+            let why = match std::fs::read_to_string(format!("/proc/self/task/{main}/syscall")) {
+                Ok(syscall) => not_interruptible(&syscall),
+                Err(_) => not_interruptible_waiting_in(
+                    std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
+                        .unwrap_or_default()
+                        .trim(),
+                ),
+            };
+            if let Some(why) = why {
+                left_alone[index].1 =
+                    format!("initial capture deferred; latest observation: {why}");
+            } else {
+                // SAFETY: this thread belongs to our process; an exited thread
+                // simply makes tgkill fail. The handler was installed before dumping.
+                let sent = unsafe {
+                    libc::syscall(libc::SYS_tgkill, libc::getpid(), main, capture_signal())
+                };
+                left_alone.remove(index);
+                if sent == 0 {
+                    *signalled += 1;
+                }
+            }
+        }
+        if CAPTURED.lock().len() >= *signalled && !left_alone.iter().any(|(tid, _)| *tid == main) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The frames of a captured backtrace below the signal handler: the capture's
@@ -784,6 +866,132 @@ mod tests {
         assert!(
             listed.backtrace.starts_with("not interrupted:"),
             "a thread on a core must not be interrupted: {listed:#?}"
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_queued_after_acknowledgement_survives_the_next_dispatch() {
+        let beat = Arc::new(Beat {
+            requested: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            acked: Mutex::new(0),
+            wake: Condvar::new(),
+        });
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        let (acked_tx, acked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let on_loop = LoopBeat(Arc::clone(&beat));
+        let event_loop = std::thread::spawn(move || {
+            let mut event_loop = calloop::EventLoop::<bool>::try_new().unwrap();
+            event_loop
+                .handle()
+                .insert_source(source, move |(), (), first| {
+                    on_loop.acknowledge();
+                    if *first {
+                        *first = false;
+                        acked_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                })
+                .unwrap();
+            let mut first = true;
+            event_loop
+                .dispatch(Duration::from_secs(5), &mut first)
+                .unwrap();
+            event_loop
+                .dispatch(Duration::from_secs(5), &mut first)
+                .unwrap();
+        });
+        let request = |beat: Arc<Beat>, ping: calloop::ping::Ping| {
+            std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET))
+        };
+        let first = request(Arc::clone(&beat), ping.clone());
+        acked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(first.join().unwrap().is_some());
+        // The source has drained request 1, but its callback has not returned.
+        // Request 2 must remain readable for the next dispatch, not disappear
+        // when request 1's callback/dispatch finishes.
+        let second = request(Arc::clone(&beat), ping);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while beat.sent.load(Ordering::SeqCst) < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "second ping write never returned"
+            );
+            std::thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+        assert!(second.join().unwrap().is_some());
+        event_loop.join().unwrap();
+        assert_eq!(beat.ticks(), 2);
+    }
+
+    #[test]
+    fn capture_revisits_a_running_thread_after_it_parks() {
+        use std::sync::atomic::AtomicBool;
+        install_capture_handler();
+        let _one = ONE_DUMP_AT_A_TIME.lock();
+        {
+            let mut captured = CAPTURED.lock();
+            captured.clear();
+            captured.reserve(8);
+        }
+        let park = Arc::new(AtomicBool::new(false));
+        let worker_park = Arc::clone(&park);
+        let (ready_tx, ready) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(gettid()).unwrap();
+            while !worker_park.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            let _ = release.recv();
+        });
+        let tid = ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Sending readiness can itself still be finishing a futex wake. Observe
+        // the spin rather than assuming the channel handoff proves it. As in
+        // production, undumpable processes use the wait channel fallback.
+        let deadline = Instant::now() + DUMP_WAIT;
+        let initially_running = loop {
+            let running = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
+                Ok(syscall) => syscall.trim() == "running",
+                Err(_) => {
+                    let observed = report(tid, String::new());
+                    observed.state == "R" && not_interruptible_waiting_in(&observed.wait).is_some()
+                }
+            };
+            if running {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        let mut left_alone = vec![(tid, "it was running".into())];
+        let mut signalled = 0;
+        park.store(true, Ordering::Release);
+        wait_for_captures(
+            tid,
+            &mut signalled,
+            &mut left_alone,
+            Instant::now() + DUMP_WAIT,
+        );
+        let frames = CAPTURED
+            .lock()
+            .iter()
+            .find(|(id, _)| *id == tid)
+            .map(|(_, backtrace)| frames_of(backtrace));
+        drop(release_tx);
+        worker.join().unwrap();
+        assert!(
+            initially_running,
+            "initial running state was not observable"
+        );
+        assert!(left_alone.is_empty(), "never revisited: {left_alone:?}");
+        assert!(
+            frames.is_some_and(|frames| frames.contains("recv")),
+            "missing parked stack"
         );
     }
 

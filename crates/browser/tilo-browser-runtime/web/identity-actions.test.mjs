@@ -161,6 +161,19 @@ test('a chosen name goes to every host the person joined, as their profile', asy
   assert.deepEqual(published, [['https://a.example', 'Ada'], ['https://b.example', 'Ada']]);
 });
 
+test('a name typed in the desktop is kept as typed, with no form', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const published = [];
+  const set = [];
+  const actions = createIdentityActions({identity, hosts: () => ['https://a.example'],
+    profile: async ({displayName}) => { published.push(displayName); },
+    naming: {ask: async () => assert.fail('the desktop already asked'), set: chosen => set.push(chosen)}});
+  await actions.attach(fakeMount());
+  await actions.perform(NAME.id, '  Kim  ');
+  assert.deepEqual(published, ['Kim']);
+  assert.deepEqual(set, ['Kim']);
+});
+
 test('a name a host refuses is said in the form, which stays open, and is not taken', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const set = [];

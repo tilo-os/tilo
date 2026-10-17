@@ -676,7 +676,15 @@ mod tests {
     use tilo_peer_state::TransportOrigin;
 
     fn signed_package(root: &std::path::Path) -> package_store::InstalledPackage {
-        let manifest = b"[package]\nid = \"so.tilo.retained-fixture\"\nversion = \"1.0.0\"\nkind = \"app\"\n[entrypoint]\nbin = \"bin/app\"\n";
+        let key = SigningKey::from_bytes(&[151; 32]);
+        let manifest = format!(
+            "[package]\nid = \"so.tilo.retained-fixture\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"ed25519:{}\"\nsignature = \"\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/app\"\n",
+            hex::encode(key.verifying_key().to_bytes())
+        );
+        let manifest = manifest.as_bytes();
         let payload_bytes = b"synthetic signed app payload";
         // A fixture encoded in the documented stable package wire format.
         // Admission below uses the production decoder, signature verifier and
@@ -686,7 +694,6 @@ mod tests {
         collection.extend(7_u32.to_le_bytes());
         collection.extend(b"bin/app");
         collection.extend(blake3::hash(payload_bytes).as_bytes());
-        let key = SigningKey::from_bytes(&[151; 32]);
         let mut signed = b"TLOPKG\0\0".to_vec();
         signed.extend(1_u32.to_le_bytes());
         signed.extend(blake3::hash(manifest).as_bytes());

@@ -6,7 +6,10 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination, FeedbackQuery};
-use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
+};
 use tilo_app::feedback::{Error, Submission};
 use tilo_browser_peer::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_desktop::feedback::Destination;
@@ -25,6 +28,8 @@ struct Connection {
     workspace: u64,
     serial: u64,
     pending: HashMap<u64, (web_time::Instant, Option<Submission>)>,
+    /// Reports filed through the owner, by the invocation that files them.
+    filing: HashMap<tilo_actions::InvocationId, (web_time::Instant, Submission)>,
     admission: Option<(Enrollment, web_time::Instant)>,
     receipts: HashMap<String, SignedReceipt>,
     installed: bool,
@@ -66,6 +71,7 @@ pub(crate) fn configure(
             workspace,
             serial: 0,
             pending: HashMap::new(),
+            filing: HashMap::new(),
             admission: None,
             receipts: HashMap::new(),
             installed: false,
@@ -128,6 +134,51 @@ impl Connection {
             .insert(self.serial, (web_time::Instant::now(), submission));
         Ok(())
     }
+    /// File `submission` through the owner's own submit action. It runs
+    /// there as this reporter, so filing needs only their right to comment,
+    /// and is done when the owner's durable store holds it.
+    fn file(&mut self, submission: &Submission) -> Result<(), String> {
+        self.filing
+            .retain(|_, (sent, _)| sent.elapsed() < Duration::from_secs(30));
+        if self.filing.len() >= 8 {
+            return Err("feedback reports pending".into());
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let arguments = serde_json::json!({ "submission": submission });
+        let request = InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: self.destination.provider.clone(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_app::feedback::destination::item(
+                        tilo_app::feedback::destination::CHANNELS,
+                        &self.destination.channel,
+                    ),
+                    tilo_app::feedback::destination::SUBMIT,
+                ),
+            },
+            argument: InvokeArgument::Json(
+                arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or("invalid submission arguments")?,
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(20_000),
+            appearance: None,
+        };
+        let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
+            .encode()
+            .map_err(|error| error.to_string())?;
+        self.peer
+            .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
+        self.filing
+            .insert(invocation, (web_time::Instant::now(), submission.clone()));
+        Ok(())
+    }
     fn admit(&self, answer: &FeedbackAnswer) -> Result<Enrollment, String> {
         Enrollment::admitted(
             answer,
@@ -151,6 +202,38 @@ impl Connection {
             ))
     }
 }
+impl Connection {
+    /// The owner's answer to filing a report: once it is saved there, ask
+    /// for the signed receipt; a refusal stays visible until a retry.
+    fn filed(&mut self, receipt: tilo_actions::remote::InvocationReceipt) {
+        let Some((_, submission)) = self.filing.remove(&receipt.invocation) else {
+            return;
+        };
+        match receipt.status {
+            ReceiptStatus::Completed { .. } => {
+                self.error = None;
+                if let Err(error) = self.request(Some(submission)) {
+                    self.error = Some(error);
+                }
+            }
+            // Still running: the receipt request after it settles answers.
+            ReceiptStatus::Accepted => {}
+            ReceiptStatus::Failed { error } => {
+                self.error = Some(format!(
+                    "feedback owner could not file it: {}",
+                    error.message
+                ));
+            }
+            ReceiptStatus::Rejected { error } => {
+                self.error = Some(format!("feedback owner refused it: {error}"));
+            }
+            ReceiptStatus::Cancelled { .. } => {
+                self.error = Some("feedback filing was cancelled".into());
+            }
+        }
+    }
+}
+
 pub(crate) fn pump(id: u32) {
     let connection = CONNECTIONS.with_borrow(|connections| connections.get(&id).cloned());
     let Some(connection) = connection else {
@@ -165,16 +248,20 @@ pub(crate) fn pump(id: u32) {
                 from,
                 frame,
             } if workspace_id == state.workspace && from == state.owner.device_public_key => {
-                let Ok(RemoteActionFrame {
-                    message:
-                        RemoteActionMessage::FeedbackResponse {
-                            correlation,
-                            result,
-                        },
-                    ..
-                }) = RemoteActionFrame::decode(&frame)
-                else {
-                    continue;
+                let message = match RemoteActionFrame::decode(&frame) {
+                    Ok(RemoteActionFrame { message, .. }) => message,
+                    Err(_) => continue,
+                };
+                let (correlation, result) = match message {
+                    RemoteActionMessage::FeedbackResponse {
+                        correlation,
+                        result,
+                    } => (correlation, result),
+                    RemoteActionMessage::Receipt(receipt) => {
+                        state.filed(receipt);
+                        continue;
+                    }
+                    _ => continue,
                 };
                 let Some((_, submission)) = state.pending.remove(&correlation) else {
                     continue;
@@ -199,7 +286,6 @@ pub(crate) fn pump(id: u32) {
                             let setup = Startup::new(
                                 admission,
                                 Box::new(Session {
-                                    id,
                                     connection: connection.clone(),
                                 }),
                                 Box::new(NoCapture),
@@ -240,7 +326,6 @@ fn identity(cert: &DeviceCert) -> Identity {
     }
 }
 struct Session {
-    id: u32,
     connection: Rc<RefCell<Connection>>,
 }
 impl Transport for Session {
@@ -257,26 +342,14 @@ impl Transport for Session {
         current
     }
     fn enqueue(&mut self, submission: &Submission) -> Result<(), Error> {
-        let admission = self.connection.borrow().current()?;
+        let mut connection = self.connection.borrow_mut();
+        let admission = connection.current()?;
         if submission.destination != admission.destination {
             return Err(Error::ReceiptMismatch);
         }
-        let id = self.id;
-        let submission = submission.clone();
-        let connection = self.connection.clone();
-        // Run after the composer's effect, through the registered local door.
-        wasm_bindgen_futures::spawn_local(async move {
-            // The report goes in through Chat's own action, whose code a
-            // bundle that splits its apps fetches only when first needed.
-            ui::application::registry::load("so.tilo.chat").await;
-            match crate::replication::submit_feedback(id, &admission, &submission) {
-                Ok(()) => {
-                    let _ = connection.borrow_mut().request(Some(submission));
-                }
-                Err(error) => connection.borrow_mut().error = Some(error),
-            }
-        });
-        Ok(())
+        connection
+            .file(submission)
+            .map_err(|_| Error::Invalid("feedback owner unavailable"))
     }
     fn receipt(&mut self, submission: &Submission) -> Result<Option<SignedReceipt>, Error> {
         let mut connection = self.connection.borrow_mut();

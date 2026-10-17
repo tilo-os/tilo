@@ -47,7 +47,9 @@ impl HeldRecords {
     fn participant(&self) -> String {
         match &self.actor {
             ReplicaActor::Bot { installation, .. } => format!("bot:{installation}"),
-            ReplicaActor::Owner | ReplicaActor::Agent => "host".to_owned(),
+            ReplicaActor::Owner | ReplicaActor::Agent | ReplicaActor::Member { .. } => {
+                "host".to_owned()
+            }
         }
     }
 

@@ -197,7 +197,8 @@ export function workspaceChoices({home = null, homeRoom = null, entered = [], cu
 export function workspaceActions(choices) {
   return choices.map(choice => {
     const host = new URL(choice.origin).host;
-    return {id: choice.id, title: `Open ${choice.name}`,
+    // `label` and `source`: the desktop's workspace menu lists it by name.
+    return {id: choice.id, title: `Open ${choice.name}`, label: choice.name, source: 'workspaces',
       subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
   });
 }

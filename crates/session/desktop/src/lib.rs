@@ -27,6 +27,7 @@ pub mod intents;
 pub mod launchpad;
 pub mod overview;
 pub mod overview_panel;
+pub mod profile_card;
 pub mod records;
 pub mod resolver;
 pub mod search;
@@ -35,6 +36,7 @@ pub mod sidebar_wheel_disc;
 pub mod text_entry;
 pub mod topbar;
 pub mod window_switcher;
+pub mod workspace_menu;
 pub mod workspace_settings;
 
 // The workspace history pane, the notification stack and centre, the

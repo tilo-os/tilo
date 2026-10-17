@@ -77,6 +77,7 @@ pub(crate) trait RootApp {
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
     fn take_save_retry(&mut self) -> bool;
     fn record_save_status(&mut self, status: RecordSaveStatus);
+    fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal);
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError>;
     fn restore_application_view(
         &mut self,
@@ -301,6 +302,10 @@ impl AppWidget for RootWidget {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.0.record_save_status(status);
+    }
+
+    fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
+        self.0.record_refused(refusal);
     }
 
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {

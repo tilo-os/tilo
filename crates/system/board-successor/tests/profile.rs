@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tilo_board_successor::installed_profile;
 use tilo_board_successor::profile::{
-    Root, development_origin, read_profile, resolve_profile, validate_definition,
+    DEFAULT_TARGET_IMGREF, Root, development_origin, install_update_origin, read_profile,
+    resolve_profile, validate_definition,
 };
 
 const PROFILES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../os/hardware/profiles");
@@ -518,8 +519,8 @@ fn every_development_trust_input_is_bound() {
 
 #[test]
 fn the_reader_tracks_the_shipped_module() {
-    // The installer still reads profiles through hardware_profile.py; these
-    // are the module's own refusals the Rust reader mirrors word for word.
+    // The image builders still read profiles through hardware_profile.py; these are the module's own
+    // refusals the Rust reader mirrors word for word.
     let module =
         fs::read_to_string(Path::new(PROFILES).join("../../dev/hardware_profile.py")).unwrap();
     for message in [
@@ -529,6 +530,8 @@ fn the_reader_tracks_the_shipped_module() {
         "installed development registry owner differs from bound public identity",
         "tilo-vm update origin requires its development repository policy",
         "hardware definition firmware_exclude names a package that may not be removed",
+        "TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference",
+        DEFAULT_TARGET_IMGREF,
     ] {
         assert!(module.contains(message), "{message}");
     }
@@ -588,5 +591,94 @@ fn the_profile_resolves_to_its_pinned_kernel_dtb() {
     assert_eq!(
         resolve_profile(&Image::new().root, "7.2.7", "aarch64").unwrap(),
         None
+    );
+}
+
+#[test]
+fn an_install_records_the_profile_origin_or_a_validated_override() {
+    let generic = Image::new();
+    assert_eq!(
+        install_update_origin(&generic.root, "").unwrap(),
+        DEFAULT_TARGET_IMGREF
+    );
+    let pinned = "registry.tilo.so/tilo/tilo:gen7";
+    assert_eq!(
+        install_update_origin(&generic.root, pinned).unwrap(),
+        pinned
+    );
+    for refused in [
+        "registry.tilo.so/tilo/tilo",
+        "example.com/tilo/tilo:latest",
+        "registry.tilo.so/tilo/tilo-vm:latest",
+    ] {
+        assert!(
+            install_update_origin(&generic.root, refused).is_err(),
+            "{refused}"
+        );
+    }
+
+    let board = Image::lenovo(&release_tag());
+    assert_eq!(
+        install_update_origin(&board.root, "").unwrap(),
+        release_tag()
+    );
+    assert_eq!(
+        install_update_origin(&board.root, &release_tag()).unwrap(),
+        release_tag()
+    );
+    assert_eq!(
+        install_update_origin(&board.root, pinned)
+            .unwrap_err()
+            .to_string(),
+        "TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference"
+    );
+
+    let development = development_image();
+    assert_eq!(
+        install_update_origin(&development.root, "").unwrap(),
+        DEVELOPMENT_REF
+    );
+    fs::remove_file(development.path("usr/lib/tilo/hardware-profile.json")).unwrap();
+    fs::remove_file(development.path("usr/lib/tilo/hardware-profile-definition.json")).unwrap();
+    assert_eq!(
+        install_update_origin(&development.root, "").unwrap(),
+        DEVELOPMENT_REF,
+        "a development image without a profile follows its bound origin"
+    );
+    assert!(install_update_origin(&development.root, pinned).is_err());
+}
+
+#[test]
+fn the_installer_command_prints_the_origin_of_the_running_image() {
+    let run = |override_ref: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tilo-board-successor"))
+            .args(["install-update-origin", override_ref])
+            .output()
+            .unwrap()
+    };
+    let output = run("");
+    match install_update_origin(&Root::system(), "") {
+        Ok(origin) => {
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{origin}\n")
+            );
+        }
+        Err(error) => {
+            assert_eq!(output.status.code(), Some(1));
+            assert_eq!(
+                String::from_utf8(output.stderr).unwrap(),
+                format!("hardware profile rejected: {error}\n")
+            );
+        }
+    }
+    let refused = run("example.com/tilo/tilo:latest");
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(refused.stdout.is_empty());
+    assert!(
+        String::from_utf8(refused.stderr)
+            .unwrap()
+            .starts_with("hardware profile rejected: "),
     );
 }

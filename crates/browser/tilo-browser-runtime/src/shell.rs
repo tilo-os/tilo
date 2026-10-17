@@ -37,9 +37,16 @@ use tilo_desktop::collaborators::{
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
 use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
+use tilo_desktop::profile_card::{
+    ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_switcher::WindowSource;
+use tilo_desktop::workspace_menu::{
+    WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+};
 use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
+use tilo_desktop_surface::HostActionSource;
 use tilo_desktop_surface::navigation::{ActivityView, Command};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::kurbo::{Affine, Point, Rect};
@@ -60,11 +67,39 @@ pub(crate) enum HostRequest {
     /// Perform the host action the person chose in search or on a banner
     /// (`mountDesktop({hostActions, onHostAction})`), by id.
     Action(String),
+    /// Go by this name, as the person typed it in their profile card: the
+    /// page's naming action, already answered (`onHostAction('set-name',
+    /// name)`).
+    Named(String),
 }
 
 /// The page's host action that lets the person choose their name; the
 /// People panel offers it on the own name when the page lists it.
 const RENAME_ACTION: &str = "set-name";
+
+/// Workspace menu keys: a workspace of this page's desktop, by id, and one
+/// of the person's others the page opens, by its host action.
+const WORKSPACE_KEY: &str = "workspace:";
+const HOST_KEY: &str = "host:";
+
+/// The popovers the bar opens, one at a time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarPopover {
+    Tilo,
+    Workspace,
+    Profile,
+    People,
+}
+
+/// Whether `user` may rename `workspace`: whoever governs it (its owner and
+/// moderators), or anyone in a workspace nobody owns yet.
+fn may_rename(workspace: &Workspace, user: &str) -> bool {
+    workspace.policy.owner.is_none()
+        || matches!(
+            workspace.role_of(user),
+            Some(tilo_action_policy::Role::Owner | tilo_action_policy::Role::Moderator)
+        )
+}
 
 /// Requests the desktop queued since the page last read its status.
 pub(crate) type HostRequests = Rc<RefCell<Vec<HostRequest>>>;
@@ -134,6 +169,7 @@ impl DesktopChromeSource for PageChrome {
             }),
             strip_places: Some(places),
             watching: self.here.borrow().watching(),
+            own: self.own_chip(),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -158,6 +194,19 @@ impl PageChrome {
     /// Who is here, placed in `tree`.
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
+    }
+
+    /// This page's person as everyone here sees them: their name (numbered
+    /// when someone else here shares it) and colour.
+    fn own_chip(&self) -> Option<tilo_desktop::chrome::OwnChip> {
+        let here = self.here.borrow();
+        let name = here
+            .own_shown()
+            .unwrap_or_else(tilo_desktop::here::guest_label);
+        let rgb = here
+            .own_rgb()
+            .unwrap_or_else(|| ui::presence::user_color(&name));
+        Some(tilo_desktop::chrome::OwnChip { name, rgb })
     }
 }
 
@@ -321,6 +370,10 @@ pub(crate) struct BrowserShell {
     menu_shown: Cell<bool>,
     offers: HostOffers,
     requests: HostRequests,
+    /// The menu behind the bar's workspace name.
+    workspace_menu: WorkspaceMenu,
+    /// The card behind the bar's own avatar.
+    profile: ProfileCard,
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
@@ -366,7 +419,8 @@ impl BrowserShell {
         let tree = handle.read(Clone::clone);
         let mut bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())
-            .with_tilo_mark();
+            .with_tilo_mark()
+            .with_workspace_menu();
         bar.set_host_label(offers.host.clone());
         let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         // Offered only where the page holds a destination for reports.
@@ -397,6 +451,8 @@ impl BrowserShell {
             menu_shown: Cell::new(false),
             offers,
             requests,
+            workspace_menu: WorkspaceMenu::new(),
+            profile: ProfileCard::new(),
             people: CollaboratorsOverlay::default(),
             people_open: false,
             expanded: None,
@@ -589,10 +645,23 @@ impl BrowserShell {
                 });
             }
             ChromeIntent::ToggleCollaborators => {
+                self.close_bar_popovers_except(BarPopover::People);
                 self.people_open = !self.people_open && !self.tilo_menu.is_open();
                 if !self.people_open {
                     self.people.clear();
                 }
+            }
+            ChromeIntent::ToggleWorkspaceMenu => {
+                self.close_bar_popovers_except(BarPopover::Workspace);
+                let model = self.workspace_menu_model();
+                self.workspace_menu
+                    .toggle(&model, self.bar.workspace_menu_rect(), self.rect);
+            }
+            ChromeIntent::ToggleProfile => {
+                self.close_bar_popovers_except(BarPopover::Profile);
+                let model = self.profile_model();
+                self.profile
+                    .toggle(&model, self.bar.own_avatar_rect(), self.rect);
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::SwitchStrip(strip) => {
@@ -605,13 +674,168 @@ impl BrowserShell {
                 }
             }
             ChromeIntent::AddStrip { name } => self.add_strip(name),
+            ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
                 // One popover from the bar at a time.
-                self.people_open = false;
+                self.close_bar_popovers_except(BarPopover::Tilo);
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
             }
             _ => {}
         }
+    }
+
+    /// Close every popover the bar opens but `keep`: one at a time.
+    fn close_bar_popovers_except(&mut self, keep: BarPopover) {
+        if keep != BarPopover::People && self.people_open {
+            self.people_open = false;
+            self.people.clear();
+        }
+        if keep != BarPopover::Tilo && self.tilo_menu.is_menu_open() {
+            self.tilo_menu.toggle(Rect::ZERO, self.rect);
+        }
+        if keep != BarPopover::Workspace {
+            self.workspace_menu.close();
+        }
+        if keep != BarPopover::Profile {
+            self.profile.close();
+        }
+    }
+
+    /// What the workspace menu offers now: this page's workspaces and the
+    /// person's others the page knows, where it is hosted, the page's own
+    /// workspace commands, and what this person may change.
+    fn workspace_menu_model(&self) -> WorkspaceMenuModel {
+        let actions = self.handle.host_actions();
+        let user = ui::collaboration::local_user_id().0;
+        let (mut workspaces, can_rename, has_workspace) = self.handle.read(|tree| {
+            let workspaces: Vec<WorkspaceChoice> = tree
+                .workspaces
+                .iter()
+                .map(|workspace| WorkspaceChoice {
+                    key: format!("{WORKSPACE_KEY}{}", workspace.id.0),
+                    name: workspace.name.clone(),
+                    current: workspace.id == tree.active,
+                })
+                .collect();
+            let can_rename = tree
+                .active_workspace()
+                .is_some_and(|workspace| may_rename(workspace, &user));
+            (workspaces, can_rename, tree.active_workspace().is_some())
+        });
+        workspaces.extend(
+            actions
+                .iter()
+                .filter(|action| action.source == Some(HostActionSource::Workspaces))
+                .map(|action| WorkspaceChoice {
+                    key: format!("{HOST_KEY}{}", action.id),
+                    name: action.label.clone().unwrap_or_else(|| action.title.clone()),
+                    current: false,
+                }),
+        );
+        WorkspaceMenuModel {
+            workspaces,
+            host: self.offers.host.clone(),
+            actions: actions
+                .iter()
+                .filter(|action| action.source == Some(HostActionSource::Workspace))
+                .map(|action| WorkspaceAction {
+                    id: action.id.clone(),
+                    title: action.label.clone().unwrap_or_else(|| action.title.clone()),
+                    destructive: action.id.starts_with("leave"),
+                })
+                .collect(),
+            can_rename,
+            can_add_desk: has_workspace
+                && self
+                    .chrome
+                    .snapshot()
+                    .strip_places
+                    .is_some_and(|places| places.can_add),
+        }
+    }
+
+    fn apply_workspace_choice(&mut self, choice: WorkspaceMenuChoice) {
+        match choice {
+            WorkspaceMenuChoice::Switch(key) => {
+                if let Some(workspace) = key.strip_prefix(WORKSPACE_KEY) {
+                    self.dispatch(&Command::Workspace {
+                        generation: self.generation.clone(),
+                        workspace: workspace.to_owned(),
+                    });
+                } else if let Some(id) = key.strip_prefix(HOST_KEY) {
+                    self.requests
+                        .borrow_mut()
+                        .push(HostRequest::Action(id.to_owned()));
+                }
+            }
+            WorkspaceMenuChoice::Action(id) => {
+                self.requests.borrow_mut().push(HostRequest::Action(id));
+            }
+            WorkspaceMenuChoice::Overview => {
+                if !self.overview.is_open() {
+                    self.toggle_overview();
+                }
+            }
+            WorkspaceMenuChoice::NewDesk => {
+                self.bar.begin_new_desk();
+            }
+            WorkspaceMenuChoice::Rename => {
+                self.bar.begin_workspace_rename();
+            }
+        }
+    }
+
+    /// Who the profile card is about, and what the page offers about them.
+    fn profile_model(&self) -> ProfileModel {
+        let actions = self
+            .handle
+            .host_actions()
+            .into_iter()
+            .filter(|action| action.id != RENAME_ACTION)
+            .filter_map(|action| {
+                let group = match action.source? {
+                    HostActionSource::Identity => ProfileGroup::Identity,
+                    HostActionSource::Devices => ProfileGroup::Devices,
+                    HostActionSource::Workspaces | HostActionSource::Workspace => return None,
+                };
+                let icon = match action.id.as_str() {
+                    "save-recovery-key" => ui::icons::Icon::Download,
+                    "sign-in-passkey" => ui::icons::Icon::User,
+                    _ if group == ProfileGroup::Devices => ui::icons::Icon::MonitorSmartphone,
+                    _ => ui::icons::Icon::Fingerprint,
+                };
+                Some(ProfileAction {
+                    id: action.id,
+                    title: action.title,
+                    group,
+                    icon,
+                })
+            })
+            .collect();
+        let rgb = self.chrome.own_chip().map(|own| own.rgb);
+        // The name in the field is the person's own, without the number
+        // others are shown beside it.
+        let name = self
+            .chrome
+            .here
+            .borrow()
+            .own_label()
+            .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
+        ProfileModel {
+            identity: ui::collaboration::local_user_id().0,
+            name,
+            colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
+            can_rename: self.handle.offers_host_action(RENAME_ACTION),
+            actions,
+        }
+    }
+
+    fn apply_profile_choice(&self, choice: ProfileChoice) {
+        let request = match choice {
+            ProfileChoice::Rename(name) => HostRequest::Named(name),
+            ProfileChoice::Action(id) => HostRequest::Action(id),
+        };
+        self.requests.borrow_mut().push(request);
     }
 
     /// Add a strip named `name` to the active workspace, kept as this
@@ -631,6 +855,20 @@ impl BrowserShell {
             .authors
             .borrow_mut()
             .insert(id.0, self.chrome.room.author.clone());
+        self.handle.replace_tree(tree);
+    }
+
+    /// Give the active workspace `name`.
+    fn rename_workspace(&self, name: String) {
+        let mut tree = self.handle.read(Clone::clone);
+        let active = tree.active;
+        let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
+            return;
+        };
+        if workspace.name == name {
+            return;
+        }
+        workspace.name = name;
         self.handle.replace_tree(tree);
     }
 
@@ -901,6 +1139,14 @@ impl Widget for BrowserShell {
             changed = true;
         }
         changed |= self.tilo_menu.settle();
+        if let Some(choice) = self.workspace_menu.take_choice() {
+            self.apply_workspace_choice(choice);
+            changed = true;
+        }
+        if let Some(choice) = self.profile.take_choice() {
+            self.apply_profile_choice(choice);
+            changed = true;
+        }
         if self.tilo_menu.take_feedback() {
             self.open_feedback();
             changed = true;
@@ -966,6 +1212,8 @@ impl Widget for BrowserShell {
         style.size = Size::auto();
         let _ = taffy.set_style(overview, style);
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
+        let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
+        let profile = self.profile.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -974,7 +1222,15 @@ impl Widget for BrowserShell {
         };
         taffy.widget_node(
             style,
-            &[backdrop, bar, area, overview, tilo_menu],
+            &[
+                backdrop,
+                bar,
+                area,
+                overview,
+                tilo_menu,
+                workspace_menu,
+                profile,
+            ],
             map,
             self,
         )
@@ -984,12 +1240,24 @@ impl Widget for BrowserShell {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
-        if let [backdrop, bar, area, overview, tilo_menu] = nodes[..] {
+        if let [
+            backdrop,
+            bar,
+            area,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            profile,
+        ] = nodes[..]
+        {
             self.backdrop.apply_layout(taffy, backdrop, inner);
             self.bar.apply_layout(taffy, bar, inner);
             self.area.apply_layout(taffy, area, inner);
             self.overview.apply_layout(taffy, overview, inner);
             self.tilo_menu.apply_layout(taffy, tilo_menu, inner);
+            self.workspace_menu
+                .apply_layout(taffy, workspace_menu, inner);
+            self.profile.apply_layout(taffy, profile, inner);
         }
     }
 
@@ -1016,7 +1284,7 @@ impl Widget for BrowserShell {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [_, bar, area, overview, tilo_menu] = nodes[..] else {
+        let [_, bar, area, overview, tilo_menu, workspace_menu, profile] = nodes[..] else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1053,6 +1321,22 @@ impl Widget for BrowserShell {
                 self.apply_people_hit(hit);
                 *ctx.handled = true;
             }
+            if *ctx.handled {
+                return;
+            }
+        }
+        // The workspace menu and the profile card, like the Tilo menu, take
+        // what they cover, the keyboard and the press that dismisses them.
+        if self.workspace_menu.is_open() {
+            self.workspace_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, workspace_menu));
+            if *ctx.handled {
+                return;
+            }
+        }
+        if self.profile.is_open() {
+            self.profile
+                .handle_event(event, &mut ctx.reborrow(ctx.path, profile));
             if *ctx.handled {
                 return;
             }
@@ -1097,6 +1381,8 @@ impl Widget for BrowserShell {
         !self.people_open
             && !self.people.wants_pointer_capture()
             && !self.tilo_menu.is_open()
+            && !self.workspace_menu.is_open()
+            && !self.profile.is_open()
             && !self.overview.is_open()
             && self
                 .cursor
@@ -1115,6 +1401,8 @@ impl Widget for BrowserShell {
             &self.area,
             &self.overview,
             &self.tilo_menu,
+            &self.workspace_menu,
+            &self.profile,
         ]
     }
 
@@ -1135,6 +1423,8 @@ impl Widget for BrowserShell {
             &mut self.area,
             &mut self.overview,
             &mut self.tilo_menu,
+            &mut self.workspace_menu,
+            &mut self.profile,
         ]
     }
 
@@ -1147,6 +1437,8 @@ impl Widget for BrowserShell {
                 &self.area,
                 &self.overview,
                 &self.tilo_menu,
+                &self.workspace_menu,
+                &self.profile,
             ]
             .iter()
             .any(|child| child.needs_redraw())

@@ -46,7 +46,7 @@ pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
     certify, certify_with_root, issue_device_cert, pending_pairings,
 };
-pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
+pub use document::{ContentCipher, DocumentRoute, OpenedDocument, claimed_changes, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
 pub use session::{

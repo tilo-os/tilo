@@ -982,6 +982,11 @@ impl ResourceRoot {
         resource
     }
 
+    /// The last action refused here, by the door or by the room.
+    pub(crate) fn refused(&self) -> Option<super::dispatch::Refused> {
+        self.dispatch.last_refused()
+    }
+
     /// Show why the record does not read as the resource instead of the
     /// view while it does not, never the last state as if it were current,
     /// and refuse submissions with the same reason.
@@ -2509,6 +2514,14 @@ impl RootApp for ResourceRoot {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+
+    // The room refused what this record sent, and the record withdrew it:
+    // the view shows the stored state again, and the action reads as
+    // refused, as one this device refused does.
+    fn record_refused(&mut self, refusal: &ui_core::record::RecordRefusal) {
+        self.dispatch.refuse_by_room(refusal);
+        self.typed.represent();
     }
 
     // A surface that keeps presentation of its own across restarts (the

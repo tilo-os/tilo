@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -78,6 +79,34 @@ class MediaProfilesTests(unittest.TestCase):
             Path(str(self.qcow) + ".hardware.json").symlink_to(self.root / "missing.json")
             with self.assertRaisesRegex(ValueError, "symlink"):
                 provenance.validate(self.qcow, "aarch64", "generic")
+
+    def test_consumer_facts_are_preserved_and_bound_to_the_exact_image(self):
+        home = {"schema": 1, "archive_protocol": 2, "seed_protocol": 1,
+                **{key: "a" * 64 for key in ("firstboot_user_sha256", "seed_helper_sha256",
+                                             "prepared_helper_sha256", "tar_sha256")}}
+        snapshot = {"profile_json": None, "definition": None, "data_consumers": {"home_archive": home}}
+        with mock.patch.object(provenance.subprocess, "check_output", side_effect=[
+            IMAGE_ID + " amd64\n", json.dumps(snapshot)
+        ]) as podman:
+            sidecar = provenance.create("mutable-tag", self.qcow)
+        self.assertIn("'--data-consumer-catalog-facts'", podman.call_args_list[1].args[0][-1])
+        self.assertEqual(json.loads(sidecar.read_bytes())["data_consumers"], {"home_archive": home})
+        result = subprocess.run([sys.executable, str(PACKAGING / "media-provenance.py"), "consumer-facts",
+                                 str(self.qcow), "x86_64", "generic"],
+                                capture_output=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout), {"home_archive": home})
+        self.qcow.write_bytes(b"substituted image")
+        with self.assertRaises(ValueError):
+            provenance.validate(self.qcow, "x86_64", "generic")
+        applications = {"schema": 1, "subset_protocol": 2,
+                        **{key: "b" * 64 for key in ("prepared_helper_sha256", "qualification_script_sha256",
+                                                     "native_qualification_sha256")}}
+        for bad in ({"applications": applications}, {"home_archive": dict(home, schema=True)},
+                    {"home_archive": home, "unknown": True},
+                    {"home_archive": home, "applications": applications,
+                     "original_source": {"original_source_protocol": 5}}):
+            with self.assertRaises(ValueError):
+                provenance.validate_consumers(bad)
 
     def test_board_profile_provenance(self):
         with self.subTest(phase="board_media_needs_provenance_and_matching_declared_architecture"):

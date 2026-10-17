@@ -220,6 +220,44 @@ impl ClaimedAction {
             other => vec![other],
         }
     }
+
+    /// What the app that made it calls each member, with the item it acted
+    /// on: a verb's key, an edit's field path (`title`, `rows.cells`), a
+    /// history step's name. A change the framework makes is no app's
+    /// action and names nothing.
+    #[must_use]
+    pub fn named(&self) -> Vec<(String, Option<String>)> {
+        self.members()
+            .into_iter()
+            .filter_map(|member| match member {
+                Self::Verb { action, item } => Some((action.action.clone(), item.clone())),
+                Self::Edit { path, .. } => {
+                    let mut fields = Vec::new();
+                    let mut item = None;
+                    for step in path {
+                        match step {
+                            PathStep::Field(field) => fields.push(field.as_str()),
+                            PathStep::Item(id) | PathStep::Key(id) | PathStep::Cell(id, _) => {
+                                item.get_or_insert_with(|| id.clone());
+                            }
+                        }
+                    }
+                    Some((fields.join("."), item))
+                }
+                Self::History(op) => Some((
+                    match op {
+                        HistoryOp::Undo | HistoryOp::Migrate { .. } => "undo",
+                        HistoryOp::Redo => "redo",
+                        HistoryOp::Restore => "restore",
+                        HistoryOp::Checkpoint { .. } => "checkpoint",
+                    }
+                    .to_owned(),
+                    None,
+                )),
+                Self::Group(_) | Self::Framework(_) => None,
+            })
+            .collect()
+    }
 }
 
 impl ChangeClaim {

@@ -28,8 +28,8 @@ pub enum Limited {
 impl std::fmt::Display for Limited {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Changes => "too many changes; slow down",
-            Self::Content => "too much content this hour",
+            Self::Changes => tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
+            Self::Content => tilo_relay_protocol::refusal::TOO_MUCH_CONTENT,
         })
     }
 }

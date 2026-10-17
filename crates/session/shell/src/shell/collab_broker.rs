@@ -1293,6 +1293,7 @@ fn remote_participant_id(
                 // over the local socket and is marked there instead.
                 is_agent: false,
                 is_self: false,
+                joined_at: None,
             }],
             permissions: Vec::new(),
         };

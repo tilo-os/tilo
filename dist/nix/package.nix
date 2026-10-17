@@ -27,6 +27,7 @@
 , harfbuzz
 , fuse3
 , gst_all_1
+, python3
 }:
 
 let

@@ -422,6 +422,7 @@ impl Room {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
         let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
+        let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
@@ -453,8 +454,20 @@ impl Room {
                 PeerEvent::DocumentRejected(reason) => {
                     warn(&format!("dropped a document: {reason}"));
                 }
+                PeerEvent::CommitRefused {
+                    route,
+                    changes,
+                    reason,
+                } if route.cluster_id == self.uuid => {
+                    refusals.push((route, changes, reason));
+                }
                 _ => {}
             }
+        }
+        // Withdrawn before what arrived since is merged: a peer's change can
+        // never build on one the room refused.
+        for (route, changes, reason) in refusals {
+            self.withdraw(&route, &changes, &reason, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
         batches.sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
@@ -487,6 +500,61 @@ impl Room {
                 Arc::clone(&mounted.attachment.notify)
             })
             .collect()
+    }
+
+    /// Withdraw what the host refused of `route` from the open record that
+    /// sent it, which tells its app, and move the record's replication
+    /// frontier back to what it keeps. The raw `reason` is for the log; the
+    /// app shows a person its plain form.
+    fn withdraw(
+        &mut self,
+        route: &DocumentRoute,
+        changes: &[[u8; 32]],
+        reason: &str,
+        woken: &mut HashSet<u64>,
+    ) {
+        warn(&format!(
+            "{}/{}: the room refused a change: {reason}",
+            route.app_id, route.record
+        ));
+        if changes.is_empty() || route.app_id == DESKTOP_APP {
+            return;
+        }
+        let refused: Vec<ui::automerge::ChangeHash> = changes
+            .iter()
+            .map(|hash| ui::automerge::ChangeHash(*hash))
+            .collect();
+        let plain = tilo_relay_protocol::refusal::plain_reason(reason);
+        for (&id, mounted) in &mut self.mounts {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                else {
+                    continue;
+                };
+                match store.withdraw_refused(&checkout.id, &refused, plain) {
+                    Ok(withdrawn) => {
+                        if let Some(heads) = withdrawn
+                            && let Some(replica) = mounted
+                                .records
+                                .get_mut(&(route.app_id.clone(), route.record.clone()))
+                        {
+                            replica.frontier.advance(heads);
+                        }
+                        woken.insert(id);
+                    }
+                    Err(error) => warn(&format!(
+                        "{}/{}: a refused change stays: {error}",
+                        route.app_id, route.record
+                    )),
+                }
+            }
+        }
     }
 
     /// The route's document as this page holds it, for a host compaction
@@ -862,153 +930,4 @@ fn outbound(
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())
-}
-
-/// Publish a reviewed report as this peer, using the existing action and record.
-/// This neither creates a destination nor answers its canonical receipt.
-pub(crate) fn submit_feedback(
-    id: u32,
-    admission: &tilo_desktop::feedback::transport::Enrollment,
-    submission: &tilo_app::feedback::Submission,
-) -> Result<(), String> {
-    use ui::record::RecordOwners;
-    let room = room(id).ok_or("feedback peer closed")?;
-    let (records, store, peer, uuid) = {
-        let room = room.borrow();
-        if !room.ready
-            || room.uuid != admission.destination.room
-            || room.device
-                != hex::encode(
-                    admission
-                        .reporter
-                        .device_public_key()
-                        .ok_or("reporter device absent")?,
-                )
-        {
-            return Err("feedback room not ready".into());
-        }
-        let store = room.store.clone();
-        let records = room.mounts.values().find_map(|mount| {
-            mount
-                .attachment
-                .stores
-                .borrow()
-                .iter()
-                .find(|records| {
-                    records.package_and_home() == ("so.tilo.chat".into(), room.uuid.clone())
-                })
-                .cloned()
-        });
-        let records = match records {
-            Some(records) => records,
-            None => RecordOwners::with_store(store.clone())
-                .open("so.tilo.chat", &room.uuid)
-                .map_err(|error| error.to_string())?,
-        };
-        (records, store, room.peer.clone(), room.uuid.clone())
-    };
-    let mut frame = feedback_publisher(admission, &records, store)?;
-    frame.relayout();
-    frame
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: 1,
-                address: tilo_actions::ActionAddress::new(
-                    tilo_app::feedback::destination::item(
-                        tilo_app::feedback::destination::CHANNELS,
-                        &admission.destination.channel,
-                    ),
-                    tilo_app::feedback::destination::SUBMIT,
-                ),
-            },
-            serde_json::json!({"submission": submission})
-                .as_object()
-                .ok_or("invalid submission arguments")?,
-        )
-        .map_err(|error| error.to_string())?;
-    let bytes = records
-        .read(&RecordId::package_primary(), |document| {
-            document.clone().save()
-        })
-        .ok_or("feedback source disappeared")?;
-    peer.publish(
-        DocumentRoute {
-            app_id: "so.tilo.chat".into(),
-            cluster_id: uuid,
-            record: String::new(),
-        },
-        &DocumentMutation::Snapshot(bytes),
-    )
-}
-
-fn feedback_publisher(
-    admission: &tilo_desktop::feedback::transport::Enrollment,
-    records: &RecordStore,
-    store: Rc<MemoryStore>,
-) -> Result<ui::headless::FrameHarness, String> {
-    use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
-    use ui::application_view::InstanceViewStore;
-    let uuid = &admission.destination.room;
-    let definition =
-        crate::desktop::application("so.tilo.chat").ok_or("Chat component unavailable")?;
-    let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
-    records
-        .try_open_record(&checkout)
-        .map_err(|error| error.to_string())?;
-    let target = LaunchTarget::Record {
-        checkout,
-        reveal: None,
-    };
-    let views = Rc::new(
-        InstanceViewStore::with_store(
-            store,
-            &hex::encode(
-                admission
-                    .reporter
-                    .device_public_key()
-                    .ok_or("reporter device absent")?,
-            ),
-            uuid,
-        )
-        .map_err(|error| error.to_string())?
-        .without_persistence(),
-    );
-    let context = HostContext::prepare(
-        definition,
-        HostContextInputs {
-            records: records.clone(),
-            views,
-            device_id: hex::encode(
-                admission
-                    .reporter
-                    .device_public_key()
-                    .ok_or("reporter device absent")?,
-            ),
-            instance_id: 1,
-            permissions: Rc::new(RefCell::new(admission.permissions.clone())),
-            author: ui::permissions::UserId(hex::encode(
-                admission
-                    .reporter
-                    .user_public_key()
-                    .ok_or("reporter root absent")?,
-            )),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &target,
-    )
-    .map_err(|error| error.to_string())?;
-    let component = definition
-        .instantiate(context, target, RestoreInput::None)
-        .map_err(|error| error.to_string())?;
-    ui::headless::FrameHarness::from_component(
-        component,
-        (1000, 700),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::new(),
-        },
-    )
-    .map_err(|error| error.to_string())
 }

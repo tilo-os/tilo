@@ -21,7 +21,8 @@
  *   elsewhere; its envelope comes from a host that keeps it, and the page
  *   reloads to join as them.
  * - `set-name`: the name others see, in history and presence; once set,
- *   a banner offers to keep the person it names.
+ *   a banner offers to keep the person it names. Asked in a form, or taken
+ *   as typed where the desktop already asked (the profile card's field).
  * - `pair-device`: let another device of the person in. Copies a link that
  *   opens this workspace there as a new device of this person (the action
  *   itself then says so in search; the link is shown only when it could
@@ -209,8 +210,10 @@ export function createIdentityActions({
       done = Math.max(done, ASK_AFTER_ACTIONS);
       ask();
     },
-    /** Run the host action `id`; resolves when done (errors go to `onError`). */
-    async perform(id) {
+    /** Run the host action `id`, with what the person already typed for it
+     * (`value`, the name from the profile card); resolves when done (errors
+     * go to `onError`). */
+    async perform(id, value) {
       try {
         if (id === KEEP.id) {
           await identity.keepWithPasskey({rpId, userName: name()});
@@ -226,8 +229,9 @@ export function createIdentityActions({
           await publishEverywhere();
         } else if (id === NAME.id && naming) {
           // The form stays open until the name is kept: a host's refusal
-          // is said there (`ask` shows what `save` throws).
-          const chosen = await naming.ask(name(), async typed => {
+          // is said there (`ask` shows what `save` throws). A name typed
+          // in the desktop is kept as typed; a refusal reaches `onError`.
+          const keep = async typed => {
             const fitted = fitDisplayName(typed);
             if (!fitted) throw new IdentityError('malformed', 'Choose a name');
             const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName: fitted})));
@@ -236,7 +240,8 @@ export function createIdentityActions({
             for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
             if (refused) throw new IdentityError('name-refused', `This name was not kept: ${refused.reason.message}`);
             return fitted;
-          });
+          };
+          const chosen = typeof value === 'string' ? await keep(value) : await naming.ask(name(), keep);
           if (chosen) {
             const set = naming.set(chosen);
             controller.named(typeof set === 'string' && set ? set : chosen);

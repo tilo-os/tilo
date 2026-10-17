@@ -468,12 +468,12 @@ export async function startEntryPage({mode}) {
   /** Opening the window in front in a browser tab of its own, once the page is open. */
   let openInTab = null;
   const diagnostics = {
-    onHostAction: id => {
+    onHostAction: (id, value) => {
       if (id === SET_UP.id) void setUp?.();
       else if (id === OPEN_IN_TAB) openInTab?.();
       else if (id.startsWith(OPEN_WORKSPACE)) void switchWorkspace?.(id);
       else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
-      else void identityActions?.perform(id);
+      else void identityActions?.perform(id, value);
     },
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),

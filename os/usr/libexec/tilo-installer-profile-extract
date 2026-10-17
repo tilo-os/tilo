@@ -9,6 +9,8 @@ readonly magic_expected=TILO_INSTALL_PROFILE_V1
 readonly out_dir="${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}"
 readonly out_file="$out_dir/profile.json"
 readonly error_file="$out_dir/profile.error"
+# Unpacks the setup handoff payload (the installer's compiled helper).
+readonly staging_handoff="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
 
 install -d -m 0755 "$out_dir"
 rm -f "$out_file" "$error_file" "$out_dir/windows-media.block" "$out_dir"/windows-media.block.*
@@ -162,29 +164,7 @@ for disk in "${candidates[@]}"; do
   unpack="$tmp_dir/handoff-unpack"
   rm -rf "$unpack"
   mkdir -p "$unpack"
-  python3 - "$payload" "$unpack" <<'PY' || continue
-import pathlib, sys
-payload, dest = pathlib.Path(sys.argv[1]).read_bytes(), pathlib.Path(sys.argv[2])
-offset = 0
-while offset < len(payload):
-    end = payload.find(b"\n", offset)
-    if end < 0:
-        raise SystemExit(1)
-    relative = payload[offset:end].decode()
-    offset = end + 1
-    end = payload.find(b"\n", offset)
-    if end < 0:
-        raise SystemExit(1)
-    size = int(payload[offset:end])
-    offset = end + 1
-    chunk = payload[offset:offset + size]
-    if len(chunk) != size or relative.startswith("/") or ".." in pathlib.PurePosixPath(relative).parts:
-        raise SystemExit(1)
-    target = dest / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(chunk)
-    offset += size
-PY
+  "$staging_handoff" unpack-setup-handoff "$payload" "$unpack" || continue
   # The human root secret never leaves the setup machine. A payload that
   # carries it is refused whole, not filtered.
   if [ -e "$unpack/var/lib/tilo/user-identity/privkey.bin" ] \

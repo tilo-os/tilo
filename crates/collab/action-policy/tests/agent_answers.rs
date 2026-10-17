@@ -26,6 +26,7 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
         room: ROOM.into(),
         owner: Some(PERSON.into()),
         members: std::collections::BTreeMap::default(),
+        joined: std::collections::BTreeMap::default(),
         grants: grants.to_vec(),
     };
     let verdict =

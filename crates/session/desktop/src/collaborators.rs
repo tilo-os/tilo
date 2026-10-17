@@ -3083,11 +3083,16 @@ pub fn collaborator_roster_rows_named(
 ) -> (Vec<RosterRow>, Option<String>) {
     let mut rows = unnumbered_roster_rows(desktop, local_user);
     let own_name = own_name.map(str::trim).filter(|name| !name.is_empty());
-    let labels = ui::presence::ParticipantLabels::new(
+    let policy = desktop
+        .active_workspace()
+        .map(|workspace| &workspace.policy);
+    let joined = |id: &str| policy.and_then(|policy| policy.joined_at(id));
+    let labels = ui::presence::ParticipantLabels::by_joining(
         rows.iter()
             .filter(|row| !row.is_agent && row.id != local_user)
             .map(|row| (row.id.as_str(), row.label.as_str()))
-            .chain(own_name.map(|name| (local_user, name))),
+            .chain(own_name.map(|name| (local_user, name)))
+            .map(|(id, name)| (id, name, joined(id))),
     );
     for row in rows.iter_mut().filter(|row| !row.is_agent) {
         row.label = labels.label(&row.id, &row.label);

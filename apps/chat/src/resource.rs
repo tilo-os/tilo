@@ -172,6 +172,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "compact",
     "starter",
     "people",
+    "namesakes",
     "thread-narrow",
     "collaboration",
     "live-context",
@@ -230,7 +231,11 @@ impl ResourceApp for ChatShell {
         } else {
             ui::models::Models::default()
         };
-        let app = ChatApp::new(identity, runtime, content).with_models(models);
+        // What the person is writing is theirs: kept in their own record.
+        let drafts = cx.person::<crate::drafts::ChatDrafts>();
+        let app = ChatApp::new(identity, runtime, content)
+            .with_models(models)
+            .with_drafts(drafts);
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         cx.surface(if live && ui::local_identity::bound().is_some() {
@@ -246,6 +251,26 @@ impl ResourceApp for ChatShell {
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
+    }
+
+    /// `composer`: a multi-line draft typed in the composer, the person's
+    /// own until sent.
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        if name == Some("composer") {
+            for (index, line) in COMPOSER_DRAFT.lines().enumerate() {
+                if index > 0 {
+                    input.set_modifiers(&["shift".to_owned()]);
+                    input.key("Enter");
+                    input.set_modifiers(&[]);
+                }
+                input.type_text(line);
+            }
+            input.relayout();
+        }
+        Ok(())
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -299,20 +324,6 @@ impl ResourceApp for ChatShell {
                 let mut invokes = demo_invokes();
                 if name == Some("bridged") {
                     invokes.extend(Invoke::edit(&bridged_post()));
-                }
-                if name == Some("composer") {
-                    // The composer mid-compose: a multi-line draft in the
-                    // channel shown.
-                    invokes.extend(COMPOSER_DRAFT.lines().filter_map(|line| {
-                        Chat::paths()
-                            .drafts
-                            .key("c_crit")
-                            .perform(&tilo_document::RichTextAction::AppendParagraph {
-                                text: line.to_owned(),
-                            })
-                            .ok()
-                            .and_then(|edit| Invoke::edit(&edit).ok())
-                    }));
                 }
                 invokes
             }

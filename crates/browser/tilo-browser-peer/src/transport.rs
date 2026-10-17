@@ -239,9 +239,11 @@ impl RelayCollabTransport {
                 // Remote actions and voice are the page's (`agents.mjs`,
                 // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
-                // volunteer answers compaction requests.
+                // volunteer answers compaction requests. A refused commit is
+                // the record owner's to withdraw; this transport holds none.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
+                | PeerEvent::CommitRefused { .. }
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
                 | PeerEvent::CompactionRequested { .. }
