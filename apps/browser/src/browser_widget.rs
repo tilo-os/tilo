@@ -88,11 +88,16 @@ struct PageOperation {
     phase: PagePhase,
     deadline: std::time::Instant,
     /// A main-frame load that settled while the request was with the engine
-    /// (`Some(error)` when it failed). The engine answers a navigating action
-    /// only once its page loaded, after the tab heard so: an answer that says
-    /// "loading" then completes at once instead of waiting for a load that
-    /// already happened.
-    settled_while_sent: Option<Option<String>>,
+    /// and how. The engine answers a navigating action only once its page
+    /// loaded, after the tab heard so: an answer that says "loading" then
+    /// completes at once instead of waiting for a load that already happened.
+    settled_while_sent: Option<SettledLoad>,
+}
+
+/// How a main-frame load settled.
+enum SettledLoad {
+    Loaded,
+    Failed(String),
 }
 
 enum PagePhase {
@@ -1554,12 +1559,15 @@ impl BrowserWidget {
         }) else {
             return;
         };
-        if let (Ok(reply), Some(error)) = (&result, &operation.settled_while_sent)
+        if let (Ok(reply), Some(settled)) = (&result, &operation.settled_while_sent)
             && reply.loading
         {
-            let note = error
-                .as_deref()
-                .map(|error| format!("the page it opened failed to load: {error}"));
+            let note = match settled {
+                SettledLoad::Loaded => None,
+                SettledLoad::Failed(error) => {
+                    Some(format!("the page it opened failed to load: {error}"))
+                }
+            };
             self.page_operation_result =
                 Some(self.page_success(operation.invocation, reply, note.as_deref()));
             return;
@@ -1592,7 +1600,10 @@ impl BrowserWidget {
         if let Some(operation) = self.page_operation.as_mut()
             && matches!(operation.phase, PagePhase::Sent)
         {
-            operation.settled_while_sent = Some(error.map(str::to_owned));
+            operation.settled_while_sent = Some(match error {
+                None => SettledLoad::Loaded,
+                Some(error) => SettledLoad::Failed(error.to_owned()),
+            });
             return;
         }
         let Some(operation) = self
