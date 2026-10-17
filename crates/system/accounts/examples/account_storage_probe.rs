@@ -7,6 +7,9 @@ mod browser {
     use accounts::{AccountId, Secret, SecretVault};
     use secret_vault::VaultFormat;
     use tilo_files::{Dir, Location, VPath, VirtualRoot};
+    // Async wasm-bindgen exports expand to calls into this crate.
+    extern crate wasm_bindgen_futures;
+
     use wasm_bindgen::prelude::*;
 
     // The pre-existing account vault's format, used only to seed a legacy fixture.

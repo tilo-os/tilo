@@ -1444,7 +1444,6 @@ dependencies = [
  "url",
  "uuid",
  "workspace-hack",
- "zeroize",
  "zip",
 ]
 
@@ -8255,7 +8254,6 @@ dependencies = [
  "thiserror 2.0.21",
  "threshold-identity",
  "tilo-action-policy",
- "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
