@@ -497,7 +497,7 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
     let (sibling_key, sibling_cert) = unenrolled_owner_device();
 
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let host_cert = tilo_browser_peer::carrier::host_info(&Plain(plain))
+        let host_cert = tilo_browser_peer::host_info(&Plain(plain))
             .await
             .unwrap()
             .host_cert;

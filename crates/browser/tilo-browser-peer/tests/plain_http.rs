@@ -65,6 +65,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             public_origin: None,
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
+            country: None,
         })
         .await
         .is_err();

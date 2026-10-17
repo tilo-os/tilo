@@ -89,6 +89,20 @@ pub struct WebArgs {
     /// and the HTTPS stream on the page origin stays the fallback.
     #[arg(long = "live-origin", value_name = "ORIGIN", requires = "web")]
     pub live_origin: Option<String>,
+    /// The request header the proxy in front of the host names a client's
+    /// country in (such as `CF-IPCountry`). A person approving a new device
+    /// is shown it; nothing is looked up.
+    #[arg(long = "country-header", value_name = "NAME", requires = "web")]
+    pub country_header: Option<String>,
+    /// The peers `--country-header` is believed from, as comma-separated
+    /// `address[/prefix]` ranges; by default this machine only.
+    #[arg(
+        long = "country-proxies",
+        value_name = "RANGES",
+        default_value = "127.0.0.0/8,::1",
+        requires = "country_header"
+    )]
+    pub country_proxies: tilo_relay_protocol::proxies::TrustedProxies,
     /// Without a device certificate yet, create the device key, print its
     /// public half and serve only `/peer/v1/install` on `--web` until a
     /// root-signed host certificate for it arrives with the token in this
@@ -288,6 +302,13 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         public_origin: args.public_origin.clone(),
         live_origin: args.live_origin.clone(),
         limits: web_limits(),
+        country: args
+            .country_header
+            .clone()
+            .map(|name| tilo_relay::web::CountryHeader {
+                name,
+                proxies: args.country_proxies.clone(),
+            }),
     }
 }
 
@@ -1154,6 +1175,7 @@ mod tests {
             device_label: "Browser".into(),
             requested: DeviceCapabilities::member(),
             nonce: rand::random(),
+            invite: [0; 16],
             issued_at_ns: now.saturating_sub(1_000_000_000),
             expires_at_ns: now.saturating_add(60_000_000_000),
             signature: [0; 64],
@@ -1266,6 +1288,8 @@ mod tests {
             request_digest: request.digest().unwrap(),
             pairing_code: code.into(),
             request,
+            requested_at_ns: 0,
+            country: None,
         }
     }
 

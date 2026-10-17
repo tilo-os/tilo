@@ -616,6 +616,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             relay.state_root().join("profiles"),
         ),
         here: Arc::new(here::Here::new(None)),
+        country: None,
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -1197,6 +1198,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
             relay.state_root().join("profiles"),
         ),
         here: Arc::new(here::Here::new(None)),
+        country: None,
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await

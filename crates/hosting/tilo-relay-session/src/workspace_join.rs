@@ -1,7 +1,16 @@
-//! The client half of the owner-neutral Iroh transport for the shared
-//! workspace join contract. The relay's side, `WorkspaceJoinProtocol`, stays
-//! in `tilo-relay`; the messages are `tilo_workspace_join`'s.
+//! The client half of the owner-neutral transport for the shared workspace
+//! join contract: over the host's iroh endpoint, or over its HTTPS route for
+//! a host that publishes no iroh address. The relay's side,
+//! `WorkspaceJoinProtocol` and the route, stays in `tilo-relay`; the
+//! messages are `tilo_workspace_join`'s.
+//!
+//! An invitation a host's admission door issued comes with the door's
+//! one-time token. Over HTTPS the client spends it as a page does
+//! (`JoinStep::ProvePreAdmitted`, under the door's limits and with the
+//! notice the room keeps) before it completes; the completion then answers
+//! that admission's bootstrap.
 
+use std::sync::Arc;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
@@ -19,14 +28,64 @@ pub const WORKSPACE_JOIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Typed client for the shared invitation and membership exchange.
 #[derive(Clone, Debug)]
 pub struct WorkspaceJoinClient {
-    endpoint: iroh::Endpoint,
+    carrier: Carrier,
+}
+
+#[derive(Clone)]
+enum Carrier {
+    /// The host's iroh endpoint, dialled from an identity-bound endpoint.
+    Iroh(iroh::Endpoint),
+    /// The host's HTTPS route, with the door's admission when it gave one.
+    Https {
+        http: Arc<dyn tilo_relay_client::HttpClient>,
+        door: Option<DoorAdmission>,
+    },
+}
+
+impl std::fmt::Debug for Carrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Iroh(endpoint) => f.debug_tuple("Iroh").field(&endpoint.id()).finish(),
+            Self::Https { door, .. } => f
+                .debug_struct("Https")
+                .field("door", &door.is_some())
+                .finish(),
+        }
+    }
+}
+
+/// What a host's admission door gave this device's person beside its
+/// invitation: the one-time token that admits them at once, and the name
+/// they give the room.
+#[derive(Clone)]
+pub struct DoorAdmission {
+    /// The token, as the door answered it.
+    pub token: Vec<u8>,
+    /// How the person names themself: a display name.
+    pub name: String,
 }
 
 impl WorkspaceJoinClient {
     /// Use an existing identity-bound Iroh endpoint.
     #[must_use]
     pub fn new(endpoint: iroh::Endpoint) -> Self {
-        Self { endpoint }
+        Self {
+            carrier: Carrier::Iroh(endpoint),
+        }
+    }
+
+    /// Use the HTTPS route of the host behind `http`, spending `door`'s
+    /// admission before completing, when the invitation came from a door.
+    /// The address a request names is then the host's identity only: the
+    /// route reaches the same host.
+    #[must_use]
+    pub fn https(
+        http: Arc<dyn tilo_relay_client::HttpClient>,
+        door: Option<DoorAdmission>,
+    ) -> Self {
+        Self {
+            carrier: Carrier::Https { http, door },
+        }
     }
 
     /// Send one bounded typed request over a fresh bidirectional stream.
@@ -59,8 +118,25 @@ impl WorkspaceJoinClient {
                 "workspace join request exceeds the wire limit".into(),
             ));
         }
-        let connection = self
-            .endpoint
+        let endpoint = match &self.carrier {
+            Carrier::Iroh(endpoint) => endpoint,
+            Carrier::Https { http, door } => {
+                if let (JoinTransportRequest::Complete(complete), Some(door)) = (&request, door) {
+                    spend_door_admission(http.as_ref(), complete, door).await?;
+                }
+                let response = tilo_relay_client::https::workspace_join(http.as_ref(), bytes)
+                    .await
+                    .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
+                if response.len() > MAX_WORKSPACE_JOIN_RESPONSE_BYTES {
+                    return Err(WorkspaceJoinError::Protocol(
+                        "workspace join response exceeds the wire limit".into(),
+                    ));
+                }
+                return postcard::from_bytes(&response)
+                    .map_err(|error| WorkspaceJoinError::Decode(error.to_string()));
+            }
+        };
+        let connection = endpoint
             .connect(address, WORKSPACE_JOIN_ALPN)
             .await
             .map_err(|error| WorkspaceJoinError::Transport(error.to_string()))?;
@@ -113,7 +189,13 @@ impl WorkspaceJoinClient {
         device_key: &ed25519_dalek::SigningKey,
         request_id: [u8; 32],
     ) -> Result<JoinBootstrap, WorkspaceJoinError> {
-        if *self.endpoint.id().as_bytes() != device_cert.device_public_key
+        // Over iroh the host binds the request to the dialling endpoint; over
+        // HTTPS to the device the request names.
+        let endpoint_disagrees = match &self.carrier {
+            Carrier::Iroh(endpoint) => *endpoint.id().as_bytes() != device_cert.device_public_key,
+            Carrier::Https { .. } => false,
+        };
+        if endpoint_disagrees
             || device_key.verifying_key().to_bytes() != device_cert.device_public_key
         {
             return Err(WorkspaceJoinError::Protocol(
@@ -182,6 +264,54 @@ impl WorkspaceJoinClient {
         }
         Ok(WorkspaceJoinAdmission { bootstrap, trust })
     }
+}
+
+/// Spend `door`'s admission with the proof `complete` carries, as a page
+/// does, so the completion that follows answers that admission. A proof
+/// spent before (an exact retry) is admitted already, which the host's
+/// status of the request says.
+async fn spend_door_admission(
+    http: &dyn tilo_relay_client::HttpClient,
+    complete: &tilo_workspace_join::JoinCompleteRequest,
+    door: &DoorAdmission,
+) -> Result<(), WorkspaceJoinError> {
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
+    let transport =
+        |error: tilo_relay_client::LinkError| WorkspaceJoinError::Transport(error.to_string());
+    let challenge = postcard::to_stdvec(&complete.proof.challenge)
+        .map_err(|error| WorkspaceJoinError::Encode(error.to_string()))?;
+    let reply = tilo_relay_client::https::join(
+        http,
+        &JoinStep::ProvePreAdmitted {
+            challenge,
+            signature: complete.proof.signature,
+            name: door.name.clone(),
+            token: door.token.clone(),
+        },
+    )
+    .await
+    .map_err(transport)?;
+    let refusal = match reply {
+        JoinReply::Admitted { .. } => return Ok(()),
+        JoinReply::Refused(reason) => reason,
+        other => format!("the door's admission was answered {other:?}"),
+    };
+    let status = tilo_relay_client::https::join(
+        http,
+        &JoinStep::Status {
+            request_id: complete.proof.challenge.request_id,
+            device_public_key: complete.proof.challenge.device_public_key,
+        },
+    )
+    .await
+    .map_err(transport)?;
+    if matches!(status, JoinReply::Admitted { .. }) {
+        return Ok(());
+    }
+    Err(WorkspaceJoinError::Remote {
+        code: 403,
+        message: refusal,
+    })
 }
 
 fn response_error(response: JoinTransportResponse) -> WorkspaceJoinError {

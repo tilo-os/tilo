@@ -61,6 +61,10 @@ pub struct PersistentConfig {
     pub strips: Vec<String>,
     /// Proxies whose `X-Forwarded-For` names the visitor.
     pub trusted_proxies: TrustedProxies,
+    /// The header those proxies name a visitor's country in
+    /// (`TILO_ROOMS_COUNTRY_HEADER`, such as `CF-IPCountry`): the relay
+    /// shows it to a person approving a new device. Unset, none is shown.
+    pub country_header: Option<String>,
     /// User public keys (hex) made Owners of the room at start.
     pub owners: Vec<String>,
     /// User public keys (hex) made Moderators of the room at start.
@@ -435,8 +439,12 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         strips: strips(var)?,
         trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
             .unwrap_or_default()
-            .parse()
+            .parse::<TrustedProxies>()
+            .map_err(anyhow::Error::msg)
             .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")?,
+        country_header: var("TILO_ROOMS_COUNTRY_HEADER")
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty()),
         owners: keys("TILO_ROOMS_OWNERS")?,
         moderators: keys("TILO_ROOMS_MODERATORS")?,
         roles_file: var("TILO_ROOMS_ROLES_FILE")

@@ -74,7 +74,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
     calls,
     get peer() { return peer; },
     async hostInfo(post) { calls.hostPost = post; return JSON.stringify({hostCert: {}, webtransportPort: 443, certificateSha256: 'ab'.repeat(32)}); },
-    async certifyDevice(post, user, label, custody, onPairingCode) {
+    async certifyDevice(post, user, label, invite, custody, onPairingCode) {
       calls.certify.push({post, user, label, custody});
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
