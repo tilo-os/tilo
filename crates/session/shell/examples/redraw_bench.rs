@@ -43,7 +43,7 @@ const HEIGHT: u32 = 2_160;
 const SAMPLE_COUNT: usize = 1_000;
 const MEAN_LIMIT_US: u128 = 25_000;
 const P99_LIMIT_US: u128 = 50_000;
-const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
+const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_workspace_pill"];
 const PROFILE_ENV: &str = "TILO_REDRAW_BENCH_PROFILE";
 const PROFILE_OUTPUT_ENV: &str = "TILO_REDRAW_BENCH_PROFILE_OUTPUT";
 const SAMPLES_ENV: &str = "TILO_REDRAW_BENCH_SAMPLES";
@@ -3856,7 +3856,7 @@ mod tests {
                 assert_eq!(overlays.quick_settings, sample_index.is_multiple_of(2));
                 assert!(
                     !overlays.overview,
-                    "the overview target dismisses open quick settings before TopBarChrome receives it"
+                    "the workspace pill target dismisses open quick settings before TopBarChrome receives it"
                 );
             }
         }

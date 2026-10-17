@@ -16,12 +16,7 @@ topbar-watching-description = { $count } { $count ->
         [one] person
        *[other] people
     } watching without joining
-topbar-open-overview = Open overview
 topbar-tilo-menu = Tilo menu
-topbar-previous-workspace = Previous workspace
-topbar-next-workspace = Next workspace
-topbar-workspace-settings = Workspace settings for { $workspace }
-topbar-workspace-host = Hosted at { $host }
 topbar-show-clock = Show clock
 topbar-show-system-monitor = Show system monitor
 topbar-show-calendar = Show calendar
@@ -37,9 +32,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
-topbar-network-offline = Offline
-topbar-tray-open = Open { $app }
-topbar-tray-menu = Menu for { $app }
 topbar-editor-control = Top bar editor control
 topbar-editor-remove-clock = Remove clock from top bar
 topbar-editor-remove-system-monitor = Remove system monitor from top bar
@@ -77,13 +69,11 @@ topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
 topbar-strips = Strips in this workspace
-topbar-strip-count = { $name } · { $count }
 topbar-strip-go = Go to { $name }, { $count ->
     [0] nobody there
     [one] one person there
    *[other] { $count } people there
 }
-topbar-strip-add = Add a strip
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] One more strip
@@ -1185,8 +1175,6 @@ activity-task-awaiting-acceptance = Waiting for the agent to pick this up. It ma
 activity-task-run-accepted = The agent picked this up · last update { $time }
 activity-task-run-planning = The agent is planning the steps · last update { $time }
 activity-task-run-executing = The agent is making changes · last update { $time }
-topbar-cpu-reading = CPU { $value }
-topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source

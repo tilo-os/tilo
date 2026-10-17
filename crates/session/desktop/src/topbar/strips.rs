@@ -1,13 +1,13 @@
 //! The active workspace's strips as named places in the bar.
 //!
 //! A host that knows who is where hands the bar [`StripPlaces`]; the bar
-//! then lists the workspace's strips beside its name ("Games · 3"), moves
-//! to one on a click and offers adding a named strip. Without places (the
-//! native desktop, whose strip ribbon already places strips) nothing here
-//! paints or takes input.
+//! then lists the workspace's strips beside its name ("Games · 3") when
+//! there is more than one, and moves to one on a click. A new desk and the
+//! workspace's new name, asked for in the workspace menu, are typed in
+//! place here. Without places nothing here paints or takes input.
 use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, SMALL_GLYPH_PX, Scene,
-    TextRenderer, TextRole, Theme, TopBarChrome, at, paint_bar_selector, t, t_args,
+    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, Scene, TextRenderer, TextRole,
+    Theme, TopBarChrome, at, paint_bar_selector, t, t_args,
 };
 use crate::chrome::StripPlaces;
 use crate::text_entry::{self, Edit, Mods};
@@ -33,7 +33,6 @@ pub(super) struct StripSwitcher {
     /// The chip standing for the strips with no room: how many, the one it
     /// moves to, and where it was painted.
     more: Option<(usize, StripId, Rect)>,
-    add_rect: Rect,
     field_rect: Rect,
     naming: Option<Naming>,
 }
@@ -70,7 +69,6 @@ impl Purpose {
 pub(super) struct StripsKey {
     strips: Vec<(StripId, String, usize)>,
     active: Option<StripId>,
-    can_add: bool,
     naming: Option<(String, usize, usize)>,
 }
 
@@ -109,7 +107,6 @@ fn next_hidden(shown: &[bool], active: Option<usize>) -> Option<usize> {
 }
 
 impl TopBarChrome {
-    pub(super) const CONTROL_STRIP_ADD: &'static str = "topbar:strip-add";
     const CONTROL_STRIP_MORE: &'static str = "topbar:strip-more";
     const STRIP_TARGET_PREFIX: &'static str = "topbar:strip:";
 
@@ -118,16 +115,13 @@ impl TopBarChrome {
         self.chrome.as_ref()?.snapshot().strip_places
     }
 
-    /// The places the bar shows as desks: with the workspace menu, only
-    /// when there is more than one desk to be on (or one is being named),
-    /// and adding one is in that menu.
+    /// The places the bar shows as desks: only when there is more than one
+    /// desk to be on, or a name is being typed; adding one is in the
+    /// workspace menu.
     fn shown_places(&self) -> Option<StripPlaces> {
-        let mut places = self.strip_places()?;
-        if self.has_workspace_menu() {
-            if self.strips.strips.len() <= 1 && self.strips.naming.is_none() {
-                return None;
-            }
-            places.can_add = false;
+        let places = self.strip_places()?;
+        if self.strips.strips.len() <= 1 && self.strips.naming.is_none() {
+            return None;
         }
         Some(places)
     }
@@ -137,7 +131,6 @@ impl TopBarChrome {
     pub fn begin_new_desk(&mut self) -> bool {
         let started = self.begin_strip_naming();
         self.cache_fp = super::CacheFingerprint::default();
-        self.responsive.dirty = true;
         started
     }
 
@@ -171,7 +164,6 @@ impl TopBarChrome {
                 .map(|(id, name)| (*id, name.clone(), places.people_on(*id)))
                 .collect(),
             active: self.strips.active,
-            can_add: places.can_add,
             naming: self
                 .strips
                 .naming
@@ -180,6 +172,7 @@ impl TopBarChrome {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn strip_naming(&self) -> bool {
         self.strips.naming.is_some()
     }
@@ -243,20 +236,18 @@ impl TopBarChrome {
         if self.strips.naming.is_some() {
             return FIELD_MAX_PX + BAR_CONTROL_PX;
         }
-        let chips: f64 = self
-            .strips
+        self.strips
             .strips
             .iter()
             .map(|(id, name)| {
                 Self::strip_chip_width(text_renderer, theme, name, places.people_on(*id))
             })
-            .sum();
-        chips + if places.can_add { BAR_CONTROL_PX } else { 0.0 }
+            .sum()
     }
 
     /// Paint the strips between `x0` and `x1`: every strip that fits, the
-    /// active one first to stay, then the add control. While a name is
-    /// being typed, the field takes the chips' place.
+    /// active one first to stay. While a name is being typed, the field
+    /// takes the chips' place.
     pub(super) fn draw_strip_places(
         &mut self,
         scene: &mut Scene,
@@ -268,7 +259,6 @@ impl TopBarChrome {
     ) {
         self.strips.chips.clear();
         self.strips.more = None;
-        self.strips.add_rect = Rect::ZERO;
         self.strips.field_rect = Rect::ZERO;
         let Some(places) = self.shown_places() else {
             return;
@@ -287,7 +277,6 @@ impl TopBarChrome {
             self.paint_strip_field(scene, transform, theme, text_renderer, field);
             return;
         }
-        let add_w = if places.can_add { BAR_CONTROL_PX } else { 0.0 };
         let widths: Vec<f64> = self
             .strips
             .strips
@@ -303,7 +292,7 @@ impl TopBarChrome {
             .position(|(id, _)| Some(*id) == self.strips.active);
         // Whatever has no room stays one press away, through a "+N" chip.
         let (shown, more) =
-            Self::fit_strips_with_more(text_renderer, theme, &widths, active, x1 - x0 - add_w);
+            Self::fit_strips_with_more(text_renderer, theme, &widths, active, x1 - x0);
         let more_w = more.map_or(0.0, |(_, _, width)| width);
         let used: f64 = widths
             .iter()
@@ -311,13 +300,13 @@ impl TopBarChrome {
             .filter(|(_, shown)| **shown)
             .map(|(width, _)| width)
             .sum();
-        if used <= 0.0 && add_w <= 0.0 && more.is_none() {
+        if used <= 0.0 && more.is_none() {
             return;
         }
         let group = Rect::new(
             x0,
             center_y - BAR_CONTROL_PX / 2.0,
-            x0 + used + more_w + add_w,
+            x0 + used + more_w,
             center_y + BAR_CONTROL_PX / 2.0,
         );
         let radius = ui::chrome::ChromeRole::Selector.radius(theme, group.height());
@@ -354,26 +343,7 @@ impl TopBarChrome {
                 (&label, 0, false),
             );
             self.strips.more = Some((hidden, *next, chip));
-            x += width;
         }
-        if places.can_add {
-            let add = Rect::new(x, group.y0, x + BAR_CONTROL_PX, group.y1);
-            Self::paint_strip_add(scene, transform, theme, add);
-            self.strips.add_rect = add;
-        }
-    }
-
-    /// The add control: a plus in dim ink.
-    fn paint_strip_add(scene: &mut Scene, transform: Affine, theme: &Theme, add: Rect) {
-        let glyph = SMALL_GLYPH_PX;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(add.center(), (glyph, glyph)),
-            ui::icons::Icon::Plus,
-            theme.tokens.colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
     }
 
     /// One strip chip: the active one lifted, its name, then the count in
@@ -471,29 +441,7 @@ impl TopBarChrome {
         );
     }
 
-    /// Paint the naming field in the compressed command row's place.
-    pub(super) fn draw_responsive_strip_field(
-        &mut self,
-        scene: &mut Scene,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        if self.strips.naming.is_none() {
-            return;
-        }
-        let row = self.responsive.toolbar.get_rect();
-        let height = FieldFace::height(ControlSize::Regular, theme);
-        let center_y = self.rect.center().y;
-        let field = Rect::new(
-            row.x0,
-            center_y - height / 2.0,
-            row.x1.max(row.x0 + BAR_CONTROL_PX),
-            center_y + height / 2.0,
-        );
-        self.paint_strip_field(scene, Affine::IDENTITY, theme, text_renderer, field);
-    }
-
-    pub(super) fn begin_strip_naming(&mut self) -> bool {
+    fn begin_strip_naming(&mut self) -> bool {
         if !self.strip_places().is_some_and(|places| places.can_add) {
             return false;
         }
@@ -521,7 +469,6 @@ impl TopBarChrome {
             input: None,
         });
         self.cache_fp = super::CacheFingerprint::default();
-        self.responsive.dirty = true;
     }
 
     pub(super) fn cancel_strip_naming(&mut self) -> bool {
@@ -559,17 +506,14 @@ impl TopBarChrome {
         moved
     }
 
-    /// A left press at `point`: a chip moves there, the add control starts
-    /// naming, a press elsewhere ends naming. Returns whether it was ours.
+    /// A left press at `point`: a chip moves there, a press elsewhere ends
+    /// naming. Returns whether it was ours.
     pub(super) fn strip_press(&mut self, point: Point) -> bool {
         if self.strips.naming.is_some() {
             if self.strips.field_rect.contains(point) {
                 return true;
             }
             self.cancel_strip_naming();
-        }
-        if self.strips.add_rect.contains(point) {
-            return self.begin_strip_naming();
         }
         if let Some((_, next, rect)) = self.strips.more
             && rect.contains(point)
@@ -626,11 +570,9 @@ impl TopBarChrome {
 
     /// Whether a pointer at `point` is over a strip control.
     pub(super) fn strip_hit(&self, point: Point) -> bool {
-        self.strips.add_rect.contains(point)
-            || self
-                .strips
-                .more
-                .is_some_and(|(_, _, rect)| rect.contains(point))
+        self.strips
+            .more
+            .is_some_and(|(_, _, rect)| rect.contains(point))
             || self
                 .strips
                 .chips
@@ -652,7 +594,6 @@ impl TopBarChrome {
             "topbar_strip_more".into(),
             self.strips.more.map_or(Rect::ZERO, |(_, _, rect)| rect),
         ));
-        rects.push(("topbar_strip_add".into(), self.strips.add_rect));
         rects.push(("topbar_strip_name_field".into(), self.strips.field_rect));
         rects
     }
@@ -664,9 +605,6 @@ impl TopBarChrome {
     /// The semantic action for a strip control, `None` when `target` is
     /// not one.
     pub(super) fn strip_semantic_action(&mut self, target: &str) -> Option<bool> {
-        if target == Self::CONTROL_STRIP_ADD {
-            return Some(self.begin_strip_naming());
-        }
         if target == Self::CONTROL_STRIP_MORE {
             return Some(
                 self.strips
@@ -729,18 +667,6 @@ impl TopBarChrome {
                     }),
             );
         }
-        if !self.strips.add_rect.is_zero_area() {
-            nodes.push(
-                AccessNode::new(Role::Button)
-                    .with_action_target(Self::CONTROL_STRIP_ADD)
-                    .with_name(t("topbar-strip-add"))
-                    .with_bounds(self.strips.add_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
-            );
-        }
         if let Some(naming) = self.strips.naming.as_ref() {
             nodes.push(
                 AccessNode::new(Role::TextInput)
@@ -756,53 +682,6 @@ impl TopBarChrome {
             );
         }
         nodes
-    }
-
-    /// The strips as entries of the compressed command row, labelled with
-    /// who is there; the add control last.
-    pub(super) fn strip_responsive_specs(&self) -> Vec<super::responsive::Spec> {
-        use super::responsive::{Command, Spec};
-        let Some(places) = self.shown_places() else {
-            return Vec::new();
-        };
-        let mut specs: Vec<Spec> = self
-            .strips
-            .strips
-            .iter()
-            .map(|(id, name)| {
-                let count = places.people_on(*id);
-                Spec {
-                    command: Command::Strip(*id),
-                    name: if count > 0 {
-                        t_args(
-                            "topbar-strip-count",
-                            &[("name", name.as_str().into()), ("count", count.into())],
-                        )
-                    } else {
-                        name.clone()
-                    },
-                    icon: ui::icons::Icon::Layers,
-                    priority: 15,
-                    enabled: true,
-                    active: Some(Some(*id) == self.strips.active),
-                    dot: false,
-                    mark: false,
-                }
-            })
-            .collect();
-        if places.can_add {
-            specs.push(Spec {
-                command: Command::AddStrip,
-                name: t("topbar-strip-add"),
-                icon: ui::icons::Icon::Plus,
-                priority: 14,
-                enabled: true,
-                active: None,
-                dot: false,
-                mark: false,
-            });
-        }
-        specs
     }
 }
 
@@ -825,7 +704,6 @@ impl TopBarChrome {
             WindowEvent::KeyboardInput { .. } => {
                 let consumed = self.strip_naming_key(event, *ctx.modifiers);
                 *ctx.handled |= consumed;
-                self.responsive.dirty = true;
                 consumed
             }
             WindowEvent::MouseInput {
@@ -840,7 +718,6 @@ impl TopBarChrome {
                     return true;
                 }
                 self.cancel_strip_naming();
-                self.responsive.dirty = true;
                 false
             }
             _ => false,
@@ -948,10 +825,7 @@ mod tests {
         // The narrowest wide bar that still shows the switcher at all.
         for width in (900..1600).step_by(20) {
             let (candidate, chrome) = bar(Some(places()), width);
-            if !candidate.responsive.active
-                && candidate.strips.more.is_some()
-                && !candidate.strips.chips.is_empty()
-            {
+            if candidate.strips.more.is_some() && !candidate.strips.chips.is_empty() {
                 frame = Some((candidate, chrome));
                 break;
             }
@@ -971,11 +845,11 @@ mod tests {
         assert!(audit.is_certified(), "{audit:?}");
     }
 
-    /// With the workspace menu, one desk is no choice to show, adding one is
-    /// in that menu, and both a new desk and the workspace's new name are
-    /// typed in place in the bar.
+    /// One desk is no choice to show, adding one is in the workspace menu,
+    /// and both a new desk and the workspace's new name are typed in place
+    /// in the bar.
     #[test]
-    fn with_the_workspace_menu_desks_show_when_several_and_are_named_in_place() {
+    fn desks_show_when_several_and_are_named_in_place() {
         let mut one = tree();
         one.workspaces[0].strips.truncate(1);
         let chrome = Rc::new(Host {
@@ -983,15 +857,10 @@ mod tests {
             reported: Some(StripPlaces::in_active_workspace(&one, &[])),
             intents: RefCell::default(),
         });
-        let bar = TopBarChrome::from_tree_with_local_user(&one, "me".into())
-            .with_chrome(chrome.clone())
-            .with_workspace_menu();
-        let mut frame = Framed::new(ui::State::new(), bar, (1440, 480), Theme::dark());
+        let one_desk =
+            TopBarChrome::from_tree_with_local_user(&one, "me".into()).with_chrome(chrome.clone());
+        let mut frame = Framed::new(ui::State::new(), one_desk, (1440, 480), Theme::dark());
         assert!(frame.strips.chips.is_empty(), "one desk is no choice");
-        assert!(
-            frame.strips.add_rect.is_zero_area(),
-            "New desk is in the menu"
-        );
 
         assert!(frame.begin_new_desk());
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
@@ -1024,23 +893,23 @@ mod tests {
             })
         );
 
-        let (several, _) = {
-            let tree = tree();
-            let chrome = Rc::new(Host {
-                tree: RefCell::new(tree.clone()),
-                reported: Some(places()),
-                intents: RefCell::default(),
-            });
-            let bar = TopBarChrome::from_tree_with_local_user(&tree, "me".into())
-                .with_chrome(chrome.clone())
-                .with_workspace_menu();
-            (
-                Framed::new(ui::State::new(), bar, (1600, 480), Theme::dark()),
-                chrome,
-            )
-        };
+        let (several, _) = bar(Some(places()), 1600);
         assert_eq!(several.strips.chips.len(), 3, "several desks are shown");
-        assert!(several.strips.add_rect.is_zero_area());
+    }
+
+    /// Without the host's leave the workspace menu offers no new desk, and
+    /// starting one anyway does nothing.
+    #[test]
+    fn a_new_desk_needs_the_hosts_leave() {
+        let (mut frame, _) = bar(
+            Some(StripPlaces {
+                can_add: false,
+                ..places()
+            }),
+            1600,
+        );
+        assert!(!frame.begin_new_desk());
+        assert!(!frame.strip_naming());
     }
 
     #[test]
@@ -1053,7 +922,6 @@ mod tests {
     fn without_places_the_bar_shows_no_strips() {
         let (frame, _) = bar(None, 1600);
         assert!(rect(&frame, "topbar_strip_Main").is_zero_area());
-        assert!(rect(&frame, "topbar_strip_add").is_zero_area());
     }
 
     #[test]
@@ -1063,13 +931,12 @@ mod tests {
         let center = frame.center_rect;
         let main = rect(&frame, "topbar_strip_Main");
         let games = rect(&frame, "topbar_strip_Games");
-        let add = rect(&frame, "topbar_strip_add");
-        for chip in [main, games, add] {
+        for chip in [main, games] {
             assert!(!chip.is_zero_area());
             assert!(chip.x0 > pill.x1, "{chip:?} after {pill:?}");
             assert!(chip.x1 < center.x0, "{chip:?} before {center:?}");
         }
-        assert!(main.x1 <= games.x0 && games.x1 <= add.x0);
+        assert!(main.x1 <= games.x0);
         Framed::harness_mut(&mut frame).click_at(games.center().x, games.center().y);
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         assert_eq!(
@@ -1079,12 +946,13 @@ mod tests {
     }
 
     #[test]
-    fn adding_a_strip_names_it_inline() {
+    fn a_new_desk_is_named_inline() {
         let (mut frame, chrome) = bar(Some(places()), 1600);
-        let add = rect(&frame, "topbar_strip_add");
-        Framed::harness_mut(&mut frame).click_at(add.center().x, add.center().y);
+        assert!(frame.begin_new_desk());
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         assert!(frame.strip_naming());
+        let field = rect(&frame, "topbar_strip_name_field");
+        Framed::harness_mut(&mut frame).click_at(field.center().x, field.center().y);
         assert!(!rect(&frame, "topbar_strip_name_field").is_zero_area());
         Framed::harness_mut(&mut frame).type_text("  Games night ");
         Framed::harness_mut(&mut frame).key("Enter");
@@ -1101,28 +969,27 @@ mod tests {
     #[test]
     fn escape_or_an_empty_name_adds_nothing() {
         let (mut frame, chrome) = bar(Some(places()), 1600);
-        let add = rect(&frame, "topbar_strip_add");
-        Framed::harness_mut(&mut frame).click_at(add.center().x, add.center().y);
-        Framed::harness_mut(&mut frame).type_text("Later");
-        Framed::harness_mut(&mut frame).key("Escape");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(!frame.strip_naming());
-        Framed::harness_mut(&mut frame).click_at(add.center().x, add.center().y);
-        Framed::harness_mut(&mut frame).key("Enter");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        for typed in ["Later", ""] {
+            assert!(frame.begin_new_desk());
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            let field = rect(&frame, "topbar_strip_name_field");
+            Framed::harness_mut(&mut frame).click_at(field.center().x, field.center().y);
+            if typed.is_empty() {
+                Framed::harness_mut(&mut frame).key("Enter");
+            } else {
+                Framed::harness_mut(&mut frame).type_text(typed);
+                Framed::harness_mut(&mut frame).key("Escape");
+            }
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert!(!frame.strip_naming());
+        }
         assert!(chrome.intents.borrow().is_empty());
     }
 
     #[test]
-    fn narrow_bar_lists_strips_with_counts_in_its_command_row() {
+    fn a_narrow_bar_keeps_its_desks_named() {
         let (frame, _) = bar(Some(places()), 360);
-        assert!(frame.responsive.active);
-        let names: Vec<String> = frame
-            .strip_responsive_specs()
-            .into_iter()
-            .map(|spec| spec.name)
-            .collect();
-        assert_eq!(names, ["Main · 1", "Games · 3", "Quiet", "Add a strip"]);
+        assert!(!frame.strips.chips.is_empty() || frame.strips.more.is_some());
         let audit = Framed::harness(&frame).native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
     }

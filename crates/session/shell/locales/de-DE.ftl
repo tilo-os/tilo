@@ -2884,3 +2884,9 @@ drives-read-only-hibernated = Windows ist im Ruhezustand oder nutzt den Schnells
 drives-read-only-not-shut-down = Windows wurde nicht richtig heruntergefahren. Fahre Windows vollständig herunter, um Änderungen zu machen.
 drives-read-only-check = Windows möchte dieses Laufwerk auf Fehler prüfen. Fahre Windows vollständig herunter, um Änderungen zu machen.
 drives-failed-title = { $drive } konnte nicht geöffnet werden
+
+# Arbeitsbereichsmenü und Profilkarte der oberen Leiste
+workspace-menu-settings = Einstellungen des Arbeitsbereichs…
+profile-action-identities = Deine Identitäten
+profile-action-backup = Identität sichern…
+profile-action-pair-device = Gerät koppeln…

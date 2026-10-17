@@ -144,12 +144,14 @@ fn native_persistent_click_key_rename_and_finish() {
     );
     assert_eq!(invalid["ok"], false);
     assert_eq!(invalid["counts"]["clicks"], 0);
-    let settings = click(
+    // The workspace name opens its menu; the settings are one row in it.
+    let menu = click(
         &mut input,
         &mut output,
         &initial,
         "topbar:workspace-settings",
     );
+    let settings = click(&mut input, &mut output, &menu, "Workspace settings…");
     let _ = click(&mut input, &mut output, &settings, "Workspace name");
     send(
         &mut input,
@@ -173,7 +175,8 @@ fn native_persistent_click_key_rename_and_finish() {
         last["persisted_workspace_names"],
         serde_json::json!(["Evidence"])
     );
-    assert_eq!(last["counts"]["clicks"], 2);
+    assert_eq!(last["counts"]["clicks"], 3);
+
     assert!(child.wait().unwrap().success());
 }
 

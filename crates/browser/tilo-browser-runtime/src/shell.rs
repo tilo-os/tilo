@@ -417,11 +417,9 @@ impl BrowserShell {
             wake,
         });
         let tree = handle.read(Clone::clone);
-        let mut bar = TopBarChrome::from_tree(&tree)
+        let bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())
-            .with_tilo_mark()
-            .with_workspace_menu();
-        bar.set_host_label(offers.host.clone());
+            .with_tilo_mark();
         let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         // Offered only where the page holds a destination for reports.
         if chrome.shared.feedback.borrow().is_some() {

@@ -5,7 +5,7 @@
   "viewport": [1280, 800],
   "budget": {"clicks": 0, "keys": 0},
   "steps": [{"op": "checkpoint", "name": "desktop", "checks": [
-    {"kind": "visible", "target": "semantic:topbar:overview"},
+    {"kind": "visible", "target": "semantic:topbar:workspace-settings"},
     {"kind": "visible", "target": "semantic:wheel:workspace:0"},
     {"kind": "absent", "target": "semantic:tabmenu:close"}
   ]}]

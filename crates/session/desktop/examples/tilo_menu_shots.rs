@@ -1,7 +1,7 @@
 //! The top bar's Tilo mark, its menu and the About sheet, as a browser
-//! desktop shows them on a room's workspace: the bar with the mark and the
-//! host pill, the menu open under the mark, and About open, each in dark,
-//! light and on a narrow (responsive) bar.
+//! desktop shows them on a room's workspace: the bar with the mark, the
+//! menu open under the mark, and About open, each in dark,
+//! light and on a narrow bar.
 //!
 //! Run:  `cargo run -p tilo-desktop --example tilo_menu_shots -- [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `target/look/tilo-menu`):
@@ -100,8 +100,7 @@ fn stage() -> Stage {
         workspaces: vec![workspace, Workspace::new(WorkspaceId(2), "Home")],
         ..DesktopTree::default()
     };
-    let mut bar = TopBarChrome::from_tree(&tree).with_tilo_mark();
-    bar.set_host_label(Some("example.org".into()));
+    let bar = TopBarChrome::from_tree(&tree).with_tilo_mark();
     let links = AboutLinks::new(
         "https://example.org/notify",
         "https://example.org/source",

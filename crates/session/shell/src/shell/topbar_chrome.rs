@@ -6,14 +6,14 @@
 //! what it asks for.
 use crate::shell::chrome_state;
 use settings_store::hardware::{TopBarWidget as StoredWidget, TopBarWidgetsConfig};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
     ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent,
     ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, SystemStatus, TelemetrySnapshot, TopBarWidget, TopBarWidgets,
-    VolumeState,
+    LinkKind, LinkStatus, MediaKind, OwnChip, StripPlaces, SystemStatus, TelemetrySnapshot,
+    TopBarWidget, TopBarWidgets, VolumeState,
 };
 pub use tilo_desktop::topbar::*;
 use vello::kurbo::Rect;
@@ -32,7 +32,86 @@ pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
         clock: RefCell::new(ClockPoll::default()),
         fixture_clock,
         widgets: RefCell::new(stored_widgets(TopBarWidgetsConfig::load())),
+        pill: Cell::new(Rect::ZERO),
+        people: RefCell::new(None),
     })
+}
+
+/// Who is where, as the bar shows it: this person's own chip and the
+/// strips people are on, worked out once per chrome revision.
+#[derive(Clone)]
+struct People {
+    key: (u64, u64),
+    own: OwnChip,
+    places: StripPlaces,
+}
+
+/// The name this person goes by here, numbered like anyone else's when
+/// someone in the room shares it; never "You", never their key.
+pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
+    // An owned fixture is nobody's desktop: it reads no person's identity.
+    let own_name = (!state.hosted_inputs().is_fixture())
+        .then(ui::local_identity::load)
+        .flatten()
+        .map(|identity| identity.display_name)
+        .filter(|name| !name.trim().is_empty());
+    let local_user = state.active_local_user();
+    let (_, shown) = tilo_desktop::collaborators::collaborator_roster_rows_named(
+        &state.tree().desktop,
+        &local_user,
+        own_name.as_deref(),
+    );
+    shown
+        .or(own_name)
+        .unwrap_or_else(|| ui::history_source::participant_display_label(&local_user))
+}
+
+/// The colour this person wears here; an owned fixture derives it from the
+/// identity it was given rather than reading the person's own.
+pub(crate) fn own_rgb(state: &chrome_state::ChromeState) -> (u8, u8, u8) {
+    let hue = if state.hosted_inputs().is_fixture() {
+        ui::tokens::PresenceHue::of_identity(&state.active_local_user())
+    } else {
+        crate::shell::state::local_presence_hue()
+    };
+    ui::presence::identity_rgb(hue)
+}
+
+/// The strips of the active workspace people are on: the others at the
+/// strip holding the tab their presence names, this person on the one shown.
+fn strip_places(state: &chrome_state::ChromeState) -> StripPlaces {
+    let local_user = state.active_local_user();
+    let tree = state.tree();
+    let desktop = &tree.desktop;
+    let others: Vec<tilo_desktop_model::StripId> = desktop
+        .active_workspace()
+        .map(|workspace| {
+            workspace
+                .collaborators
+                .iter()
+                .filter(|person| person.id != local_user)
+                .filter_map(|person| {
+                    let tab = person.active_tab?;
+                    workspace
+                        .strips
+                        .iter()
+                        .find(|strip| {
+                            strip
+                                .window_groups
+                                .iter()
+                                .any(|group| group.tabs.iter().any(|t| t.id == tab))
+                        })
+                        .map(|strip| strip.id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let places = StripPlaces::in_active_workspace(desktop, &others);
+    drop(tree);
+    StripPlaces {
+        can_add: state.can_add_strip(),
+        ..places
+    }
 }
 
 #[derive(Default)]
@@ -187,6 +266,28 @@ struct NativeChrome {
     clock: RefCell<ClockPoll>,
     fixture_clock: Option<ClockSnapshot>,
     widgets: RefCell<TopBarWidgets>,
+    /// Where this bar last drew its workspace name: its menu opens there.
+    pill: Cell<Rect>,
+    people: RefCell<Option<People>>,
+}
+
+impl NativeChrome {
+    fn people(&self, state: &chrome_state::ChromeState) -> People {
+        let key = (state.revision, ui::local_identity::generation());
+        if let Some(people) = self.people.borrow().as_ref().filter(|p| p.key == key) {
+            return people.clone();
+        }
+        let people = People {
+            key,
+            own: OwnChip {
+                name: own_shown_name(state),
+                rgb: own_rgb(state),
+            },
+            places: strip_places(state),
+        };
+        *self.people.borrow_mut() = Some(people.clone());
+        people
+    }
 }
 
 impl DesktopChromeSource for NativeChrome {
@@ -201,6 +302,7 @@ impl DesktopChromeSource for NativeChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let mut state = self.chrome.borrow_mut();
         refresh_clock_activity(&mut state, &mut self.clock.borrow_mut());
+        let people = self.people(&state);
         DesktopChromeSnapshot {
             revision: state.revision,
             status: system_status(&state.status),
@@ -230,10 +332,9 @@ impl DesktopChromeSource for NativeChrome {
             // Native presence has no spectator role yet.
             watching: 0,
             topbar_widgets: Some(self.widgets.borrow().clone()),
-            // The strip ribbon already places strips on this desktop.
-            strip_places: None,
+            strip_places: Some(people.places),
             top_bar: state.top_bar_presence(),
-            own: None,
+            own: Some(people.own),
         }
     }
 
@@ -299,14 +400,26 @@ impl DesktopChromeSource for NativeChrome {
                 }
                 return true;
             }
-            // Strips are added from the ribbon and workspace settings here,
-            // and the native bar carries no Tilo mark: its About is in
-            // Settings.
-            ChromeIntent::AddStrip { .. }
-            | ChromeIntent::RenameWorkspace { .. }
-            | ChromeIntent::ToggleTiloMenu
-            | ChromeIntent::ToggleWorkspaceMenu
-            | ChromeIntent::ToggleProfile => return false,
+            ChromeIntent::AddStrip { name } => return state.add_named_strip(&name),
+            ChromeIntent::RenameWorkspace { name } => {
+                if !state.may_rename_active_workspace() {
+                    return false;
+                }
+                state.rename_active_workspace(&name);
+                return true;
+            }
+            // The overlay host shows both popovers; it takes the request
+            // in the same dispatch.
+            ChromeIntent::ToggleWorkspaceMenu => {
+                state.bar_popover_request = Some(chrome_state::BarPopoverRequest::WorkspaceMenu {
+                    anchor: self.pill.get(),
+                });
+            }
+            ChromeIntent::ToggleProfile => {
+                state.bar_popover_request = Some(chrome_state::BarPopoverRequest::Profile);
+            }
+            // The native bar carries no Tilo mark: its About is in Settings.
+            ChromeIntent::ToggleTiloMenu => return false,
             ChromeIntent::SetTopBarWidgets(widgets) => {
                 let widgets = widgets.normalised();
                 save_widgets(&widgets);
@@ -318,6 +431,7 @@ impl DesktopChromeSource for NativeChrome {
     }
 
     fn settings_anchor(&self, rect: Rect) {
+        self.pill.set(rect);
         self.chrome.borrow_mut().workspace_settings_anchor = rect;
     }
 

@@ -3200,16 +3200,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 // Named targets, not coordinates: the scenario runs across
                 // the viewport sweep, where every chip moves. Hover dwell
                 // shows the tooltip of the tray pill against the right
-                // screen edge, then the overview button's against the left.
+                // screen edge, then the workspace name's against the left.
                 Action::MoveCursorNamed("topbar_tray_pill"),
                 Action::Wait(40),
                 Action::Snapshot("01-tooltip-right-edge"),
-                Action::MoveCursorNamed("topbar_overview_button"),
+                Action::MoveCursorNamed("topbar_workspace_pill"),
                 Action::Wait(40),
                 Action::Snapshot("02-tooltip-left-edge"),
                 Action::ClickNamed("topbar_workspace_pill"),
                 Action::Wait(4),
                 Action::Snapshot("03-workspace-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_profile"),
+                Action::Wait(4),
+                Action::Snapshot("03b-profile-chip"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::ClickNamed("topbar_center_clock"),
                 Action::Wait(4),

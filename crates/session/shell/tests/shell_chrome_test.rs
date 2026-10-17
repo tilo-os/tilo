@@ -242,9 +242,10 @@ fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
     }
 
     // Phase `topbar_chrome_overview_glyph_is_lucide_layout_grid`.
-    // The overview button paints lucide `LayoutGrid` via `ui::icons`, not a
-    // hand-rolled quad — routed through `overview_glyph_icon()` so a revert
-    // fails here without needing a pixel snapshot harness.
+    // The workspace menu's Overview row paints lucide `LayoutGrid` via
+    // `ui::icons`, not a hand-rolled quad — routed through
+    // `overview_glyph_icon()` so a revert fails here without needing a pixel
+    // snapshot harness.
     {
         use shell::shell::topbar_chrome::TopBarChrome;
         use ui::icons::Icon;
@@ -254,6 +255,79 @@ fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
             "overview glyph must be lucide LayoutGrid per visual-gap #5",
         );
     }
+}
+
+/// The native bar's two popovers, opened the way assistive technology and
+/// a press open them: the workspace name opens the workspace menu (the
+/// workspaces, the shell's workspace commands, the overview, a new desk),
+/// your own avatar opens your profile card, and opening one closes the
+/// other.
+#[test]
+fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    let mut frame = FrameHarness::for_root(State::new(), host, (1440, 900), Theme::dark());
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/topbar-native-popovers");
+    std::fs::create_dir_all(&out).unwrap();
+    frame.render_png(&out.join("bar.png"));
+
+    frame
+        .perform_semantic_named("topbar:workspace-settings", None, &Action::Activate)
+        .unwrap();
+    frame.relayout();
+    let labels: Vec<String> = frame
+        .root::<ShellOverlayHost>()
+        .workspace_menu_labels()
+        .expect("the workspace name opens its menu")
+        .into_iter()
+        .flatten()
+        .collect();
+    let names: Vec<String> = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.name.clone())
+        .collect();
+    for name in &names {
+        assert!(labels.contains(name), "{name} in {labels:?}");
+    }
+    for row in ["Workspace settings…", "Overview", "New desk"] {
+        assert!(
+            labels.iter().any(|label| label == row),
+            "{row} in {labels:?}"
+        );
+    }
+    assert!(
+        !labels.iter().any(|label| label.starts_with("Hosted by")),
+        "workspaces on one's own computer name no host"
+    );
+    frame.render_png(&out.join("workspace-menu.png"));
+
+    frame
+        .perform_semantic_named("topbar:profile", None, &Action::Activate)
+        .unwrap();
+    frame.relayout();
+    let host = frame.root::<ShellOverlayHost>();
+    assert!(
+        host.profile_card_open(),
+        "your avatar opens your profile card"
+    );
+    assert!(
+        host.workspace_menu_labels().is_none(),
+        "one popover from the bar at a time"
+    );
+    let inspection = frame.inspection_json().unwrap();
+    for text in ["Your identities", "Pair a device…"] {
+        assert!(inspection.contains(text), "{text} is on the card");
+    }
+    frame.render_png(&out.join("profile-card.png"));
+    frame.key("Escape");
+    assert!(!frame.root::<ShellOverlayHost>().profile_card_open());
 }
 
 fn topbar_editor_actions(frame: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
