@@ -46,8 +46,11 @@ esac
 # headless session runs one, unlocked, so its apps' channels open as a
 # person's do. python3-gobject gives tilo-secret-service's suite libsecret's
 # own client (gi Secret-1) to drive the service with, as apps would.
-# xwayland-satellite and Xwayland are the X11 bridge the shell's X11 clipboard
-# and focus tests drive through the compositor.
+# Xwayland and xwayland-satellite are the X11 bridge the shell's X11 clipboard
+# and focus tests drive through the compositor. Satellite itself is built from
+# pinned source with Tilo's patch by tools/ci/install-xwayland-satellite.sh once
+# Rust is installed; this installs its build headers and the font and cursor
+# library it needs at runtime.
 # pipewire, wireplumber and pipewire-gstreamer: a private PipeWire with a
 # session manager, which the screen-capture tests start to serve a headless
 # screen node to the production pipewiresrc capture path; pipewire-utils'
@@ -71,7 +74,7 @@ install_test_runtime_fedora() {
         bubblewrap gnome-text-editor \
         cryptsetup swtpm swtpm-tools tpm2-tools \
         libsecret gnome-keyring python3-gobject \
-        xwayland-satellite xorg-x11-server-Xwayland \
+        xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \
         pipewire wireplumber pipewire-gstreamer pipewire-utils
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image

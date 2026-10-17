@@ -28,6 +28,8 @@ on:
       - "tools/ci/install-android-ndk.sh"
       - "tools/ci/builder_workflow_plan.py"
       - "tools/ci/install-pdfium.sh"
+      - "tools/ci/install-xwayland-satellite.sh"
+      - "os/external-assets/xwayland-satellite/**"
       - "tools/ci/measure.sh"
       - "tools/ci/native-mold-linker.sh"
       - "tools/ci/sccache-canary.sh"

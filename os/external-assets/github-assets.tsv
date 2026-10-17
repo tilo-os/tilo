@@ -18,6 +18,8 @@ e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
 e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
+# xwayland-satellite v0.8.2, built with os/external-assets/xwayland-satellite/.
+4ce9e47b359627e0407fcdc3651b1de51f27209056a1d8356acb181268819367	xwayland-satellite-8d135d3.tar.gz	https://github.com/Supreeeme/xwayland-satellite/archive/8d135d3b2854b30fd01ea6cd6c27e523dd50a839.tar.gz
 # chunkah, the content-based OCI re-layering of the published OS image (os/Containerfile.rechunk):
 # the release's source and its cargo vendor tree, built offline. GitHub asset SHA-256.
 12c0101532e4c65cd63244f28ed801296df9d0a7302e3646026387f684fb690b	chunkah-0.7.1.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1.tar.gz
