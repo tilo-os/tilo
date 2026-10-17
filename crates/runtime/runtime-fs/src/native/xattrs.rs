@@ -1,12 +1,13 @@
 //! Bounded original-user metadata access. No file-content methods or descriptors
 //! leave this module. Refusal is safer than replacing with weaker permissions.
-use super::{
-    EntryName, FsError, FsRight, FsSession, GrantedEntry, NativeIdentity, NativeObject, OFlags,
-    io_error,
-};
+#[cfg(target_os = "linux")]
+use super::{EntryName, FsRight, NativeIdentity, NativeObject, OFlags, io_error};
+use super::{FsError, FsSession, GrantedEntry};
+use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
-use std::{collections::BTreeMap, os::fd::AsRawFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 
 #[cfg(target_os = "linux")]
 const VALUE_LIMIT: usize = 65_536;
@@ -196,21 +197,11 @@ impl FsSession {
 }
 #[cfg(not(target_os = "linux"))]
 impl FsSession {
-    pub(crate) fn replacement_captured_attributes(
-        &self,
-        _: &GrantedEntry,
-        _: &super::removal::RemovalCustody,
-        _: &EntryName,
-        _: NativeIdentity,
-    ) -> Result<NativeAttributes, FsError> {
-        Err(FsError::Unsupported(
-            "replacement attribute preservation requires Linux",
-        ))
-    }
     pub(crate) fn replacement_attributes(
         &self,
         _: &GrantedEntry,
     ) -> Result<NativeAttributes, FsError> {
+        self.check_alive()?;
         Err(FsError::Unsupported(
             "replacement attribute preservation requires Linux",
         ))
@@ -252,11 +243,5 @@ impl NativeAttributes {
         }
         drop(fd);
         Ok(())
-    }
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn apply(&self, _: impl AsRawFd) -> Result<(), FsError> {
-        Err(FsError::Unsupported(
-            "replacement attribute preservation requires Linux",
-        ))
     }
 }
