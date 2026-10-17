@@ -82,6 +82,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 tilo-actions = { path = "../../collab/actions" }
 # A call's voice channel is a real Chat channel, written by Chat's own model.
 chat = { path = "../../../apps/chat", default-features = false }
+# A refused commit reaches the app that made it, mounted headlessly.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

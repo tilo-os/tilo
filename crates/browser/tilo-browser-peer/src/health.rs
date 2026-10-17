@@ -128,6 +128,9 @@ pub struct Outgoing {
     pub pending_operations: usize,
     /// Acknowledged this session.
     pub durable_operations: u64,
+    /// Refused by the host this session: withdrawn from the replica, never
+    /// shared.
+    pub refused_operations: u64,
 }
 
 /// `SessionHealth.capabilities`.
@@ -347,6 +350,7 @@ impl PeerSnapshot {
                 outgoing: Outgoing {
                     pending_operations: route_status.pending_operations,
                     durable_operations: route_status.durable_operations,
+                    refused_operations: route_status.refused_operations,
                 },
                 acknowledgement: if route_status.pending_operations > 0 {
                     "pending"
