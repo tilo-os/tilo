@@ -6,33 +6,28 @@ files-time-unknown = unknown time
 
 ## Keyboard shortcuts
 files-shortcuts-title = Keyboard shortcuts
-files-shortcuts-summary = Files controls that work with the current desktop keyboard convention
-files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
-files-shortcuts-navigate = Move selection: ↑ and ↓
+files-shortcuts-row = { $action }: { $keys }
+files-shortcuts-open = Open
+files-shortcuts-back-forward = Back, forward
+files-shortcuts-up = Enclosing folder
+files-shortcuts-location = Go to a location
+files-shortcuts-rename = Rename
+files-shortcuts-new-folder = New folder
+files-shortcuts-trash = Move to Trash
+files-shortcuts-copy-cut-paste = Copy, cut, paste
+files-shortcuts-undo-redo = Undo, redo
+files-shortcuts-select-all = Select all
+files-shortcuts-hidden = Show hidden files
+files-shortcuts-size = Larger, smaller items
+files-shortcuts-refresh = Refresh
 files-selection-empty = Select files first.
 files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
 files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
 files-clipboard-unavailable = The workspace file clipboard is unavailable.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.
-files-clipboard-partial = Pasted { $count } items. Some items could not be pasted: { $error }
 files-selection-unavailable = An entry is no longer in the folder shown. The selection was not changed.
 files-selection-too-large = Select at most 256 entries in one request, or use Select all.
-files-shortcuts-range = Select a range: Shift + ↑ and ↓
-files-shortcuts-grid = Grid navigation: ← / → move across; ↑ / ↓ move by visual row
-files-shortcuts-open = Open selected: Enter
-files-shortcuts-rename = Rename: F2
-files-shortcuts-trash = Move to Trash: Delete
-files-shortcuts-location = Edit location: Primary + L
-files-shortcuts-refresh = Refresh: F5
-files-shortcuts-new-folder = New folder: Primary + Shift + N
-files-shortcuts-edit = Copy, cut, paste, undo Trash, select all: Primary + C / X / V / Z / A
-files-shortcuts-hidden = Show or hide hidden files: Primary + H
-files-shortcuts-size = Change item size: Primary + + / −
-files-shortcuts-size-reset = Reset item size: Primary + 0
-files-shortcuts-context = Context menu: Menu key or right-click
-files-shortcuts-close = Show this reference: ? or F1
-files-shortcuts-dismiss = Close sheets and menus: Escape
 
 ## Availability actions and status
 files-opening-document = Opening document…
@@ -404,8 +399,10 @@ files-loading-folder = Loading { $path }
 files-loading-title = Opening folder
 files-loading-detail = Loading { $path }
 files-directory-read-failed = Could not open this folder: { $error }
-files-load-error-title = Couldn’t open this folder
-files-load-error-detail = { $path }: { $error }
+files-load-error-title = Couldn’t open “{ $name }”
+files-folder-error-permission = You don’t have permission to see inside it.
+files-folder-error-missing = It was moved or deleted.
+files-open-enclosing = Open enclosing folder
 files-a11y-load-error = Could not load folder: { $error }. Try again is available
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Press Escape to close
 files-a11y-dialog-close = { $summary }. Press Escape to close
@@ -445,8 +442,6 @@ files-properties-summary = Filesystem metadata
 
 ## Ordinary operation results
 files-new-folder-default-name = New folder
-files-created-folder = Created folder
-files-new-folder-failed = New folder failed: { $error }
 files-permanently-deleted = Permanently deleted { $count } { $count ->
     [one] item
    *[other] items
@@ -460,42 +455,19 @@ files-restored = Restored { $count } { $count ->
     [one] item
    *[other] items
 }
-files-undo-move-trash = Undo move to Trash
-files-undo-trash-restored = Restored { $count } { $count ->
-    [one] 1 item
-   *[other] { $count } items
-}
-files-undo-trash-unavailable = Undo is no longer available because Trash changed
-files-undo-trash-failed = Could not restore the trashed items: { $error }
 files-restore-failed = Restore failed: { $error }
 files-trash-already-empty = Trash is already empty
 files-emptied-trash = Emptied Trash ({ $count })
 files-empty-trash-failed = Empty Trash failed: { $error }
-files-copied = Copied { $count } { $count ->
-    [one] item
-   *[other] items
-}
-files-cut = Cut { $count } { $count ->
-    [one] item
-   *[other] items
-}
 files-created-file = Created file
 files-new-file-failed = New file failed: { $error }
 files-added-favourite = Added to Favorites
 files-removed-favourite = Removed from Favorites
-files-moved-with-failures = Moved { $moved } to “{ $destination }” ({ $failed } failed)
 files-moved-to-folder = Moved { $count } { $count ->
     [one] item
    *[other] items
 } to “{ $destination }”
 files-nothing-to-move = Nothing to move
-files-pasted = Pasted { $count } { $count ->
-    [one] item
-   *[other] items
-}
-files-pasted-with-failures = Pasted { $count } ({ $failed } failed)
-files-renamed = Renamed
-files-rename-failed = Rename failed: { $error }
 
 ## Context, view and sort menus
 files-menu-open = Open
@@ -649,8 +621,8 @@ files-native-restore-select-one = Select one home Trash entry to restore. Other 
 
 ## History: what each change to Files did
 
-file-explorer-add-bookmark = Added { $place } to Favourites
-file-explorer-remove-bookmark = Removed { $place } from Favourites
+file-explorer-add-bookmark = Added { $place } to Favorites
+file-explorer-remove-bookmark = Removed { $place } from Favorites
 file-explorer-new-folder = Created the folder { $name }
 file-explorer-rename = Renamed { $entry } to { $name }
 file-explorer-trash = Moved files to Trash
@@ -681,3 +653,28 @@ files-mounted-open = Open read-only conversion
 files-mounted-copy = Create independent editable copy…
 files-mounted-independent = Edits to an independent local copy do not change the cloud original.
 file-explorer-import-mounted = Created independent editable copies in { $folder }
+
+## Notices
+files-notice-undo = Undo
+files-notice-open-with = Open With…
+files-notice-dismiss = Dismiss
+files-menu-undo = Undo
+files-open-failed = Couldn’t open “{ $name }”
+files-open-unavailable = Files can’t open documents in this window.
+files-open-no-answer = The desktop didn’t respond.
+files-new-folder-failed-title = Couldn’t create the folder
+files-rename-failed-title = Couldn’t rename
+files-trash-failed = Couldn’t move to Trash
+files-move-failed = Couldn’t move everything to “{ $destination }”
+files-paste-failed = { $count } of { $total } { $total ->
+    [one] item
+   *[other] items
+} couldn’t be pasted
+files-clipboard-partial = Couldn’t paste everything
+files-error-permission = You don’t have permission.
+files-error-not-found = It no longer exists.
+files-error-busy = It’s in use.
+files-error-exists = Something with that name already exists.
+files-error-no-space = There isn’t enough space.
+files-error-read-only = This location is read-only.
+files-error-not-empty = The folder isn’t empty.
