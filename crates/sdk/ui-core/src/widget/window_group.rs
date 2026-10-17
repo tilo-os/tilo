@@ -648,7 +648,7 @@ impl WindowGroup {
         let mut spring = Spring::new(0.0, Self::width_params());
         spring.set_target(target);
         self.width_spring = Some(spring);
-        self.last_width_step = None;
+        self.last_width_step = Some(crate::time::now());
         self.style_dirty = true;
     }
 
@@ -669,7 +669,9 @@ impl WindowGroup {
         let mut spring = Spring::new(from, Self::width_params());
         spring.set_target(to);
         self.width_spring = Some(spring);
-        self.last_width_step = None;
+        // The spring's clock starts with the motion, so its first step
+        // covers the time since the resize was asked for.
+        self.last_width_step = Some(crate::time::now());
         self.style_dirty = true;
     }
 
@@ -698,20 +700,24 @@ impl WindowGroup {
             self.width_step_skipped = true;
             return;
         }
+        // Unclamped: `Spring::step` sub-steps a long frame, so after a stall
+        // the width lands where a wall-clock tween started with it would,
+        // instead of crawling in slow motion.
         let now = crate::time::now();
         let dt = self
             .last_width_step
-            .map(|t| now.saturating_duration_since(t).as_secs_f32())
-            .unwrap_or(1.0 / 60.0)
-            .clamp(1.0 / 240.0, 1.0 / 20.0);
+            .map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32());
         let before = spring.value();
         spring.step(dt);
         self.last_width_step = Some(now);
-        if (spring.value() - before).abs() <= 0.05 {
+        if (spring.value() - before).abs() <= 0.05 && (spring.value() - spring.target()).abs() < 0.5
+        {
             // The spring is only stepped while the layout is rebuilt, and a
             // step this small asks for no rebuild: the rest of the motion,
             // well under a pixel, would never be taken and the group would
-            // ask for animation frames forever. Finish it now.
+            // ask for animation frames forever. Finish it now. A small step
+            // far from the target is only a short frame (the first one after
+            // the motion began), not the end of the motion.
             spring.snap(spring.target());
         }
         self.style_dirty = true;
@@ -3228,7 +3234,10 @@ impl Widget for WindowGroup {
         // A chip pressed from assistive technology arrives outside
         // `handle_event`: run it here, before the frame lays out.
         let pressed = self.drain_chip_presses();
-        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed
+        // The bar's hover dwell or aim hold that came due (its wake
+        // deadline) opens its pill here, before the frame lays out.
+        let bar = self.bar.update(s, p);
+        self.active_host_mut().is_some_and(|h| h.update(s, p)) || pressed || bar
     }
     fn build_layout(
         &mut self,
@@ -5841,6 +5850,8 @@ mod tests {
             );
             let mut last = g.layout_width_px();
             for _ in 0..8 {
+                // Frames 16 ms apart on the spring's clock.
+                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
                 g.next_frame();
                 g.step_width_spring();
                 let now = g.layout_width_px();
@@ -5859,6 +5870,7 @@ mod tests {
             g.set_strip_usable_px(1200.0);
             g.start_spawn_animation();
             for _ in 0..10 {
+                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
                 g.next_frame();
                 g.step_width_spring();
             }
@@ -5980,6 +5992,8 @@ mod tests {
             );
             let mut last = g.layout_width_px();
             for _ in 0..8 {
+                // Frames 16 ms apart on the spring's clock.
+                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
                 g.next_frame();
                 g.step_width_spring();
                 let now = g.layout_width_px();
