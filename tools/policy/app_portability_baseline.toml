@@ -66,9 +66,9 @@ D2 = 3
 [apps.imager]
 D1 = 6
 D2 = 9
-R1 = 295
+R1 = 294
 R2 = 144
-R3 = 39
+R3 = 37
 R4 = 1
 
 [apps.logs]

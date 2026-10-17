@@ -1242,6 +1242,7 @@ installer-desktop-prepare = Set up Tilo Desktop
 
 installer-desktop-password-intro = Choose a password to protect your prepared Tilo identity and connections. Your computer’s login password stays the same.
 
+installer-desktop-keep-existing = Your files, applications and Linux account stay unchanged. Your current desktop remains the default session.
 installer-desktop-unavailable = Tilo Desktop setup is unavailable on this computer.
 
 installer-desktop-enrolled-unavailable = This prepared device identity is for a new Tilo device. To use Tilo Desktop on this computer, use an identity backup.

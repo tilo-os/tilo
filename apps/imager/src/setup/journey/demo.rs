@@ -163,6 +163,25 @@ mod tests {
         for destination in ["computer", "another", "desktop"] {
             for identity in ["new", "existing"] {
                 let mut app = TestApp::<GuidedInstallerShell>::launched(&["--demo"]).unwrap();
+                if destination == "desktop" {
+                    app.effect(&InstallerPreviewEffect::ChoosePreview {
+                        choice: destination.into(),
+                    })
+                    .unwrap();
+                    advance(&mut app);
+                    assert_eq!(state(&mut app)["page"], "review");
+                    app.with_widget::<super::super::InstallerPreview, _>(|preview| {
+                        assert!(preview.journey.identity.is_none());
+                        assert!(preview.journey.name.is_empty());
+                        assert!(preview.journey.password.is_empty());
+                        assert_eq!(preview.journey.categories, [false; 3]);
+                        assert!(preview.personal.prepared_handle().is_none());
+                    })
+                    .unwrap();
+                    app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+                    assert_eq!(state(&mut app)["page"], "destination");
+                    continue;
+                }
                 for choice in [destination, "migrate", identity] {
                     app.effect(&InstallerPreviewEffect::ChoosePreview {
                         choice: choice.into(),

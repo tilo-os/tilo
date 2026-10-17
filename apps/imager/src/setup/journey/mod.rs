@@ -585,14 +585,14 @@ pub struct InstallerPreview {
     outgoing: Option<Scene>,
     slide: Option<Animated<f64>>,
     pending_slide: Option<f64>,
-    presentation_scale: f32,
-    viewport_reference: (f64, f64),
+    layout_metrics: Option<(f32, f32, f32)>,
     profile_breakpoint: f64,
     field_values: [ui::LocalState<String>; 4],
     storage: storage::Storage,
     install_preferences: imager_backend::imager_model::InstallProfile,
     direct: direct::Direct,
     desktop_pending: bool,
+    desktop_review_pending: bool,
     user_transfer: transfer::Transfer,
     home_promotion: promotion::Promotion,
     account_actions: super::account_transfer::AccountActions,
@@ -653,14 +653,14 @@ impl Default for InstallerPreview {
             outgoing: None,
             slide: None,
             pending_slide: None,
-            presentation_scale: 1.0,
-            viewport_reference: (1.0, 1.0),
+            layout_metrics: None,
             profile_breakpoint: 0.0,
             field_values: std::array::from_fn(|_| ui::LocalState::new(String::new())),
             storage: storage::Storage::default(),
             install_preferences: imager_backend::imager_model::InstallProfile::default(),
             direct: direct::Direct::default(),
             desktop_pending: false,
+            desktop_review_pending: false,
             user_transfer: transfer::Transfer::default(),
             home_promotion: promotion::Promotion::default(),
             account_actions: super::account_transfer::AccountActions::default(),
@@ -941,12 +941,6 @@ impl InstallerPreview {
         content.push(Box::new(self.recovery_content()))
     }
 
-    fn presentation_theme(&self, theme: &Theme) -> Theme {
-        let mut presentation = theme.clone().with_ui_scale(self.presentation_scale);
-        presentation.ui_scale = theme.ui_scale * self.presentation_scale;
-        presentation
-    }
-
     fn invalidate_migration_preparation(&mut self) {
         self.storage
             .set_application_minimum(super::staging::MIN_TARGET_BYTES);
@@ -1101,6 +1095,20 @@ impl InstallerPreview {
             }
         }
         let page = self.journey.page;
+        if self.journey.destination == Some(Destination::Desktop)
+            && page == Page::Review
+            && !matches!(
+                effect,
+                InstallerPreviewEffect::ReadPreview
+                    | InstallerPreviewEffect::BackInPreview
+                    | InstallerPreviewEffect::RestartPreview
+                    | InstallerPreviewEffect::EditPreview { .. }
+                    | InstallerPreviewEffect::ContinuePreview
+                    | InstallerPreviewEffect::PrepareDesktopInstallation
+            )
+        {
+            return Err("installer-preview-wrong-page");
+        }
         let profile_edit = self.journey.editing_profile();
         if profile_edit
             && !matches!(
@@ -1157,6 +1165,9 @@ impl InstallerPreview {
                 InstallerPreviewEffect::ReadPreview => return Ok(()),
                 InstallerPreviewEffect::BackInPreview if self.direct.navigation.get() => {
                     self.direct.active = false;
+                    if self.journey.destination == Some(Destination::Desktop) {
+                        self.journey.back()?;
+                    }
                     self.composed = None;
                     self.dirty = true;
                     return Ok(());
@@ -1746,6 +1757,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::ChoosePreview { choice } => {
                 if matches!(page, Page::Destination | Page::Migration)
                     && !self.guided_host_available()
+                    && !(page == Page::Destination && choice == "desktop" && self.linux)
                 {
                     return Err("installer-guided-host-unavailable");
                 }
@@ -1767,7 +1779,20 @@ impl InstallerPreview {
                     self.personal.reset_preparation()?;
                     self.existing_identity = existing_identity::ExistingIdentity::default();
                 }
+                if page == Page::Destination
+                    && choice == "desktop"
+                    && self.journey.destination != Some(Destination::Desktop)
+                    && self.linux
+                {
+                    self.retire_preparation();
+                }
                 self.journey.choose(&choice, self.linux)?;
+                if page == Page::Destination
+                    && self.journey.destination != Some(Destination::Desktop)
+                    && self.journey.device_name.is_empty()
+                {
+                    self.journey.device_name = t("installer-preview-device-default");
+                }
                 if choice == "fresh" && !choices_edit {
                     self.belongings.sessions.clear();
                 }
@@ -1802,8 +1827,18 @@ impl InstallerPreview {
             InstallerPreviewEffect::ContinuePreview => 'advance: {
                 if matches!(page, Page::Destination | Page::Migration)
                     && !self.guided_host_available()
+                    && self.journey.destination != Some(Destination::Desktop)
                 {
                     return Err("installer-guided-host-unavailable");
+                }
+                if page == Page::Destination
+                    && self.journey.destination == Some(Destination::Desktop)
+                {
+                    self.journey.next()?;
+                    self.dirty = true;
+                    self.desktop_review_pending = self.live;
+                    self.error = None;
+                    return Ok(());
                 }
                 if page == Page::Profile && self.avatar_picker.is_some() {
                     return Err("installer-preview-identity-busy");
@@ -2198,9 +2233,12 @@ impl InstallerPreview {
                 return Ok(());
             }
             InstallerPreviewEffect::PrepareDesktopInstallation
-                if page == Page::Review && self.live =>
+                if page == Page::Review
+                    && self.live
+                    && self.journey.destination == Some(Destination::Desktop)
+                    && self.direct.context.is_some() =>
             {
-                self.prepare_desktop()?;
+                self.desktop_review_pending = true;
             }
             InstallerPreviewEffect::PrepareBelongings => {
                 self.prepare_belongings()?;
@@ -2944,6 +2982,13 @@ impl InstallerPreview {
         resumed: restart_controller::Resumed,
     ) -> Result<(), &'static str> {
         let metadata = resumed.metadata;
+        if resumed.choices.destination == Some(draft::DestinationChoice::Desktop) {
+            self.retire_preparation();
+            self.journey
+                .restore_draft(&resumed.choices, resumed.kind, String::new());
+            self.prepare_desktop()?;
+            return Ok(());
+        }
         if resumed.kind == draft::IdentityKind::Enrolled {
             self.pairing = pairing::Pairing::resume(resumed.prepared.clone())
                 .map_err(|_| "installer-restart-unavailable")?;
@@ -3010,6 +3055,13 @@ impl InstallerPreview {
     }
 
     fn drain(&mut self) -> bool {
+        // Register the child after the current semantic invocation has finished;
+        // its published effects must not replace the executing surface's door.
+        let desktop_review_changed = std::mem::take(&mut self.desktop_review_pending);
+        if desktop_review_changed && let Err(error) = self.prepare_desktop() {
+            self.error = Some(error);
+            self.dirty = true;
+        }
         if self.windows.enabled && self.live {
             let changed = self.poll_windows();
             self.dirty |= changed;
@@ -3305,7 +3357,8 @@ impl InstallerPreview {
             || existing_changed
             || pairing_changed;
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = checkpoint_changed
+        let changed = desktop_review_changed
+            || checkpoint_changed
             || restart_changed
             || migration_changed
             || media_changed
@@ -3840,7 +3893,7 @@ impl InstallerPreview {
             ));
         }
         match j.page {
-            Page::Destination | Page::Migration if !self.guided_host_available() => {}
+            Page::Migration if !self.guided_host_available() => {}
             Page::Destination => {
                 body =
                     body.push(Box::new(
@@ -5261,24 +5314,8 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         }
         self.dispatcher = Some(cx.dispatcher());
         self.journey.categories = [true; 3];
-        let login = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_default();
-        self.journey.name.clone_from(&login);
-        #[cfg(target_os = "linux")]
-        {
-            // This is an editable suggestion from the current OS account,
-            // not the identity that the person will create or restore.
-            self.journey.name = tilo_identity_host::provisioning::login_account_display_name();
-            if !login.is_empty() && !login.contains('/') && !login.contains('\\') {
-                let picture = std::path::Path::new("/var/lib/AccountsService/icons").join(&login);
-                if picture.is_file() {
-                    let path = picture.to_string_lossy().into_owned();
-                    let _ = self.personal.select_photo(path.clone());
-                    self.avatar = Some(path);
-                }
-            }
-        }
+        // The OS profile is entered explicitly; Desktop never reads a host profile.
+        self.journey.name.clear();
         self.dirty = true;
     }
     fn stage(&mut self, scenario: Option<&str>) {
@@ -5383,9 +5420,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
             return statuses;
         }
-        if matches!(self.journey.page, Page::Destination | Page::Migration)
-            && !self.guided_host_available()
-        {
+        if self.journey.page == Page::Migration && !self.guided_host_available() {
             for action in ["choose-preview", "continue-preview"] {
                 statuses.push(EffectStatus::unavailable(
                     ActionRef::<InstallerPreviewEffect, ()>::new(action, &[]),
@@ -5464,19 +5499,21 @@ impl Widget for InstallerPreview {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The journey keeps one host-scaled presentation size. Individual
-        // pages may bound their content measure, but navigation must not
-        // resize controls or invalidate the departing page's paint snapshot.
-        let reference = (
-            f64::from(theme.tokens.metrics.readable_width),
-            f64::from(theme.tokens.metrics.content_min_width),
+        // The host has already applied accessibility scaling to the theme.
+        // Window growth changes whitespace, never type or control dimensions.
+        let metrics = (
+            theme.tokens.metrics.readable_width,
+            theme.tokens.metrics.content_min_width,
+            theme.text(TextRole::LargeTitle).size,
         );
-        if self.viewport_reference != reference {
+        if self.layout_metrics != Some(metrics) {
             self.dirty = true;
+            self.last_frame = None;
+            self.pending_slide = None;
+            self.slide = None;
+            self.outgoing = None;
         }
-        self.viewport_reference = reference;
-        let presentation = self.presentation_theme(theme);
-        let theme = &presentation;
+        self.layout_metrics = Some(metrics);
         self.profile_breakpoint = f64::from(theme.tokens.metrics.content_min_width);
         let showing_direct = self.direct.active;
         if !showing_direct && (self.dirty || self.composed.is_none()) {
@@ -5524,6 +5561,7 @@ impl Widget for InstallerPreview {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let previous_rect = self.rect;
         let profile_compact = self.rect.width() < self.profile_breakpoint;
         if let Ok(layout) = taffy.layout(node) {
             self.rect = Rect::from_origin_size(
@@ -5537,16 +5575,11 @@ impl Widget for InstallerPreview {
         if profile_compact != (self.rect.width() < self.profile_breakpoint) {
             self.dirty = true;
         }
-        let factor = (self.rect.width() / self.viewport_reference.0)
-            .min(self.rect.height() / self.viewport_reference.1)
-            .clamp(1.0, 3.0);
-        // Quarter steps keep resize changes bounded. The host-scaled
-        // reference avoids applying high-DPI scaling twice.
-        let scale = ui::num::f32_of_f64((factor * 4.0).floor()) / 4.0;
-        if (self.presentation_scale - scale).abs() > f32::EPSILON {
-            self.presentation_scale = scale;
-            self.dirty = true;
+        if self.rect != previous_rect {
+            // A cached departing scene belongs to its old layout. Ordinary
+            // page navigation retains snapshots when the viewport is stable.
             self.last_frame = None;
+            self.pending_slide = None;
             self.slide = None;
             self.outgoing = None;
         }
@@ -5565,8 +5598,6 @@ impl Widget for InstallerPreview {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let presentation = self.presentation_theme(theme);
-        let theme = &presentation;
         let now = ui::time::now();
         if theme.reduce_motion || self.capture {
             self.pending_slide = None;
@@ -5689,6 +5720,8 @@ fn review_source_label(label: &str) -> String {
 }
 
 #[cfg(all(test, unix))]
+mod desktop_model_tests;
+#[cfg(all(test, unix))]
 mod purpose_tests;
 
 // This fixture exercises the Unix identity/restart controller. Windows has
@@ -5698,6 +5731,80 @@ mod tests {
     use super::*;
     use crate::ImagerShell;
     use ui::framework::testing::TestApp;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn desktop_choice_uses_native_review_without_account_or_migration() {
+        let mut app = fixture();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.live = true;
+            preview.capabilities.prepared_installation = false;
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "desktop".into(),
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.page, Page::Review);
+            assert_eq!(preview.journey.history, vec![Page::Destination]);
+            assert!(preview.direct.active);
+            assert!(preview.personal.prepared_handle().is_none());
+            assert!(preview.journey.password.is_empty());
+            assert!(preview.journey.identity.is_none());
+            assert_eq!(preview.journey.categories, [false; 3]);
+            assert!(!preview.media_preparation.busy());
+            assert!(preview.belongings_worker.is_none());
+            assert!(!preview.storage.checking());
+        })
+        .unwrap();
+        for effect in [
+            InstallerPreviewEffect::SetPreviewName {
+                value: "Not a profile".into(),
+            },
+            InstallerPreviewEffect::SetPreviewPassword {
+                value: "Not a password".into(),
+            },
+            InstallerPreviewEffect::SetPreviewCategory {
+                category: "accounts".into(),
+                included: true,
+            },
+            InstallerPreviewEffect::ChoosePreviewAvatar,
+            InstallerPreviewEffect::CheckBelongings,
+        ] {
+            assert!(
+                app.effect(&effect).is_err(),
+                "Desktop must reject OS-only effects"
+            );
+        }
+        let inspection = app.harness().inspection_json().unwrap();
+        for id in [
+            "installer.name",
+            "installer.password",
+            "installer.category.accounts",
+        ] {
+            assert!(!inspection.contains(id), "Desktop must not expose {id}");
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !app
+            .with_widget::<InstallerPreview, _>(|preview| preview.direct.navigation.get())
+            .unwrap()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native host check must complete"
+            );
+            app.settle();
+        }
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.page, Page::Destination);
+            assert!(preview.journey.history.is_empty());
+        })
+        .unwrap();
+    }
 
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
     mod current_identity {
@@ -5808,7 +5915,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn live_profile_prefill_uses_current_os_person_instead_of_environment_login() {
+    fn live_profile_starts_empty_and_remains_explicitly_editable() {
         let root = tempfile::tempdir().unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", root.path().join("state"));
@@ -5816,7 +5923,7 @@ mod tests {
         let suggested = original
             .with_widget::<InstallerPreview, _>(|preview| preview.journey.name.clone())
             .unwrap();
-        assert!(!suggested.trim().is_empty());
+        assert!(suggested.is_empty());
         environment.set("USER", "another-person-not-the-current-os-account");
         let mut changed = fixture();
         changed
@@ -5828,8 +5935,8 @@ mod tests {
                 );
             })
             .unwrap();
-        // The suggestion remains an ordinary editable field. It neither
-        // selects nor prepares any Tilo identity until the existing flow does.
+        // The OS profile remains editable without reading the host account.
+        // Entering a name does not prepare identity custody.
         choose(&mut changed, "computer");
         choose(&mut changed, "fresh");
         choose(&mut changed, "new");
@@ -8446,7 +8553,7 @@ mod tests {
                         let back = find_control(preview, "installer.back").get_rect();
                         let heading = find_control(preview, "installer.heading");
                         let heading_rect = heading.get_rect();
-                        let heading_style = preview.presentation_theme(&theme).text(TextRole::LargeTitle);
+                        let heading_style = theme.text(TextRole::LargeTitle);
                         let heading_name = heading.accessibility().unwrap().name.unwrap();
                         assert_eq!(heading_name, t("installer-preview-belongings-heading"));
                         let mut renderer = ui::TextRenderer::new();
@@ -10248,14 +10355,14 @@ mod tests {
         choose(&mut app, "migrate");
         choose(&mut app, "new");
         for theme in [Theme::dark(), Theme::light()] {
-            for (viewport, scale, presentation) in [
-                ((320, 640), 1.0, 1.0),
-                ((480, 800), 1.0, 1.0),
-                ((1180, 820), 1.0, 1.25),
-                // The framework's 80-pixel header leaves 1360 pixels here;
-                // the host has already supplied the comfortable 2x size.
-                ((2560, 1440), 2.0, 1.0),
-                ((2560, 1600), 2.0, 1.25),
+            for (viewport, scale) in [
+                ((320, 640), 1.0),
+                ((480, 800), 1.0),
+                ((1180, 820), 1.0),
+                ((2560, 1440), 2.0),
+                ((2560, 1600), 2.0),
+                ((3840, 2160), 1.5),
+                ((5120, 2822), 2.0),
             ] {
                 app.harness()
                     .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
@@ -10269,13 +10376,8 @@ mod tests {
                     let back = find_control(preview, "installer.back").get_rect();
                     let next = find_control(preview, "installer.next").get_rect();
                     assert!(name.width() >= 180.0, "usable name field: {name:?}");
-                    assert_eq!(
-                        preview.presentation_scale, presentation,
-                        "viewport={viewport:?}, host_scale={scale}, rect={:?}, reference={:?}",
-                        preview.rect, preview.viewport_reference
-                    );
                     if viewport.0 >= 1180 {
-                        let effective = f64::from(scale * presentation);
+                        let effective = f64::from(scale);
                         assert!(
                             (name.width()
                                 - f64::from(theme.tokens.metrics.content_min_width) * effective)
@@ -10396,14 +10498,17 @@ mod tests {
         })
         .unwrap();
         assert!(!app.harness().inspection_json().unwrap().contains(sample));
-        for (viewport, expected_scale) in
-            [((1180, 820), 1.25), ((5088, 2666), 3.0), ((480, 720), 1.0)]
-        {
+        let mut control_height = None;
+        for viewport in [(1180, 820), (5120, 2822), (3840, 2160), (480, 720)] {
             app.harness().resize(viewport).unwrap();
             app.settle();
             app.with_widget::<InstallerPreview, _>(|preview| {
-                assert_eq!(preview.presentation_scale, expected_scale);
                 let first = find_control(preview, "installer.password").get_rect();
+                if let Some(height) = control_height {
+                    assert_eq!(first.height(), height, "resize must not magnify controls");
+                } else {
+                    control_height = Some(first.height());
+                }
                 let second = find_control(preview, "installer.confirmation").get_rect();
                 assert!(
                     (first.x0 - second.x0).abs() < 1.0,
@@ -10422,11 +10527,8 @@ mod tests {
         app.harness().resize((1732, 906)).unwrap();
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(
-                preview.presentation_scale, 1.0,
-                "host scaling is already applied"
-            );
             let field = find_control(preview, "installer.password").get_rect();
+            assert_eq!(field.height(), control_height.unwrap() * 2.0);
             assert!(
                 field.width() > 800.0,
                 "form measure follows the host UI scale"
@@ -10501,18 +10603,16 @@ mod tests {
     #[test]
     fn desktop_belongings_actions_keep_files_and_apps_in_place_and_select_connections() {
         let mut app = fixture();
-        choose(&mut app, "desktop");
-        choose(&mut app, "migrate");
-        choose(&mut app, "new");
-        app.effect(&InstallerPreviewEffect::SetPreviewName {
-            value: "Ada".into(),
+        // Retained legacy preparations can still render their migration choices.
+        // New Desktop choices enter native review instead.
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.destination = Some(Destination::Desktop);
+            preview.journey.page = Page::Belongings;
+            preview.journey.migrate = Some(true);
+            preview.journey.categories = [false, false, true];
+            preview.dirty = true;
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
-        password(&mut app);
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         assert_eq!(status(&mut app)["page"], "belongings");
         app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
             .unwrap();
@@ -10570,11 +10670,16 @@ mod tests {
     #[test]
     fn desktop_identity_routes_admit_device_without_pairing_and_keep_backup() {
         let mut app = fixture();
-        choose(&mut app, "desktop");
-        choose(&mut app, "fresh");
-        app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
-            .unwrap();
-        choose(&mut app, "existing");
+        // Exercise the retained legacy connection surface, not new Desktop navigation.
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.live = true;
+            preview.journey.destination = Some(Destination::Desktop);
+            preview.journey.migrate = Some(false);
+            preview.journey.identity = Some(Identity::Existing);
+            preview.journey.page = Page::Connect;
+            preview.dirty = true;
+        })
+        .unwrap();
         assert_eq!(status(&mut app)["page"], "connect");
         let inspection = app.harness().inspection_json().unwrap();
         assert!(inspection.contains("installer.choice.device"));
@@ -11196,12 +11301,18 @@ mod tests {
         let capture_inspection = capture.harness().inspection_json().unwrap();
         for migration in ["fresh", "migrate"] {
             let mut route = fixture();
-            choose(&mut route, "desktop");
-            choose(&mut route, migration);
+            // Captures retain the legacy prepared migration surface. New
+            // Desktop navigation is covered by the native-review route test.
             route
-                .with_widget::<InstallerPreview, _>(|preview| preview.live = true)
+                .with_widget::<InstallerPreview, _>(|preview| {
+                    preview.live = true;
+                    preview.journey.destination = Some(Destination::Desktop);
+                    preview.journey.migrate = Some(migration == "migrate");
+                    preview.journey.identity = Some(Identity::Existing);
+                    preview.journey.page = Page::Connect;
+                    preview.dirty = true;
+                })
                 .unwrap();
-            choose(&mut route, "existing");
             assert_eq!(status(&mut route)["page"], "connect");
             let route_inspection = route.harness().inspection_json().unwrap();
             for id in [

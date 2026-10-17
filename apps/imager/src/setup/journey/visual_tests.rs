@@ -91,6 +91,143 @@ pub(super) fn paint_app<A: ui::framework::ResourceApp>(
     }
 }
 
+/// Resize the production widget tree, rasterize it, then click its current
+/// rectangles. Neither a paint-only fixture nor a separate input transform is
+/// involved: the same host theme drives layout, text and pointer dispatch.
+#[test]
+fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
+    fn heading_font(root: &mut dyn Widget, theme: &Theme) -> Option<f32> {
+        if root.test_id() == Some("installer.heading") {
+            let mut scene = Scene::new();
+            root.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                theme,
+                &PresenceCtx::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "the heading must paint real glyphs");
+            let size = runs[0].font_size;
+            assert!(runs.iter().all(|run| run.font_size == size));
+            return Some(size);
+        }
+        root.children_mut()
+            .into_iter()
+            .find_map(|child| heading_font(child, theme))
+    }
+    for theme in [Theme::dark(), Theme::light()] {
+        let mut unscaled: Option<(f32, f64, f64, f64)> = None;
+        for host_scale in [1.0, 1.5, 2.0] {
+            // Keep the initial logical workspace constant across host DPI.
+            // Compact-page tests separately exercise small-window scrolling.
+            let initial = match host_scale {
+                1.0 => (1180, 820),
+                1.5 => (1770, 1230),
+                _ => (2360, 1640),
+            };
+            let mut app =
+                TestApp::<GuidedInstallerShell>::capture_at(Some("installer-profile"), initial)
+                    .unwrap();
+            app.harness().set_theme(
+                theme
+                    .clone()
+                    .with_ui_scale(host_scale)
+                    .with_reduce_motion(true),
+            );
+            let mut original = None;
+            for viewport in [initial, (5120, 2822), (3840, 2160), (2560, 1440)] {
+                app.harness().resize(viewport).unwrap();
+                paint_app(
+                    &mut app,
+                    "installer-profile",
+                    &["installer.name", "installer.next"],
+                    viewport,
+                    &format!("logical-size-{host_scale}"),
+                );
+                let dimensions = app
+                    .with_widget::<InstallerPreview, _>(|preview| {
+                        let heading_size =
+                            heading_font(preview, &theme.clone().with_ui_scale(host_scale))
+                                .unwrap();
+                        let name = control(preview, "installer.name").unwrap().get_rect();
+                        let next = control(preview, "installer.next").unwrap().get_rect();
+                        let avatar = control(preview, "installer.profile.avatar")
+                            .unwrap()
+                            .get_rect();
+                        let metrics = &theme.tokens.metrics;
+                        assert!(
+                            (name.width() - f64::from(metrics.content_min_width * host_scale))
+                                .abs()
+                                < 1.0
+                        );
+                        assert!((name.center().x - preview.rect.center().x).abs() < 1.0);
+                        (heading_size, name.height(), next.height(), avatar.height())
+                    })
+                    .unwrap();
+                if let Some(expected) = original {
+                    assert_eq!(
+                        dimensions, expected,
+                        "viewport growth must add whitespace, not magnify: {viewport:?}"
+                    );
+                } else {
+                    original = Some(dimensions);
+                }
+                if let Some((font, field, button, avatar)) = unscaled {
+                    assert_eq!(dimensions.0, font * host_scale);
+                    for (actual, base) in [
+                        (dimensions.1, field),
+                        (dimensions.2, button),
+                        (dimensions.3, avatar),
+                    ] {
+                        assert!(
+                            (actual - base * f64::from(host_scale)).abs() < 0.01,
+                            "host UI scale must apply exactly once: {actual}, {base}, {host_scale}"
+                        );
+                    }
+                } else {
+                    unscaled = Some(dimensions);
+                }
+                let next = app
+                    .with_widget::<InstallerPreview, _>(|preview| {
+                        control(preview, "installer.next")
+                            .unwrap()
+                            .get_rect()
+                            .center()
+                    })
+                    .unwrap();
+                app.harness().click_at(next.x, next.y);
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(
+                        preview.journey.page,
+                        Page::Password,
+                        "pointer coordinates must match the resized painted control"
+                    );
+                })
+                .unwrap();
+                paint_app(
+                    &mut app,
+                    "installer-password",
+                    &[
+                        "installer.password",
+                        "installer.confirmation",
+                        "installer.next",
+                    ],
+                    viewport,
+                    &format!("logical-size-{host_scale}"),
+                );
+                app.harness().click_named("installer.back").unwrap();
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(preview.journey.page, Page::Profile);
+                })
+                .unwrap();
+            }
+        }
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_actions() {
@@ -694,11 +831,15 @@ fn personal_motion_frames(
     name: &str,
     direction: f64,
     viewport: (u32, u32),
-    scale: f32,
+    control_height: f64,
 ) {
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(
-            preview.presentation_scale, scale,
+            control(preview, "installer.next")
+                .unwrap()
+                .get_rect()
+                .height(),
+            control_height,
             "{name}: controls resized"
         );
         assert_eq!(
@@ -986,21 +1127,18 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
         app.harness().set_theme(theme);
         app.harness().resize(viewport).unwrap();
         app.settle();
-        let (scale, next_height) = app
+        let next_height = app
             .with_widget::<InstallerPreview, _>(|preview| {
                 inspect_controls(preview, &["installer.name", "installer.next"], viewport);
-                (
-                    preview.presentation_scale,
-                    control(preview, "installer.next")
-                        .unwrap()
-                        .get_rect()
-                        .height(),
-                )
+                control(preview, "installer.next")
+                    .unwrap()
+                    .get_rect()
+                    .height()
             })
             .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
-        personal_motion_frames(&mut app, "profile-to-password", 1.0, viewport, scale);
+        personal_motion_frames(&mut app, "profile-to-password", 1.0, viewport, next_height);
         for effect in [
             InstallerPreviewEffect::SetPreviewPassword {
                 value: "several unrelated installation words".into(),
@@ -1012,7 +1150,7 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
         ] {
             app.effect(&effect).unwrap();
         }
-        personal_motion_frames(&mut app, "password-to-devices", 1.0, viewport, scale);
+        personal_motion_frames(&mut app, "password-to-devices", 1.0, viewport, next_height);
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Devices);
             inspect_controls(
@@ -1030,11 +1168,59 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        personal_motion_frames(&mut app, "devices-to-password", -1.0, viewport, scale);
+        personal_motion_frames(&mut app, "devices-to-password", -1.0, viewport, next_height);
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-        personal_motion_frames(&mut app, "password-to-profile", -1.0, viewport, scale);
+        personal_motion_frames(&mut app, "password-to-profile", -1.0, viewport, next_height);
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Profile)
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
+    let mut app =
+        TestApp::<GuidedInstallerShell>::capture_at(Some("installer-profile"), (1180, 820))
+            .unwrap();
+    let mut theme = Theme::dark().with_reduce_motion(false);
+    theme.tokens.motion.durations.base_ms = 30_000;
+    app.harness().set_theme(theme.clone());
+    app.with_widget::<InstallerPreview, _>(|preview| preview.capture = false)
+        .unwrap();
+    app.settle();
+    for change_scale in [false, true] {
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(
+                preview.slide.is_some(),
+                "stable geometry retains page transitions"
+            );
+            assert!(preview.outgoing.is_some());
+        })
+        .unwrap();
+        if change_scale {
+            app.harness().set_theme(theme.clone().with_ui_scale(1.5));
+        } else {
+            app.harness().resize((5120, 2822)).unwrap();
+        }
+        app.settle();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(preview.slide.is_none());
+            assert!(preview.outgoing.is_none());
+            assert!(preview.pending_slide.is_none());
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(
+                preview.slide.is_some(),
+                "navigation resumes at the new geometry"
+            );
+            assert!(preview.outgoing.is_some());
+            preview.slide = None;
+            preview.outgoing = None;
         })
         .unwrap();
     }
