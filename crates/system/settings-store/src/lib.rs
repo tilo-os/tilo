@@ -1087,6 +1087,7 @@ mod parent_durability_tests {
         let root = std::fs::canonicalize(root.path()).unwrap();
         let profile = root.join("profile");
         let path = profile.join("config/settings.json");
+        assert!(!profile.exists(), "the update must create its parent chain");
         let values = || serde_json::from_str::<Map<String, Value>>(r#"{"theme":"dark"}"#).unwrap();
         let error = with_provision_failure(ProvisionCheckpoint::BeforeSync, &profile, || {
             update_section_at(&path, "display", values())
