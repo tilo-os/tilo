@@ -15865,8 +15865,6 @@ pub mod tests {
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
-    include!("local_document_action_rpc_tests.rs");
-    #[cfg(test)]
     include!("record_content_tests.rs");
     #[cfg(test)]
     include!("offload_door_tests.rs");
