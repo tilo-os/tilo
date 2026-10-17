@@ -20,7 +20,7 @@
 
 use std::ops::Range;
 
-use crate::clipboard::ClipboardTarget;
+use crate::clipboard::{ClipboardCopy, ClipboardTarget, CopyContent};
 use crate::text_break::grapheme_indices;
 
 /// Which shaped run owns a caret at a shared logical byte boundary.
@@ -318,27 +318,32 @@ pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<Stri
 ///
 /// Routes to the current host's clipboard; see [`crate::clipboard`]. Without
 /// a system clipboard the copy stays inside this process, and the native host
-/// says so in the log when it does.
+/// says so in the log when it does. Never waits on the compositor.
 pub fn clipboard_copy(text: &str) {
-    clipboard().set_text(ClipboardTarget::Clipboard, text);
+    let _ = clipboard().copy(CopyContent::Text(text));
 }
 
 /// [`clipboard_copy`] that reports whether the host's clipboard took the
 /// text, including the in-process fallback (which pastes inside this
 /// process). Cut uses it so a failed copy never deletes the selection.
+///
+/// A copy still waiting on the compositor counts as taken: one the
+/// compositor refuses lands in the in-process buffer instead.
 #[must_use]
 pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
-    clipboard().set_text(ClipboardTarget::Clipboard, text)
+    clipboard().copy(CopyContent::Text(text)).outcome() != Some(false)
 }
 
-/// Copy text only if a system clipboard backend accepts it.
+/// Copy text only if a system clipboard backend accepts it, without waiting
+/// for it to.
 ///
-/// Returns `false` on failure and never retains the text in an in-process
-/// buffer. Use this for secrets and success messages that require an actual
-/// clipboard write rather than an editor-local copy.
-#[must_use]
-pub fn try_clipboard_copy(text: &str) -> bool {
-    clipboard().set_shared_text(ClipboardTarget::Clipboard, text)
+/// Never retains the text in an in-process buffer. The outcome may settle
+/// after this returns (an app's own Wayland connection answers through the
+/// event loop); keep it in a [`CopyWatch`] to say so when it fails. Use this
+/// for success messages that require an actual clipboard write rather than an
+/// editor-local copy.
+pub fn try_clipboard_copy(text: &str) -> ClipboardCopy {
+    clipboard().copy(CopyContent::SharedText(text))
 }
 
 /// Copy a secret — a password, a one-time code, a recovery key, an enrolment
@@ -350,14 +355,17 @@ pub fn try_clipboard_copy(text: &str) -> bool {
 /// secret; something copied since is left alone. A browser page has no
 /// thread to wait on, so there the clipboard is not cleared.
 ///
-/// Returns `false` when no shared clipboard took the secret: it is never kept
-/// in a buffer private to this process.
-#[must_use]
-pub fn try_clipboard_copy_secret(text: &str, clear_after: std::time::Duration) -> bool {
+/// Fails when no shared clipboard takes the secret: it is never kept in a
+/// buffer private to this process. Like [`try_clipboard_copy`], it never
+/// waits, and its outcome may settle later.
+pub fn try_clipboard_copy_secret(text: &str, clear_after: std::time::Duration) -> ClipboardCopy {
     let clipboard = clipboard();
-    if !clipboard.set_secret_text(text) {
-        return false;
+    let copy = clipboard.copy(CopyContent::SecretText(text));
+    if copy.outcome() == Some(false) {
+        return copy;
     }
+    // A copy that fails after all leaves nothing to clear: the clipboard
+    // will not hold this secret, so the clear finds nothing to do.
     let lease = SecretLease {
         value: zeroize::Zeroizing::new(text.to_owned()),
     };
@@ -368,7 +376,55 @@ pub fn try_clipboard_copy_secret(text: &str, clear_after: std::time::Duration) -
             lease.clear_if_unchanged(&*clipboard);
         }
     });
-    true
+    copy
+}
+
+/// Watches the copy behind a confirmation the app already showed, so a copy
+/// whose outcome settles later can still say it failed.
+///
+/// ```ignore
+/// if !self.copy.watch(ui::try_clipboard_copy(&link)) {
+///     self.toast("Could not copy");
+/// } else {
+///     self.toast("Copied");
+/// }
+/// // Wherever the app handles a wake:
+/// if self.copy.failed() {
+///     self.toast("Could not copy");
+/// }
+/// ```
+#[derive(Debug, Default)]
+pub struct CopyWatch {
+    copy: Option<ClipboardCopy>,
+}
+
+impl CopyWatch {
+    /// Watch `copy`, replacing an earlier one. `false` when it already
+    /// failed: say so instead of confirming it.
+    pub fn watch(&mut self, copy: ClipboardCopy) -> bool {
+        let failed = copy.outcome() == Some(false);
+        self.copy = copy.outcome().is_none().then_some(copy);
+        !failed
+    }
+
+    /// `true` once, when the watched copy has failed since it was watched.
+    /// The settling copy wakes the app, so call this where the app handles a
+    /// wake.
+    pub fn failed(&mut self) -> bool {
+        match self.copy.as_ref().and_then(ClipboardCopy::outcome) {
+            Some(copied) => {
+                self.copy = None;
+                !copied
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a watched copy has not settled yet.
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.copy.is_some()
+    }
 }
 
 /// A secret this process put on the clipboard, held only to recognise it.
@@ -394,17 +450,23 @@ impl SecretLease {
 /// the system clipboard as image data, so it can be pasted into an image editor
 /// or chat. Returns `false` when the buffer size is wrong or no backend can
 /// carry an image. Used by the PDF reader to copy a selected page region.
-pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
+/// Like [`try_clipboard_copy`], it never waits, and its outcome may settle
+/// later.
+pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> ClipboardCopy {
     let Some(expected_len) = width
         .checked_mul(height)
         .and_then(|area| area.checked_mul(4))
     else {
-        return false;
+        return ClipboardCopy::settled(false);
     };
     if width == 0 || height == 0 || rgba.len() != expected_len {
-        return false;
+        return ClipboardCopy::settled(false);
     }
-    clipboard().set_image(width, height, rgba)
+    clipboard().copy(CopyContent::Image {
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// Pull the current clipboard contents as a UTF-8 string. Returns
@@ -495,10 +557,10 @@ mod tests {
         let (services, recorder) = crate::host::HostServices::recording();
         let clipboard = services.clipboard.clone();
         let _host = crate::host::enter(&services);
-        assert!(try_clipboard_copy_secret(
-            "hunter2",
-            std::time::Duration::from_secs(3600)
-        ));
+        assert_eq!(
+            try_clipboard_copy_secret("hunter2", std::time::Duration::from_secs(3600)).outcome(),
+            Some(true)
+        );
         assert_eq!(recorder.secret_copies(), ["hunter2"]);
         assert!(
             recorder.copies().is_empty(),
@@ -528,17 +590,18 @@ mod tests {
         {
             let _host = crate::host::enter(&services);
             assert!(
-                !try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO),
+                try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome()
+                    == Some(false),
                 "an in-process buffer must not claim a secret copy"
             );
             assert_eq!(clipboard_paste(), None);
         }
         let (services, recorder) = crate::host::HostServices::recording();
         let _host = crate::host::enter(&services);
-        assert!(try_clipboard_copy_secret(
-            "hunter2",
-            std::time::Duration::ZERO
-        ));
+        assert_eq!(
+            try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome(),
+            Some(true)
+        );
         let deadline = tilo_test_env::hang_deadline();
         while recorder.secret_copies().len() < 2 {
             assert!(
@@ -548,6 +611,36 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(recorder.secret_copies(), ["hunter2", ""]);
+    }
+
+    #[test]
+    fn a_copy_watch_reports_a_late_failure_once_and_a_late_success_never() {
+        let mut watch = CopyWatch::default();
+        assert!(
+            !watch.watch(ClipboardCopy::settled(false)),
+            "failed at once"
+        );
+        assert!(!watch.failed() && !watch.pending());
+        assert!(watch.watch(ClipboardCopy::settled(true)));
+        assert!(!watch.pending(), "nothing left to watch");
+
+        let (copy, settler) = ClipboardCopy::pending();
+        assert!(watch.watch(copy));
+        assert!(watch.pending() && !watch.failed(), "not settled yet");
+        settler.settle(false);
+        assert!(watch.failed(), "the late failure is reported");
+        assert!(!watch.failed(), "once");
+
+        let (copy, settler) = ClipboardCopy::pending();
+        assert!(watch.watch(copy));
+        settler.settle(true);
+        assert!(!watch.failed() && !watch.pending());
+
+        // A worker that went away without answering is a failure.
+        let (copy, settler) = ClipboardCopy::pending();
+        assert!(watch.watch(copy));
+        drop(settler);
+        assert!(watch.failed());
     }
 
     #[cfg(windows)]

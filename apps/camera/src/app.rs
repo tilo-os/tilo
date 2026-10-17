@@ -341,6 +341,8 @@ pub struct CameraApp {
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
     toast: Option<String>,
+    /// The last copy, whose outcome can arrive after its confirmation.
+    copy: ui::CopyWatch,
     /// The toast on screen and when it appeared, so it can expire.
     toast_shown: Option<(String, Instant)>,
     last_mouse: Point,
@@ -512,6 +514,7 @@ impl CameraApp {
             scanned: None,
             scan_gen: (0, 0),
             toast: None,
+            copy: ui::CopyWatch::default(),
             toast_shown: None,
             last_mouse: Point::new(-1_000.0, -1_000.0),
             document_scan: crate::document_scan::ScanSession::default(),
@@ -2378,7 +2381,10 @@ impl CameraApp {
             }
             ("Copy password", CodeKind::Wifi { password, .. }) => {
                 self.toast = Some(
-                    if ui::try_clipboard_copy_secret(password, WIFI_PASSWORD_ON_CLIPBOARD_FOR) {
+                    if self.copy.watch(ui::try_clipboard_copy_secret(
+                        password,
+                        WIFI_PASSWORD_ON_CLIPBOARD_FOR,
+                    )) {
                         "Wi-Fi password copied"
                     } else {
                         "Could not copy the Wi-Fi password"
@@ -2850,6 +2856,9 @@ impl Widget for CameraApp {
         self.poll_video_results(state);
         self.poll_thumbnail_results();
         self.poll_scan_results(state);
+        if self.copy.failed() {
+            self.toast = Some("Could not copy the Wi-Fi password".into());
+        }
         for capture in std::mem::take(&mut self.sample_captures) {
             if let Err(error) = self
                 .try_perform_action(state, crate::record::Record::REGISTER_CAPTURE.with(capture))

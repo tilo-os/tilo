@@ -1737,7 +1737,7 @@ fn clipboard_copy(text: &str, primary: bool) -> (Response, Vec<PlannedAction>) {
 
 fn clipboard_copy_image() -> (Response, Vec<PlannedAction>) {
     let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
-    if ui::text_selection::clipboard_copy_image(2, 1, &rgba) {
+    if ui::text_selection::clipboard_copy_image(2, 1, &rgba).outcome() == Some(true) {
         (Response::Ok { frame: 0 }, Vec::new())
     } else {
         (

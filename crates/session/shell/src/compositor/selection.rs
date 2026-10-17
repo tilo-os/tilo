@@ -1550,7 +1550,8 @@ impl State {
 /// only answers once the compositor flushes, which can't happen mid-handler).
 /// Reads come from the mirror (always current); writes go into the mirror
 /// and raise a publish flag that [`State::pump_selection`] turns into a
-/// real Wayland selection next tick.
+/// real Wayland selection next tick. A copy therefore settles before it
+/// returns, and chrome reads its outcome at once.
 struct HostClipboard {
     store: SharedSelection,
 }
@@ -2774,10 +2775,11 @@ mod tests {
         let s = store();
         let _host = ui::host::enter(&host_services(s.clone()));
         assert!(set_mirror_text(&s, Target::Clipboard, "ordinary copy"));
-        assert!(ui::try_clipboard_copy_secret(
-            "hunter2",
-            std::time::Duration::from_secs(3600)
-        ));
+        assert_eq!(
+            ui::try_clipboard_copy_secret("hunter2", std::time::Duration::from_secs(3600))
+                .outcome(),
+            Some(true)
+        );
         assert_eq!(
             mirror_text(&s, Target::Clipboard).as_deref(),
             Some("hunter2"),

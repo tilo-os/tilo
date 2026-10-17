@@ -532,7 +532,7 @@ impl State {
             .as_mut()
             .filter(|recovery| recovery.id == id)
             .ok_or(DictationError::StaleSession)?;
-        let copied = ui::text_selection::try_clipboard_copy(&recovery.text);
+        let copied = ui::text_selection::try_clipboard_copy(&recovery.text).outcome() == Some(true);
         recovery.copied |= copied;
         recovery.copy_failed = !copied;
         Ok(())

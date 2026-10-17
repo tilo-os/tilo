@@ -211,7 +211,10 @@ impl NotesApp {
             .title
             .trim();
         let label = if title.is_empty() { "Untitled" } else { title };
-        if !ui::try_clipboard_copy(&format!("[[{label}]]")) {
+        if !self
+            .link_copy
+            .watch(ui::try_clipboard_copy(&format!("[[{label}]]")))
+        {
             return Err("the clipboard is unavailable".into());
         }
         self.transfer_toasts.push(

@@ -46,6 +46,9 @@ struct Pending {
     started: Instant,
     /// A person asked through a view: the URL goes to the clipboard.
     copy: bool,
+    /// The minted URL, once its copy is under way: the answer waits for the
+    /// clipboard's outcome, which settles without blocking the app.
+    copying: Option<(String, ui_core::clipboard::ClipboardCopy)>,
 }
 
 /// The root's minting of links: its own client for the session's action
@@ -133,16 +136,25 @@ impl ShareLinks {
             }),
             ..CatalogueQuery::default()
         });
-        let pending = Pending {
+        let mut pending = Pending {
             invocation,
             minting,
             call,
             started: ui_core::time::now(),
             copy,
+            copying: None,
         };
         // A host in this process answers at once.
         if let Some(result) = settled(&pending) {
-            return result.map(|url| Some(finish(&url, pending.copy)));
+            let url = result?;
+            if !pending.copy {
+                return Ok(Some(finish(&url, None)));
+            }
+            let copy = ui_core::try_clipboard_copy(&url);
+            if let Some(copied) = copy.outcome() {
+                return Ok(Some(finish(&url, Some(copied))));
+            }
+            pending.copying = Some((url, copy));
         }
         self.pending.push(pending);
         Ok(None)
@@ -158,7 +170,7 @@ impl ShareLinks {
             .pending
             .iter()
             .position(|pending| pending.invocation == invocation)?;
-        let pending = self.pending.get(at)?;
+        let pending = self.pending.get_mut(at)?;
         if cancellation_requested {
             self.pending.remove(at);
             return Some((
@@ -169,35 +181,41 @@ impl ShareLinks {
                 false,
             ));
         }
-        let result = settled(pending).or_else(|| {
-            (ui_core::time::now().saturating_duration_since(pending.started) >= LOOKUP_TIMEOUT)
-                .then(|| Err("The workspace's host did not answer".to_owned()))
-        })?;
-        let pending = self.pending.remove(at);
-        Some(match result {
-            Ok(url) => {
-                let minted = finish(&url, pending.copy);
-                (
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: minted.output,
-                    },
-                    minted.copied,
-                )
+        if pending.copying.is_none() {
+            let result = settled(pending).or_else(|| {
+                (ui_core::time::now().saturating_duration_since(pending.started) >= LOOKUP_TIMEOUT)
+                    .then(|| Err("The workspace's host did not answer".to_owned()))
+            })?;
+            match result {
+                Ok(url) if pending.copy => {
+                    let copy = ui_core::try_clipboard_copy(&url);
+                    pending.copying = Some((url, copy));
+                }
+                Ok(url) => {
+                    self.pending.remove(at);
+                    return Some(succeeded(invocation, finish(&url, None)));
+                }
+                Err(message) => {
+                    self.pending.remove(at);
+                    return Some((
+                        tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "share_link".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        },
+                        false,
+                    ));
+                }
             }
-            Err(message) => (
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "share_link".into(),
-                        message,
-                        details: None,
-                        retryable: true,
-                    },
-                },
-                false,
-            ),
-        })
+        }
+        let (url, copy) = pending.copying.as_ref()?;
+        let minted = finish(url, Some(copy.outcome()?));
+        self.pending.remove(at);
+        Some(succeeded(invocation, minted))
     }
 }
 
@@ -212,19 +230,31 @@ fn settled(pending: &Pending) -> Option<Result<String, String>> {
     })
 }
 
-/// The output for `url`, copied when a person asked through a view.
-fn finish(url: &str, copy: bool) -> Minted {
-    let copied = copy && ui_core::try_clipboard_copy(url);
+fn succeeded(
+    invocation: tilo_actions::InvocationId,
+    minted: Minted,
+) -> (tilo_actions::InvocationUpdate, bool) {
+    (
+        tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: minted.output,
+        },
+        minted.copied,
+    )
+}
+
+/// The output for `url`, with whether it was copied when a person asked
+/// through a view.
+fn finish(url: &str, copied: Option<bool>) -> Minted {
     Minted {
         output: tilo_actions::ActionOutput {
-            value: Some(if copy {
-                serde_json::json!({ "url": url, "copied": copied })
-            } else {
-                serde_json::json!({ "url": url })
+            value: Some(match copied {
+                Some(copied) => serde_json::json!({ "url": url, "copied": copied }),
+                None => serde_json::json!({ "url": url }),
             }),
             resources: Vec::new(),
         },
-        copied,
+        copied: copied.unwrap_or(false),
     }
 }
 

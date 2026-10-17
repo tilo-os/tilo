@@ -68,12 +68,12 @@ impl RichClipboard {
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 
-/// How long a copy waits for the compositor. A copy is two compositor
-/// roundtrips (the focus check, then the selection's confirmation), and each
-/// waits for an iteration of the compositor's loop, which also paints; the
-/// compositor itself only calls an iteration slow beyond 100 ms. The copy
-/// blocks the app's UI thread this long only while the compositor is that
-/// slow.
+/// How long a copy may wait for the compositor before it is refused. A copy
+/// is two compositor roundtrips (the focus check, then the selection's
+/// confirmation), and each waits for an iteration of the compositor's loop,
+/// which also paints; the compositor itself only calls an iteration slow
+/// beyond 100 ms. The app's UI thread does not wait: the outcome settles a
+/// [`crate::ClipboardCopy`].
 const PUBLICATION_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
 
 fn publication_deadline() -> tilo_clock::Instant {
@@ -88,33 +88,65 @@ enum PublicationPayload {
     Image(Vec<u8>),
 }
 
-/// A queued copy and the decision on it, which the worker and the waiting
-/// caller race to make exactly once.
-struct Publication {
-    payload: PublicationPayload,
-    reply: std::sync::mpsc::Sender<bool>,
-    deadline: tilo_clock::Instant,
-    claim: Arc<PublicationClaim>,
-}
+/// Reports a copy's outcome once. Dropped unreported (the worker went away),
+/// it reports a failure.
+struct Settle(Option<Box<dyn FnOnce(bool) + Send>>);
 
-impl Publication {
-    fn new(
-        payload: PublicationPayload,
-        reply: std::sync::mpsc::Sender<bool>,
-        deadline: tilo_clock::Instant,
-    ) -> Self {
-        Self {
-            payload,
-            reply,
-            deadline,
-            claim: Arc::default(),
+impl Settle {
+    fn new(report: impl FnOnce(bool) + Send + 'static) -> Self {
+        Self(Some(Box::new(report)))
+    }
+
+    fn settle(mut self, copied: bool) {
+        if let Some(report) = self.0.take() {
+            report(copied);
         }
     }
 }
 
-/// Whether the worker took a copy (and set the selection) or its caller gave
-/// up on it first. Whichever comes first decides: a copy the compositor got
-/// is never reported as failed, and one reported as failed never becomes the
+impl Drop for Settle {
+    fn drop(&mut self) {
+        if let Some(report) = self.0.take() {
+            report(false);
+        }
+    }
+}
+
+/// A [`Settle`] the focus check, the confirmation and the deadline share;
+/// the first to report wins.
+type SharedSettle = Arc<std::sync::Mutex<Option<Settle>>>;
+
+fn settle_once(settle: &SharedSettle, copied: bool) {
+    let taken = settle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(settle) = taken {
+        settle.settle(copied);
+    }
+}
+
+/// A queued copy and the decision on it, which the worker's focus check and
+/// its deadline race to make exactly once.
+struct Publication {
+    payload: PublicationPayload,
+    settle: Settle,
+    deadline: tilo_clock::Instant,
+}
+
+impl Publication {
+    fn new(payload: PublicationPayload, settle: Settle, deadline: tilo_clock::Instant) -> Self {
+        Self {
+            payload,
+            settle,
+            deadline,
+        }
+    }
+}
+
+/// Whether the worker took a copy (and set the selection) or its deadline
+/// passed first. Whichever comes first decides: a copy the compositor got is
+/// never reported as failed, and one reported as failed never becomes the
 /// selection later.
 #[derive(Default)]
 struct PublicationClaim(std::sync::atomic::AtomicU8);
@@ -131,14 +163,18 @@ impl PublicationClaim {
             .is_ok()
     }
 
-    /// The worker publishes, unless the caller already gave up.
+    /// The worker publishes, unless the deadline already gave up on it.
     fn take(&self) -> bool {
         self.decide(Self::TAKEN)
     }
 
-    /// The caller gives up, unless the worker already published.
+    /// The deadline gives up, unless the worker already published.
     fn abandon(&self) -> bool {
         self.decide(Self::ABANDONED)
+    }
+
+    fn taken(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire) == Self::TAKEN
     }
 }
 
@@ -453,7 +489,7 @@ mod image_worker_impl {
 
     use super::{
         ClipboardCommand, PastedImage, Publication, PublicationClaim, PublicationPayload,
-        RichClipboard,
+        RichClipboard, SharedSettle, settle_once,
     };
 
     #[derive(Debug, Default)]
@@ -583,9 +619,11 @@ mod image_worker_impl {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
                     ClipboardCommand::Publish(publication) => {
+                        let pending = PendingPublication::new(publication);
+                        state.arm_publication_deadline(&pending);
                         fence_connection
                             .display()
-                            .sync(&state.queue_handle, PendingPublication::new(publication));
+                            .sync(&state.queue_handle, pending);
                         let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
@@ -617,13 +655,13 @@ mod image_worker_impl {
 
     struct PendingPublication {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
-        reply: std::sync::mpsc::Sender<bool>,
+        settle: SharedSettle,
         deadline: tilo_clock::Instant,
         claim: Arc<PublicationClaim>,
     }
 
     struct PublishedSelection {
-        reply: std::sync::mpsc::Sender<bool>,
+        settle: SharedSettle,
     }
 
     struct PlainRequest {
@@ -660,9 +698,40 @@ mod image_worker_impl {
         fn new(publication: Publication) -> Self {
             Self {
                 payload: std::sync::Mutex::new(Some(publication.payload)),
-                reply: publication.reply,
+                settle: Arc::new(std::sync::Mutex::new(Some(publication.settle))),
                 deadline: publication.deadline,
-                claim: publication.claim,
+                claim: Arc::default(),
+            }
+        }
+    }
+
+    impl State {
+        /// At the deadline, refuse a copy the focus check has not taken. One
+        /// it took already set the selection: give the compositor's
+        /// confirmation one more budget, then report it copied either way.
+        fn arm_publication_deadline(&self, pending: &PendingPublication) {
+            let claim = Arc::clone(&pending.claim);
+            let settle = Arc::clone(&pending.settle);
+            let mut confirming = false;
+            let armed = self.loop_handle.insert_source(
+                calloop::timer::Timer::from_deadline(pending.deadline),
+                move |_, (), _| {
+                    if confirming {
+                        settle_once(&settle, true);
+                        return calloop::timer::TimeoutAction::Drop;
+                    }
+                    if claim.abandon() || !claim.taken() {
+                        settle_once(&settle, false);
+                        return calloop::timer::TimeoutAction::Drop;
+                    }
+                    confirming = true;
+                    calloop::timer::TimeoutAction::ToDuration(super::PUBLICATION_BUDGET)
+                },
+            );
+            if armed.is_err() {
+                // Without a deadline the copy could stay pending for good.
+                pending.claim.abandon();
+                settle_once(&pending.settle, false);
             }
         }
     }
@@ -709,19 +778,20 @@ mod image_worker_impl {
                 false
             };
             if ok {
-                // The new sink may take focus as soon as set_image returns.
+                // The new sink may take focus as soon as the copy settles.
                 // Fence set_selection on this connection before reporting a
                 // successful copy, so a caller's next focus change cannot
                 // overtake its own publication.
                 connection.display().sync(
                     queue_handle,
                     PublishedSelection {
-                        reply: pending.reply.clone(),
+                        settle: Arc::clone(&pending.settle),
                     },
                 );
                 let _ = connection.flush();
             } else {
-                let _ = pending.reply.send(false);
+                pending.claim.abandon();
+                settle_once(&pending.settle, false);
             }
         }
     }
@@ -737,7 +807,7 @@ mod image_worker_impl {
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            let _ = published.reply.send(true);
+            settle_once(&published.settle, true);
         }
     }
 
@@ -1921,6 +1991,12 @@ impl ClipboardBackend for WaylandClipboard {
         self.publish(PublicationPayload::Image(png))
     }
 
+    fn copy(&self, content: crate::CopyContent<'_>) -> crate::ClipboardCopy {
+        let (copy, settler) = crate::ClipboardCopy::pending();
+        self.copy_then(content, move |copied| settler.settle(copied));
+        copy
+    }
+
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
         if !self
             .publication
@@ -2017,27 +2093,52 @@ impl WaylandClipboard {
         recv_bounded(&immediate_rx, CLIPBOARD_READ_BUDGET)
     }
 
-    /// Queue a copy and wait for its outcome: refused, or published and
-    /// confirmed by the compositor.
+    /// Queue a copy; `settle` reports its outcome from the worker: refused,
+    /// or published and confirmed by the compositor. The worker settles it by
+    /// the deadline plus one more budget at the latest.
+    fn publish_async(&self, payload: PublicationPayload, settle: Settle) {
+        let publication = Publication::new(payload, settle, publication_deadline());
+        // A refused send drops the publication, and with it the settle,
+        // which reports the failure.
+        let _ = self.send_publication(ClipboardCommand::Publish(publication));
+    }
+
+    /// [`Self::publish_async`] for a blocking caller.
     fn publish(&self, payload: PublicationPayload) -> bool {
         let (reply, result) = std::sync::mpsc::channel();
-        let publication = Publication::new(payload, reply, publication_deadline());
-        let (deadline, claim) = (publication.deadline, Arc::clone(&publication.claim));
-        if !self.send_publication(ClipboardCommand::Publish(publication)) {
-            return false;
-        }
-        let remaining = deadline.saturating_duration_since(tilo_clock::now());
-        if let Some(published) = recv_bounded(&result, remaining) {
-            return published;
-        }
-        if claim.abandon() {
-            // The worker refuses it when it gets there.
-            return false;
-        }
-        // The worker took the copy and set the selection; only the
-        // compositor's confirmation is late. Give it one more budget to
-        // arrive, and report the copy either way.
-        recv_bounded(&result, PUBLICATION_BUDGET).unwrap_or(true)
+        self.publish_async(
+            payload,
+            Settle::new(move |copied| {
+                let _ = reply.send(copied);
+            }),
+        );
+        // The worker answers by the deadline plus one budget; the third
+        // budget only bounds a worker that stopped running its loop.
+        recv_bounded(&result, PUBLICATION_BUDGET.saturating_mul(3)).unwrap_or(false)
+    }
+
+    /// Queue `content`; `then` reports its outcome from the worker.
+    fn copy_then(&self, content: crate::CopyContent<'_>, then: impl FnOnce(bool) + Send + 'static) {
+        let payload = match content {
+            crate::CopyContent::Text(text) | crate::CopyContent::SharedText(text) => {
+                PublicationPayload::Text(text.as_bytes().to_vec())
+            }
+            crate::CopyContent::SecretText(text) => {
+                PublicationPayload::SecretText(text.as_bytes().to_vec())
+            }
+            crate::CopyContent::Image {
+                width,
+                height,
+                rgba,
+            } => {
+                let Some(png) = encode_png(width, height, rgba) else {
+                    then(false);
+                    return;
+                };
+                PublicationPayload::Image(png)
+            }
+        };
+        self.publish_async(payload, Settle::new(then));
     }
 
     fn send_publication(&self, command: ClipboardCommand) -> bool {
