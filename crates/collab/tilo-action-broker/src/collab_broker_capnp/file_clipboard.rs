@@ -561,7 +561,6 @@ impl SelectedOpenCustody {
                 Ok(())
             })?
             .map_err(str::to_owned)?;
-        drop(state);
         Ok(())
     }
 }
