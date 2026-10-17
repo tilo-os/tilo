@@ -21,6 +21,111 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     (app, doc)
 }
 
+#[test]
+fn transport_effects_preserve_the_existing_shuffle_history() {
+    use crate::actions::MusicEffect;
+
+    for effect in [
+        MusicEffect::SetVolume { volume: 37 },
+        MusicEffect::Seek { position_ms: 1_000 },
+    ] {
+        let (mut app, _) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
+        app.pb.current = Some("tk_g3".into());
+        app.pb.queue_index = 2;
+        app.pb.shuffle = true;
+        app.pb.playing = false;
+        app.shuffle_order = vec![0, 2, 1];
+        app.begin_effect(tilo_actions::InvocationId::new(), effect)
+            .unwrap();
+        assert_eq!(app.shuffle_order, [0, 2, 1]);
+        app.advance(false);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+        app.advance(false);
+        assert!(!app.pb.playing, "already played tracks must not reappear");
+    }
+}
+
+#[test]
+fn play_next_of_current_song_does_not_restart_its_source() {
+    for playing in [false, true] {
+        let (mut app, mut doc) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        app.pb.current = Some("tk_g1".into());
+        app.pb.playing = playing;
+        app.pb.position_ms = 12_000;
+        app.playhead_ms = 12_000.0;
+        app.active_resolve_request = Some(7);
+        app.next_request_id = 7;
+        app.resolve_in_flight = 1;
+        let heads = doc.get_heads();
+
+        app.dispatch(
+            Action::PlayNext("tk_g1".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+
+        assert_eq!(app.pb.queue, ["tk_g1", "tk_g1", "tk_g2"]);
+        assert_eq!(app.pb.queue_index, 0);
+        assert_eq!(app.pb.playing, playing);
+        assert_eq!(app.pb.position_ms, 12_000);
+        assert_eq!(app.playhead_ms, 12_000.0);
+        assert_eq!(
+            app.next_request_id, 7,
+            "no replacement source was requested"
+        );
+        assert_eq!(app.active_resolve_request, Some(7));
+        assert_eq!(app.resolve_in_flight, 1);
+        assert_eq!(doc.get_heads(), heads);
+    }
+}
+
+#[test]
+fn play_next_still_starts_an_empty_queue() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.use_worker(crate::stream::StreamWorker::spawn_offline());
+    app.dispatch(
+        Action::PlayNext("tk_g1".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.pb.queue, ["tk_g1"]);
+    assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+    assert!(app.pb.playing);
+    assert!(app.active_resolve_request.is_some());
+    assert_eq!(app.resolve_in_flight, 1);
+}
+
+#[test]
+fn queue_reordering_preserves_the_current_duplicate_occurrence() {
+    // The two copies of g1 are distinct queue occurrences even though their
+    // metadata is identical. Moving any row must preserve the selected copy.
+    for (from, to, expected) in [(2, 1, 1), (1, 0, 2), (0, 2, 1), (2, 0, 0)] {
+        let (mut app, mut doc) = app_with_doc();
+        app.disconnect();
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g1".into()];
+        app.pb.queue_index = 2;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.position_ms = 12_000;
+        app.playhead_ms = 12_000.0;
+        let heads = doc.get_heads();
+
+        app.dispatch(
+            Action::MoveQueueItem { from, to },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+
+        assert_eq!(app.pb.queue_index, expected, "move {from} to {to}");
+        assert_eq!(app.pb.queue[expected], "tk_g1");
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+        assert_eq!(app.pb.position_ms, 12_000);
+        assert_eq!(app.playhead_ms, 12_000.0);
+        assert_eq!(doc.get_heads(), heads, "queue edits stay device-local");
+    }
+}
+
 #[cfg(feature = "audio")]
 #[test]
 fn private_queue_metadata_restores_unsaved_songs_before_resume() {

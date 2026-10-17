@@ -201,9 +201,7 @@ impl HexModel {
     /// that differ from `saved` are exactly the changed ones (an undo
     /// clears its byte's mark).
     pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
-        if bytes == self.bytes.as_slice() {
-            return;
-        }
+        let unchanged = bytes == self.bytes.as_slice();
         if bytes.len() == saved.len() {
             self.dirty = bytes
                 .iter()
@@ -211,7 +209,7 @@ impl HexModel {
                 .enumerate()
                 .filter_map(|(index, (now, was))| (now != was).then_some(index))
                 .collect();
-        } else {
+        } else if !unchanged {
             let prefix = self
                 .bytes
                 .iter()
@@ -239,6 +237,11 @@ impl HexModel {
                 .chain(prefix..new_end)
                 .collect();
         }
+        // Local typing already changed the view's copy, but its dirty marks
+        // still need reconciliation against the saved file above.
+        if unchanged {
+            return;
+        }
         // Reuse the buffer: a large file is not reallocated per edit.
         self.bytes.clear();
         self.bytes.extend_from_slice(bytes);
@@ -258,8 +261,15 @@ impl HexModel {
         self.top_row = 0;
     }
 
+    fn cursor_limit(&self) -> usize {
+        match self.mode {
+            EditMode::Insert => self.bytes.len(),
+            EditMode::Overwrite => self.bytes.len().saturating_sub(1),
+        }
+    }
+
     fn clamp_cursor(&mut self) {
-        let max = self.bytes.len().saturating_sub(1);
+        let max = self.cursor_limit();
         self.cursor = self.cursor.min(max);
         self.anchor = self.anchor.map(|anchor| anchor.min(max));
         self.top_row = self.top_row.min(self.row_count().saturating_sub(1));
@@ -325,10 +335,9 @@ impl HexModel {
     /// Total number of rows the buffer occupies at the current width.
     /// Always at least 1 so an empty buffer still shows one cursor row.
     pub fn row_count(&self) -> usize {
-        if self.bytes.is_empty() {
-            1
-        } else {
-            self.bytes.len().div_ceil(self.bytes_per_row)
+        match self.mode {
+            EditMode::Insert => self.bytes.len() / self.bytes_per_row + 1,
+            EditMode::Overwrite => self.bytes.len().div_ceil(self.bytes_per_row).max(1),
         }
     }
 
@@ -397,6 +406,7 @@ impl HexModel {
     pub fn toggle_mode(&mut self) {
         self.mode = self.mode.toggle();
         self.pending_nibble = None;
+        self.clamp_cursor();
     }
 
     pub fn toggle_endian(&mut self) {
@@ -409,7 +419,11 @@ impl HexModel {
     /// `extend` keeps/creates the selection anchor; otherwise the
     /// selection is cleared.
     pub fn move_to(&mut self, offset: usize, extend: bool) {
-        let max = self.bytes.len().saturating_sub(1);
+        let max = if extend {
+            self.bytes.len().saturating_sub(1)
+        } else {
+            self.cursor_limit()
+        };
         let target = offset.min(max);
         if extend {
             if self.anchor.is_none() {
@@ -458,7 +472,7 @@ impl HexModel {
     }
 
     pub fn move_doc_end(&mut self, extend: bool) {
-        self.move_to(self.bytes.len().saturating_sub(1), extend);
+        self.move_to(self.cursor_limit(), extend);
     }
 
     pub fn page_up(&mut self, rows: usize, extend: bool) {
@@ -705,6 +719,39 @@ mod tests {
 
     fn model() -> HexModel {
         HexModel::new((0u8..=63).collect())
+    }
+
+    #[test]
+    fn insert_navigation_reaches_append_cell_and_records_an_append() {
+        let mut m = HexModel::new(vec![0xaa; 16]);
+        m.toggle_mode();
+        m.move_doc_end(false);
+        assert_eq!(m.cursor(), 16);
+        assert_eq!(m.row_count(), 2);
+        m.move_left(false);
+        m.move_right(false);
+        assert_eq!(m.cursor(), 16);
+        m.show_bytes(&[0xbb; 16], &[0xaa; 16]);
+        assert_eq!(m.cursor(), 16, "presentation keeps the append cursor");
+        m.input_hex_digit(0xc);
+        m.input_hex_digit(0xd);
+        assert_eq!(m.bytes().last(), Some(&0xcd));
+        assert_eq!(m.len(), 17);
+        assert_eq!(
+            m.take_edits(),
+            vec![
+                BufferEdit::Insert {
+                    offset: 16,
+                    bytes: Hex(vec![0xc0])
+                },
+                BufferEdit::Overwrite {
+                    offset: 16,
+                    bytes: Hex(vec![0xcd])
+                },
+            ]
+        );
+        m.toggle_mode();
+        assert_eq!(m.cursor(), 16, "overwrite stays on an existing byte");
     }
 
     #[test]

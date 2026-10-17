@@ -301,16 +301,17 @@ impl SessionSettings {
     ///
     /// # Errors
     ///
-    /// The copy cannot be locked, or a record or the copy cannot be written.
+    /// The copy cannot be locked, an existing record or copy cannot be read,
+    /// or a record or the copy cannot be written.
     pub fn open(paths: SessionPaths) -> std::io::Result<Self> {
         let _lock = lock_copy(&paths.copy)?;
         let mut state = State {
-            person: load_at(&paths.person),
-            device: load_at(&paths.device),
+            person: crate::load_for_update(&paths.person)?,
+            device: crate::load_for_update(&paths.device)?,
             copy: Map::new(),
             copy_identity: None,
         };
-        let copy = load_at(&paths.copy);
+        let copy = crate::load_for_update(&paths.copy)?;
         let previous = state.projection();
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &previous, &mut log);
@@ -577,7 +578,7 @@ impl SessionSettings {
             return Ok(());
         }
         let identity = copy_identity(&self.paths.copy);
-        let copy = load_at(&self.paths.copy);
+        let copy = crate::load_for_update(&self.paths.copy)?;
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
@@ -841,6 +842,101 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn opening_a_session_preserves_unreadable_records_and_copy() {
+        for target in ["person", "device", "copy"] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = SessionPaths::beside(dir.path().join("settings.json"));
+            std::fs::create_dir_all(paths.person.parent().unwrap()).unwrap();
+            let path = match target {
+                "person" => &paths.person,
+                "device" => &paths.device,
+                _ => &paths.copy,
+            };
+            let bytes = b"{\"region\":\"\xff\"}";
+            std::fs::write(path, bytes).unwrap();
+            let result = SessionSettings::open(paths.clone());
+            let error = result
+                .err()
+                .expect("unreadable settings must refuse import");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            for other in [&paths.person, &paths.device, &paths.copy] {
+                if other != path {
+                    assert!(!other.exists(), "opening must not write partial state");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_copy_blocks_writes_until_the_external_edit_is_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        session
+            .update_section("appearance", object(json!({"dark_theme": "dark"})))
+            .unwrap();
+        let record = std::fs::read(&session.paths.person).unwrap();
+        let bytes = b"{\"appearance\":\"\xff\"}";
+        std::fs::write(&session.paths.copy, bytes).unwrap();
+
+        session.refresh();
+        assert_eq!(std::fs::read(&session.paths.copy).unwrap(), bytes);
+        let error = session
+            .update_section("appearance", object(json!({"dark_theme": "light"})))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&session.paths.copy).unwrap(), bytes);
+        assert_eq!(std::fs::read(&session.paths.person).unwrap(), record);
+        assert_eq!(session.load()["appearance"]["dark_theme"], "dark");
+
+        std::fs::write(
+            &session.paths.copy,
+            br#"{"appearance":{"dark_theme":"light"}}"#,
+        )
+        .unwrap();
+        session.refresh();
+        assert_eq!(session.load()["appearance"]["dark_theme"], "light");
+        assert_eq!(
+            load_at(&session.paths.person)["appearance"]["dark_theme"],
+            "light"
+        );
+    }
+
+    #[test]
+    fn missing_and_malformed_copies_are_repaired_from_durable_records() {
+        for missing in [true, false] {
+            for reopen in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let session = open(dir.path());
+                session
+                    .update_section("appearance", object(json!({"dark_theme": "dark"})))
+                    .unwrap();
+                session
+                    .update_section("power", object(json!({"idle": 5})))
+                    .unwrap();
+                let expected = session.load();
+                let person = std::fs::read(&session.paths.person).unwrap();
+                let device = std::fs::read(&session.paths.device).unwrap();
+                if missing {
+                    std::fs::remove_file(&session.paths.copy).unwrap();
+                } else {
+                    std::fs::write(&session.paths.copy, b"{broken json").unwrap();
+                }
+                let session = if reopen {
+                    SessionSettings::open(session.paths.clone()).unwrap()
+                } else {
+                    session.refresh();
+                    session
+                };
+                assert_eq!(session.load(), expected);
+                assert_eq!(load_at(&session.paths.copy), expected);
+                assert_eq!(std::fs::read(&session.paths.person).unwrap(), person);
+                assert_eq!(std::fs::read(&session.paths.device).unwrap(), device);
+            }
+        }
+    }
+
+    #[test]
     fn display_update_commits_transaction_and_profiles_in_one_device_record() {
         let dir = tempfile::tempdir().unwrap();
         let session = open(dir.path());
@@ -917,16 +1013,22 @@ mod tests {
             object(json!({"id": 7})),
             Some(object(json!({"profiles": {}}))),
         );
-        std::fs::remove_file(&session.paths.copy).unwrap();
-        std::fs::create_dir(&session.paths.copy).unwrap();
+        let copy = std::fs::read(&session.paths.copy).unwrap();
+        // The first publication saves the device record; only the second,
+        // replacing the still-readable copy, fails.
+        let result = tilo_files::native::atomic::test_support::with_failure_on_nth(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
+            2,
+            || session.compare_display_update(update),
+        );
         assert!(matches!(
-            session.compare_display_update(update).unwrap(),
+            result.unwrap(),
             ConditionalUpdate::StoredWithCopyRepair(_)
         ));
+        assert_eq!(std::fs::read(&session.paths.copy).unwrap(), copy);
         let durable = load_at(&session.paths.device);
         assert_eq!(durable["display_transaction"]["id"], 7);
         assert_eq!(durable["display_profiles"]["profiles"], json!({}));
-        std::fs::remove_dir(&session.paths.copy).unwrap();
         assert_eq!(session.load(), durable);
         assert_eq!(load_at(&session.paths.copy), durable);
     }

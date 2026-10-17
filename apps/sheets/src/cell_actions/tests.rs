@@ -177,6 +177,59 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
 }
 
 #[test]
+fn sort_rows_compares_formula_values_not_formatted_or_rounded_labels() {
+    for format_kind in [
+        CellFormat::Number,
+        CellFormat::Currency(tilo_locale::Currency::USD),
+        CellFormat::Percent,
+    ] {
+        let mut book = workbook(&[
+            &["ten", "=10"],
+            &["two", "=2"],
+            &["thousand", "=1000"],
+            &["three", "3"],
+            &["larger fraction", "=1.004"],
+            &["smaller fraction", "=1.003"],
+        ]);
+        format(&mut book, "B1:B6", Some(format_kind), None);
+        let before = snapshot(&book);
+        for descending in [false, true] {
+            let sheet = sheet(&book);
+            book.apply(Workbook::SORT_ROWS.with(verbs::SortRows {
+                sheet,
+                range: "A1:B6".into(),
+                by: "B".into(),
+                descending: Some(descending),
+            }))
+            .unwrap();
+            let mut expected = vec![
+                "smaller fraction",
+                "larger fraction",
+                "two",
+                "three",
+                "ten",
+                "thousand",
+            ];
+            if descending {
+                expected.reverse();
+            }
+            let actual: Vec<_> = raws(&book).into_iter().map(|row| row[0].clone()).collect();
+            assert_eq!(actual, expected, "{format_kind:?}, descending={descending}");
+            let after = snapshot(&book);
+            assert_eq!(after.fmt, before.fmt, "sorting does not change the format");
+            assert_eq!(
+                read_back(&book, Some("B1"))["rows"][0][0],
+                if descending {
+                    json!(1000.0)
+                } else {
+                    json!(1.003)
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn sort_rows_reorders_by_a_column_and_moves_formulas_with_their_row() {
     let mut book = workbook(&[
         &["name", "signed_up", "n"],

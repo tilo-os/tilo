@@ -507,6 +507,15 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 }
                 continue;
             }
+            Ok(Event::CData(data)) => {
+                if in_text_p {
+                    let text = data.xml10_content().ok()?;
+                    p_buf.push_str(&text);
+                    let (bold, italic) = spans.last().copied().unwrap_or_default();
+                    crate::model::push_run(&mut p_block, &text, bold, italic);
+                }
+                continue;
+            }
             Ok(Event::GeneralRef(r)) => {
                 // quick_xml surfaces an entity reference (`&amp;`, `&#38;`, …) as
                 // its own event, splitting the surrounding text. Fold it back into

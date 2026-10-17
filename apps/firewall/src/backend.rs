@@ -371,6 +371,19 @@ fn firewall_cmd(args: impl IntoIterator<Item = String>) -> Invocation {
 
 fn plan_zone_args(zone: &Zone, out: &mut Vec<Invocation>) {
     let name = zone.kind.name();
+    out.push(firewall_cmd([
+        "--permanent".to_string(),
+        format!("--zone={name}"),
+        format!(
+            "--set-target={}",
+            match zone.target {
+                Target::Default => "default",
+                Target::Accept => "ACCEPT",
+                Target::Drop => "DROP",
+                Target::Reject => "%%REJECT%%",
+            }
+        ),
+    ]));
     for iface in &zone.interfaces {
         out.push(firewall_cmd([
             "--permanent".to_string(),
@@ -470,6 +483,37 @@ fn rich_rule_body(matcher: &Matcher, action: Action, source: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::{Proto, Target, ZoneKind};
+
+    #[test]
+    fn apply_includes_each_zones_default_policy_before_reload() {
+        for (target, wire_target) in [
+            (Target::Default, "default"),
+            (Target::Accept, "ACCEPT"),
+            (Target::Drop, "DROP"),
+            (Target::Reject, "%%REJECT%%"),
+        ] {
+            let mut config = crate::sample::sample_config();
+            config.zone_mut(ZoneKind::Public).unwrap().target = target;
+            let mut backend = Backend {
+                mode: Mode::DryRun,
+                last_plan: Vec::new(),
+            };
+            backend.apply(&config).unwrap();
+            let expected =
+                format!("firewall-cmd --permanent --zone=public --set-target={wire_target}");
+            let policy = backend
+                .last_plan()
+                .iter()
+                .position(|line| line == &expected)
+                .expect("applying a policy must send it to firewalld");
+            let reload = backend
+                .last_plan()
+                .iter()
+                .position(|line| line == "firewall-cmd --reload")
+                .unwrap();
+            assert!(policy < reload);
+        }
+    }
 
     /// Planned changes become the right firewall-cmd invocations (fast paths, rich rules as one argument), and detection defaults to dry-run.
     #[test]

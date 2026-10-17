@@ -92,16 +92,10 @@ impl PhotosApp {
         let Some((target_day, _, _)) = target else {
             return Err(tr("photos-error-day-gone"));
         };
-        if let Some(offset) = self
-            .timeline_projection
-            .day_offset(target_day, self.timeline_viewport_height)
-        {
-            self.timeline_scroll_y = offset;
-            return Ok(());
-        }
-        // A semantic action can arrive before the first painted frame. Build
-        // the same lightweight metadata projection now so the jump is exact
-        // rather than falling back to a guessed fixed-height row.
+        // The previous projection may describe a filtered collection or an
+        // older library snapshot. Rebuild against the timeline being opened
+        // before resolving its offset, even if that day was already present.
+        // This also handles actions arriving before the first painted frame.
         self.timeline_projection
             .replace(library.photos.values().map(|photo| {
                 TimelinePhoto {
@@ -648,7 +642,7 @@ impl PhotosApp {
         if library.album(album_id).cloned().is_none() {
             return Err("that album is no longer in the library".to_owned());
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = Some(album_id.to_owned());
         self.active_folder = None;
         self.active_person = None;
@@ -691,7 +685,7 @@ impl PhotosApp {
         if !exists {
             return Err(tr("photos-error-filter-gone"));
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = folder;
         self.active_person = person;
@@ -726,7 +720,7 @@ impl PhotosApp {
         if !exists {
             return Err(tr("photos-error-filter-gone"));
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
@@ -750,7 +744,7 @@ impl PhotosApp {
         if !library.photos.values().any(|photo| photo.favorite) {
             return Err("there are no favorite photographs in the library".to_owned());
         }
-        self.library_mode = true;
+        self.show_library();
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;

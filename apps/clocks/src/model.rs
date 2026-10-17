@@ -450,7 +450,11 @@ impl Clocks {
         let left = timer
             .remaining(instant(now_ms))
             .saturating_add(Duration::from_secs(60));
-        timer.start(now_ms, millis(left));
+        if timer.paused_remaining_ms.is_some() {
+            timer.paused_remaining_ms = Some(millis(left));
+        } else {
+            timer.start(now_ms, millis(left));
+        }
         Ok(())
     }
 

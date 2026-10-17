@@ -495,10 +495,7 @@ pub fn compare_update_section_at(
     expected: &Map<String, Value>,
     values: Map<String, Value>,
 ) -> std::io::Result<ConditionalUpdate> {
-    let _lock = advisory_lock::FileLock::open(
-        &session::lock_path(path),
-        advisory_lock::LockMode::Exclusive,
-    )?;
+    let _lock = session::lock_copy(path)?;
     let mut doc = load_for_update(path)?;
     if doc.get(name) != Some(&Value::Object(expected.clone())) {
         return Ok(ConditionalUpdate::Superseded);
@@ -517,13 +514,7 @@ pub fn compare_display_update_at(
     path: &Path,
     update: DisplayUpdate,
 ) -> std::io::Result<ConditionalUpdate> {
-    if let Some(parent) = path.parent() {
-        tilo_files::native::create_dir_all(parent)?;
-    }
-    let _lock = advisory_lock::FileLock::open(
-        &session::lock_path(path),
-        advisory_lock::LockMode::Exclusive,
-    )?;
+    let _lock = session::lock_copy(path)?;
     let mut document = load_for_update(path)?;
     if !update.matches(&document) {
         return Ok(ConditionalUpdate::Superseded);
@@ -541,8 +532,8 @@ pub fn compare_display_update_at(
 ///
 /// A session keeps its records behind the file and takes in what other
 /// writers change in it ([`SessionSettings`]); the lock keeps each read,
-/// change and replace whole. With no directory yet there is no session copy
-/// to share and nothing to lock.
+/// change and replace whole. The first writer also creates and locks the
+/// directory before reading, so concurrent first writes cannot lose edits.
 ///
 /// # Errors
 ///
@@ -552,13 +543,7 @@ pub fn update_document_at(
     path: &Path,
     change: impl FnOnce(&mut Map<String, Value>),
 ) -> std::io::Result<()> {
-    let _lock = match path.parent() {
-        Some(dir) if dir.is_dir() => Some(advisory_lock::FileLock::open(
-            &session::lock_path(path),
-            advisory_lock::LockMode::Exclusive,
-        )?),
-        _ => None,
-    };
+    let _lock = session::lock_copy(path)?;
     let mut doc = load_for_update(path)?;
     change(&mut doc);
     write_atomic(path, &Value::Object(doc))
@@ -672,6 +657,44 @@ mod tests {
         ));
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    #[test]
+    fn first_document_write_holds_the_lock_before_running_the_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new-config/tilo/settings.json");
+        assert!(!path.parent().unwrap().exists());
+        update_document_at(&path, |doc| {
+            let (root, name) = tilo_files::file_at(&session::lock_path(&path)).unwrap();
+            let competing =
+                tilo_files::blocking::try_lock(&root, &name, tilo_files::LockMode::Exclusive)
+                    .unwrap();
+            assert!(
+                competing.is_none(),
+                "a competing writer must wait for the first edit"
+            );
+            doc.insert("region".into(), json!({"units": "metric"}));
+        })
+        .unwrap();
+        update_section_at(
+            &path,
+            "appearance",
+            json!({"dark_theme": "dark"}).as_object().unwrap().clone(),
+        )
+        .unwrap();
+        assert_eq!(load_at(&path)["region"], json!({"units": "metric"}));
+        assert_eq!(load_at(&path)["appearance"], json!({"dark_theme": "dark"}));
+    }
+
+    #[test]
+    fn conditional_write_to_a_missing_directory_is_superseded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new-config/tilo/settings.json");
+        let result =
+            compare_update_section_at(&path, "display_transaction", &Map::new(), Map::new())
+                .unwrap();
+        assert!(matches!(result, ConditionalUpdate::Superseded));
+        assert!(!path.exists(), "a stale answer must not create settings");
     }
 
     #[test]

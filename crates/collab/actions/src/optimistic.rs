@@ -294,6 +294,7 @@ impl OptimisticQueue {
         // The new confirmed baseline; `None` keeps the current one.
         confirmed: Option<AutoCommit>,
     ) -> Result<RebaseBatch, OptimisticError> {
+        self.ensure_live_heads(live)?;
         let old = self.pending.clone();
         let mut superseded: Vec<_> = old.iter().map(|pending| pending.envelope.id).collect();
         if let Some(rejected) = rejected {
@@ -549,6 +550,32 @@ mod tests {
         assert!(queue.is_superseded(first.id));
         assert!(queue.is_superseded(second.id));
         assert_eq!(queue.reconnect_batch(), batch.outbound);
+    }
+
+    #[test]
+    fn rebasing_does_not_discard_edits_made_outside_the_queue() {
+        let mut live = AutoCommit::new();
+        let mut queue = OptimisticQueue::new(&mut live);
+        let edit = Edit::Put {
+            key: "score".into(),
+            value: 1,
+        };
+        let sent = queue.submit(&mut live, &edit, encoded(&edit)).unwrap();
+        let mut remote = queue.confirmed().clone();
+        live.put(&ROOT, "outside", 9_i64).unwrap();
+        let heads = live.get_heads();
+
+        assert!(matches!(
+            queue.reject(&mut live, sent.id, &registry()),
+            Err(OptimisticError::LiveDiverged)
+        ));
+        assert!(matches!(
+            queue.merge_authoritative(&mut live, &mut remote, &registry()),
+            Err(OptimisticError::LiveDiverged)
+        ));
+        assert_eq!(live.get_heads(), heads);
+        assert_eq!(value(&live, "outside"), Some(9));
+        assert_eq!(queue.reconnect_batch(), [sent]);
     }
 
     fn direct_live_writes_are_detected_instead_of_silently_lost() {

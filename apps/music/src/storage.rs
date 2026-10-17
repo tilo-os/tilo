@@ -223,6 +223,14 @@ impl MediaCache {
     /// Returns an error when the replacement manifest cannot be written.
     pub fn remove(&mut self, root: &Path, track_id: &str) -> std::io::Result<()> {
         let removed = self.entries.remove(track_id);
+        // Publish the removal before deleting bytes: a failed manifest write
+        // must leave the offline copy available both here and after restart.
+        if let Err(error) = self.save(root) {
+            if let Some(entry) = removed {
+                self.entries.insert(track_id.to_owned(), entry);
+            }
+            return Err(error);
+        }
         if let Some(entry) = removed
             && !self
                 .entries
@@ -231,7 +239,7 @@ impl MediaCache {
         {
             crate::files::remove(&media_object_path(root, &entry.content_id));
         }
-        self.save(root)
+        Ok(())
     }
 
     /// Validate and mark one cached object as recently used.
@@ -401,6 +409,33 @@ mod tests {
         assert_eq!(loaded.playback.volume, 37);
         assert!(!loaded.playback.playing, "restart never autoplays");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_offline_removal_preserves_the_cached_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut cache = MediaCache::default();
+        cache
+            .install_bytes(root, "track", b"saved audio", 1024)
+            .unwrap();
+        let before = cache.clone();
+        let manifest = media_manifest_path(root);
+        let saved_manifest = crate::files::read(&manifest).unwrap();
+        std::fs::remove_file(&manifest).unwrap();
+        std::fs::create_dir(&manifest).unwrap();
+
+        assert!(cache.remove(root, "track").is_err());
+        assert_eq!(cache, before);
+        let object = cache.object_path(root, "track").unwrap();
+        assert_eq!(crate::files::read(&object).unwrap(), b"saved audio");
+
+        std::fs::remove_dir(&manifest).unwrap();
+        crate::files::write(&manifest, &saved_manifest).unwrap();
+        assert_eq!(load_media_cache_from(root), before);
+        cache.remove(root, "track").unwrap();
+        assert!(!object.exists());
+        assert!(load_media_cache_from(root).entries.is_empty());
     }
 
     #[test]

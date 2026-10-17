@@ -450,17 +450,42 @@ fn parse_external_link(
     (bytes.get(at) == Some(&b'[') && bytes.get(at + 1) != Some(&b'[')).then_some(())?;
     let label_end = find_unescaped(bytes, at + 1, b']')?;
     (bytes.get(label_end + 1) == Some(&b'(')).then_some(())?;
-    let url_end = find_unescaped(bytes, label_end + 2, b')')?;
+    let url_end = link_destination_end(bytes, label_end + 2)?;
     let label = line.get(at + 1..label_end)?;
     let url = line.get(label_end + 2..url_end)?;
     (!label.is_empty() && safe_external_url(url)).then_some(())?;
+    let label = parse_inline(label);
     let start = plain.len();
-    plain.push_str(label);
+    plain.push_str(&label.text);
     marks.push(MarkSpan::new(
         start..plain.len(),
         Mark::ExternalLink(url.to_string()),
     ));
+    marks.extend(label.marks.into_iter().map(|inner| {
+        MarkSpan::new(
+            (inner.range.start + start)..(inner.range.end + start),
+            inner.mark,
+        )
+    }));
     Some(url_end + 1)
+}
+
+// Parentheses inside a destination belong to the URL until their matching
+// close. Stopping at the first ')' silently changes where a link opens.
+fn link_destination_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 1,
+            b'(' => depth += 1,
+            b')' if depth == 0 => return Some(i),
+            b')' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn parse_paired_mark(
@@ -573,20 +598,21 @@ fn priority(m: &Mark) -> u8 {
 ///
 /// Algorithm: walk `text` byte-by-byte; at each byte, open any mark
 /// span whose `range.start == i`, append the byte, then close any
-/// span whose `range.end == i+1`. Marks are emitted in this order
-/// (most-nested last on open, first on close): bold outermost, then
-/// italic, then code/link innermost.
+/// span whose `range.end == i+1`. At a shared start the longest span
+/// opens first, so contained formatting closes inside its parent. Equal
+/// spans use the canonical bold, italic, code/link priority.
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
     // marks (in order of opening). We open marks at their `start`
-    // byte (in priority order Bold → Italic → Code/Link) and close
+    // byte (longest first, then Bold → Italic → Code/Link) and close
     // them at their `end` byte in reverse order.
     let mut marks = text.marks.clone();
     marks.sort_by(|a, b| {
         a.range
             .start
             .cmp(&b.range.start)
+            .then_with(|| b.range.end.cmp(&a.range.end))
             .then_with(|| priority(&a.mark).cmp(&priority(&b.mark)))
     });
 

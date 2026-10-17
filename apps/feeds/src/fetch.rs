@@ -248,9 +248,19 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Fetched>), Strin
         let title = entry
             .title
             .map_or_else(|| "(untitled)".to_string(), |t| t.content);
+        // Atom links are unordered: a self link or enclosure is not the
+        // article's web page. Prefer an HTML alternate, then any alternate;
+        // keep the first link as a fallback for feeds without one.
         let url = entry
             .links
-            .first()
+            .iter()
+            .filter(|link| link.rel.as_deref().is_none_or(|rel| rel == "alternate"))
+            .min_by_key(|link| match link.media_type.as_deref() {
+                Some("text/html" | "application/xhtml+xml") => 0,
+                None => 1,
+                _ => 2,
+            })
+            .or_else(|| entry.links.first())
             .map(|l| l.href.clone())
             .unwrap_or_default();
         let author = entry
@@ -421,6 +431,30 @@ async fn gemini_request(url: &str, expected: Option<&str>) -> Result<(String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atom_articles_use_the_web_alternate_instead_of_self_or_enclosure() {
+        let atom = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+          <id>https://example.org/feed</id><title>News</title>
+          <updated>2025-06-30T12:00:00Z</updated>
+          <entry><id>https://example.org/posts/1</id><title>First</title>
+            <updated>2025-06-30T12:00:00Z</updated>
+            <link rel="self" type="application/atom+xml" href="https://example.org/api/1"/>
+            <link rel="enclosure" type="audio/mpeg" href="https://example.org/audio/1"/>
+            <link rel="alternate" type="application/json" href="https://example.org/json/1"/>
+            <link rel="alternate" type="text/html" href="https://example.org/posts/1"/>
+          </entry>
+          <entry><id>https://example.org/posts/2</id><title>Second</title>
+            <updated>2025-06-30T12:00:00Z</updated>
+            <link rel="self" href="https://example.org/api/2"/>
+            <link href="https://example.org/posts/2"/>
+          </entry>
+        </feed>"#;
+        let (_, articles) = parse_http_feed(atom.as_bytes()).unwrap();
+        assert_eq!(articles.len(), 2);
+        assert_eq!(articles[0].url, "https://example.org/posts/1");
+        assert_eq!(articles[1].url, "https://example.org/posts/2");
+    }
 
     /// Fetching derives site URLs, parses RSS bytes and polls the worker without blocking.
     #[test]

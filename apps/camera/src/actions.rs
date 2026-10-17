@@ -396,7 +396,11 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
     }
     let mut record = bound(
         &CameraEffect::Record,
-        if !ctx.feed_available {
+        // Finalizing an existing clip needs no live camera. Keep the semantic
+        // stop door available after disconnection, just like the shutter.
+        if ctx.recording {
+            None
+        } else if !ctx.feed_available {
             Some((
                 "camera_unavailable",
                 "Connect or allow a camera before recording",
@@ -652,6 +656,33 @@ mod tests {
                 .expect("capture has a canonical open action");
             assert_eq!(open.kind, OperationKind::Effect);
         }
+    }
+
+    #[test]
+    fn disconnected_camera_keeps_stop_recording_available() {
+        let resources = provide_resources(&CameraResourceCtx {
+            mode: CaptureMode::Video,
+            recording: true,
+            feed_available: false,
+            ..CameraResourceCtx::default()
+        });
+        let capture = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "camera.capture")
+            .expect("capture effect root");
+        let record = capture
+            .actions
+            .iter()
+            .find(|action| action.id == "record")
+            .expect("recording action");
+        assert_eq!(record.label, "Stop recording");
+        assert!(record.contract.availability.is_available());
+        let photo = capture
+            .actions
+            .iter()
+            .find(|action| action.id == "capture")
+            .expect("photo action");
+        assert!(!photo.contract.availability.is_available());
     }
 
     #[test]

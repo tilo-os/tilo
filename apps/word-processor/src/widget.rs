@@ -2185,6 +2185,12 @@ impl WordProcessorWidget {
         let live: std::collections::HashSet<&str> =
             self.blocks.iter().map(|b| b.id.as_str()).collect();
         self.spell_cache.retain(|id, _| live.contains(id.as_str()));
+        if moved && self.find.is_open() {
+            // Search ranges are character offsets, not stable anchors. Follow
+            // edits before navigation or replacement can use the old ranges.
+            let blocks = self.search_blocks(state);
+            self.find.refresh(&mut Blocks(&blocks));
+        }
     }
 
     /// The running region (if any) whose reference-page band contains content-

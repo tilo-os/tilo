@@ -1532,6 +1532,34 @@ mod tests {
         assert_eq!(view.model.dirty_count(), 0);
     }
 
+    #[test]
+    fn presented_local_edits_clear_highlights_when_saved_bytes_are_restored() {
+        let mut view = HexView::empty();
+        let state = |bytes: &[u8]| {
+            Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                bytes: crate::buffer::ByteBuffer::of(bytes),
+                opened: 1,
+            })
+        };
+        view.present(&state(&[0x12, 0x34]));
+        view.model.input_hex_digit(0xa);
+        view.model.input_hex_digit(0xb);
+        view.present(&state(&[0xab, 0x34]));
+        assert!(view.model.is_dirty(0));
+        view.model.move_to(0, false);
+        view.model.input_hex_digit(1);
+        view.model.input_hex_digit(2);
+        view.present(&state(&[0x12, 0x34]));
+        assert_eq!(view.model.dirty_count(), 0);
+        assert_eq!(
+            view.model.cursor(),
+            1,
+            "reconciliation preserves typing state"
+        );
+        assert_eq!(view.model.bytes(), &[0x12, 0x34]);
+    }
+
     /// Find runs through the framework's `Findable` contract: hex and text
     /// modes, the bar's case and word rules, a bounded index.
     #[test]

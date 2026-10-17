@@ -90,20 +90,33 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
     Ok(written)
 }
 
-/// Remove the shims installed for a package. Best-effort — a
-/// missing file is silently ignored so a partial install doesn't
-/// leave the user stuck.
+/// Remove only shims whose sidecar still names this package and command.
+/// Another package may have replaced a shared command since installation.
+/// Best-effort: missing or unreadable sidecars are left alone.
 ///
 /// # Errors
 ///
-/// Currently infallible (always `Ok`) — the `Result` return keeps the
-/// signature stable for a future policy that surfaces removal failures.
-pub fn remove_shims(bin_dir: &Path, commands: &[String]) -> Result<(), ShimError> {
+/// Returns [`ShimError::BadCommandName`] for an unsafe command in a stale
+/// registry entry, without accessing a path outside the shim directory.
+pub fn remove_shims(
+    bin_dir: &Path,
+    package_id: &str,
+    commands: &[String],
+) -> Result<(), ShimError> {
     for cmd in commands {
-        // We deliberately don't validate the name here — if a
-        // stale entry has garbage in it we still want to try.
+        validate_command_name(cmd)?;
         let shim = bin_dir.join(cmd);
-        let _ = fs::remove_file(sidecar_path_for(&shim));
+        let sidecar_path = sidecar_path_for(&shim);
+        let Ok(text) = fs::read_to_string(&sidecar_path) else {
+            continue;
+        };
+        let Ok(sidecar) = toml::from_str::<Sidecar>(&text) else {
+            continue;
+        };
+        if sidecar.package_id != package_id || sidecar.command != *cmd {
+            continue;
+        }
+        let _ = fs::remove_file(sidecar_path);
         let _ = fs::remove_file(shim);
     }
     Ok(())
@@ -210,6 +223,32 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_replaced_command_keeps_the_current_packages_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = dummy_shim(tmp.path());
+        let bin_dir = tmp.path().join("bin");
+        let commands = vec!["notes".to_string()];
+        for package_id in ["so.tilo.old-notes", "so.tilo.new-notes"] {
+            write_shims(&ShimInstall {
+                package_id,
+                commands: &commands,
+                shim_source: &shim,
+                bin_dir: &bin_dir,
+                launcher_override: None,
+            })
+            .unwrap();
+        }
+        remove_shims(&bin_dir, "so.tilo.old-notes", &commands).unwrap();
+        assert!(bin_dir.join("notes").is_file());
+        let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
+        let sidecar: Sidecar = toml::from_str(&text).unwrap();
+        assert_eq!(sidecar.package_id, "so.tilo.new-notes");
+        remove_shims(&bin_dir, "so.tilo.new-notes", &commands).unwrap();
+        assert!(!bin_dir.join("notes").exists());
+        assert!(!bin_dir.join("notes.tilo-shim").exists());
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -277,7 +316,7 @@ mod tests {
             })
             .unwrap();
             assert!(bin_dir.join("notes").exists());
-            remove_shims(&bin_dir, &commands).unwrap();
+            remove_shims(&bin_dir, "so.tilo.notes-cli", &commands).unwrap();
             assert!(!bin_dir.join("notes").exists());
             assert!(!bin_dir.join("notes.tilo-shim").exists());
         }

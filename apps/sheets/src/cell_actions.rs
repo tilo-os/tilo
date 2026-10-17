@@ -16,12 +16,13 @@ use crate::workbook::SheetSnapshot;
 pub const MAX_READ_CELLS: usize = 4096;
 
 /// A populated cell with what it shows, for search and sorting.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SearchableCell {
     pub col: u32,
     pub row: u32,
     pub raw: String,
     pub display: String,
+    pub value: CellValue,
 }
 
 /// Every populated cell of `snap` with what it shows, row by row: formulas
@@ -46,6 +47,7 @@ pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
                 row,
                 raw: raw.clone(),
                 display,
+                value: values.get(&(col, row)).cloned().unwrap_or(CellValue::Empty),
             }
         })
         .collect::<Vec<_>>();
@@ -64,6 +66,13 @@ fn sort_key(cell: Option<&SearchableCell>) -> SortKey {
     let Some(cell) = cell else {
         return SortKey::Blank;
     };
+    // Presentation can add currency signs, separators or rounding. Sort
+    // formula results by their value, never by that lossy display string.
+    if cell.raw.starts_with('=')
+        && let CellValue::Number(number) = &cell.value
+    {
+        return SortKey::Number(*number);
+    }
     let shown = if cell.raw.starts_with('=') {
         &cell.display
     } else {

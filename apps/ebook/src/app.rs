@@ -2374,7 +2374,17 @@ impl BooksApp {
     fn on_goto_chapter(&mut self, c: usize) {
         self.chapter = c.min(self.num_chapters().saturating_sub(1));
         self.page = 0;
-        self.selected_block = None;
+        self.scroll_y = 0.0;
+        // A chapter destination supersedes passage and deferred navigation
+        // from the previous chapter, including an unresolved progress seek.
+        self.pending_last_page = false;
+        self.pending_jump_block = None;
+        self.pending_scroll_end = false;
+        self.pending_seek_fraction = None;
+        self.pending_sel_edge = None;
+        self.clear_selection();
+        self.composing = None;
+        self.note_composer.close();
         self.comment_overlay.close();
         self.layout = None;
         self.toc_scroll_to_active = true;
@@ -3342,12 +3352,20 @@ impl BooksApp {
         }
         let span = (piece.end.saturating_sub(piece.start)).clamp(1, tb.char_len);
         let excerpt: String = tb.text.chars().take(span.min(120)).collect();
-        let at = Ebook::paths().annotations.item(&piece.key());
-        self.edit(doc, at.chapter.set(self.chapter));
-        self.edit(doc, at.block.set(tb.index));
-        self.edit(doc, at.start.set(0));
-        self.edit(doc, at.end.set(span));
-        self.edit(doc, at.excerpt.replace(excerpt));
+        // Comments are also passage destinations in the notes drawer and
+        // search. Move their anchors with the highlight, keeping their text
+        // and identity rather than leaving links to the old paragraph.
+        for annotation in self.annotations.iter().filter(|annotation| {
+            annotation.group == group
+                && (annotation.id == piece.id || annotation.kind == AnnoKind::Note)
+        }) {
+            let at = Ebook::paths().annotations.item(&annotation.key());
+            self.edit(doc, at.chapter.set(self.chapter));
+            self.edit(doc, at.block.set(tb.index));
+            self.edit(doc, at.start.set(0));
+            self.edit(doc, at.end.set(span));
+            self.edit(doc, at.excerpt.replace(excerpt.clone()));
+        }
         true
     }
 

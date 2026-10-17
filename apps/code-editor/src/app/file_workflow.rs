@@ -270,26 +270,43 @@ impl CodeApp {
             Some(PortalIntent::OpenFolder) => self.open_project_dir(&path),
             Some(PortalIntent::OpenFile) => self.open_disk_file(&path),
             Some(PortalIntent::SaveAs(node)) => {
-                let name = path.file_name().map_or_else(
-                    || "untitled".to_string(),
-                    |s| s.to_string_lossy().to_string(),
-                );
-                self.session.project.set_file_path(node, &path, &name);
-                if let Some(buf) = self.session.buffer_of_mut(node) {
-                    buf.path = Some(path.clone());
-                    buf.name.clone_from(&name);
-                    buf.language = crate::model::Language::from_path(&name);
-                    // No stamp: this is a destination the user chose, and the
-                    // save that follows is the one they asked for.
-                    buf.stamp = None;
+                if self.session.buffer_of(node).is_none() {
+                    self.finish_file_effect(Err("the buffer is no longer open".into()));
+                    return;
                 }
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.invalidate_search_projection();
-                let snapshot = doc.clone();
-                if self.save_buffer(&snapshot, node, true) {
-                    Ok(())
-                } else {
-                    Err("file could not be saved".into())
+                let Some(text) = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)) else {
+                    self.finish_file_effect(Err("the buffer text is unavailable".into()));
+                    return;
+                };
+                // Keep the original destination and conflict stamp until the
+                // new file exists. A failed Save As must not redirect Save or
+                // Reload away from the file the person was editing.
+                match disk::save(&path, &text, None) {
+                    Ok(stamp) => {
+                        let name = path.file_name().map_or_else(
+                            || "untitled".to_string(),
+                            |s| s.to_string_lossy().to_string(),
+                        );
+                        self.session.project.set_file_path(node, &path, &name);
+                        if let Some(buf) = self.session.buffer_of_mut(node) {
+                            buf.path = Some(path.clone());
+                            buf.name.clone_from(&name);
+                            buf.language = crate::model::Language::from_path(&name);
+                            buf.mark_saved(text, Some(stamp));
+                        }
+                        explorer::refresh(&mut self.sidebar, &self.session.project);
+                        self.invalidate_search_projection();
+                        self.bound_node = None;
+                        self.reset_language_server();
+                        self.refresh_header();
+                        self.note(format!("Saved {name}"), false);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let message = format!("Could not save {}: {error}", path.display());
+                        self.note(&message, true);
+                        Err(message)
+                    }
                 }
             }
             None => Ok(()),

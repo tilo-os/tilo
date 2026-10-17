@@ -602,6 +602,8 @@ fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
+    use tilo_files::native::private as private_fs;
+
     #[test]
     fn secret_debug_never_exposes_password_or_token() {
         let secret = super::Secret {

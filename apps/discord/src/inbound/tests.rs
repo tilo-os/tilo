@@ -300,6 +300,42 @@ fn edits_and_deletes_of_discord_messages_follow_the_map() {
 }
 
 #[test]
+fn deleting_a_discord_post_removes_every_attachment_copy() {
+    let mut g = guild();
+    let mut event = created("dm1", "three files");
+    event.attachments = ["one.txt", "two.txt", "three.txt"]
+        .into_iter()
+        .map(|name| AttachmentInfo {
+            name: name.into(),
+            size: 10,
+            url: format!("https://cdn.discordapp.com/a/{name}"),
+            ..AttachmentInfo::default()
+        })
+        .collect();
+    let posted = plan_created(&g, &event);
+    assert_eq!(posted.files.len(), 3);
+    for (index, file) in posted.files.iter().enumerate() {
+        g.map.push(discord_origin(
+            &format!("m{index}"),
+            &file.post.discord,
+            None,
+        ));
+    }
+    g.map.push(discord_origin("unrelated", "dm2", None));
+    let deleted = plan_deleted(
+        &g,
+        &MessageDeleted {
+            message_id: event.message_id,
+            ..MessageDeleted::default()
+        },
+        &json!({}),
+    );
+    assert_eq!(deleted.deletes, ["m0", "m1", "m2"]);
+    assert!(deleted.removes.is_empty());
+    assert!(deleted.resends.is_empty());
+}
+
+#[test]
 fn a_tilo_message_deleted_in_discord_is_resent_unless_a_linked_moderator_did_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
