@@ -36,7 +36,7 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
                 vault.put(&id, &accounts::Secret::password("replacement-password"));
                 vault.try_save().unwrap();
             }
-            _ => unreachable!(),
+            other => panic!("no change named {other}"),
         }
         let before = root.store().get(&id).cloned();
         release.send(()).unwrap();
