@@ -19231,6 +19231,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-session-record"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "tempfile",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sibling-unlock"
 version = "0.1.0"
 dependencies = [

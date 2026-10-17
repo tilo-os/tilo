@@ -242,7 +242,10 @@ containerfile="$repo/os/Containerfile"
 # The release trust directory (keys/release: the transparency log key, the
 # trust epoch and, after the root ceremony, the root certificate) is staged
 # with the other trust inputs.
-expected_contract=bfc7ff4615e7d58ea4a9aff2cd43ca48cf328ec729e64c5dc2bc8fb747c879c5
+# The flight recorder and tilo-session-report are compiled now (the
+# session-record component): their two rows come from desktop-binaries
+# instead of COPYs of the Python scripts.
+expected_contract=9b83d0a5f687e1c65ccbe746c782945db8deb46cda662f9dde1841c1813783a0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

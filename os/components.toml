@@ -178,6 +178,20 @@ files = [
   { from = "tilo-projector", to = "/usr/libexec/tilo-projector", mode = "0755" },
 ]
 
+# tilo-session records each login through the flight recorder; the report
+# summarises those records. The host packages install the same two programs.
+[[component]]
+name = "session-record"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-session-record"]
+bins = ["tilo-flight-recorder", "tilo-session-report"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-flight-recorder", to = "/usr/libexec/tilo-flight-recorder", mode = "0755" },
+  { from = "tilo-session-report", to = "/usr/libexec/tilo-session-report", mode = "0755" },
+]
+
 # The sandboxed PDF engine process. Every PDF consumer (the PDF viewer,
 # thumbnails) starts it through tilo-pdf, which looks for it here.
 [[component]]
