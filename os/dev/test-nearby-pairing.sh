@@ -101,10 +101,10 @@ vm_a() {
 b_lan_model=virtio-net-pci
 [ "$wake" = 0 ] || b_lan_model=e1000
 # Wait until B's onboarding shows a node whose name contains each fragment.
-# `vm.sh ssh` hands its words to the guest's shell, so each fragment is quoted
+# `vm.sh test` hands its words to the guest's shell, so each fragment is quoted
 # for it.
 b_shows() {
-  vm_b ssh "/usr/libexec/tilo/native-atspi-smoke.sh oobe-text $(printf '%q ' "$@")"
+  vm_b test native-atspi-smoke.sh "oobe-text $(printf '%q ' "$@")"
 }
 vm_b() {
   TILO_RUN="$run_b" TILO_SSH_PORT="${TILO_NEARBY_SSH_B:-2232}" \
@@ -267,7 +267,7 @@ wait_onboarding vm_a
 wait_onboarding vm_b
 
 # A: the ordinary Create path, exactly as the release gate makes it.
-vm_a ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
+vm_a test native-atspi-smoke.sh oobe-actions
 for attempt in $(seq 1 60); do
   vm_a ssh "test -s $identity_dir/primary.json && test -s /var/lib/tilo/device/cert.bin" && break
   [ "$attempt" -lt 60 ] || die "VM A did not create its identity"
@@ -378,7 +378,7 @@ no_privileged_pairing() {
 # Exactly the field failure: the approval arrives, then publishing it is
 # refused with EACCES. The UI must say so and offer the action again.
 sudo_b 'chmod 2750 /var/lib/tilo/enrollment-commits'
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
+vm_b test native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
 b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" refused || note "A's approval did not complete, as expected for a refused commit"
@@ -409,7 +409,7 @@ vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 
 # --- retry: the same UI pairs -----------------------------------------------------
 sudo_b 'chmod 2770 /var/lib/tilo/enrollment-commits'
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
+vm_b test native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
 b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" paired || {
@@ -455,7 +455,7 @@ for each in vm_a vm_b; do
     || die "$each does not record exactly A and B as personal devices: $(cat "$out/$each-personal-devices.json")"
 done
 
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby-done
+vm_b test native-atspi-smoke.sh oobe-nearby-done
 no_privileged_pairing
 vm_b shot paired >/dev/null && cp -f "$run_b/paired.png" "$out/"
 
@@ -514,7 +514,7 @@ for attempt in $(seq 1 120); do
   [ "$attempt" -lt 120 ] || die "B's compositor did not return after signing in again"
   sleep 1
 done
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh post-identity
+vm_b test native-atspi-smoke.sh post-identity
 vm_b shot relogin >/dev/null && cp -f "$run_b/relogin.png" "$out/"
 # The read-only gate the graphical session wrapper runs at login, in the
 # person's own session so their secret store answers.

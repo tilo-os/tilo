@@ -2298,17 +2298,13 @@ COPY \
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
 # The session-context check proves a greetd login runs in the user's SELinux
 # domain and logind session scope, with each launched app in its own scope.
-COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh \
-     os/tests/input-hotplug-check.sh os/tests/installed-admin-actions.sh /usr/libexec/tilo/
+COPY os/tests/session-context-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
-          /usr/libexec/tilo/projection-boot-check.sh \
-          /usr/libexec/tilo/session-context-check.sh \
-          /usr/libexec/tilo/input-hotplug-check.sh \
-          /usr/libexec/tilo/installed-admin-actions.sh
+          /usr/libexec/tilo/session-context-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -3049,9 +3045,7 @@ RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
 # initramfs, which leaves the kernel able to see the LUKS device and unable to
 # open it. Also bundled so an operator can re-run it on a live machine.
 COPY os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
-COPY os/tests/boot_performance_gate.sh /usr/libexec/tilo/boot-performance-gate.sh
 RUN chmod 0755 /usr/libexec/tilo/boot-chain-test.sh \
-        /usr/libexec/tilo/boot-performance-gate.sh \
     && OS_ROOT=/ bash /usr/libexec/tilo/boot-chain-test.sh
 
 # Public marketplace trust input. The private owner key never enters the image
@@ -3070,14 +3064,11 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
 # the production rootfs build rather than a source-tree lint: it inspects the
 # copied binaries, enabled system/user units, FUSE package/config,
 # tmpfiles/ACL seed, and the Files package as installed in the launcher's
-# immutable registry.  It runs with the Tilo build outputs, below. The same
-# script's runtime mode is run after a bootc install + graphical login by
+# immutable registry.  It runs with the Tilo build outputs, below, bind-mounted
+# rather than copied: it and the in-guest smokes are test tooling, which the
+# image does not ship (os/dev/vm.sh test hands them to a booted guest). The
+# same script's runtime mode is run after a bootc install + graphical login by
 # build-image.yml.
-COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/tilo/collaborative-files-image-contract.sh
-COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/tilo/files-atspi-smoke.sh
-COPY crates/session/shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
-COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py
-COPY os/tests/installed_atspi_apps.sh /usr/libexec/tilo/installed-atspi-apps.sh
 
 # Enrolment invariants, likewise at BUILD time. A build container has no
 # /dev/tpm*, which is exactly the path this needs to exercise: the machine with
@@ -3235,7 +3226,8 @@ COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
-RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
+RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
+    chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
     && chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/tilo-greeter \
@@ -3274,12 +3266,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
     && cat /usr/share/tilo/registry-runtime-publisher.hex \
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
-    && chmod 0755 /usr/libexec/tilo/collaborative-files-image-contract.sh \
-        /usr/libexec/tilo/files-atspi-smoke.sh \
-        /usr/libexec/tilo/native-atspi-smoke.sh \
-        /usr/libexec/tilo/atspi-external-client.py \
-        /usr/libexec/tilo/installed-atspi-apps.sh \
-    && OS_ROOT=/ /usr/libexec/tilo/collaborative-files-image-contract.sh image \
+    && OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image \
     # Observe the installed helper and exact signed SDK through its own loader.
     # Optional service-session artifacts absent means no service_sessions proof.
     && /usr/libexec/tilo-verify-account-consumer-capability \

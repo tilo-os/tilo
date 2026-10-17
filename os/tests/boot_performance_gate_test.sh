@@ -295,7 +295,7 @@ if grep -Eq '^(After|Wants)=.*network-online.target|^Before=.*(greetd|graphical)
   exit 1
 fi
 grep -Fq 'After=local-fs.target network.target systemd-tmpfiles-setup.service' "$fs_unit"
-grep -Fq "TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh" \
+grep -Fq 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 "$TILO_GUEST_TESTS/boot-performance-gate.sh"' \
   "$repo/.forgejo/workflows/build-image.yml"
 
 # Native Tilo performs personal setup in the compositor OOBE. The old system

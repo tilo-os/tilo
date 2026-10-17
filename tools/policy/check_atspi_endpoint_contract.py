@@ -193,9 +193,23 @@ def audit(root: Path = ROOT) -> list[str]:
             if not isinstance(values, list) or not values or not all(isinstance(item, str) and item for item in values):
                 errors.append(f"{manifest.relative_to(root)}: AT-SPI acceptance {key} must be a non-empty string list")
 
-    external_client = root / "tools/atspi_external_client.py"
-    if not external_client.is_file():
-        errors.append("tools/atspi_external_client.py: installed external AT-SPI client is absent")
+    errors += external_client_errors(root)
+    return errors
+
+
+def external_client_errors(root: Path) -> list[str]:
+    """The external AT-SPI client is test tooling: the VM harness hands the checkout's copy
+    to a booted guest, and the image must not carry it (no Python ships in the image)."""
+    errors = []
+    client = "tools/atspi_external_client.py"
+    if not (root / client).is_file():
+        errors.append(f"{client}: the external AT-SPI client is absent")
+    harness = root / "os/dev/vm.sh"
+    if not harness.is_file() or f'"{client} ' not in harness.read_text(encoding="utf-8"):
+        errors.append("os/dev/vm.sh: the VM harness does not deliver the external AT-SPI client into the guest")
+    containerfile = root / "os/Containerfile"
+    if containerfile.is_file() and client in containerfile.read_text(encoding="utf-8"):
+        errors.append("os/Containerfile: the image ships the external AT-SPI client, which is test tooling")
     return errors
 
 
