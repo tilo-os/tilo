@@ -551,27 +551,65 @@ enum BarVariant {
     Compact,
 }
 
-/// The Tilo mark: three dots in a row, violet, blue and teal from the
-/// theme's presence hues, centred in `rect`.
+/// The Tilo mark's left bar as the brand's `mark.svg` draws it, in its
+/// 100 × 100 view box: `M10.98 31.85 Q10.979892448752274 27.96648782251284
+/// 14.4 26.12 L20.26 22.97 Q… Z`. The right bar is its mirror image about
+/// the box's centre line and the central block a plain rounded rectangle.
+fn tilo_mark_side() -> vello::kurbo::BezPath {
+    let mut path = vello::kurbo::BezPath::new();
+    path.move_to((10.98, 31.85));
+    path.quad_to(
+        (10.979_892_448_752_274, 27.966_487_822_512_84),
+        (14.4, 26.12),
+    );
+    path.line_to((20.26, 22.97));
+    path.quad_to(
+        (24.843_373_493_975_903, 20.506_024_096_385_54),
+        (24.84, 25.71),
+    );
+    path.line_to((24.84, 74.29));
+    path.quad_to(
+        (24.843_373_493_975_903, 79.493_975_903_614_46),
+        (20.26, 77.03),
+    );
+    path.line_to((14.4, 73.88));
+    path.quad_to(
+        (10.979_892_448_752_274, 72.033_512_177_487_15),
+        (10.98, 68.15),
+    );
+    path.close_path();
+    path
+}
+
+/// The Tilo mark, the brand's own shapes, centred in `rect` with its view
+/// box the largest square that fits. A dark palette takes the brand's dark
+/// variant (`mark-dark.svg`): the light one's pale bars glare there.
 pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    use ui::tokens::PresenceHue;
+    static SIDE: std::sync::LazyLock<vello::kurbo::BezPath> =
+        std::sync::LazyLock::new(tilo_mark_side);
+    let (sides, block) = if theme.tokens.colors.palette.dark {
+        (
+            Color::from_rgb8(0x3b, 0x43, 0x76),
+            Color::from_rgb8(0x6f, 0x82, 0xff),
+        )
+    } else {
+        (
+            Color::from_rgb8(0x9f, 0xa6, 0xe0),
+            Color::from_rgb8(0x2a, 0x3f, 0xd1),
+        )
+    };
     let side = rect.width().min(rect.height());
-    let step = side * 0.3;
-    let radius = side * 0.13;
     let center = rect.center();
-    for (offset, hue) in [
-        (-step, PresenceHue::Violet),
-        (0.0, PresenceHue::Blue),
-        (step, PresenceHue::Teal),
-    ] {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.presence.hue(hue),
-            None,
-            &vello::kurbo::Circle::new((center.x + offset, center.y), radius),
-        );
-    }
+    let view = transform
+        .pre_translate((center.x - side / 2.0, center.y - side / 2.0).into())
+        .pre_scale(side / 100.0);
+    scene.fill(Fill::NonZero, view, sides, None, &*SIDE);
+    let mirrored = view
+        .pre_translate((100.0, 0.0).into())
+        .pre_scale_non_uniform(-1.0, 1.0);
+    scene.fill(Fill::NonZero, mirrored, sides, None, &*SIDE);
+    let block_shape = RoundedRect::new(29.0, 16.0, 71.0, 84.0, 6.0);
+    scene.fill(Fill::NonZero, view, block, None, &block_shape);
 }
 
 /// How the bar's focus last arrived, which decides whether its ring shows.
