@@ -29,11 +29,18 @@ retains it; the existing authenticated, exact-owner observation RPC returns it
 in `admissionJson`. Neither progress streams nor application invocation envelopes
 receive it. Runtime observation debug output redacts evidence and result JSON.
 A separate commitment component checks retained authorization/context fields on
-recovery after the argument-bearing request has been discarded.
+recovery after the argument-bearing request has been discarded. New private
+openings also bind the journal's exact retry request digest, including whether
+a request was present. Recovery compares this signed private binding with the
+stored digest before accepting the row; changing only the stored digest cannot
+substitute the accepted retry. The digest is not added to the public receipt.
 
 Journal format 7 stores evidence in the original admission append, using its
 existing data barrier. There is no second evidence file or additional fsync.
-Older records stay readable and do not acquire synthetic attestations. Host
+Older records stay readable and do not acquire synthetic attestations. Openings
+written before retry-digest binding keep their original commitment encoding;
+they cannot authenticate the separately stored request digest retroactively.
+Removing the binding from a new opening invalidates its signed commitment. Host
 signer custody is shared and cached under `current_device_stamp`; identity
 selection, key, certificate, enrollment and revocation changes invalidate it.
 Certificate time validity is checked on every signature. Authenticated eager
