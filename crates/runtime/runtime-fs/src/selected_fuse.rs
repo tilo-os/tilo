@@ -1,4 +1,4 @@
-//! The selected-file adapter over the existing WorkspaceFs protocol.
+//! The selected-file adapter over the existing `WorkspaceFs` protocol.
 //! It creates no mount and grants no filesystem authority. A canonical signed
 //! worker supplies its already admitted channel and target presentation facts.
 use crate::selected_client::SelectedFileConnection;
@@ -69,7 +69,8 @@ impl SelectedFilesystem {
         let mtime = metadata
             .modified_unix_seconds
             .and_then(|s| u64::try_from(s).ok())
-            .map_or(UNIX_EPOCH, |s| UNIX_EPOCH + Duration::from_secs(s));
+            .and_then(|s| UNIX_EPOCH.checked_add(Duration::from_secs(s)))
+            .unwrap_or(UNIX_EPOCH);
         let directory = ino == ROOT;
         Ok(FileAttr {
             ino,
@@ -236,12 +237,12 @@ impl Filesystem for SelectedFilesystem {
             (ROOT, FileType::Directory, OsStr::new("..")),
             (FILE, FileType::RegularFile, self.name.as_os_str()),
         ];
-        for (index, (ino, kind, name)) in rows
+        for ((ino, kind, name), cookie) in rows
             .iter()
-            .enumerate()
+            .zip(1u64..)
             .skip(usize::try_from(offset).unwrap_or(usize::MAX))
         {
-            if reply.add(*ino, index as u64 + 1, *kind, name) {
+            if reply.add(*ino, cookie, *kind, name) {
                 break;
             }
         }
