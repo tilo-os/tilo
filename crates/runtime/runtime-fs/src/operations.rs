@@ -3233,6 +3233,7 @@ pub(super) mod tests {
         let f = Fixture::new();
         f.bind_removal();
         fs::write(f.source("victim"), b"original unreadable").unwrap();
+        let mut original = fs::File::open(f.source("victim")).unwrap();
         fs::set_permissions(f.source("victim"), fs::Permissions::from_mode(0o000)).unwrap();
         let entry = f.entry("victim");
         f.hooks(Hooks {
@@ -3284,12 +3285,17 @@ pub(super) mod tests {
             0
         );
         assert!(f.store.recoveries().unwrap()[0].acknowledged);
-        // Root fixture validates preserved content after the namespace-only job;
-        // the operation itself never opens a leaf or computes a content digest.
+        // The verifier retains its own read descriptor before chmod; the job
+        // never receives it and cannot reopen the mode-000 restored leaf.
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
         assert_eq!(
-            fs::read(f.source("victim")).unwrap(),
-            b"original unreadable"
+            fs::metadata(f.source("victim")).unwrap().ino(),
+            original.metadata().unwrap().ino()
         );
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"original unreadable");
     }
 
     #[test]
@@ -3930,6 +3936,108 @@ pub(super) mod tests {
             std::io::Error::last_os_error()
         );
     }
+    #[cfg(target_os = "linux")]
+    fn assert_path_only_victim(session: &FsSession, victim: &GrantedEntry) {
+        let source = session.mutation_source(victim, FsRight::Replace).unwrap();
+        let NativeObject::File { descriptor, .. } = source.object else {
+            panic!("actual regular victim descriptor required");
+        };
+        assert!(
+            rustix::fs::fcntl_getfl(&*descriptor)
+                .unwrap()
+                .contains(rustix::fs::OFlags::PATH),
+            "victim lookup must exercise the production O_PATH fallback"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn replacing_save_path_only_write_only_victim_refuses_unreadable_user_attributes() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let f = Fixture::new();
+        f.bind_removal();
+        f.bind_source_key();
+        fs::write(f.source("document"), b"old").unwrap();
+        fs::write(f.source("temporary"), b"new").unwrap();
+        put_attribute(&f.source("document"), b"user.original", b"preserved data");
+        put_attribute(&f.source("temporary"), b"user.temporary", b"temporary data");
+        // This verifier-only descriptor is never given to the session or job.
+        let mut original = fs::File::open(f.source("document")).unwrap();
+        fs::set_permissions(f.source("document"), fs::Permissions::from_mode(0o200)).unwrap();
+        let before = fs::metadata(f.source("document")).unwrap();
+        let temporary = fs::metadata(f.source("temporary")).unwrap();
+        let victim = f.entry("document");
+        assert_path_only_victim(&f.session, &victim);
+        assert!(matches!(
+            f.session.prepare_replace(
+                f.entry("temporary"),
+                f.src.clone(),
+                name("document"),
+                victim,
+            ),
+            Err(FsError::Denied)
+        ));
+        for (path, expected) in [("document", before), ("temporary", temporary)] {
+            let actual = fs::metadata(f.source(path)).unwrap();
+            assert_eq!(
+                (
+                    actual.dev(),
+                    actual.ino(),
+                    actual.uid(),
+                    actual.gid(),
+                    actual.mode()
+                ),
+                (
+                    expected.dev(),
+                    expected.ino(),
+                    expected.uid(),
+                    expected.gid(),
+                    expected.mode()
+                )
+            );
+        }
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"old");
+        assert_eq!(fs::read(f.source("temporary")).unwrap(), b"new");
+        assert!(f.store.recoveries().unwrap().is_empty());
+        assert_eq!(f.store.submissions.load(Ordering::Acquire), 0);
+        assert!(
+            fs::read_dir(f.disk.path().join("root-capture-guard/entries"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        // DAC also checks fgetxattr on a pre-chmod fd. Only after the refusal
+        // and unchanged-mode assertions may the verifier restore read access.
+        original
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        for (file, attribute, expected) in [
+            (&original, c"user.original", b"preserved data".as_slice()),
+            (
+                &fs::File::open(f.source("temporary")).unwrap(),
+                c"user.temporary",
+                b"temporary data".as_slice(),
+            ),
+        ] {
+            let mut value = [0_u8; 64];
+            // SAFETY: verifier-owned fd, NUL-terminated name and live bounded buffer.
+            let length = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    attribute.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            };
+            assert_eq!(length, expected.len() as libc::ssize_t);
+            assert_eq!(&value[..expected.len()], expected);
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn replacing_save_preserves_posix_acl_and_user_attributes_and_removes_temporary_extras() {
@@ -4301,7 +4409,24 @@ pub(super) mod tests {
     fn chown_fixture_tree(path: &std::path::Path, uid: u32, gid: u32) {
         let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         // SAFETY: root fixture construction, owned disposable paths only.
-        assert_eq!(unsafe { libc::chown(name.as_ptr(), uid, gid) }, 0);
+        assert_eq!(
+            unsafe { libc::chown(name.as_ptr(), uid, gid) },
+            0,
+            "chown {path:?} to {uid}:{gid}: {}; credentials: {}; uid map: {}; gid map: {}",
+            std::io::Error::last_os_error(),
+            fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .filter(|line| {
+                    ["Uid:", "Gid:", "Groups:", "Cap", "NoNewPrivs:", "Seccomp:"]
+                        .iter()
+                        .any(|prefix| line.starts_with(prefix))
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            fs::read_to_string("/proc/self/uid_map").unwrap(),
+            fs::read_to_string("/proc/self/gid_map").unwrap(),
+        );
         if path.is_dir() {
             for entry in fs::read_dir(path).unwrap() {
                 chown_fixture_tree(&entry.unwrap().path(), uid, gid);
@@ -4463,14 +4588,19 @@ pub(super) mod tests {
         f.bind_removal();
         f.bind_source_key();
         fs::write(f.source("document"), b"unreadable old").unwrap();
+        let mut original = fs::File::open(f.source("document")).unwrap();
         fs::set_permissions(f.source("document"), fs::Permissions::from_mode(0o0)).unwrap();
         let old = fs::metadata(f.source("document")).unwrap().ino();
         fs::write(f.source("temporary"), b"new").unwrap();
+        let mut saved = fs::File::open(f.source("temporary")).unwrap();
+        let victim = f.entry("document");
+        #[cfg(target_os = "linux")]
+        assert_path_only_victim(&f.session, &victim);
         let (id, updates) = f.run(FsOperation::Replace {
             entry: f.entry("temporary"),
             into: f.src.clone(),
             name: name("document"),
-            victim: f.entry("document"),
+            victim,
         });
         assert_eq!(item(&updates).state, ItemState::Completed);
         let pin = f.store.pin_replacement(&f.session, &id, &f.src).unwrap();
@@ -4486,13 +4616,19 @@ pub(super) mod tests {
         let metadata = fs::metadata(f.source("old-restored")).unwrap();
         assert_eq!(metadata.ino(), old);
         assert_eq!(metadata.permissions().mode() & 0o777, 0);
-        assert_eq!(fs::read(f.source("document")).unwrap(), b"new");
-        // Root fixture checks contents only after the real namespace-only job;
-        // production operation never had a Read grant and never opened bytes.
-        assert_eq!(
-            fs::read(f.source("old-restored")).unwrap(),
-            b"unreadable old"
-        );
+        let published = fs::metadata(f.source("document")).unwrap();
+        assert_eq!(published.ino(), saved.metadata().unwrap().ino());
+        assert_eq!(published.permissions().mode() & 0o777, 0);
+        // Verifier-only read descriptors predate chmod and are never admitted
+        // to the session, whose namespace-only job has no Read grant.
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        saved.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"new");
+        assert_eq!(metadata.ino(), original.metadata().unwrap().ino());
+        bytes.clear();
+        original.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"unreadable old");
     }
 
     fn rights() -> Vec<FsRight> {

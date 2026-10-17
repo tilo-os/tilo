@@ -4,9 +4,9 @@ use super::{
     EntryName, FsError, FsRight, FsSession, GrantedEntry, NativeIdentity, NativeObject, OFlags,
     io_error,
 };
-use std::{collections::BTreeMap, os::fd::AsRawFd};
 #[cfg(target_os = "linux")]
-use std::{ffi::CString, os::fd::OwnedFd};
+use std::ffi::CString;
+use std::{collections::BTreeMap, os::fd::AsRawFd};
 
 #[cfg(target_os = "linux")]
 const VALUE_LIMIT: usize = 65_536;
@@ -27,9 +27,25 @@ fn result(value: libc::ssize_t) -> Result<usize, FsError> {
 #[cfg(target_os = "linux")]
 fn observe(fd: &impl AsRawFd) -> Result<NativeAttributes, FsError> {
     let mut list = vec![0_u8; VALUE_LIMIT];
-    // SAFETY: held original-user descriptor, live bounded writable buffer.
-    let size =
-        result(unsafe { libc::flistxattr(fd.as_raw_fd(), list.as_mut_ptr().cast(), list.len()) })?;
+    // SAFETY: the borrowed descriptor cannot outlive its owner.
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd.as_raw_fd()) };
+    let flags = rustix::fs::fcntl_getfl(borrowed).map_err(|e| io_error(e.into()))?;
+    // Legacy f*xattr rejects O_PATH. Follow only this owned descriptor through
+    // procfs instead of reopening the victim for content access. Kernel xattr
+    // permissions still apply, including refusal of unreadable user attributes.
+    let path = flags
+        .contains(OFlags::PATH)
+        .then(|| CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())))
+        .transpose()
+        .map_err(|_| FsError::StoreUnavailable)?;
+    // SAFETY: held descriptor, owned procfs path and bounded writable buffer.
+    let size = result(unsafe {
+        if let Some(path) = &path {
+            libc::listxattr(path.as_ptr(), list.as_mut_ptr().cast(), list.len())
+        } else {
+            libc::flistxattr(fd.as_raw_fd(), list.as_mut_ptr().cast(), list.len())
+        }
+    })?;
     if size > list.len() {
         return Err(FsError::LimitExceeded);
     }
@@ -55,12 +71,21 @@ fn observe(fd: &impl AsRawFd) -> Result<NativeAttributes, FsError> {
         // SAFETY: owned NUL-terminated metadata name, actual held descriptor and
         // bounded live buffer. This observes xattrs, never file contents.
         let length = result(unsafe {
-            libc::fgetxattr(
-                fd.as_raw_fd(),
-                name.as_ptr(),
-                value.as_mut_ptr().cast(),
-                value.len(),
-            )
+            if let Some(path) = &path {
+                libc::getxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            } else {
+                libc::fgetxattr(
+                    fd.as_raw_fd(),
+                    name.as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                )
+            }
         })?;
         if length > value.len() {
             return Err(FsError::LimitExceeded);
@@ -110,30 +135,15 @@ impl FsSession {
             return Err(FsError::StaleEntry);
         }
         let flags = rustix::fs::fcntl_getfl(&*descriptor).map_err(|e| io_error(e.into()))?;
-        let opened = if flags.contains(OFlags::PATH) {
+        if flags.contains(OFlags::PATH) {
             self.validate(&table, victim.lease(), Some(FsRight::Write))?;
-            Some(
-                rustix::fs::openat(
-                    &*custody.directory,
-                    stage.as_os_str(),
-                    OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                    rustix::fs::Mode::empty(),
-                )
-                .map_err(|e| io_error(e.into()))?,
-            )
-        } else {
-            None
-        };
-        let fd = opened
-            .as_ref()
-            .map_or_else(|| descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
-        // SAFETY: fd remains owned by opened or the actual retained descriptor.
-        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        }
+        let borrowed = &*descriptor;
         let stat = rustix::fs::fstat(borrowed).map_err(|e| io_error(e.into()))?;
         if [stat.st_dev, stat.st_ino] != [identity.device, identity.inode] {
             return Err(FsError::StaleEntry);
         }
-        let attributes = observe(&borrowed)?;
+        let attributes = observe(borrowed)?;
         self.validate(&table, victim.lease(), Some(FsRight::Replace))?;
         custody.check()?;
         let metadata = custody
@@ -164,32 +174,15 @@ impl FsSession {
             ));
         };
         let flags = rustix::fs::fcntl_getfl(&*descriptor).map_err(|e| io_error(e.into()))?;
-        let opened: Option<OwnedFd> = if flags.contains(OFlags::PATH) {
-            // O_PATH cannot perform legacy f*xattr. An independent Write grant
-            // may admit a private WRONLY descriptor; never upgrade to RDONLY.
+        if flags.contains(OFlags::PATH) {
             self.validate(&table, victim.lease(), Some(FsRight::Write))?;
-            Some(
-                rustix::fs::openat(
-                    &*source.parent,
-                    source.name.as_os_str(),
-                    OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                    rustix::fs::Mode::empty(),
-                )
-                .map_err(|e| io_error(e.into()))?,
-            )
-        } else {
-            None
-        };
-        let fd = opened
-            .as_ref()
-            .map_or_else(|| descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
-        // SAFETY: fd remains owned by opened or the actual retained descriptor.
-        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        }
+        let borrowed = &*descriptor;
         let before = rustix::fs::fstat(borrowed).map_err(|e| io_error(e.into()))?;
         if [before.st_dev, before.st_ino] != [identity.device, identity.inode] {
             return Err(FsError::StaleEntry);
         }
-        let attributes = observe(&borrowed)?;
+        let attributes = observe(borrowed)?;
         self.validate(&table, victim.lease(), Some(FsRight::Replace))?;
         let after = source
             .parent

@@ -7,13 +7,19 @@
 )]
 use std::process::Command;
 
+fn fs_binary() -> std::path::PathBuf {
+    // Archived nextest runs relocate the production binary away from Cargo's build path.
+    std::env::var_os("NEXTEST_BIN_EXE_fs")
+        .map_or_else(|| env!("CARGO_BIN_EXE_fs").into(), Into::into)
+}
+
 #[test]
 fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
     let dir = tempfile::tempdir().expect("isolated fixture");
     let cache = dir.path().join("cache");
     let mount = dir.path().join("mount");
     let identity = dir.path().join("identity");
-    let output = Command::new(env!("CARGO_BIN_EXE_fs"))
+    let output = Command::new(fs_binary())
         .env("TILO_IDENTITY_ROOT", &identity)
         .args(["serve", "--require-existing-workspace", "--cache-dir"])
         .arg(&cache)
@@ -32,7 +38,7 @@ fn recovery_only_launch_does_not_create_a_workspace_or_identity() {
 fn status_is_read_only_and_does_not_require_identity() {
     let dir = tempfile::tempdir().expect("isolated fixture");
     let cache = dir.path().join("cache");
-    let output = Command::new(env!("CARGO_BIN_EXE_fs"))
+    let output = Command::new(fs_binary())
         .env("TILO_IDENTITY_ROOT", dir.path().join("identity"))
         .args(["workspace-status", "--cache-dir"])
         .arg(&cache)
@@ -95,7 +101,7 @@ impl Profile {
     }
 
     fn launch(&self, overrides: &[(&str, &str)]) -> std::process::Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_fs"));
+        let mut command = Command::new(fs_binary());
         command
             .args(["serve-primary", "--dry-run", "--admin-binary"])
             .arg(&self.admin)
@@ -200,7 +206,7 @@ fn primary_launch_gives_the_daemon_the_paths_the_authority_check_saw() {
     let text = |path: std::path::PathBuf| path.to_str().expect("UTF-8 fixture").to_string();
     assert_eq!(
         std::fs::canonicalize(&argv[0]).expect("fs path"),
-        std::fs::canonicalize(env!("CARGO_BIN_EXE_fs")).expect("fs path"),
+        std::fs::canonicalize(fs_binary()).expect("fs path"),
         "the daemon is this same fs executable"
     );
     assert_eq!(
