@@ -1286,7 +1286,6 @@ COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
     os/usr/libexec/tilo-verified-update \
     /tilo-components/usr/libexec/
-COPY os/dev/hardware_profile.py /tilo-components/dev/
 COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
@@ -3016,7 +3015,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     done; \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
-    install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
     # -B: the script imports hardware_profile from /run, and its bytecode
     # (which records the checkout's mtime) would otherwise stay in the layer.
     python3 -B /run/tilo-prepare-hardware-profile.py \

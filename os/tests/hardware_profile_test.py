@@ -284,20 +284,17 @@ class HardwareProfileTest(unittest.TestCase):
             for module in ("ath12k", "ath12k_wifi7", "mac80211", "cfg80211", "qrtr-mhi",
                            "pwrseq-qcom-wcn", "pci-pwrctrl-pwrseq"):
                 self.assertIn(module, LENOVO["boot_modules"])
-            parser = self.root / prepare.PARSER_PATH
-            self.assertIn(b"FIELDS_V2", parser.read_bytes())
-            self.assertNotIn(b"\r", parser.read_bytes())
-            installed_spec = importlib.util.spec_from_file_location("installed_hardware_profile", parser)
-            installed_parser = importlib.util.module_from_spec(installed_spec)
-            installed_spec.loader.exec_module(installed_parser)
+            # The image reads its profile with the compiled reader
+            # (tilo-board-successor); no Python parser ships beside it.
+            self.assertFalse((self.root / "usr/lib/tilo/hardware_profile.py").exists())
             definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
-            self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
+            self.assertEqual(hardware_profile.validate_definition(definition)["id"], "lenovo-83ed")
             # The 83ED firmware reports a TPM no Linux driver serves; without
             # this the generator holds sysinit.target for the 45 s device
             # timeout in the initrd and again after switch-root.
             kargs = self.root / prepare.KARGS_PATH
             self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
-            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
+            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, kargs,
                        self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks",
                        *(installed / name for name in NAMES)]

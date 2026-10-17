@@ -133,13 +133,9 @@ class Transport(unittest.TestCase):
         protocol.send(output, self.raw)
         self.assertEqual(output.getvalue(), struct.pack('!I', len(self.raw)) + self.raw)
 
-    def test_canonical_profile_source_maps_only_to_existing_runtime_module(self):
-        module = self.source/'os/dev/hardware_profile.py'
-        module.parent.mkdir(parents=True)
-        module.write_bytes(b'canonical profile implementation\n')
-        files, _ = protocol.validate(protocol.bundle(self.source, 'a'*40, True))
-        self.assertEqual(files['usr/lib/tilo/hardware_profile.py'], module.read_bytes())
-        self.assertNotIn('usr/lib/tilo/uki_hardware_profile.py', protocol.ALLOWLIST)
+    def test_no_profile_module_is_refreshable(self):
+        # The image's hardware-profile reader is compiled; no Python module ships.
+        self.assertFalse(any(path.endswith('.py') for path in protocol.ALLOWLIST))
 
     def test_bad_hash_path_duplicates_and_packet_size_refused(self):
         packet = json.loads(self.raw)
