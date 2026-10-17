@@ -237,7 +237,7 @@ def is_splash(frame: Frame) -> bool:
 
 
 def is_stub(frame: Frame) -> bool:
-    """The stub's tile centred on black: the middle dot of its mark is lit."""
+    """The stub's tile centred on black: the central block of its mark is lit."""
     width, height = frame.size()
     x = (width - STUB_TILE[0]) // 2 + STUB_TILE[0] // 2
     y = (height - STUB_TILE[1]) // 2 + round(STUB_TILE[1] * 0.43)
