@@ -10,13 +10,13 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, device_pairing, identity_admin};
+use tilo_actions::remote::{Pending, community, device_pairing, identity_admin};
 use tilo_actions::{ActionAddress, ActionDescriptor};
 
 use super::BrokerActor;
 use crate::services::{
-    DevicePairingOutcome, DevicePairingRequest, DevicePairingServices, HostServices,
-    IdentityAdminRequest, IdentityAdminServices,
+    CommunityRequest, CommunityServices, DevicePairingOutcome, DevicePairingRequest,
+    DevicePairingServices, HostServices, IdentityAdminRequest, IdentityAdminServices,
 };
 
 /// One installed host-step service.
@@ -24,6 +24,7 @@ use crate::services::{
 pub(super) enum HostSteps {
     Pairing(Arc<dyn DevicePairingServices>),
     Identity(Arc<dyn IdentityAdminServices>),
+    Community(Arc<dyn CommunityServices>),
 }
 
 impl HostSteps {
@@ -31,7 +32,12 @@ impl HostSteps {
     pub(super) fn installed(services: &HostServices) -> Vec<Self> {
         let pairing = services.device_pairing.clone().map(Self::Pairing);
         let identity = services.identity_admin.clone().map(Self::Identity);
-        pairing.into_iter().chain(identity).collect()
+        let community = services.community.clone().map(Self::Community);
+        pairing
+            .into_iter()
+            .chain(identity)
+            .chain(community)
+            .collect()
     }
 
     /// The installed service that answers under `provider`, if any.
@@ -46,6 +52,7 @@ impl HostSteps {
         match self {
             Self::Pairing(_) => device_pairing::PROVIDER,
             Self::Identity(_) => identity_admin::PROVIDER,
+            Self::Community(_) => community::PROVIDER,
         }
     }
 
@@ -54,6 +61,7 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.app_id(),
             Self::Identity(service) => service.app_id(),
+            Self::Community(service) => service.app_id(),
         }
     }
 
@@ -62,6 +70,7 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.descriptors(),
             Self::Identity(service) => service.descriptors(),
+            Self::Community(service) => service.descriptors(),
         }
     }
 
@@ -85,6 +94,12 @@ impl HostSteps {
                 argument,
             }),
             Self::Identity(service) => service.start(&IdentityAdminRequest {
+                room,
+                actor,
+                address,
+                argument,
+            }),
+            Self::Community(service) => service.start(&CommunityRequest {
                 room,
                 actor,
                 address,

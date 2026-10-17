@@ -2358,6 +2358,9 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # copy is the fallback for one it cannot
 # (crates/packaging/package-store/src/interfaces.rs).
 COPY os/usr/share/tilo/fs-capabilities.json os/usr/share/tilo/system-interfaces.toml /usr/share/tilo/
+# The community workspace a computer is in by default: the vendor's site,
+# which /etc/tilo/community.toml overrides (crates/session/shell, community.rs).
+COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
 # Git compares only the stat fields that sync between devices (mtime and
 # size, not inode or ctime), so a synced repository is clean everywhere
 # without re-hashing; see the snippet and docs/device-local-state.md.

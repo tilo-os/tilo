@@ -896,6 +896,42 @@ impl ShellNetwork {
         )))
     }
 
+    /// Enroll into `room` no second time while enrollment `id` runs, and
+    /// install it once it completes, as a shared room's is, when `install`
+    /// (else its caller polls it).
+    pub(super) fn finish_when_enrolled(
+        &self,
+        room: RoomId,
+        id: u64,
+        install: bool,
+    ) -> Result<(), String> {
+        self.relay_rooms
+            .joining
+            .lock()
+            .map_err(|_| "host room enrollments are unavailable")?
+            .insert(room, id);
+        if !install {
+            return Ok(());
+        }
+        self.relay_rooms
+            .shared
+            .lock()
+            .map_err(|_| "shared room enrollments are unavailable")?
+            .push(id);
+        Ok(())
+    }
+
+    /// The enrollment into `room` still running, if any.
+    pub(super) fn enrolling_into(&self, room: RoomId) -> Option<u64> {
+        let id = *self.relay_rooms.joining.lock().ok()?.get(&room)?;
+        self.native_enrollment
+            .attempts
+            .lock()
+            .ok()?
+            .contains_key(&id)
+            .then_some(id)
+    }
+
     /// Whether a shared room's enrollment is still to be installed, never
     /// waiting: a pass installing them holds the list meanwhile.
     pub(super) fn shared_rooms_pending(&self) -> bool {

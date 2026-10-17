@@ -491,6 +491,9 @@ impl<'a> ChromeNotifications<'a> {
 impl NotificationHost for ChromeNotifications<'_> {
     fn actions_for(&self, notification: &Notification) -> Vec<(String, String)> {
         let state = self.chrome.borrow();
+        if let Some(actions) = state.device_asking_actions(notification.id) {
+            return actions;
+        }
         let available = state.alarm_actions_available();
         if available && state.alarm_action_authorized(notification) {
             let snoozed = notification
@@ -507,6 +510,14 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn invoke_action(&self, id: u64, key: &str) {
+        if matches!(key, "approve" | "decline")
+            && self
+                .chrome
+                .borrow_mut()
+                .answer_device_asking(id, key == "approve")
+        {
+            return;
+        }
         let action = match key {
             "snooze" => crate::notifications::ScheduledAction::Snooze,
             "dismiss" => crate::notifications::ScheduledAction::Dismiss,

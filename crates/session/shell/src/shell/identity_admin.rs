@@ -225,6 +225,16 @@ impl Store {
     }
 }
 
+/// The session's device fleets: the host-side identity store that keeps
+/// the person's root and the devices trusted under it.
+///
+/// # Errors
+///
+/// Why the person's identity directory cannot be found.
+pub(crate) fn fleet_store() -> Result<crate::device_fleet::DeviceFleetStore, String> {
+    Ok(Store::from_env()?.fleets())
+}
+
 /// The host's identity steps.
 pub(crate) struct IdentityAdmin {
     runner: Runner,

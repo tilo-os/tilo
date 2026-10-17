@@ -169,6 +169,7 @@ pub(super) async fn restart_after_offline_snapshot(
     commands
         .send(crate::network::actor::NetCmd::NativeConnect(
             crate::network::actor::native_ingress::Connect::new(owner.clone(), room).unwrap(),
+            None,
         ))
         .await
         .unwrap();

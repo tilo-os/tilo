@@ -366,7 +366,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.confirmation = ConfirmationPolicy::Confirm;
             contract.retry = RetryPolicy::AtMostOnce;
         }
-        "peer.invite" | "peer.connect" => {
+        "peer.invite" | "peer.connect" | "peer.pair-device" => {
             contract = ActionContract::view();
             contract.kind = ActionKind::Outside;
         }
@@ -427,9 +427,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
 
 pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
     match id {
-        "shortcut-help.toggle" | "overview.toggle" | "peer.invite" | "peer.connect" => {
-            tilo_actions::OperationKind::View
-        }
+        "shortcut-help.toggle"
+        | "overview.toggle"
+        | "peer.invite"
+        | "peer.connect"
+        | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
         | "workspace.create" | "strip.create" | "strip.rename" => {
@@ -1940,6 +1942,15 @@ impl Action {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
                 );
+                Ok(())
+            },
+        ),
+        chrome(
+            "peer.pair-device",
+            "search-action-pair-device",
+            "search-action-pair-device-subtitle",
+            |st, _| {
+                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::PairDevice);
                 Ok(())
             },
         ),
@@ -3578,7 +3589,7 @@ impl ActionsProvider {
                 (on_open, Some(begin))
             } else if matches!(
                 action.id,
-                "peer.invite" | "peer.connect" | "peer.invite.named"
+                "peer.invite" | "peer.connect" | "peer.invite.named" | "peer.pair-device"
             ) {
                 let action_id = action.id;
                 let on_open = Rc::new(
@@ -3603,7 +3614,7 @@ impl ActionsProvider {
                                     "current workspace authority no longer permits {action_id}"
                                 )));
                             }
-                            if action_id != "peer.connect"
+                            if !matches!(action_id, "peer.connect" | "peer.pair-device")
                                 && let Some(refusal) =
                                     crate::shell::invite_policy::active_invite_route(&state)
                                         .map_or(Some("no active workspace"), |route| {
@@ -3618,6 +3629,9 @@ impl ActionsProvider {
                                 }
                                 "peer.connect" => {
                                     crate::shell::overlay_host::PeerSyncAction::PromptConnect
+                                }
+                                "peer.pair-device" => {
+                                    crate::shell::overlay_host::PeerSyncAction::PairDevice
                                 }
                                 "peer.invite.named" => {
                                     let name = name_invited_peer(&state, args)?;

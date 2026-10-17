@@ -1,0 +1,6 @@
+# The community workspace a Tilo computer is in by default, as its person:
+# the home workspace of this site, joined through the site's admission door.
+# The person leaves it from the workspace switcher and can join it again in
+# Settings. An administrator names another site, or none (an empty `site`),
+# in /etc/tilo/community.toml, which wins over this file.
+site = "https://tilo.coffee/"

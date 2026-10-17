@@ -738,6 +738,17 @@ overview-share-with-many = { $count ->
     }
 overview-share-can-edit = { $with } · darf bearbeiten
 overview-new-workspace = Neuer Arbeitsbereich
+overview-join-workspace = Einem Arbeitsbereich beitreten…
+overview-leave-workspace = Verlassen
+# Der Arbeitsbereich einer Website im Umschalter: die Community dieses Computers
+# oder die Website, von der er kommt.
+overview-site-community = Community · { $site }
+overview-site-web = Im Web
+overview-site-here = { $count ->
+    [one] 1 Person hier
+   *[other] { $count } Personen hier
+}
+a11y-leave-workspace = { $name } verlassen
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }
@@ -1335,8 +1346,10 @@ search-action-room-activity-open = Aktivität im Arbeitsbereich anzeigen
 search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änderungen, Berechtigungen, wer was wann getan hat
 search-action-peer-invite = Mitwirkende einladen …
 search-action-peer-invite-subtitle = Eine Einladung prüfen, bevor sie erstellt wird
-search-action-peer-connect = Dialog zum Beitreten öffnen
-search-action-peer-connect-subtitle = Eine Einladung von Mitwirkenden eingeben und prüfen
+search-action-peer-connect = Einem Arbeitsbereich beitreten…
+search-action-peer-connect-subtitle = Eine Website wie tilo.coffee, ein Arbeitsbereichslink oder eine Einladung
+search-action-pair-device = Neues Gerät koppeln
+search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen
 search-action-tab-new-terminal-here = Neuer Terminal-Tab hier
 search-action-tab-new-terminal-here-subtitle = Ein Terminal als Tab in der fokussierten Fenstergruppe öffnen
 search-action-window-new-terminal = Neues Terminalfenster
@@ -1861,7 +1874,7 @@ peer-sync-title-review = Einladung prüfen
 peer-sync-title-invite = Jemanden einladen
 peer-sync-title-join = Einem Arbeitsbereich beitreten
 peer-sync-title-workspace-invite = Einladung zum Arbeitsbereich
-peer-sync-paste-token = Einladungscode einfügen oder eingeben
+peer-sync-paste-token = Eine Website eingeben oder einen Arbeitsbereichs- oder Einladungslink einfügen
 peer-sync-identity-copied = Kopiert
 peer-sync-invite-failed = Einladung fehlgeschlagen: { $error }
 peer-sync-identity-unavailable = Identität nicht verfügbar: { $error }
@@ -1958,12 +1971,15 @@ peer-sync-identity-remembered = Verifizierte gespeicherte Identität: { $fingerp
 peer-sync-identity-new = Neue Identität gebunden: { $fingerprint }
 peer-sync-invite-anyone = Jeder mit dieser Einladung
 peer-sync-invite-received = Einladung erhalten
-peer-sync-paste-invite-hint = Füge die Einladung ein, die man dir geschickt hat.
+peer-sync-paste-invite-hint = Etwa tilo.coffee oder einen Link, den man dir geschickt hat.
+peer-sync-join-site = Tritt dem Arbeitsbereich auf { $host } bei
+peer-sync-join-invitation-link = Eine Einladung in einen Arbeitsbereich auf { $host }
+peer-sync-join-invitation = Eine Einladung in einen Arbeitsbereich
 peer-sync-token-characters = { $token }, { $count ->
     [one] 1 Zeichen
    *[other] { $count } Zeichen
 }
-peer-sync-token-incomplete = Noch keine vollständige Einladung
+peer-sync-token-incomplete = Noch keine Website und kein Link
 
 # Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
 doc-open-failed = { $name } konnte nicht geöffnet werden
@@ -2931,3 +2947,36 @@ strip-switcher-rename = Leiste umbenennen
 strip-switcher-name-placeholder = Name der Leiste
 strip-switcher-lounge-placeholder = Lounge
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
+
+
+## The community workspace's steps (Settings).
+community-resource = Community-Arbeitsbereich
+community-status = Community-Arbeitsbereich
+community-status-subtitle = Ob dieser Computer in seinem Community-Arbeitsbereich ist
+community-join = Dem Community-Arbeitsbereich wieder beitreten
+community-join-subtitle = Dem verlassenen Arbeitsbereich wieder beitreten, als du
+community-leave = Community-Arbeitsbereich verlassen
+community-leave-subtitle = Auf diesem Computer verlassen; in den Einstellungen kannst du wieder beitreten
+
+## Pairing a new device of the person.
+pairing-title = Neues Gerät koppeln
+pairing-making = Link wird erstellt…
+pairing-waiting = Warte auf dein neues Gerät…
+pairing-copy-link = Link kopieren
+pairing-done-button = Fertig
+pairing-copied = Kopiert
+pairing-way-phone = Smartphone
+pairing-way-phone-how = Mit der Kamera scannen
+pairing-way-computer = Tilo-Computer
+pairing-way-computer-how = Den Link in „Einem Arbeitsbereich beitreten…“ einfügen
+pairing-way-browser = Browser
+pairing-way-browser-how = Den Link öffnen
+pairing-safe = Dieser Computer fragt dich zuerst und zeigt einen passenden Code. Der Link funktioniert einmal, 10 Minuten lang.
+pairing-qr-alt = Kopplungslink für dein neues Gerät
+pairing-done = { $device } ist jetzt eines deiner Geräte.
+pairing-asks-title = Ein Gerät möchte du sein
+pairing-asks-body = { $device }{ $from } · { $when } · Wenn du bestätigst, handelt es als du. Bestätige nur, wenn es { $code } zeigt.
+pairing-asks-from = {" "}({ $country })
+pairing-approve = { $code } bestätigen
+pairing-decline = Ablehnen
+pairing-answer-failed = Das Gerät wurde nicht beantwortet: { $error }

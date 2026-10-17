@@ -121,8 +121,16 @@ impl ShellNetwork {
             return Err("native topic queue unavailable".into());
         }
         let connect = native_ingress::Connect::new(owner, room)?;
+        // A room joined through a site is reached over its host's HTTPS
+        // routes; every other over the iroh endpoint its hint names.
+        let https = match self.hosted_sites.origin(room) {
+            Some(origin) => Some(crate::network::actor::HttpsRoute(
+                super::hosted_sites::HostHttp::new(&origin)?,
+            )),
+            None => None,
+        };
         self.cmd_tx
-            .try_send(NetCmd::NativeConnect(connect))
+            .try_send(NetCmd::NativeConnect(connect, https))
             .map_err(|_| "native relay queue unavailable".into())
     }
     pub(super) fn native_document_committed(&self, msg: &NeighbourMsg) -> bool {

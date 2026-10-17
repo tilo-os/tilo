@@ -119,7 +119,36 @@ impl ShellNetwork {
             PeerSyncRequest::IssueInvitation(terms) => self
                 .issue_invitation(workspace, &terms)
                 .map(PeerSyncResponse::Message),
-            PeerSyncRequest::AcceptInvite(token) => self.accept_peer_invitation(workspace, &token),
+            PeerSyncRequest::AcceptInvite(text) => self.join_from_field(workspace, &text),
+            PeerSyncRequest::LeaveSite(room) => self
+                .leave_site(room)
+                .map(|()| PeerSyncResponse::Message(room.to_string())),
+            PeerSyncRequest::InviteDevice => {
+                self.invite_device()
+                    .map(|invite| PeerSyncResponse::PairingInvite {
+                        link: invite.link,
+                        expires_at_ms: invite.expires_at_ms,
+                    })
+            }
+            PeerSyncRequest::DevicesAsking => self.devices_asking().map(|asking| {
+                PeerSyncResponse::DevicesAsking(
+                    asking
+                        .into_iter()
+                        .map(
+                            |device| crate::shell::peer_sync_overlay::DeviceAskingSummary {
+                                digest: device.digest,
+                                label: device.label,
+                                code: device.code,
+                                requested_at_ms: device.requested_at_ms,
+                                country: device.country,
+                            },
+                        )
+                        .collect(),
+                )
+            }),
+            PeerSyncRequest::AnswerDevice { digest, approve } => self
+                .answer_device(digest, approve)
+                .map(|()| PeerSyncResponse::Message(String::new())),
             PeerSyncRequest::PollEnrollment(id) => self.poll_enrollment(id),
             PeerSyncRequest::CancelEnrollment(id) => self.cancel_enrollment(id),
             PeerSyncRequest::ListPendingInvitations => {

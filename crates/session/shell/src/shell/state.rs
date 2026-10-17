@@ -4216,12 +4216,17 @@ impl WorkspaceTree {
     }
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
-        let ws_id = WorkspaceId::new();
-        let strip_id = StripId::new();
         // A workspace the user just created is a room that now exists;
         // it gets its identity at the same moment it gets its id, not
         // the first time someone tries to share it.
-        let room = RoomId::new();
+        self.append_workspace_for_room(name, RoomId::new())
+    }
+
+    /// Append a workspace named `name` showing `room`, a room this device
+    /// holds already (one the person left here and came back to).
+    pub fn append_workspace_for_room(&mut self, name: &str, room: RoomId) -> WorkspaceId {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
         let mut ws = Workspace {
             id: ws_id,
             name: name.into(),

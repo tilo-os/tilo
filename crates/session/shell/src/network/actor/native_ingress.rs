@@ -13,6 +13,8 @@ use tilo_peer_state::join::TransportHint;
 
 struct Route {
     connect: Connect,
+    /// The host's HTTPS routes, for a host that publishes no iroh address.
+    https: Option<super::HttpsRoute>,
     serial: u64,
     pending: Option<tokio::task::JoinHandle<()>>,
 }
@@ -181,7 +183,7 @@ impl ActorState {
             .send(*request);
     }
 
-    pub(super) fn native_connect(&mut self, connect: Connect) {
+    pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
         let ws = crate::shell::network::room_topic_id(connect.room());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
@@ -195,6 +197,7 @@ impl ActorState {
             ws,
             Route {
                 connect,
+                https,
                 serial: self.native_routes.serial,
                 pending: None,
             },
@@ -243,10 +246,25 @@ impl ActorState {
             let key = identity.device_signing_key.clone();
             let tx = self.internal_tx.clone();
             let serial = route.serial;
+            let https = route.https.clone();
             route.pending = Some(tokio::spawn(async move {
-                let result =
-                    tilo_joined_room::session::dial(endpoint, ws, &hint, cert, key, revocations)
-                        .await;
+                let result = match https {
+                    Some(super::HttpsRoute(http)) => {
+                        tilo_joined_room::session::dial_https(
+                            http,
+                            ws,
+                            &hint,
+                            cert,
+                            key,
+                            revocations,
+                        )
+                        .await
+                    }
+                    None => {
+                        tilo_joined_room::session::dial(endpoint, ws, &hint, cert, key, revocations)
+                            .await
+                    }
+                };
                 let _ = tx
                     .send(InternalEvent::NativeHostConnected {
                         ws,

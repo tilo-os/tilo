@@ -76,7 +76,22 @@ fn cancel_pending(owner: &NativeWorkspaceOwner, local: WorkspaceId) -> Result<()
 pub struct Command {
     attempt: Attempt,
     invitation: String,
+    via: Via,
     receiver: watch::Receiver<bool>,
+}
+
+/// How an enrollment reaches the host that issued its invitation.
+#[derive(Clone, Default)]
+pub(crate) enum Via {
+    /// The host's iroh endpoint, which the invitation names.
+    #[default]
+    Iroh,
+    /// The host's HTTPS routes, for a host that publishes no iroh address,
+    /// with what its admission door gave when the invitation came from one.
+    Https {
+        http: Arc<dyn tilo_relay_client::HttpClient>,
+        door: Option<tilo_relay_session::workspace_join::DoorAdmission>,
+    },
 }
 impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,6 +103,7 @@ pub(crate) fn command(
     local: WorkspaceId,
     identity_topic: u64,
     invitation: String,
+    via: Via,
 ) -> Result<(Command, Attempt), String> {
     if invitation.len() > 384 * 1024 {
         return Err("native invitation exceeds bound".into());
@@ -113,6 +129,7 @@ pub(crate) fn command(
         Command {
             attempt: attempt.clone(),
             invitation,
+            via,
             receiver,
         },
         attempt,
@@ -153,13 +170,17 @@ impl Registry {
             return;
         };
         self.tasks.push(tokio::spawn(async move {
-            let Command { attempt, invitation, mut receiver } = command;
+            let Command { attempt, invitation, via, mut receiver } = command;
+            let client = match via {
+                Via::Iroh => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
+                Via::Https { http, door } => tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door),
+            };
             let result = if *receiver.borrow() { Err("native enrollment cancelled".into()) } else {
                 tokio::select! {
                     biased;
                     _ = receiver.changed() => Err("native enrollment cancelled".into()),
                     value = tokio::time::timeout(Duration::from_secs(60), tilo_joined_room::enroll::prepare_and_complete(
-                        tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint), identity, attempt.identity_topic,
+                        client, identity, attempt.identity_topic,
                         Some(attempt.local), invitation, attempt.owner.clone())) => value.unwrap_or_else(|_| Err("native enrollment deadline elapsed; proof retained for exact retry".into())),
                 }
             };

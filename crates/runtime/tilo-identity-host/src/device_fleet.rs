@@ -539,6 +539,66 @@ impl DeviceFleetStore {
         Ok(fleet)
     }
 
+    /// The approver of `identity_id`'s new devices at the hosts the person
+    /// shares: the person's root, signing only member-approval commands
+    /// (which requests wait, and the answer to one). Certificates are issued
+    /// by [`Self::certify_paired_device`] alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity cannot be loaded.
+    pub fn pairing_approver(&self, identity_id: &str) -> io::Result<PairingApprover> {
+        let (root, profile) = self.identity(identity_id)?;
+        Ok(PairingApprover {
+            root: Arc::new(root),
+            user_public_key: profile.user_public_key,
+        })
+    }
+
+    /// Root-sign the certificate a new device of `identity_id` asked for
+    /// with `request` (it showed the person its pairing code, and they
+    /// approved it on this device), as a browser of theirs, and keep it
+    /// with the fleet so the person's devices list it and can revoke it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity cannot sign, the request does not
+    /// verify or names another person or a revoked device, or the fleet
+    /// cannot be saved.
+    pub fn certify_paired_device(
+        &self,
+        identity_id: &str,
+        request: &tilo_user_identity::CertificationRequest,
+        now_ns: u64,
+    ) -> io::Result<DeviceCert> {
+        let (root, profile) = self.identity(identity_id)?;
+        let fleet = self.load(identity_id)?;
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in fleet.revocations {
+            revocations
+                .insert(entry)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        }
+        let policy = tilo_user_identity::CertificationPolicy::browser();
+        let mut cert = tilo_user_identity::prepare_device_cert(
+            request,
+            profile.user_public_key,
+            &policy,
+            &revocations,
+            now_ns,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        cert.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        tilo_user_identity::verify_issued_cert(request, &cert, &policy, &revocations, now_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        self.insert_certificate(identity_id, cert.clone())?;
+        Ok(cert)
+    }
+
     pub(crate) fn identity(
         &self,
         identity_id: &str,
@@ -1121,5 +1181,34 @@ mod tests {
         );
         let saved = fs::read_to_string(store.path(&identity_id)).expect("fleet file");
         assert!(!saved.contains("consumed_enrollments"), "{saved}");
+    }
+}
+
+/// The person's root as the approver of their new devices at a host they
+/// share ([`DeviceFleetStore::pairing_approver`]): it signs member-approval
+/// commands and nothing else, so no certificate or revocation can be made
+/// through it.
+#[derive(Clone)]
+pub struct PairingApprover {
+    root: Arc<runtime_identity::SigningIdentity>,
+    user_public_key: [u8; 32],
+}
+
+impl collab_types::signer::DeviceSigner for PairingApprover {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.user_public_key
+    }
+
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        let signed = if message.starts_with(tilo_relay_protocol::certify::MEMBER_APPROVAL_LABEL) {
+            self.root
+                .sign(&message)
+                .map_err(|error| collab_types::signer::SignError(error.to_string()))
+        } else {
+            Err(collab_types::signer::SignError(
+                "the pairing approver signs approval commands only".into(),
+            ))
+        };
+        Box::pin(std::future::ready(signed))
     }
 }
