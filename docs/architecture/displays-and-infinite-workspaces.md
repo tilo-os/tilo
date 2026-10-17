@@ -18,7 +18,7 @@ top-left in the physical monitor island; negative authoring coordinates are
 translated as a group for the renderer without changing adjacency.
 
 The primary output determines where login and system prompts first appear, and
-carries the workspace wheel and the full top bar; every other display gets a
+carries the full top bar; every other display gets a
 compact top bar along its own top edge. It does **not** own a workspace.
 
 ## Each display holds its own windows

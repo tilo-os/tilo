@@ -18,7 +18,7 @@ behind each binding, and how every transition moves.
 
    the frame:          maximize / restore           Super+↑ / ↓
    the plane you see:  windows along strips, spread across your displays
-   one level out:      workspaces, on the wheel     Super+Page Up / Page Down
+   one level out:      workspaces                   Super+Page Up / Page Down
    the glass:          which display                Alt+Super + arrow
 ```
 
@@ -26,7 +26,7 @@ A workspace is a **desk**: its strips stack top to bottom, a strip's window
 groups run left to right, and each display is a window onto part of that desk
 (every display shows the same workspace and holds its own groups; see
 [displays-and-infinite-workspaces.md](displays-and-infinite-workspaces.md)).
-Workspaces are separate desks on a wheel. Nothing overlaps and nothing floats.
+Workspaces are separate desks, stacked in order. Nothing overlaps and nothing floats.
 
 Every input device says the same three things:
 
@@ -77,10 +77,10 @@ unless marked fixed.
 | Nth / first / last group of the strip | `window.focus-nth` (`index`) | Ctrl+Super+1…9, Super+Home / End | — | click | 1…9 today |
 | Strip above / below | `strip.focus-previous` / `-next` | Ctrl+Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today |
 | Nth strip, from the top | `strip.focus-nth` (`index`) | Super+1…9 | — | strip ribbon | today |
-| Previous / next workspace | `workspace.previous` / `-next` | Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
+| Previous / next workspace | `workspace.previous` / `-next` | Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | strip switcher | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
-| Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
+| Strip switcher | — | Super+S (fixed), then ↑ / ↓, Enter, F2 rename, Esc | — | hover-aim the right-edge strip ribbon; click in the card | today |
 | Recent windows | — (a held modal) | Alt+Tab, Alt+` (fixed) | — | — | today |
 
 ### Discover tab operations
@@ -100,7 +100,7 @@ and Shift+F10 keys continue to reach the app's resource menu.
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
-| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | drag onto a wheel-disc entry (spring-loaded, 600 ms) | planned; one tab today via `tab.move` |
+| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
 A workspace is the sandbox and sharing boundary. Carrying a group there moves
@@ -120,11 +120,11 @@ would show it; a chord opens the sheet and never bypasses it.
 | New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
 
 **Maximize** makes the group fill its display's work area. The top bar and the
-workspace wheel stay, because they say where you are; the group's title,
+strip ribbon stay, because they say where you are; the group's title,
 restore and close chips appear when the pointer nears its top edge. **Full
 screen** hides all chrome on that display. The two are separate states today:
-a maximized group stops beside the wheel, where the strip's first window
-starts, and only a client's full screen covers it. Both still hold one slot
+a maximized group stops at the leading edge gutter, where the strip's first
+window starts, and only a client's full screen covers it. Both still hold one slot
 for the whole desktop; each display getting its own, so a group full screen on
 a projector leaves the laptop's chrome alone, is planned.
 
@@ -157,18 +157,17 @@ resizes, with a hit area at least 24 px wide under touch.
 ## Pointer
 
 - **Tab**: drag to reorder, onto another group to join it, into a gap for a new
-  group, onto another strip, display, overview preview or wheel-disc entry.
+  group, onto another strip, display or overview preview.
 - **Tab-bar ground** (the empty part of the bar): drag moves the whole group to
   the same targets; double-click maximizes.
 - **Right edge of a group**: drag resizes; the width snaps to ⅓, ½ and ⅔ of
   the display within 12 px of one.
 - **Super + drag** anywhere on a window moves its group; Super + right-drag
   resizes it. Super chords are shell-owned, so no app loses a binding.
-- **Wheel**: over the tab bar it pans the strip; Super+wheel steps windows;
-  over the wheel disc it turns the disc.
+- **Wheel**: over the tab bar it pans the strip; Super+wheel steps windows.
 - **Every drop target is drawn while it would accept**: an insertion bar in a
   gap, a lift on a group to join, the target strip's ribbon segment, the target
-  display's outline, a wheel-disc entry. Dragging against a display's outer
+  display's outline. Dragging against a display's outer
   edge scrolls that lane, faster the closer to the edge; resting a drag on a
   background tab for half a second brings that tab to the front.
 
@@ -204,8 +203,11 @@ focus; one summoned by pointer or fingers opens on the display under them.
   is a drop target and a drag source. Entering zooms each window from where it
   is drawn to its card, tracking a pinch while the fingers are down; leaving
   reverses it.
-- **Workspace wheel** (Super+S): the disc, enlarged and navigable with ↑ / ↓
-  and Enter. It is where a dragged group goes to change workspace.
+- **Strip switcher** (Super+S, or hover-aim the strip ribbon): the ribbon
+  expands into a card listing the workspace's strips — names, avatars of who
+  is on each, click to switch, + New strip, rename — and a Workspaces section
+  to switch workspace or add one. Keyboard: ↑ / ↓, Enter, F2 renames, Esc
+  closes.
 - **Window switcher** (Alt+Tab): most recently used first, every display,
   shown once Alt is held 120 ms.
 - **Strip ribbon**: the right edge of the content, one segment per strip
@@ -264,8 +266,7 @@ shortcut) and `Motion::context` for what only says where something went
 | Overview in / out | each window zooms between its live rect and its card | lands at once |
 
 The workspace switch swaps the desk's content in place today; the vertical
-desk slide that should carry its direction cue, and the wheel turning with a
-keyboard switch, are not drawn yet (#5248).
+desk slide that should carry its direction cue is not drawn yet (#5248).
 
 **Reduced motion** (`theme.reduce_motion`) stays the global override: it
 collapses every duration to 0 and jumps springs to their targets, whatever
@@ -307,7 +308,7 @@ Small PRs, each carrying its action, chord, test and doc row together:
 
 ## Open questions
 
-1. Four-finger workspaces are vertical, because the wheel is. macOS and
+1. Four-finger workspaces are vertical, because the workspace list is. macOS and
    Windows users expect horizontal. Keep vertical?
 2. Decided 2026-10-17: Super+↑ / ↓ are maximize and restore, as on Windows and
    GNOME; strips moved to Ctrl+Super+↑ / ↓ and Super+1…9, and windows by

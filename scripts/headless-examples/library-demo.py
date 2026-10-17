@@ -18,7 +18,11 @@ with TiloClient.spawn_headless() as tilo:
         print(f"  {t.name}  centre={t.center}")
 
     # Drive the UI:
-    tilo.click("wheel_disc")
+    tilo.modifiers(logo=True)
+    tilo.key("s")               # Super+S → strip switcher
+    tilo.modifiers()
+    tilo.click("strip_switcher")
+    tilo.key("Escape")          # close the switcher again
     tilo.modifiers(logo=True)
     tilo.key("Space")           # Super+Space → machine-wide search
     tilo.modifiers()            # release modifiers

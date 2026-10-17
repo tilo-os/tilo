@@ -6,7 +6,7 @@
 //! Fire-and-forget animations (fades, spawns, snaps) use `Animated` /
 //! `Transition` — they are wall-clock parametric, so a dropped frame skips
 //! rather than slows. Interactive gestures that need velocity continuity
-//! across inputs (the workspace wheel) use `Spring`, fed the real frame dt.
+//! across inputs (the workspace slide) use `Spring`, fed the real frame dt.
 
 pub mod animated;
 pub mod idle_fade;

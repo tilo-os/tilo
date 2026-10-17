@@ -714,6 +714,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().window_switcher_active() {
         return true;
     }
+    // The strip switcher opened by Super+S, or naming a strip: arrows,
+    // Enter, typed letters and Escape are its.
+    if fb.host().strip_switcher_takes_keys() {
+        return true;
+    }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();
@@ -741,6 +746,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
     chrome_captures_input(fb)
         || fb.host().maximized_chrome_captures_pointer()
+        || fb.host().strip_switcher_captures_pointer()
         || fb.host().top_bar_captures_pointer()
         || fb.host().notification_banner_captures_pointer()
 }

@@ -492,7 +492,7 @@ image = "registry.tilo.so/tilo/tilo-builder@sha256:b1107264972dda1416a122e58c54f
 requires = ["arch=x86_64"]
 wrapper = ["bash", "tools/test-env.sh"]
 packages = ["ebook", "shell", "tilo-ui"]
-args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))"]
+args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))"]
 inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 cost = "minutes"
@@ -1435,7 +1435,7 @@ default = false
 name = "nightly-arm64-goldens"
 image = "registry.tilo.so/tilo/tilo-builder@sha256:b1107264972dda1416a122e58c54f50b12bdb9cb442fb5a40d219839892f7cf9"
 requires = ["arch=arm64"]
-run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'"
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 writable_sources = true
 on = ["schedule:0 3 * * *", "dispatch"]

@@ -1,6 +1,6 @@
 # Spatial Compositor Design
 
-The compositor is a single Rust binary, `shell`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, wheel disc, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
+The compositor is a single Rust binary, `shell`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, strip switcher, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
 
 ## Modes and backends
 
@@ -295,7 +295,7 @@ The Wayland state is decoupled from the graphical backend so the compositor's lo
 
 The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
 
-1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
+1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, strip switcher, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are imported on the presenting device (`shell::gpu_frames`), once per client buffer, and drawn into Vello's image atlas straight from the client's buffer, which the compositor holds until the last frame that drew it was presented.
 3. Hand the scene to the presenter — the render thread where the backend
    supports one, inline otherwise. It either presents into a winit window
@@ -352,15 +352,14 @@ client-reported damage, from `wl_surface.damage_buffer` as from
 scales the buffer). A strip pan moves pixels instead of repainting them:
 while a strip pans, the producer draws the desktop as layers
 (`FramePaint::cache`: what is behind the windows, each strip on its own in
-canvas coordinates, the docked wheel on its own, the chrome above), in device
+canvas coordinates, the chrome above), in device
 pixels, and the DRM GPU presenter keeps the backdrop, the strips and the
-chrome in textures of the output's size and the wheel in one of its own size
+chrome in textures of the output's size
 (`render/strip_layers.rs`). A pure pan copies the pixels whose strips all
 moved by the same distance, rasterises only the columns it uncovered and the
 band where a moving strip's shadows meet a strip that stayed, and composites
-from the textures; the wheel, which rides the top strip over the strips below,
-is only composited at its new place, and a layer is rasterised again only when
-its scene changes. Each window group of a strip is a damage part of the
+from the textures, and a layer is rasterised again only when its scene
+changes. Each window group of a strip is a damage part of the
 strip's drawing (`GroupRow::draw_group_apart`, bounded by its sprites' reach
 and the lane's clip), so a strip whose drawing changed is rasterised only
 where a changed group shows now (`strip_layers::strip_change`): a window off
@@ -379,8 +378,7 @@ gesture's rounded to a device pixel (a layout pixel at 100 %, half of one at
 200 %, two thirds at 150 %, four fifths at 125 %). A pan then moves strip
 pixels by whole pixels without resampling them, as finely as the panel shows,
 and the panned frame is what the desktop drawn without layers shows: what
-rides the strip moves by exactly the pan (the docked wheel replays its cached
-drawing under the exact change of its place, not a rounded one), so nothing
+rides the strip moves by exactly the pan, so nothing
 lands a fraction of a pixel apart and twitches when the pan ends. Layout and
 input use the same drawn pan. A rotated, calibrated or HDR output composites
 the layers the same way and then turns, calibrates or PQ-encodes the result
@@ -726,7 +724,7 @@ A CI integration test (`crates/session/shell/tests/compositor_test.rs`) spawns t
 
 These are **rules**, not preferences:
 
-- **`Workspace → Strip → WindowGroup → Tab`, no overlap.** Tabs tile within a group; groups scroll horizontally within a strip (Niri-inspired columnar workflow plus a tab dimension); strips stack within a workspace; workspaces are switched via the wheel disc. The infinite 2-D canvas (Niri-OG X/Y panning) is deliberately **out** — the strip is the navigable unit, not a free 2-D pan surface. Any design that reintroduces overlapping floating windows, or the infinite canvas, is rejected at review.
+- **`Workspace → Strip → WindowGroup → Tab`, no overlap.** Tabs tile within a group; groups scroll horizontally within a strip (Niri-inspired columnar workflow plus a tab dimension); strips stack within a workspace; workspaces are switched from the strip switcher. The infinite 2-D canvas (Niri-OG X/Y panning) is deliberately **out** — the strip is the navigable unit, not a free 2-D pan surface. Any design that reintroduces overlapping floating windows, or the infinite canvas, is rejected at review.
 - **Active group / active strip are explicit.** New tabs land in `(active_strip, active_group)`. Cross-strip drags update both pointers.
 - **Workspace is the boundary for sandboxing and replication.** A surface from sandbox A cannot adopt into a workspace B tab — its bridge tag would mismatch.
 
@@ -736,7 +734,7 @@ These are **rules**, not preferences:
 
 Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::Seat::input`, which dispatches through smithay's focus rules. The compositor adds policy on top:
 
-- Shell-chrome shortcuts (palette open, wheel disc, workspace switching) are intercepted before the seat dispatch.
+- Shell-chrome shortcuts (palette open, strip switcher, workspace switching) are intercepted before the seat dispatch.
 - Per-workspace input policy (host-priority over guests, per-peer `read_only` flags) is enforced when `RemoteInput` arrives — see `docs/architecture/collaboration.md`.
 
 ### Test-control input (`TILO_TEST_CONTROL`)

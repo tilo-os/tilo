@@ -1128,7 +1128,7 @@ pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
 
 /// The native chrome the shared desktop surface is built with: the session's
 /// top bar and wallpaper, the collaboration launchpad for an empty
-/// workspace, and a leading inset for the sidebar wheel.
+/// workspace, and the strip's leading edge gutter.
 pub(crate) fn workspace_surface_chrome(
     desktop: &state::DesktopTree,
     chrome: &chrome_state::Chrome,
@@ -1169,15 +1169,13 @@ pub(crate) fn workspace_surface_chrome(
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(
-            tilo_desktop::launchpad::CollaborationLaunchpad::new(
-                overlay_host::workspace_rail_clearance_for_viewport,
-            ),
+            tilo_desktop::launchpad::CollaborationLaunchpad::new(),
         )),
         // Compact top bars of the displays other than the primary.
         display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
-        // Reserves canvas-x [0, SIDEBAR_RESERVE_PX] for the wheel disc, which
-        // lives in the overlay layer, so wheel and strip pan together.
-        leading_inset: f64::from(tilo_desktop::sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
+        // Wallpaper before the first window, panning with the strip; the
+        // overlay host keeps it at this value every layout.
+        leading_inset: overlay_host::STRIP_EDGE_GUTTER_PX,
         // An application mounted in this process does its asynchronous work
         // (an action directory question, an invocation, a collaborator's
         // edit) on the compositor's own thread, which parks while nothing
@@ -1356,42 +1354,17 @@ fn build_overlay_host_from_chrome(
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let records = chrome.borrow().records().clone();
     let (root, group_row_ptrs) = build_workspace_root(tree, &records, &chrome);
-    // Each workspace is a spoke; dragging rotates them, releasing snaps to
-    // the nearest one.
-    let spokes: Vec<tilo_desktop::sidebar_wheel_disc::SpokeLabel> = tree
-        .desktop
-        .workspaces
-        .iter()
-        .map(|w| tilo_desktop::sidebar_wheel_disc::SpokeLabel {
-            text: w.name.clone(),
-            workspace_id: Some(w.id.0),
-        })
-        .collect();
-    let active_idx = tree
-        .desktop
-        .workspaces
-        .iter()
-        .position(|w| w.id == tree.desktop.active)
-        .unwrap_or(0);
-    let sidebar: Box<dyn Widget> = Box::new(
-        tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
-            .with_active_idx(active_idx)
-            .with_host(std::rc::Rc::new(chrome_state::ChromeWheel(chrome.clone()))),
-    );
-
-    // The slot's top is pinned below the topbar so the sidebar's
-    // click-guard doesn't overlap the overview-toggle icon. With padding
-    // off on the outer Container/Column the topbar lands at y=0, so its
-    // bottom is exactly `TOPBAR_HEIGHT_PX`.
-    let sidebar_top = topbar_chrome::TOPBAR_HEIGHT_PX;
+    // The band under the top bar that sheets and prompts lay out under. With
+    // padding off on the outer Container/Column the topbar lands at y=0, so
+    // its bottom is exactly `TOPBAR_HEIGHT_PX`.
+    let chrome_top = topbar_chrome::TOPBAR_HEIGHT_PX;
     let host = if fixture {
         overlay_host::ShellOverlayHost::with_fixture_content(root)
     } else {
         overlay_host::ShellOverlayHost::new(root)
     }
     .with_chrome(chrome.clone())
-    .with_sidebar(sidebar)
-    .with_sidebar_top(sidebar_top)
+    .with_chrome_top(chrome_top)
     .with_group_row_ptrs(group_row_ptrs)
     .with_content_workspace(tree.desktop.active.raw())
     .with_peer_sync_enabled(enable_peer_sync);

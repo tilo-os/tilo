@@ -331,34 +331,6 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
-    /// Press on the workspace wheel's rim and drag it `dy` px vertically
-    /// in `steps` increments, WITHOUT releasing.
-    ///
-    /// Self-locating: the press lands on the disc's own laid-out rect,
-    /// so the scenario does not carry coordinates that go stale when the
-    /// sidebar's width changes with the viewport. Leaving the button
-    /// down is the point — the indicator stepping across workspaces is a
-    /// mid-drag state, and a scenario that released could never capture
-    /// it.
-    DragWheelRim {
-        dy: f64,
-        steps: u32,
-    },
-    /// Sample the workspace wheel's settle at fixed points along its
-    /// curve and capture each as `prefix-<ms>`.
-    ///
-    /// The escape [`Action::SampleTabReveal`] gives, pointed at the
-    /// wheel: a release's settle lasts about half a second and one
-    /// offscreen render costs more wall time than that, so stepping
-    /// frames catches the wheel where it was let go and then already
-    /// parked. This asks the disc to hold the production spring at a
-    /// chosen millisecond instead, and what renders is the production
-    /// `draw` there.
-    SampleWheelSettle {
-        prefix: &'static str,
-        /// Milliseconds into the settle.
-        at_ms: &'static [u64],
-    },
     /// Put the selection on the `idx`-th group of the active strip, or
     /// clear it entirely with `None` — which is the state rule 3 (place
     /// at a seam) is about.
@@ -561,8 +533,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_pointer_and_capture(driver, action, sink);
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
-    apply_hosted_window_and_wheel_drag(driver, action);
-    apply_wheel_and_reveal_samples(driver, action, sink);
+    apply_hosted_window(driver, action);
+    apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
     apply_seed_wifi_and_select_group(driver, action);
@@ -948,9 +920,9 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
-/// `Action::OpenHostedWindow` and `Action::DragWheelRim` — split out of
-/// [`apply`] to keep that dispatcher short.
-fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action) {
+/// `Action::OpenHostedWindow` and `Action::EnableNativeAppSearch` — split
+/// out of [`apply`] to keep that dispatcher short.
+fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
@@ -988,140 +960,49 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
                 Err(error) => eprintln!("scenario: could not enable native app search: {error}"),
             }
         }
-        Action::DragWheelRim { dy, steps } => {
-            driver.relayout();
-            let Some(rect) = driver
-                .host_mut()
-                .sidebar_wheel_mut_for_tests()
-                .map(|w| ui::Widget::get_rect(w))
-            else {
-                eprintln!("scenario: no wheel disc in the tree to drag");
-                return;
-            };
-            if rect.area() <= 0.0 {
-                eprintln!("scenario: the wheel disc has not laid out yet — paint first?");
-                return;
-            }
-            // Continue an existing gesture rather than starting a new
-            // one. Two of these back to back is how a scenario captures
-            // a drag at more than one depth, and pressing again half way
-            // through does not do that: the second press lands on
-            // whichever sector has rotated under the pointer by then,
-            // which the disc reads as *clicking* that workspace, and no
-            // drag starts at all. The release afterwards then has
-            // nothing to settle.
-            let in_flight = driver
-                .host_mut()
-                .sidebar_wheel_mut_for_tests()
-                .and_then(|w| w.drag_from.map(|_| w.last_cursor_pos))
-                .flatten();
-            let from = if let Some(p) = in_flight {
-                p
-            } else {
-                // A third of the way in from the rim, vertically
-                // centred: inside the arc at every rotation, and
-                // clear of the add-workspace button at the bottom.
-                let p = Point::new(
-                    rect.x0 + rect.width() * 0.66,
-                    f64::midpoint(rect.y0, rect.y1),
-                );
-                driver.move_cursor(p);
-                driver.press();
-                p
-            };
-            let n = (*steps).max(1);
-            for s in 1..=n {
-                let t = f64::from(s) / f64::from(n);
-                driver.move_cursor(Point::new(from.x, from.y + dy * t));
-                // One frame per increment so the follow spring actually
-                // integrates — with no frames between moves the rim
-                // never gets anywhere and the drag is a teleport.
-                driver.step_frames(1);
-            }
-        }
         _ => {}
     }
 }
 
-/// `Action::SampleWheelSettle` and `Action::SampleTabReveal` — split out
-/// of [`apply`] to keep that dispatcher short.
-fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
-    driver: &mut ShellDriver,
-    action: &Action,
-    sink: &mut S,
-) {
-    match action {
-        Action::SampleWheelSettle { prefix, at_ms } => {
-            // Settle the content before sampling anything.
-            //
-            // Committing a workspace swaps the content underneath, and
-            // the strip that comes in has its own per-widget animations
-            // (a tab bar's reveal, a group's spawn fade). Sampling
-            // straight after the release caught those a frame or two in,
-            // and the earliest frames of the strip — which are the whole
-            // job of a sampled-curve capture — showed them rather than
-            // the wheel.
-            //
-            // Spending frames here is free: every sample re-derives the
-            // wheel's curve from the settle's recorded starting state,
-            // so whatever the spring does meanwhile is discarded. Only
-            // the content keeps the time, which is the point.
-            driver.step_frames(24);
+/// `Action::SampleTabReveal` — split out of [`apply`] to keep that
+/// dispatcher short.
+fn apply_reveal_samples<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    if let Action::SampleTabReveal { prefix, at_ms } = action {
+        // Freezing an animation curve at a chosen offset needs
+        // `bar_mut_for_tests`, which is `cfg(any(test,
+        // debug_assertions))` — the toolkit does not expose its
+        // internals to a release build, and should not start doing
+        // so for a capture tool. So this one scenario is
+        // debug-only; every other scenario builds and runs in
+        // release, which is what lets `shots` be built at all in
+        // the configuration a session actually ships in.
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (driver, sink, prefix, at_ms);
+            eprintln!(
+                "scenario: SampleTabReveal needs a debug build (it freezes an \
+                 animation curve through a debug-only accessor); skipping"
+            );
+        }
+        #[cfg(debug_assertions)]
+        {
+            // Lay out once so the hover that preceded this has latched a
+            // curve, then freeze it before a render's worth of wall time
+            // can retire it.
             driver.relayout();
-            for ms in *at_ms {
-                let held = match driver.host_mut().sidebar_wheel_mut_for_tests() {
-                    None => {
-                        eprintln!("scenario: no wheel disc in the tree to sample at {ms} ms");
-                        false
-                    }
-                    Some(w) => w.hold_rotation_at(std::time::Duration::from_millis(*ms)),
-                };
-                if !held {
-                    eprintln!("scenario: no wheel settle recorded to sample at {ms} ms");
-                }
-                driver.relayout();
-                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
-                sink.capture(driver, name);
-            }
+            sample_held(
+                driver,
+                sink,
+                prefix,
+                at_ms,
+                "tab reveal in flight",
+                |row, at| {
+                    row.groups.iter_mut().fold(false, |any, g| {
+                        g.bar_mut_for_tests().hold_reveal_at(at) | any
+                    })
+                },
+            );
         }
-        Action::SampleTabReveal { prefix, at_ms } => {
-            // Freezing an animation curve at a chosen offset needs
-            // `bar_mut_for_tests`, which is `cfg(any(test,
-            // debug_assertions))` — the toolkit does not expose its
-            // internals to a release build, and should not start doing
-            // so for a capture tool. So this one scenario is
-            // debug-only; every other scenario builds and runs in
-            // release, which is what lets `shots` be built at all in
-            // the configuration a session actually ships in.
-            #[cfg(not(debug_assertions))]
-            {
-                let _ = (prefix, at_ms);
-                eprintln!(
-                    "scenario: SampleTabReveal needs a debug build (it freezes an \
-                     animation curve through a debug-only accessor); skipping"
-                );
-            }
-            #[cfg(debug_assertions)]
-            {
-                // Lay out once so the hover that preceded this has latched a
-                // curve, then freeze it before a render's worth of wall time
-                // can retire it.
-                driver.relayout();
-                sample_held(
-                    driver,
-                    sink,
-                    prefix,
-                    at_ms,
-                    "tab reveal in flight",
-                    |row, at| {
-                        row.groups.iter_mut().fold(false, |any, g| {
-                            g.bar_mut_for_tests().hold_reveal_at(at) | any
-                        })
-                    },
-                );
-            }
-        }
-        _ => {}
     }
 }
 
@@ -1746,12 +1627,6 @@ const SIBLING_FADE_SAMPLES: &[u64] = &[0, 20, 40, 65, 100, 130];
 
 /// Frames to let the motion finish before the settled capture.
 const PLACEMENT_SETTLE_FRAMES: u32 = 8;
-
-/// Points along the workspace wheel settle for overscroll captures.
-const SETTLE_SAMPLES: &[u64] = &[0, 60, 140, 240, 400];
-
-/// One workspace on the wheel disc is 15° / 0.15 = 100 px of drag.
-const PER_WORKSPACE_PX: f64 = 100.0;
 
 /// Resolve a [`Action::SeedStatus`] preset name into the reading the
 /// poller would have published.
@@ -2959,8 +2834,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-tabs-initial"),
                 Action::Drag {
                     // Approximate centres of pills 1 and 3 inside the first
-                    // window group's tab bar at viewport (1600, 900) with the
-                    // sidebar wheel taking ~200 px of left padding.
+                    // window group's tab bar at viewport (1600, 900).
                     from: Point::new(360.0, 130.0),
                     to: Point::new(560.0, 130.0),
                     steps: 8,
@@ -3077,132 +2951,63 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "wheel_scroll_workspaces",
-            description: "Scroll the workspace wheel via MouseWheel; capture every animation frame.",
+            name: "strip_switcher",
+            description: "The strip ribbon at rest, a new strip named from the keyboard \
+             (Super+S), the pointer coming to rest on the ribbon opening the card, \
+             renaming the first strip Lounge, and Escape closing it.",
             actions: vec![
-                // Move cursor over the wheel disc (left edge of viewport).
-                Action::MoveCursor(Point::new(80.0, 540.0)),
-                Action::Snapshot("00-pre"),
-                // Negative dy advances forward (LineDelta sign convention
-                // matches a wheel-down gesture). 8 lines × 16 px/line =
-                // 128 px, which at a 48-px detent is two workspaces plus a
-                // remainder the idle timer clears.
-                Action::MouseWheel { dx: 0.0, dy: -8.0 },
-                Action::SnapshotSequence {
-                    prefix: "detent-1",
-                    frames: 12,
-                    gap_frames: 1,
-                },
-                Action::MouseWheel { dx: 0.0, dy: -8.0 },
-                Action::SnapshotSequence {
-                    prefix: "detent-2",
-                    frames: 12,
-                    gap_frames: 1,
-                },
-            ],
-        },
-        Scenario {
-            name: "wheel_drag_feel",
-            description: "Drag the workspace wheel's rim across the list with the button held,              then sample the release settle along its curve.",
-            actions: vec![
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(1700),
                 Action::Snapshot("00-rest"),
-                // A third of a workspace: not yet past the boundary, so the
-                // indicator is still on the workspace we started from while
-                // the disc is visibly turned off its detent. Deliberately
-                // not one HALF — that is exactly the boundary, and a
-                // capture there tips one way or the other and shows neither
-                // state clearly.
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX * 0.35,
-                    steps: 10,
-                },
-                Action::Snapshot("01-part-way"),
-                Action::MouseRelease,
-                Action::Wait(45),
-                // One, two, three workspaces, each captured while still held.
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX,
-                    steps: 14,
-                },
-                Action::Snapshot("02-one-workspace-held"),
-                Action::DragWheelRim {
-                    dy: -PER_WORKSPACE_PX,
-                    steps: 14,
-                },
-                Action::Snapshot("03-two-workspaces-held"),
-                Action::MouseRelease,
-                Action::Wait(60),
-                Action::Snapshot("04-settled-at-the-end"),
-                // Now a flick: the same distance covered in a third of the
-                // moves, so the pointer is still travelling fast when the
-                // button comes up. Sampling THIS is the point — a release
-                // from rest has almost nothing to show, whereas a flick has
-                // to coast the length of the list and decelerate, which is
-                // the entire claim about weight.
-                Action::DragWheelRim {
-                    dy: PER_WORKSPACE_PX * 1.6,
-                    steps: 5,
-                },
-                Action::MouseRelease,
-                Action::SampleWheelSettle {
-                    prefix: "05-coast",
-                    at_ms: SETTLE_SAMPLES,
-                },
-                Action::Wait(60),
-                Action::Snapshot("06-landed"),
-            ],
-        },
-        Scenario {
-            name: "wheel_overscroll_at_the_end",
-            description: "Pull the workspace wheel past the first workspace, where the list ends,              and sample its return.",
-            actions: vec![
-                Action::Snapshot("00-rest"),
-                // Downward from the first workspace is off the top of the
-                // list. 90 px asks for 13.5°; resistance gives back far less.
-                Action::DragWheelRim {
-                    dy: 90.0,
-                    steps: 12,
-                },
-                Action::Snapshot("01-pulled"),
-                // More than three times the pull, for nowhere near three
-                // times the give. Kept inside the disc's own column: the
-                // pointer has to still be over the wheel when the button
-                // comes up, or the release is routed to whatever is under
-                // it instead and the gesture never ends.
-                Action::DragWheelRim {
-                    dy: 200.0,
-                    steps: 20,
-                },
-                Action::Snapshot("02-pulled-hard"),
-                Action::MouseRelease,
-                Action::SampleWheelSettle {
-                    prefix: "03-returning",
-                    at_ms: SETTLE_SAMPLES,
-                },
-                Action::Wait(60),
-                Action::Snapshot("04-back-at-the-end"),
-            ],
-        },
-        Scenario {
-            name: "wheel_summon_at_pointer",
-            description: "Pan the strip until the wheel scrolls away, summon it back to the \
-             pointer with Super+S, then dismiss it with Escape.",
-            actions: vec![
-                Action::MoveCursor(Point::new(900.0, 500.0)),
-                Action::Snapshot("00-docked"),
-                // Pan right, carrying the wheel off the left edge with the
-                // rest of the workspace canvas.
-                Action::MouseWheel { dx: -12.0, dy: 0.0 },
-                Action::MouseWheel { dx: -12.0, dy: 0.0 },
-                Action::Snapshot("01-scrolled-away"),
-                // Call it to the pointer, out on the right where the work is.
-                Action::MoveCursor(Point::new(1180.0, 620.0)),
                 Action::Modifiers(ModifiersState::SUPER),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
-                Action::Snapshot("02-summoned"),
+                Action::Wait(10),
+                Action::Snapshot("01-super-s"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Type("Research"),
+                Action::Wait(4),
+                Action::Snapshot("02-naming-a-new-strip"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("03-created"),
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(1700),
+                Action::MoveCursor(Point::new(1200.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1350.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1450.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1515.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1552.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1572.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1582.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1587.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1589.0, 462.0)),
+                Action::WaitWall(8),
+                Action::MoveCursor(Point::new(1590.0, 462.0)),
+                Action::WaitWall(8),
+                Action::WaitWall(120),
+                Action::Wait(10),
+                Action::Snapshot("04-aimed-open"),
+                Action::ClickNamed("strip_switcher.rename.1"),
+                Action::Key(Key::Named(NamedKey::Backspace)),
+                Action::Type("Lounge"),
+                Action::Wait(4),
+                Action::Snapshot("05-renaming"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("06-renamed"),
                 Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Snapshot("03-dismissed"),
+                Action::Wait(4),
+                Action::Snapshot("07-closed"),
             ],
         },
         Scenario {
@@ -3472,8 +3277,8 @@ fn build_scenarios() -> Vec<Scenario> {
              forward, then back — with the rail reading out where that is.",
             actions: vec![
                 // Cursor over the active tile / strip area (well below the
-                // topbar's persistent band and well to the right of the sidebar
-                // gutter).
+                // topbar's persistent band and well clear of the leading
+                // edge gutter).
                 Action::MoveCursor(Point::new(900.0, 500.0)),
                 Action::Snapshot("00-before"),
                 // A sideways swipe steps focus one window along the strip —
@@ -4202,9 +4007,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-open"),
                 // Off the bar entirely: the pill closes again, and its body
                 // has to stay under the chips for the whole shrink. Park in
-                // the middle of the window card — the wheel disc down the
-                // left edge reacts to a pointer near it, which would move
-                // the whole strip and confuse what this is measuring.
+                // the middle of the window card, clear of the strip's edges
+                // and the right-edge strip ribbon, so nothing else reacts
+                // to the pointer and confuses what this is measuring.
                 Action::MoveCursor(Point::new(800.0, 500.0)),
                 Action::SampleTabReveal {
                     prefix: "04-closing",
@@ -4909,8 +4714,14 @@ mod tests {
             "four half-width windows must overflow the display by more than a third of \
              a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
         );
+        // The strip's leading inset is the fixed edge gutter
+        // (`STRIP_EDGE_GUTTER_PX`, 32 px, the same as the trailing one).
+        assert!(
+            (rest_inset - 32.0).abs() < 0.5,
+            "the leading inset is the 32 px edge gutter (leading inset = {rest_inset})"
+        );
         // Focusing the first window reveals it by the least pan: flush with
-        // the screen edge, the wheel-disc gutter scrolled off to its left.
+        // the screen edge, the edge gutter scrolled off to its left.
         assert!(
             rest_x <= rest_inset + 1.0,
             "the strip starts with its first window flush at the screen edge \

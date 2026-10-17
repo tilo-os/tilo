@@ -394,7 +394,15 @@ impl ShellOverlayHost {
             .collect();
         let super_up = self.desk.super_surface.is_some();
         let area = self.overlay_area();
-        let slots = layout::place(area, &items, &self.desk.system_activities, super_up);
+        // The strip ribbon on the right edge is where the strip switcher
+        // opens: a widget waiting there would take the pointer that reaches
+        // for it. Widgets on that edge step past it, as past a call card.
+        let mut occupied = self.desk.system_activities.clone();
+        let ribbon = self.strip_switcher_zone();
+        if ribbon.area() > 0.0 {
+            occupied.push(ribbon.inflate(layout::MARGIN, layout::MARGIN));
+        }
+        let slots = layout::place(area, &items, &occupied, super_up);
         let mut changed = slots != self.desk.slots;
         self.desk.slots = slots;
         self.desk.edges = items.iter().map(|item| (item.id, item.edge)).collect();
@@ -664,9 +672,16 @@ impl ShellOverlayHost {
             .filter(|press| press.dragging)
             .zip(self.last_cursor)
             .map(|(press, p)| (press.id, p - press.at));
+        // The strip switcher's card is where the person is looking: a widget
+        // glance under it steps aside while it is open, not over it.
+        let switcher_card = self
+            .strip_switcher
+            .is_open()
+            .then(|| self.strip_switcher.layout().card);
         for slot in self.desk.slots.clone() {
             let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| t.value(now));
-            if shown <= f32::EPSILON {
+            if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
+            {
                 continue;
             }
             let open = self.desk.opened.get(&slot.id).map_or(0.0, |t| t.value(now));

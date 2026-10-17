@@ -1301,8 +1301,8 @@ mod overview_add_workspace {
         }
 
         // Phase `overview_add_workspace_click_appends_workspace`.
-        // Clicking the add-workspace rect must append + activate a workspace (the
-        // wheel-disc plus slot's contract) and release the overview's input grab
+        // Clicking the add-workspace rect must append + activate a workspace
+        // (create-and-switch) and release the overview's input grab
         // so the user can immediately navigate the new workspace.
         {
             let mut h = build_settled_overview();
@@ -1345,8 +1345,8 @@ mod overview_add_workspace {
             assert_ne!(
                 st.tree().desktop.active,
                 initial_active,
-                "the newly-appended workspace must be activated, mirroring \
-                 the wheel-disc plus slot's create-and-switch semantics"
+                "the newly-appended workspace must be activated: \
+                 create-and-switch semantics"
             );
             assert!(
                 !st.overlays.overview,

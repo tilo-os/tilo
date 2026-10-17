@@ -1,5 +1,5 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, the search
-//! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
+//! palette, `QuickSettings`, `WorkspaceSettings`, `TopBar`, …).
 
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;

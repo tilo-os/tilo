@@ -9,37 +9,29 @@ fn host() -> ShellOverlayHost {
 fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
     /// A window at the strip's max width still has to stop short of the
     /// display edge, or its border/corners/shadow — which live in the last
-    /// few pixels — get clipped by the bezel. Mirrors the gutter the near
-    /// edge already reserves beside the wheel disc.
+    /// few pixels — get clipped by the bezel. Both edges keep the same
+    /// gutter so the window reads as centred in its canvas.
     ///
     /// The gutter itself is pinned to the spacing scale: 2026-09-17 moved
-    /// it from 28 px (off-grid, S1-21) to `s8`. `s8` rather than `s6`
-    /// because the disc's rim shadow reaches 26 px past its footprint and
-    /// `s6` (24) would lay it over the first window; 32 is also the
-    /// pointer floor the bar controls already sit on, so the wheel-to-
-    /// window margin and a control's hit rect are one measure.
+    /// it from 28 px (off-grid, S1-21) to `s8`. 32 is also the pointer
+    /// floor the bar controls already sit on, so the edge margin and a
+    /// control's hit rect are one measure.
     fn a_full_width_window_stops_short_of_both_screen_edges() {
         assert_eq!(
-            WHEEL_TO_STRIP_GAP_PX,
+            STRIP_EDGE_GUTTER_PX,
             f64::from(ui::tokens::Spacing::BASE.s8),
-            "the wheel gutter is a spacing step, not a tuned literal",
+            "the edge gutter is a spacing step, not a tuned literal",
         );
-        const {
-            assert!(
-                WHEEL_TO_STRIP_GAP_PX > tilo_desktop::sidebar_wheel_disc::RIM_SHADOW_REACH,
-                "the gutter must hold the disc's rim shadow with wallpaper to spare",
-            );
-        }
-        assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
-        let mut h = host().with_sidebar(Box::new(Container::new()));
+        assert_eq!(STRIP_TRAILING_GUTTER_PX, STRIP_EDGE_GUTTER_PX);
+        let mut h = host();
         h.set_output_geometry(&[OutputGeometry::unscaled(0.0, 0.0, 1600.0, 900.0)]);
 
         let spans = h.strip_output_spans();
         assert_eq!(spans.len(), 1, "one output in, one span out");
         let span = spans[0];
 
-        // Where the strip starts placing groups: past the wheel slot.
-        let leading = f64::from(sidebar_width_for_viewport(900.0)) + WHEEL_TO_STRIP_GAP_PX;
+        // Where the strip starts placing groups: past the leading edge gutter.
+        let leading = span.x + STRIP_EDGE_GUTTER_PX;
         // The widest a group can be, and therefore where the widest one ends.
         let widest = f64::from(ui::widget::WIDTH_WIDE_PERMILLE) / 1000.0 * span.usable;
         let right_edge = leading + widest;
@@ -55,9 +47,9 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
         // the window looks centred in its canvas rather than shoved right.
         let trailing = span.x + span.width - right_edge;
         assert!(
-            (trailing - WHEEL_TO_STRIP_GAP_PX).abs() < 1.0,
-            "trailing gutter is {trailing}px against a {WHEEL_TO_STRIP_GAP_PX}px \
-             gutter beside the wheel; they should read as the same margin",
+            (trailing - STRIP_EDGE_GUTTER_PX).abs() < 1.0,
+            "trailing gutter is {trailing}px against a {STRIP_EDGE_GUTTER_PX}px \
+             leading gutter; they should read as the same margin",
         );
     }
 

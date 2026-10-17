@@ -450,7 +450,6 @@ fn pan_layers(size: (u32, u32), scroll_x: u32) -> crate::shell::frame::FrameCach
             workspace: Scene::new(),
             strips: vec![strip],
             strip_parts: vec![None],
-            wheel: None,
             chrome,
         },
     }

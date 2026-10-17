@@ -11,7 +11,7 @@ Usage:
   >>> with TiloClient.spawn_headless() as tilo:
   ...     for target in tilo.list_targets():
   ...         print(target.name, target.rect)
-  ...     tilo.click("wheel_disc")
+  ...     tilo.click("strip_switcher")
   ...     tilo.snapshot("/tmp/state.png")
 
 If a compositor is already running, skip `spawn_headless` and use

@@ -42,8 +42,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// Just over half the strip's usable width (the display minus the wheel-disc
-/// gutter and trailing gutter) each, so the second group's trailing controls
+/// Just over half the strip's usable width (the display minus the leading
+/// and trailing edge gutters) each, so the second group's trailing controls
 /// remain clickable while the group itself still crosses the viewport edge
 /// and the third is entirely off screen — content that fits cannot
 /// demonstrate anything about panning.
@@ -736,12 +736,6 @@ fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
             row.contains(click),
             "fixture must leave group 1's + chip clickable ({plus:?} outside {row:?})"
         );
-        if let Some(sidebar) = h.host.sidebar_rect_for_tests() {
-            assert!(
-                !sidebar.contains(click),
-                "fixture must leave the click clear of sidebar chrome ({click:?} inside {sidebar:?})"
-            );
-        }
         h.click(click);
         h.tick();
 

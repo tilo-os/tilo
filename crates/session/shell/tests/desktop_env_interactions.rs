@@ -116,8 +116,8 @@ struct Layout {
     input_scale: f64,
 }
 
-/// Usable strip width at the fixture's viewport (window minus the
-/// wheel-disc slot + gutter). Group widths are fractions of this, so a
+/// Usable strip width at the fixture's viewport (window minus the 32 px
+/// leading and trailing edge gutters). Group widths are fractions of this, so a
 /// pixel expectation only means anything alongside it; read off the live
 /// row so the test can't drift from what the shell reserves.
 fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
@@ -1024,9 +1024,9 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn expand_restore_and_workspace_switch_change_what_is_rendered() {
-    // Phase `expand_maximizes_into_the_work_area_and_tucks_the_wheel_away`.
+    // Phase `expand_maximizes_into_the_work_area`.
     // Clicking a tab's Expand chip maximizes it inside the desktop work area:
-    // the top bar stays, and the workspace wheel is tucked away.
+    // the top bar stays, and the group spans the full width.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1065,14 +1065,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         );
 
         let layout2 = lay_out_host(&mut host);
-        let sidebar = host
-            .sidebar_rect_for_tests()
-            .expect("the desktop has a wheel");
-        assert!(
-            sidebar.area() == 0.0,
-            "the radial workspace switcher is tucked away while a window is expanded; \
-             got {sidebar:?}",
-        );
         let topbar_height = laid_out_topbar_height(chrome.clone());
         assert_approx_eq!(
             topbar_height,
@@ -1093,7 +1085,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         assert_approx_eq!(
             maximized.x0,
             0.0,
-            "an expanded group owns the left edge: no gutter is left where the wheel was"
+            "an expanded group owns the left edge: no leading edge gutter is left"
         );
         assert_approx_eq!(
             maximized.x1,
@@ -1176,10 +1168,9 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
     }
 
-    // Phase `the_workspace_switcher_is_tucked_while_expanded_and_returns_on_restore`.
-    // An expanded group tucks the sidebar away; restoring it lays the sidebar
-    // out again on the first frame, rather than leaving its taffy node at
-    // `display:none`.
+    // Phase `the_leading_gutter_is_dropped_while_expanded_and_returns_on_restore`.
+    // An expanded group owns the left edge; restoring it lays the group out
+    // behind the leading edge gutter again on the first frame.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1198,9 +1189,13 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         host.tick_pending_maximize_harvest_for_tests();
         let maximized_layout = lay_out_host(&mut host);
         assert!(chrome.borrow().is_fullscreen());
-        assert!(
-            host.sidebar_rect_for_tests().unwrap().area() == 0.0,
-            "the switcher is tucked away while the group is expanded",
+        assert_approx_eq!(
+            host.group_at_for_tests(strip_id, 0)
+                .expect("maximized group")
+                .get_rect()
+                .x0,
+            0.0,
+            "an expanded group reaches the left edge",
         );
 
         // Queue the same one-shot toggle the Restore button publishes, then
@@ -1217,13 +1212,17 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
 
         assert!(!chrome.borrow().is_fullscreen());
         let _restored_layout = lay_out_host(&mut host);
+        let restored = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("restored group")
+            .get_rect();
         assert!(
-            host.sidebar_rect_for_tests().unwrap().area() > 0.0,
-            "the radial workspace switcher must return on the first restored layout",
+            restored.x0 > 0.0,
+            "the leading edge gutter must return on the first restored layout; got {restored:?}",
         );
     }
 
-    // Phase `a_client_fullscreen_covers_the_wheel_and_the_whole_output`.
+    // Phase `a_client_fullscreen_covers_the_whole_output`.
     // Full screen, unlike maximize, hides every piece of chrome.
     {
         let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
@@ -1231,11 +1230,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let _ = lay_out_host(&mut host);
         chrome.borrow_mut().set_fullscreen_group(Some(ids[0]));
         let _ = lay_out_host(&mut host);
-        assert_approx_eq!(
-            host.sidebar_rect_for_tests().unwrap().area(),
-            0.0,
-            "a fullscreen client covers the wheel",
-        );
         let group = host
             .group_at_for_tests(strip_id, 0)
             .expect("fullscreen group")
@@ -1349,10 +1343,12 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
     // view — `adopt_toplevel` creates and focuses a group before it has a
     // rect.
     {
-        // One full-width group fills the strip, so a second starts past the
-        // right edge — the geometry a newly launched app lands in.
+        // One group as wide as the strip's usable width fills it, so a second
+        // starts past the right edge — the geometry a newly launched app
+        // lands in. (`Wide` is half of it; it filled the strip only while a
+        // workspace wheel took a quarter of the display beside it.)
         let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
+        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(2000);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
         let _ = &layout;

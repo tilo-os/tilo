@@ -225,8 +225,6 @@ mod shell_narration;
 mod shell_state_test;
 #[path = "shm_readback.rs"]
 mod shm_readback;
-#[path = "sidebar_wheel_disc_snapshot.rs"]
-mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_calibration_fabric.rs"]
 mod speaker_calibration_fabric;
 #[path = "speaker_clock_policy.rs"]

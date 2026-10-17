@@ -4132,14 +4132,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
-            // Super+S detaches the workspace wheel from the strip's left
-            // edge and places it at this point. `null` means docked. The
-            // disc's `test_id` is always `wheel_disc`, so a harness that
-            // only diffs target names cannot see the summon.
-            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
-                "x": p.x,
-                "y": p.y,
-            })),
+            // Super+S (or hovering the right-edge strip ribbon) opens the
+            // strip switcher card; `true` while it is up.
+            "strip_switcher_open": chrome.strip_switcher_open(),
             // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
@@ -18773,70 +18768,6 @@ mod tests {
             let scene = fb.paint();
             assert!(!scene.encoding().is_empty());
         }
-        // Phase `click_on_wheel_plus_slot_grows_workspace_count`.
-        // Click sequence at the wheel-disc's plus slot mutates chrome state —
-        // proves planned actions reach the host's click handlers, not a void.
-        //
-        // The bootstrap tree seeds three demo workspaces; the plus slot calls
-        // `chrome.add_workspace("Untitled")`, growing the count to four —
-        // asserting on the count is more robust than internal widget state, since chrome is the contract every consumer sees.
-        {
-            let mut fb = FrameBuilder::new((1600, 900));
-            // Paint once so the wheel-disc populates its plus_rect (the press handler
-            // hit-tests against it; it's `Rect::ZERO` until the first draw pass).
-            let _ = fb.paint();
-            // Find the wheel disc rect by its opt-in `test_id`, then search it for the
-            // affordance rather than re-deriving where `draw` puts it — scanning the whole footprint keeps the test layout-agnostic.
-            let registry = fb.widget_registry();
-            let wheel_rect = registry
-                .get("wheel_disc")
-                .copied()
-                .expect("wheel_disc test_id resolves on bootstrap tree");
-
-            let initial_count = fb.chrome().tree().desktop.workspaces.len();
-
-            // Sweep the footprint bottom-up in 4px rows until one click lands on
-            // the affordance; misses are harmless (rim press drags back, row press switches workspace).
-            let mut ctx = TestControlCtx::new();
-            let mut found = false;
-            // Integer-counted sweep (not a float-terminated `while`): the `if`
-            // breaks below reproduce the original `y > y0` / `x < x1` bounds
-            // exactly, so a generously wide static loop cap is safe — it never
-            // runs anywhere near it before hitting one of them.
-            'sweep: for row in 0..10_000u32 {
-                let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
-                if y <= wheel_rect.y0 {
-                    break;
-                }
-                for col in 0..10_000u32 {
-                    let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
-                    if x >= wheel_rect.x1 {
-                        break;
-                    }
-                    execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
-                    execute_planned_action(
-                        &PlannedAction::MouseLeftButton { pressed: true },
-                        &mut fb,
-                        &mut ctx,
-                    );
-                    execute_planned_action(
-                        &PlannedAction::MouseLeftButton { pressed: false },
-                        &mut fb,
-                        &mut ctx,
-                    );
-                    if fb.chrome().tree().desktop.workspaces.len() > initial_count {
-                        found = true;
-                        break 'sweep;
-                    }
-                }
-            }
-            assert!(
-                found,
-                "sweep of clicks across the wheel disc's footprint should hit the \
-                 add-workspace affordance and grow the workspace count from \
-                 {initial_count}"
-            );
-        }
         // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
         // The same tracker as libinput's path decides what the fingers meant.
         {
@@ -19211,31 +19142,6 @@ mod tests {
                 "on_screen_keyboard_surface": null,
             })
         );
-    }
-
-    #[test]
-    fn state_dump_chrome_includes_wheel_summon() {
-        let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-            seat: None,
-            resolved: None,
-        };
-        assert_eq!(
-            state.chrome_state_json().get("wheel_summon"),
-            Some(&serde_json::Value::Null),
-            "the wheel starts docked"
-        );
-
-        fb.chrome_handle()
-            .borrow_mut()
-            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
-        let summoned = &state.chrome_state_json()["wheel_summon"];
-        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
-        assert_eq!(summoned["y"].as_f64(), Some(450.0));
     }
 
     /// The state dump says who asks for animation frames, and asking must
@@ -20409,10 +20315,10 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// Super+F on a Tilo window covers the output, including the wheel.
+/// Super+F on a Tilo window covers the whole output.
 /// Hosted Tilo apps are xdg clients too; sending them a protocol
 /// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
-/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// (Super+M) keeps the top bar. A focused xdg surface with no
 /// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;

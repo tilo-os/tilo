@@ -268,13 +268,9 @@ fn consume_launchpad(
 }
 
 pub struct CollaborationLaunchpad {
-    /// Horizontal room the host's floating workspace rail takes over a
-    /// canvas of the given height.
-    rail_clearance: fn(f64) -> f64,
     rect: Rect,
-    /// The display the launchpad presents on when the canvas spans several,
-    /// and whether the rail floats over that display.
-    presentation: Option<(Rect, bool)>,
+    /// The display the launchpad presents on when the canvas spans several.
+    presentation: Option<Rect>,
     card_rects: [Rect; 6],
     last_cursor: Point,
     focused: bool,
@@ -311,12 +307,16 @@ const FOOTER_MIN_H: f64 = 36.0;
 /// Height of the heading band (title + subtitle) above the first card row.
 const HEADING_BAND: f64 = 90.0;
 
+impl Default for CollaborationLaunchpad {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CollaborationLaunchpad {
-    /// A launchpad centred beside a rail that takes `rail_clearance` of a
-    /// canvas that tall.
-    pub fn new(rail_clearance: fn(f64) -> f64) -> Self {
+    /// A launchpad centred in its canvas.
+    pub fn new() -> Self {
         Self {
-            rail_clearance,
             rect: Rect::ZERO,
             presentation: None,
             card_rects: [Rect::ZERO; 6],
@@ -366,11 +366,10 @@ impl CollaborationLaunchpad {
             .unwrap_or_else(|| t("launchpad-keyboard-hint"))
     }
 
-    /// Centre on `display` (with the rail's clearance when `beside_rail`)
-    /// instead of the whole canvas, as on a desktop spanning several
-    /// displays. `None` returns to the whole canvas.
-    pub fn set_presentation_area(&mut self, display: Option<Rect>, beside_rail: bool) {
-        let presentation = display.map(|rect| (rect, beside_rail));
+    /// Centre on `display` instead of the whole canvas, as on a desktop
+    /// spanning several displays. `None` returns to the whole canvas.
+    pub fn set_presentation_area(&mut self, display: Option<Rect>) {
+        let presentation = display;
         if presentation != self.presentation {
             self.targets.cancel_pointer_press();
             self.presentation = presentation;
@@ -382,7 +381,7 @@ impl CollaborationLaunchpad {
     /// The part of the canvas the grid centres in.
     fn presentation_rect(&self) -> Rect {
         match self.presentation {
-            Some((display, _)) => {
+            Some(display) => {
                 let area = display.intersect(self.rect);
                 if area.width() > 0.0 && area.height() > 0.0 {
                     area
@@ -399,12 +398,7 @@ impl CollaborationLaunchpad {
     }
 
     fn card_layout(&self) -> ([Rect; 6], usize) {
-        let no_rail: fn(f64) -> f64 = |_| 0.0;
-        let clearance = match self.presentation {
-            Some((_, false)) => no_rail,
-            _ => self.rail_clearance,
-        };
-        Self::card_geometry(self.presentation_rect(), clearance)
+        Self::card_geometry(self.presentation_rect())
     }
 
     /// The cards and the "Open an app" button by stable name
@@ -457,9 +451,9 @@ impl CollaborationLaunchpad {
     }
 
     /// What the launchpad presents — heading band, cards and footer — as
-    /// opposed to its layout rect, which spans the whole canvas under the
-    /// floating workspace rail. The access tree reports this, so a geometry
-    /// probe does not read the rail's controls as overlapping the launchpad.
+    /// opposed to its layout rect, which spans the whole canvas. The access
+    /// tree reports this, so a geometry probe does not read chrome floating
+    /// over the canvas as overlapping the launchpad.
     /// The layout rect until the first frame has placed the cards.
     fn content_bounds(&self) -> Rect {
         let Some(first) = self.card_rects.first().copied() else {
@@ -510,18 +504,8 @@ impl CollaborationLaunchpad {
         clippy::cast_precision_loss,
         reason = "bounded six-card renderer geometry uses f64 logical pixels"
     )]
-    fn card_geometry(rect: Rect, rail_clearance: fn(f64) -> f64) -> ([Rect; 6], usize) {
-        // The workspace rail floats over the launchpad rather than shrinking
-        // its widget's layout rect. On desktop-sized outputs, centre the
-        // launchpad in the remaining canvas so its first heading/card never
-        // starts under that rail. Narrow layouts keep the full canvas: the
-        // rail is then already collapsed by the surrounding chrome.
-        let rail_clearance = rail_clearance(rect.height());
-        let content_x0 = if rect.width() >= 720.0 {
-            rect.x0 + rail_clearance
-        } else {
-            rect.x0
-        };
+    fn card_geometry(rect: Rect) -> ([Rect; 6], usize) {
+        let content_x0 = rect.x0;
         let content_width = rect.x1 - content_x0;
         let panel_w = (content_width - 48.0).clamp(280.0, 900.0);
         let panel_x = content_x0 + (content_width - panel_w) / 2.0;
@@ -1010,7 +994,7 @@ mod tests {
 
     #[test]
     fn app_opener_waits_for_pointer_release_and_cancelled_drag_does_not_open() {
-        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut pad = CollaborationLaunchpad::new();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         pad.card_rects = pad.cards();
         let button = pad.app_button_rect().center();
@@ -1043,7 +1027,7 @@ mod tests {
     #[test]
     fn interrupted_app_opener_gestures_consume_release_and_can_be_retried() {
         for interruption in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
-            let mut pad = CollaborationLaunchpad::new(test_rail);
+            let mut pad = CollaborationLaunchpad::new();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             pad.card_rects = pad.cards();
             pad.set_focus(true);
@@ -1070,14 +1054,14 @@ mod tests {
 
     #[test]
     fn moving_the_launchpad_cancels_the_old_press_before_new_geometry_is_clicked() {
-        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut pad = CollaborationLaunchpad::new();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         pad.card_rects = pad.cards();
         let mut doc = AutoCommit::new();
         let button = pad.app_button_rect().center();
         deliver(&mut pad, &mut doc, &pointer_at(button));
         deliver(&mut pad, &mut doc, &mouse_press());
-        pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)), false);
+        pad.set_presentation_area(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
         let moved_button = pad.app_button_rect().center();
         deliver(&mut pad, &mut doc, &pointer_at(moved_button));
         assert!(deliver(&mut pad, &mut doc, &mouse_release()));
@@ -1095,7 +1079,7 @@ mod tests {
 
     #[test]
     fn app_opener_keyboard_repeat_is_consumed_without_a_second_request() {
-        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut pad = CollaborationLaunchpad::new();
         pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         pad.card_rects = pad.cards();
         pad.focus_synthetic_accessibility(&[6]);
@@ -1124,7 +1108,7 @@ mod tests {
 
     #[test]
     fn pending_requests_are_consumed_once_and_keep_false_witnesses() {
-        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut pad = CollaborationLaunchpad::new();
         let mut doc = AutoCommit::new();
         let nested = doc
             .put_object(automerge::ROOT, "launchpad", automerge::ObjType::Map)
@@ -1173,11 +1157,6 @@ mod tests {
         }
     }
 
-    /// A host rail as wide as the shell's on a laptop display.
-    fn test_rail(_height: f64) -> f64 {
-        140.0
-    }
-
     fn pointer_at(point: Point) -> WindowEvent {
         ui::synthetic_input::cursor_moved(point.x, point.y)
     }
@@ -1204,7 +1183,7 @@ mod tests {
         }
 
         fn compact_large_text_heading_stays_below_top_chrome() {
-            let mut pad = CollaborationLaunchpad::new(test_rail);
+            let mut pad = CollaborationLaunchpad::new();
             pad.rect = Rect::new(0.0, 48.0, 800.0, 700.0);
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
@@ -1225,7 +1204,7 @@ mod tests {
 
         fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
             for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
-                let mut pad = CollaborationLaunchpad::new(test_rail);
+                let mut pad = CollaborationLaunchpad::new();
                 pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
                 for scale in [1.0, 1.5, 2.0] {
                     let theme = Theme::dark().with_text_scale(scale);
@@ -1265,7 +1244,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 1200.0, 720.0),
                 Rect::new(0.0, 0.0, 460.0, 760.0),
             ] {
-                let (cards, _) = CollaborationLaunchpad::card_geometry(rect, test_rail);
+                let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
                 assert!(
                     cards
                         .iter()
@@ -1282,22 +1261,11 @@ mod tests {
     }
 
     #[test]
-    fn desktop_launchpad_clears_the_workspace_rail() {
-        let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
-        let (cards, _) = CollaborationLaunchpad::card_geometry(rect, test_rail);
-        let rail_clearance = test_rail(rect.height());
-        assert!(
-            cards.iter().all(|card| card.x0 >= rail_clearance),
-            "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
-        );
-    }
-
-    #[test]
     fn a_canvas_across_two_displays_centres_on_the_presenting_one() {
-        let mut pad = CollaborationLaunchpad::new(test_rail);
+        let mut pad = CollaborationLaunchpad::new();
         pad.rect = Rect::new(0.0, 48.0, 2048.0, 768.0);
         let right = Rect::new(1024.0, 0.0, 2048.0, 768.0);
-        pad.set_presentation_area(Some(right), false);
+        pad.set_presentation_area(Some(right));
         let cards = pad.cards();
         let x0 = cards.iter().map(|c| c.x0).fold(f64::INFINITY, f64::min);
         let x1 = cards.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
@@ -1310,12 +1278,12 @@ mod tests {
             "the grid centres on its display: {x0}..{x1}"
         );
         let left = Rect::new(0.0, 0.0, 1024.0, 768.0);
-        pad.set_presentation_area(Some(left), true);
+        pad.set_presentation_area(Some(left));
         assert!(
             pad.cards()
                 .iter()
-                .all(|c| c.x0 >= test_rail(720.0) && c.x1 <= left.x1),
-            "the rail's display keeps its clearance: {:?}",
+                .all(|c| c.x0 >= left.x0 && c.x1 <= left.x1),
+            "moving to the other display moves the grid there: {:?}",
             pad.cards()
         );
     }
@@ -1323,7 +1291,7 @@ mod tests {
     #[test]
     fn launchpad_cards_route_to_their_owning_apps_by_click_or_assistive_action() {
         fn desktop_launchpad_exposes_an_app_opener() {
-            let pad = CollaborationLaunchpad::new(test_rail);
+            let pad = CollaborationLaunchpad::new();
             assert!(
                 pad.accessibility()
                     .unwrap()
@@ -1384,7 +1352,7 @@ mod tests {
         }
 
         fn assistive_activation_publishes_the_same_action_as_a_card_click() {
-            let mut launchpad = CollaborationLaunchpad::new(test_rail);
+            let mut launchpad = CollaborationLaunchpad::new();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
@@ -1411,7 +1379,7 @@ mod tests {
     #[test]
     fn a_card_publishes_its_own_action_by_click_or_keyboard() {
         fn a_clicked_card_publishes_its_own_action_not_the_launcher() {
-            let mut pad = CollaborationLaunchpad::new(test_rail);
+            let mut pad = CollaborationLaunchpad::new();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             pad.card_rects = pad.cards();
             let mut doc = AutoCommit::new();
@@ -1433,7 +1401,7 @@ mod tests {
         }
 
         fn arrow_keys_move_and_enter_opens_the_selected_card() {
-            let mut pad = CollaborationLaunchpad::new(test_rail);
+            let mut pad = CollaborationLaunchpad::new();
             pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             pad.card_rects = pad.cards();
             pad.set_focus(true);

@@ -442,8 +442,8 @@ pub struct GroupRow {
     /// the parent's cached scene would keep painting stale positions on a
     /// wheel-pan.
     scroll_dirty: bool,
-    /// Canvas-x gutter before the first group (set to the wheel-disc
-    /// width so it pans with the strip). `apply_layout` offsets every
+    /// Canvas-x gutter before the first group (the strip-edge gutter, so
+    /// it pans with the strip). `apply_layout` offsets every
     /// child's screen-space origin by `rect.x0 + leading_inset - scroll_x`.
     leading_inset: f64,
     /// Transient fullscreen override (not persisted), set by the shell
@@ -451,8 +451,8 @@ pub struct GroupRow {
     /// group; if it belongs to another strip, [`Self::hidden`] is set
     /// instead.
     fullscreen_group: Option<u64>,
-    /// Transient: the promoted group leaves its lane's leading gutter to the
-    /// workspace wheel, as a user maximize does; a client fullscreen covers it.
+    /// Transient: the promoted group leaves its lane's leading gutter clear,
+    /// as a user maximize does; a client fullscreen covers it.
     promotion_keeps_gutter: bool,
     /// A maximize can cover the gutter without hiding its Restore controls.
     promotion_keeps_controls: bool,
@@ -672,7 +672,7 @@ pub struct OutputSpan {
     pub width: f64,
     /// Width available to window groups on this display: `width` minus
     /// whatever shell chrome it reserves (on the leftmost display, the
-    /// wheel-disc slot). The denominator every [`WindowWidth`] fraction
+    /// strip-edge gutter). The denominator every [`WindowWidth`] fraction
     /// is taken of.
     pub usable: f64,
 }
@@ -694,7 +694,7 @@ pub struct StripLane {
     pub area: Rect,
     /// Width window groups in this lane resolve their fractions against.
     pub usable: f64,
-    /// Whether this lane begins with the wheel-disc gutter.
+    /// Whether this lane begins with the strip-edge gutter.
     pub leading: bool,
 }
 
@@ -707,7 +707,7 @@ pub struct StripLane {
 pub struct Pan {
     /// What this run is clipped to and framed against.
     viewport: Rect,
-    /// Canvas-x gutter before the first group (the wheel-disc slot).
+    /// Canvas-x gutter before the first group (the strip-edge gutter).
     inset: f64,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
     /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active
@@ -966,11 +966,10 @@ impl Pan {
             return None;
         }
         // A group needs to be on screen, flush with the viewport's edges.
-        // The wheel-disc gutter is canvas the strip pans *with*: every
-        // group already starts past it, so a group revealed at the left
-        // edge never overlaps the disc. Bounding at the gutter instead
-        // panned the leftmost group's reveal all the way home to scroll 0,
-        // dragging the workspace switcher back into view.
+        // The leading gutter is canvas the strip pans *with*: every group
+        // already starts past it, so a group revealed at the left edge is
+        // flush with the viewport. Bounding at the gutter instead panned the
+        // leftmost group's reveal all the way home to scroll 0.
         let left_bound = self.viewport.x0;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
@@ -1157,7 +1156,7 @@ impl Pan {
     }
 
     /// Snap target nearest the current `scroll_x`. Candidates include
-    /// canvas-x = 0 (the wheel-visible home) when the run has a gutter —
+    /// canvas-x = 0 (the gutter-visible home) when the run has a gutter —
     /// without it, a small flick away from 0 would snap forward to the
     /// first group instead of relaxing back home.
     fn nearest_group_edge(&self) -> Option<f64> {
@@ -1757,8 +1756,8 @@ impl GroupRow {
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
-    /// lane's leading gutter (a maximize, beside the wheel) or covers it (a
-    /// client fullscreen).
+    /// lane's leading gutter (a maximize) or covers it (a client
+    /// fullscreen).
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
@@ -1776,7 +1775,7 @@ impl GroupRow {
     }
 
     /// Reserve a canvas-x gutter before the first group so it pans with
-    /// `scroll_x` too (set to the wheel-disc width). On a strip partitioned
+    /// `scroll_x` too (the strip-edge gutter). On a strip partitioned
     /// across displays only the leading lane carries it.
     #[must_use]
     pub fn with_leading_inset(mut self, px: f64) -> Self {
@@ -2059,8 +2058,8 @@ impl GroupRow {
             .map(|lane| &lane.pan)
     }
 
-    /// The pan the wheel disc rides along with: the row's, or the leading
-    /// lane's.
+    /// The pan of the run that carries the leading gutter: the row's, or the
+    /// leading lane's.
     fn leading_pan(&self) -> &Pan {
         self.lanes
             .iter()
@@ -2424,15 +2423,8 @@ impl GroupRow {
     }
 
     /// How far the row is panned. On a partitioned strip, the leading
-    /// lane's pan — the one the wheel disc rides along with; see
+    /// lane's pan (the one carrying the leading gutter); see
     /// [`Self::output_pan`] for any other display.
-    /// The farthest a direct pan can pull the strip past either end: the
-    /// rubber band's reach. Anything drawn beside the strip's ends and moved
-    /// with it (the docked wheel) has to cover this much more.
-    pub fn overpull_reach(&self) -> f64 {
-        self.leading_pan().viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC
-    }
-
     pub fn scroll_x(&self) -> f64 {
         self.leading_pan().scroll_x
     }
@@ -4738,7 +4730,7 @@ impl Widget for GroupRow {
                 moved |= pan.reframe_on_geometry_change(s, steady);
             }
             // An insert, close or reorder that moves the pan eases it there,
-            // carrying the wheel and every group together; the groups'
+            // carrying every group together; the groups'
             // own moves are measured on screen against this eased pan.
             if ease_reframe
                 && pan.strip_pan_origin.is_none()
@@ -4756,9 +4748,7 @@ impl Widget for GroupRow {
         // re-frame with the moves it started alongside.
         let snap_now = self.snap_clock(now);
         self.tick_snap_at(snap_now);
-        // Panning stays in lock-step with the wheel-disc's own
-        // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
-        // maximized or fullscreen-promoted group drops the leading gutter
+        // A maximized or fullscreen-promoted group drops the leading gutter
         // and any prior pan, pinning it flush at its viewport's left edge.
         let collapsed: Vec<bool> = (0..runs)
             .map(|k| {
