@@ -3250,7 +3250,7 @@ on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 [[check]]
 name = "image-legacy-guest"
 run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/agent /target/publish/legacy-guest/image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/ci/publish/legacy-guest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/external-assets/xwayland-satellite/**", "tools/ci/install-xwayland-satellite.sh", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/ci/publish/legacy-guest.sh"]
 needs = ["legacy-guest-agent"]
 outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/legacy-guest/image/digest"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -3280,7 +3280,7 @@ run = """
 bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image 'x86_64-{commit}'
 bash tools/ci/publish/legacy-guest.sh pins /target/publish/legacy-guest/image
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/external-assets/xwayland-satellite/**", "tools/ci/install-xwayland-satellite.sh", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "tools/ci/publish/legacy-guest.sh"]
 needs = ["image-legacy-guest", "legacy-guest-e2e", "sign-legacy-guest"]
 outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
 pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }

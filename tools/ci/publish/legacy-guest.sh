@@ -24,7 +24,8 @@ pins=os/legacy-guest-snapshot.env
 # Everything that ends up in the guest disk (os/dev/legacy-guest-snapshot.sh's INPUTS).
 inputs_digest() {
   find os/Containerfile.legacy-guest os/legacy-guest os/base-snapshot.env \
-    crates/runtime/legacy-agent crates/runtime/legacy-agent-protocol -type f -print0 \
+    crates/runtime/legacy-agent crates/runtime/legacy-agent-protocol \
+    os/external-assets/xwayland-satellite tools/ci/install-xwayland-satellite.sh -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
 }
 
