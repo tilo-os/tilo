@@ -880,6 +880,25 @@ pub fn serve(guest: &dyn Guest) -> Result<()> {
     }
 }
 
+/// `tilo-vm-install-proof code-refresh-check STATE_DIR`: the installer
+/// backend, holding the refresh lock, refuses to run over a refresh that
+/// did not finish applying.
+///
+/// # Errors
+/// A marker in `base` that is unreadable or not in the applied state.
+pub fn check_applied(base: &Path) -> Result<()> {
+    let marker = base.join("active.json");
+    if !marker.exists() {
+        return Ok(());
+    }
+    let value: Value = serde_json::from_slice(&fs::read(&marker)?)
+        .map_err(|error| Error::new(error.to_string()))?;
+    require(
+        value.get("state").and_then(Value::as_str) == Some("applied"),
+        "installer code refresh is incomplete",
+    )
+}
+
 /// `tilo-vm-install-proof code-refresh`: runs [`serve`] on the VM.
 #[must_use]
 pub fn main(guest: &dyn Guest) -> std::process::ExitCode {

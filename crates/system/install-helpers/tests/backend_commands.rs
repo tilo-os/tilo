@@ -429,12 +429,13 @@ fn the_installer_scripts_ask_the_compiled_helper() {
     assert!(backend.contains(
         "\"$STAGING_HANDOFF\" write-machine-info \"$DEPLOY_ETC/machine-info\" \"$DEVICE_LABEL\""
     ));
-    // Only the development VM's own Python helper is still started from the
-    // backend; it ships for development media alone.
-    for line in backend.lines().filter(|line| line.contains("python")) {
-        assert!(
-            line.contains("python3 /usr/libexec/tilo-installer-dev-target-uki.py "),
-            "{line}"
-        );
-    }
+    // Only the development VM's code-refresh probe, which runs the refresh
+    // loop's Python target probe, is still Python.
+    let probe = backend.find("  python3 - \"$0\" ").unwrap();
+    let probe_end = probe + backend.get(probe..).unwrap().find("\nPY\n").unwrap();
+    assert!(!backend.get(..probe).unwrap().contains("python"));
+    assert!(!backend.get(probe_end..).unwrap().contains("python"));
+    assert!(backend.contains(
+        "/usr/libexec/tilo-vm-install-proof code-refresh-check /run/tilo-installer/code-refresh"
+    ));
 }
