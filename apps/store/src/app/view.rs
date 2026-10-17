@@ -886,17 +886,23 @@ impl StoreApp {
         let mut buttons: Vec<Button> = Vec::new();
         if self.reported_app(report).is_ok() {
             if report.is_case() {
-                let case_actions: [super::CaseControl; 2] = [
-                    ("refresh-status", "Refresh status", |app| {
-                        StoreEffect::RefreshStatus { app }
-                    }),
-                    ("appeal", "Appeal decision", |app| StoreEffect::Appeal {
-                        app,
-                    }),
+                let case_actions = [
+                    (
+                        "refresh-status",
+                        "Refresh status",
+                        Some(StoreEffect::RefreshStatus {
+                            app: report.app_id.clone(),
+                        }),
+                    ),
+                    (
+                        "appeal",
+                        "Appeal decision",
+                        self.moderation_effect(&report.app_id, true),
+                    ),
                 ];
                 for (action, label, effect) in case_actions {
                     let mut button = Button::new(&format!("{}.{action}", report.id), label);
-                    if let Some(binding) = bindings::report(effect, &report.app_id) {
+                    if let Some(binding) = effect.as_ref().and_then(bindings::effect) {
                         button = button.on_action(binding);
                     }
                     buttons.push(button);
@@ -905,8 +911,10 @@ impl StoreApp {
                 let mut submit = Button::new(&format!("{}.submit", report.id), "Submit report")
                     .role(ButtonRole::Primary)
                     .tooltip("Sign and submit this report to the authoritative registry");
-                if let Some(binding) =
-                    bindings::report(|app| StoreEffect::SubmitReport { app }, &report.app_id)
+                if let Some(binding) = self
+                    .moderation_effect(&report.app_id, false)
+                    .as_ref()
+                    .and_then(bindings::effect)
                 {
                     submit = submit.on_action(binding);
                 }

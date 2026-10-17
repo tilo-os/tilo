@@ -306,6 +306,14 @@ pub enum StoreEffect {
         #[param("Remote name")]
         name: String,
     },
+    /// Prepare exact report or appeal parameters without submitting them.
+    #[effect(returns, kind = "read")]
+    PrepareModeration {
+        #[param("App identity of the report")]
+        app: String,
+        #[param("Prepare an appeal instead of a report")]
+        appeal: bool,
+    },
     /// Submit signed report.
     ///
     /// Signs the app's report draft with your workspace identity and sends
@@ -314,6 +322,8 @@ pub enum StoreEffect {
     SubmitReport {
         #[param("App identity of the report")]
         app: String,
+        #[param("Exact operation JSON returned by prepare-moderation")]
+        operation: String,
     },
     /// Refresh status.
     ///
@@ -330,6 +340,8 @@ pub enum StoreEffect {
     Appeal {
         #[param("App identity of the report")]
         app: String,
+        #[param("Exact operation JSON returned by prepare-moderation")]
+        operation: String,
     },
     /// Export evidence envelope.
     #[effect(job)]
