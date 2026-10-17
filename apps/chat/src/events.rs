@@ -2266,9 +2266,15 @@ mod tests {
 
     #[test]
     fn with_no_channel_open_the_composer_takes_no_text() {
-        let (mut app, mut doc) = app_with_doc();
-        app.active_channel = "c_missing".into();
+        // A chat with no channels yet, as a room opens one its operator named
+        // none for.
+        let mut doc = AutoCommit::new();
+        let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
+        assert!(
+            app.channel(&app.active_channel).is_none(),
+            "no channel is open"
+        );
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "nowhere to go");
