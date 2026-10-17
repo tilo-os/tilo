@@ -195,14 +195,18 @@ fn presentation_profile_requested(
 /// through the connection that owns the focused surface — the compositor only
 /// accepts `set_selection` from that one.
 ///
-/// Returns `true` when it attached. A no-op when the current host's clipboard
-/// is not the system one (a host or test installed its own), when already
-/// attached, or when the display is not Wayland.
-pub fn attach_display(handle: &impl winit::raw_window_handle::HasDisplayHandle) -> bool {
-    std::ptr::addr_eq(
+/// The runner keeps the returned guard until close. A no-op when the host
+/// installed its own clipboard, already attached, or is not on Wayland.
+pub fn attach_display(
+    handle: winit::event_loop::OwnedDisplayHandle,
+) -> Option<tilo_clipboard::ClipboardAttachment> {
+    if !std::ptr::addr_eq(
         Arc::as_ptr(&tilo_clipboard::system()),
         Arc::as_ptr(&crate::host::current().clipboard),
-    ) && tilo_clipboard::attach_wayland_display(handle)
+    ) {
+        return None;
+    }
+    tilo_clipboard::attach_wayland_display(handle)
 }
 
 #[cfg(not(target_os = "android"))]

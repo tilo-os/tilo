@@ -24,6 +24,22 @@ use wayland_server::{
 use super::{ClipboardCommand, Publication, PublicationPayload, WaylandClipboard};
 use crate::ClipboardBackend as _;
 
+// Owns a real libwayland connection over the fixture's private socket; never
+// borrows the user's display or clipboard.
+struct OwnedTestDisplay(client::Connection);
+
+impl raw_window_handle::HasDisplayHandle for OwnedTestDisplay {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let pointer = std::ptr::NonNull::new(self.0.backend().display_ptr().cast())
+            .expect("live owned fixture display");
+        let raw = raw_window_handle::WaylandDisplayHandle::new(pointer);
+        // SAFETY: this connection owns the display throughout the borrow.
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw.into()) })
+    }
+}
+
 const PLAIN: &str = "text/plain;charset=utf-8";
 
 /// A copy queued directly, with its own deadline, as `publish` queues one.
@@ -39,6 +55,8 @@ type Operation = Box<dyn FnOnce(&mut Server, &DisplayHandle) + Send>;
 
 #[derive(Default)]
 struct Seat {
+    keyboards: Vec<wl_keyboard::WlKeyboard>,
+    devices: Vec<wl_data_device::WlDataDevice>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     device: Option<wl_data_device::WlDataDevice>,
     surface: Option<wl_surface::WlSurface>,
@@ -158,6 +176,7 @@ impl Dispatch<wl_seat::WlSeat, usize> for Server {
             let empty = std::fs::File::open("/dev/null").expect("empty keymap descriptor");
             keyboard.keymap(wl_keyboard::KeymapFormat::NoKeymap, empty.as_fd(), 0);
             keyboard.repeat_info(25, 600);
+            state.seat(*index).keyboards.push(keyboard.clone());
             state.seat(*index).keyboard = Some(keyboard);
         }
     }
@@ -189,7 +208,9 @@ impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for Server {
         match request {
             wl_data_device_manager::Request::GetDataDevice { id, seat } => {
                 let index = *seat.data::<usize>().expect("seat identity");
-                state.seat(index).device = Some(init.init(id, ()));
+                let device = init.init(id, ());
+                state.seat(index).devices.push(device.clone());
+                state.seat(index).device = Some(device);
             }
             wl_data_device_manager::Request::CreateDataSource { id } => {
                 init.init(id, SourceMimes::default());
@@ -369,15 +390,157 @@ struct Harness {
     operations: Option<mpsc::Sender<Operation>>,
     thread: Option<std::thread::JoinHandle<()>>,
     deadline: Instant,
-    _connection: client::Connection,
+    connection: client::Connection,
     _host: Host,
     _queue: client::EventQueue<Host>,
+}
+
+#[test]
+fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
+    let _system = crate::tests::SYSTEM.lock();
+    let fixture = Harness::with_deadline(ReadDeadline::NoWorker);
+    let display = Arc::new(OwnedTestDisplay(fixture.connection.clone()));
+    let retained_display = Arc::downgrade(&display);
+    let attachment = crate::attach_wayland_display(display.clone()).expect("native attachment");
+    assert!(
+        crate::attach_wayland_display(display.clone()).is_none(),
+        "only one attachment"
+    );
+    drop(display);
+    fixture.wait(
+        || {
+            fixture.query(|state| {
+                state.seats.iter().all(|seat| {
+                    seat.devices
+                        .iter()
+                        .filter(|device| device.is_alive())
+                        .count()
+                        == 4
+                        && seat
+                            .keyboards
+                            .iter()
+                            .filter(|keyboard| keyboard.is_alive())
+                            .count()
+                            == 4
+                })
+            })
+        },
+        "all production readers and publisher",
+    );
+    fixture.assert_attached_secret_copy();
+    let clipboard = crate::system();
+    fixture.operation(|state, handle| {
+        let surface = state.surfaces[0].clone();
+        for seat in &state.seats {
+            for keyboard in seat.keyboards.iter().filter(|keyboard| keyboard.is_alive()) {
+                keyboard.enter(10, &surface, Vec::new());
+                // Smithay chooses its active seat on key/modifier events,
+                // not Enter. Activate every reader binding, not just the
+                // last keyboard retained by the fixture's seat helper.
+                keyboard.modifiers(11, 0, 0, 0, 0);
+            }
+            for device in seat.devices.iter().filter(|device| device.is_alive()) {
+                let offer = device
+                    .client()
+                    .unwrap()
+                    .create_resource::<wl_data_offer::WlDataOffer, _, Server>(
+                        handle,
+                        3,
+                        Offer {
+                            label: "held-native-read".into(),
+                            hold: true,
+                        },
+                    )
+                    .unwrap();
+                device.data_offer(&offer);
+                offer.offer(PLAIN.into());
+                device.selection(Some(&offer));
+            }
+        }
+    });
+    // A first call may race delivery of focus/selection. Retry only until the
+    // server has actually received a production smithay loader's pipe.
+    fixture.wait(
+        || {
+            let _ = clipboard.text(crate::ClipboardTarget::Clipboard);
+            fixture.query(|state| !state.held.is_empty())
+        },
+        "production native reader pipe",
+    );
+    drop(attachment);
+    fixture.wait(
+        crate::native::reaped_wayland_for_test,
+        "parent backend and unrelated workers reaped",
+    );
+    assert!(
+        retained_display.upgrade().is_some(),
+        "loader lost its display owner"
+    );
+    assert!(clipboard.text(crate::ClipboardTarget::Clipboard).is_none());
+    assert!(!clipboard.set_text(crate::ClipboardTarget::Clipboard, "late copy"));
+    assert!(!clipboard.set_shared_text(crate::ClipboardTarget::Primary, "late secret"));
+    assert!(!clipboard.set_secret_text("late secret"));
+    assert!(!clipboard.set_image(1, 1, &[0; 4]));
+    assert!(clipboard.image().is_none());
+    assert!(clipboard.rich_text().is_none());
+    assert_eq!(
+        clipboard
+            .request_text(crate::ClipboardTarget::Clipboard)
+            .recv_timeout(fixture.remaining())
+            .unwrap(),
+        None
+    );
+    assert!(
+        crate::attach_wayland_display(OwnedTestDisplay(fixture.connection.clone())).is_none(),
+        "close must not reopen readers or increase the worker ceiling"
+    );
+    fixture.operation(|state, _| state.held.clear());
+    fixture.wait(
+        || retained_display.upgrade().is_none(),
+        "all display owners released",
+    );
+    crate::native::clear_wayland_for_test();
+}
+
+#[test]
+fn runner_close_does_not_wait_for_initial_registry_replies() {
+    let _system = crate::tests::SYSTEM.lock();
+    let fixture = Harness::with_deadline(ReadDeadline::NoWorker);
+    fixture.operation(|state, _| state.hold_flush = true);
+    fixture.query(|_| ());
+    let display = Arc::new(OwnedTestDisplay(fixture.connection.clone()));
+    let retained_display = Arc::downgrade(&display);
+    let attachment = crate::attach_wayland_display(display).expect("native attachment");
+    let (notification, received) = mpsc::channel();
+    let closer = std::thread::spawn(move || {
+        drop(attachment);
+        notification.send(()).unwrap();
+    });
+    let result = received.recv_timeout(tilo_test_env::hang_bound() / 2);
+    assert!(
+        retained_display.upgrade().is_some(),
+        "initializing workers lost their display"
+    );
+    // Release even when close failed, so reporting the assertion cannot itself
+    // hang fixture teardown in an uninterruptible initial registry roundtrip.
+    fixture.operation(|state, _| state.hold_flush = false);
+    assert!(
+        result.is_ok(),
+        "runner close waited for protocol initialization"
+    );
+    closer.join().unwrap();
+    fixture.wait(
+        || retained_display.upgrade().is_none(),
+        "initialized workers reaped",
+    );
+    crate::native::clear_wayland_for_test();
 }
 
 #[derive(Clone, Copy)]
 enum ReadDeadline {
     Production,
     AfterTest,
+    NoWorker,
 }
 
 impl Harness {
@@ -427,35 +590,62 @@ impl Harness {
         queue.roundtrip(&mut host).expect("host registry");
         queue.roundtrip(&mut host).expect("real client surfaces");
         let clipboard = match read_deadline {
-            ReadDeadline::Production => WaylandClipboard::new_for_wayland_test(connection.clone()),
-            ReadDeadline::AfterTest => WaylandClipboard::new_for_wayland_test_with_read_budget(
-                connection.clone(),
-                read_budget,
-            ),
+            ReadDeadline::Production => {
+                Some(WaylandClipboard::new_for_wayland_test(connection.clone()))
+            }
+            ReadDeadline::AfterTest => {
+                Some(WaylandClipboard::new_for_wayland_test_with_read_budget(
+                    connection.clone(),
+                    read_budget,
+                ))
+            }
+            ReadDeadline::NoWorker => None,
         };
         let harness = Self {
-            clipboard: Some(clipboard),
+            clipboard,
             operations: Some(send),
             thread: Some(thread),
             deadline,
-            _connection: connection,
+            connection,
             _host: host,
             _queue: queue,
         };
-        harness.wait(
-            || {
-                harness.query(|state| {
-                    state
-                        .seats
-                        .iter()
-                        .all(|seat| seat.keyboard.is_some() && seat.device.is_some())
-                        && state.surfaces.len() == 2
-                })
-            },
-            "worker bindings",
-        );
-        harness.fence();
+        if harness.clipboard.is_some() {
+            harness.wait(
+                || {
+                    harness.query(|state| {
+                        state
+                            .seats
+                            .iter()
+                            .all(|seat| seat.keyboard.is_some() && seat.device.is_some())
+                            && state.surfaces.len() == 2
+                    })
+                },
+                "worker bindings",
+            );
+            harness.fence();
+        }
         harness
+    }
+
+    fn assert_attached_secret_copy(&self) {
+        self.operation(|state, _| {
+            state.enter(0, 0);
+            let surface = &state.surfaces[0];
+            for seat in &state.seats {
+                for keyboard in seat.keyboards.iter().filter(|keyboard| keyboard.is_alive()) {
+                    keyboard.enter(10, surface, Vec::new());
+                }
+            }
+        });
+        self.query(|_| ());
+        assert!(crate::system().set_secret_text("attached secret"));
+        let mimes = self.selection_mimes();
+        for marker in [crate::SECRET_MIME, crate::PASSWORD_MANAGER_HINT_MIME] {
+            assert!(mimes.iter().any(|mime| mime == marker));
+            assert_eq!(self.selection_bytes(marker), crate::SECRET_MARKER);
+        }
+        assert_eq!(self.selection_bytes("text/plain"), b"attached secret");
     }
 
     fn remaining(&self) -> Duration {

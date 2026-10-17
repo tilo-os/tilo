@@ -149,23 +149,27 @@ fn recv_bounded<T>(
     receiver.recv_timeout(budget).ok()
 }
 
+// Field order matters: smithay joins its protocol worker before releasing
+// the display owner. Detached loaders clone this entire wrapper, not just the
+// mutex, so they cannot outlive the connection they use.
+struct DisplayReader {
+    clipboard: std::sync::Mutex<smithay_clipboard::Clipboard>,
+    _display: Option<Arc<dyn Send + Sync>>,
+}
+
 /// `wl_data_device` + `zwp_primary_selection_device_v1` on the app's own
-/// Wayland connection.
-///
-/// Built on `smithay-clipboard`, which runs the selection protocol on a
-/// dedicated event queue over the *existing* connection. Sharing the
-/// connection is the point: the compositor gates `set_selection` on keyboard
-/// focus, and only the connection that owns the focused surface has it. A
-/// second, separate connection would be a different client, would never hold
-/// focus, and every copy from it would be refused.
+/// Wayland connection. The focused client's connection is required for the
+/// compositor to accept copies; a separate connection cannot substitute.
+/// Prefer [`Self::from_owned_display`] so every protocol worker and retained
+/// loader owns the display it uses.
 pub struct WaylandClipboard {
     /// `smithay_clipboard::Clipboard` owns an mpsc receiver, so it is `Send`
     /// but not `Sync`. Each target has its own instance and read thread: a
     /// peer that never closes its clipboard pipe can therefore stall at most
     /// one bounded reader and can never starve the other target.
-    read_clipboard: Option<Arc<std::sync::Mutex<smithay_clipboard::Clipboard>>>,
-    read_primary: Option<Arc<std::sync::Mutex<smithay_clipboard::Clipboard>>>,
-    write_inner: Option<Arc<std::sync::Mutex<smithay_clipboard::Clipboard>>>,
+    read_clipboard: Option<Arc<DisplayReader>>,
+    read_primary: Option<Arc<DisplayReader>>,
+    write_inner: Option<Arc<DisplayReader>>,
     publication: PublicationClipboard,
     clipboard_cache: Arc<std::sync::Mutex<Option<String>>>,
     primary_cache: Arc<std::sync::Mutex<Option<String>>>,
@@ -186,12 +190,10 @@ struct PublicationClipboard {
 
 impl PublicationClipboard {
     /// Stop the worker and wait until it has. The worker drives the
-    /// application's own `wl_display`, which the application frees after
-    /// this clipboard; a worker left running would go on reading and
-    /// writing freed memory. It sits in its event loop, where `Exit` wakes
-    /// it at once, and none of its work blocks: its pipes are event
-    /// sources. `smithay_clipboard::Clipboard` makes the same wait on drop
-    /// for the readers this clipboard also owns.
+    /// application's own `wl_display`. Once initialized, Exit wakes its
+    /// event loop and its pipes are nonblocking sources. Initialization can
+    /// still wait on a registry roundtrip, so runner attachments arrange
+    /// for this wait off the UI thread while retaining the display owner.
     fn shut_down(&self) {
         let _ = self.sender.send(ClipboardCommand::Exit);
         let thread = self
@@ -219,10 +221,34 @@ impl WaylandClipboard {
     ///
     /// # Safety
     ///
-    /// `display_ptr` must be a live `wl_display *` that outlives the returned
-    /// value. In practice it comes from winit's display handle and lives as
-    /// long as the event loop, which outlives every widget that could copy.
+    /// `display_ptr` must remain live until this value AND every outstanding
+    /// loader have finished. A timed-out text read can retain a loader after
+    /// this value is dropped. Use [`Self::from_owned_display`] when that
+    /// independent lifetime cannot be guaranteed.
     pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
+        unsafe { Self::new_with_owner(display_ptr, None) }
+    }
+
+    /// Attach while retaining the actual display owner for every worker,
+    /// including loaders that survive runner close.
+    pub fn from_owned_display(
+        handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
+    ) -> Option<Self> {
+        let owner = Arc::new(handle);
+        let display = owner.display_handle().ok()?;
+        let raw_window_handle::RawDisplayHandle::Wayland(display) = display.as_raw() else {
+            return None;
+        };
+        let pointer = display.display.as_ptr();
+        // SAFETY: each foreign-display worker retains an owner clone until
+        // its protocol objects have been destroyed and its thread joined.
+        Some(unsafe { Self::new_with_owner(pointer, Some(owner)) })
+    }
+
+    unsafe fn new_with_owner(
+        display_ptr: *mut std::ffi::c_void,
+        owner: Option<Arc<dyn Send + Sync>>,
+    ) -> Self {
         let backend = unsafe {
             smithay_client_toolkit::reexports::client::backend::Backend::from_foreign_display(
                 display_ptr.cast(),
@@ -237,10 +263,12 @@ impl WaylandClipboard {
         let worker_pasted = Arc::clone(&pasted);
         let rich = Arc::new(RichClipboard::new());
         let worker_rich = Arc::clone(&rich);
+        let worker_display = owner.clone();
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard".into())
             .spawn(move || {
                 publication_worker(connection, receiver, worker_pasted, worker_rich);
+                drop(worker_display);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -248,15 +276,24 @@ impl WaylandClipboard {
             alive.store(false, std::sync::atomic::Ordering::Release);
         }
         Self {
-            read_clipboard: Some(Arc::new(std::sync::Mutex::new(unsafe {
-                smithay_clipboard::Clipboard::new(display_ptr)
-            }))),
-            read_primary: Some(Arc::new(std::sync::Mutex::new(unsafe {
-                smithay_clipboard::Clipboard::new(display_ptr)
-            }))),
-            write_inner: Some(Arc::new(std::sync::Mutex::new(unsafe {
-                smithay_clipboard::Clipboard::new(display_ptr)
-            }))),
+            read_clipboard: Some(Arc::new(DisplayReader {
+                clipboard: std::sync::Mutex::new(unsafe {
+                    smithay_clipboard::Clipboard::new(display_ptr)
+                }),
+                _display: owner.clone(),
+            })),
+            read_primary: Some(Arc::new(DisplayReader {
+                clipboard: std::sync::Mutex::new(unsafe {
+                    smithay_clipboard::Clipboard::new(display_ptr)
+                }),
+                _display: owner.clone(),
+            })),
+            write_inner: Some(Arc::new(DisplayReader {
+                clipboard: std::sync::Mutex::new(unsafe {
+                    smithay_clipboard::Clipboard::new(display_ptr)
+                }),
+                _display: owner,
+            })),
             publication: PublicationClipboard {
                 sender,
                 thread: std::sync::Mutex::new(thread),
@@ -1850,7 +1887,7 @@ impl ClipboardBackend for WaylandClipboard {
                 let Some(inner) = self.write_inner.as_ref() else {
                     return false;
                 };
-                let Ok(inner) = inner.try_lock() else {
+                let Ok(inner) = inner.clipboard.try_lock() else {
                     return false;
                 };
                 inner.store_primary(text.to_string());
@@ -1950,10 +1987,14 @@ impl WaylandClipboard {
                 // still blocked; the latter creates an unbounded pile of blocked
                 // threads when a peer never closes its pipe.
                 let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    inner.lock().ok().and_then(|clipboard| match target {
-                        ClipboardTarget::Clipboard => clipboard.load().ok(),
-                        ClipboardTarget::Primary => clipboard.load_primary().ok(),
-                    })
+                    inner
+                        .clipboard
+                        .lock()
+                        .ok()
+                        .and_then(|clipboard| match target {
+                            ClipboardTarget::Clipboard => clipboard.load().ok(),
+                            ClipboardTarget::Primary => clipboard.load_primary().ok(),
+                        })
                 }))
                 .ok()
                 .flatten();
