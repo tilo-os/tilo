@@ -35,8 +35,35 @@ fn parse_section(id: &str) -> Option<usize> {
     id.strip_prefix("account-")?.parse().ok()
 }
 
-/// The sidebar's destinations for the current state.
+/// The row id of every account's inbox together.
+pub(crate) const ALL_INBOXES: &str = "all/inbox";
+
+/// The sidebar's destinations for the current state: with more than one
+/// account, every inbox together first, then each account's folders.
 pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
+    let mut sections = Vec::new();
+    if state.accounts.accounts.len() > 1 {
+        let unread: usize = state
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| {
+                state
+                    .mailbox
+                    .unread_count_of(&account.config.email, Folder::Inbox)
+            })
+            .sum();
+        let item = NavItem::new(ALL_INBOXES, "All inboxes")
+            .icon(Icon::Inbox)
+            .live_count(u32_of_usize(unread));
+        sections.push(NavSection::untitled("all", vec![item]));
+    }
+    sections.extend(account_sections(state));
+    sections
+}
+
+/// One section per account, listing its folders.
+fn account_sections(state: &MailState) -> Vec<NavSection> {
     state
         .accounts
         .accounts
@@ -101,6 +128,9 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
 
 /// The row that shows the open folder.
 pub(crate) fn selected_row(state: &MailState) -> Option<String> {
+    if state.all_inboxes {
+        return Some(ALL_INBOXES.to_owned());
+    }
     (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
 }
 
@@ -114,7 +144,9 @@ pub fn sidebar(shared: &Shared) -> NavList {
         .with_id("mail-mailboxes")
         .with_accessible_name("Mailboxes")
         .on_select(move |id| {
-            if let Some((account, folder)) = parse_folder_row(&id) {
+            if id == ALL_INBOXES {
+                on_select.borrow_mut().push_command(Command::OpenAllInboxes);
+            } else if let Some((account, folder)) = parse_folder_row(&id) {
                 on_select
                     .borrow_mut()
                     .push_command(Command::OpenFolder(account, folder));
@@ -156,7 +188,13 @@ mod tests {
 
         let state = state();
         let sections = sections(&state);
-        assert_eq!(sections.len(), state.accounts.accounts.len());
+        assert_eq!(
+            sections.len(),
+            state.accounts.accounts.len() + 1,
+            "every inbox together, then each account"
+        );
+        assert_eq!(sections[0].items[0].id, ALL_INBOXES);
+        let sections = &sections[1..];
         let first = &sections[0];
         assert_eq!(first.title, state.accounts.accounts[0].config.email);
         let inbox = &first.items[0];
