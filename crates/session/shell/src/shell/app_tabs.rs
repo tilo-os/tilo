@@ -238,13 +238,41 @@ pub fn open_beside(
     }
     .ok_or(AppTabError::NoWorkspace)?;
     let placement = placement_after(st, anchor, background);
-    // Before the launch: the window may map before this function returns.
-    launcher::set_pending_placement(&app.package_id, placement);
-    launcher::queue_launch_target_in_workspace(app.clone(), &workspace, target.map(str::to_owned))
-        .map_err(|error| {
-            launcher::clear_pending_placement(&app.package_id);
-            AppTabError::Refused(error.user_message())
-        })
+    hold_and_launch(st, &app.package_id, &app.display_name, placement, || {
+        launcher::queue_launch_target_in_workspace(
+            app.clone(),
+            &workspace,
+            target.map(str::to_owned),
+        )
+    })
+    .map(drop)
+}
+
+/// The new tab is there from this frame, like a browser's: the opening card
+/// holds its place at `placement` and the app's window binds into it when it
+/// maps. Held before `queue` starts the launch, since the window may map
+/// before this returns. A launch refused before any process leaves no card.
+fn hold_and_launch(
+    st: &ChromeState,
+    package_id: &str,
+    display_name: &str,
+    placement: Placement,
+    queue: impl FnOnce() -> Result<(), launcher::LaunchError>,
+) -> Result<TabId, AppTabError> {
+    let held = crate::shell::tab_binding::hold_place_for_launch(
+        &mut st.tree_mut(),
+        package_id,
+        display_name,
+        placement,
+    );
+    match queue() {
+        Ok(()) => Ok(held),
+        Err(error) => {
+            launcher::clear_pending_placement(package_id);
+            crate::shell::tab_binding::remove_tab(&mut st.tree_mut(), held);
+            Err(AppTabError::Refused(error.user_message()))
+        }
+    }
 }
 
 /// The next window `package_id` maps lands as a tab right after `anchor`:
@@ -580,6 +608,51 @@ mod tests {
                 "a plain t is typing, not a tab chord"
             );
             drop(frame);
+        }
+
+        // Phase `a_new_instance_has_its_tab_from_the_request`.
+        {
+            const APP: &str = "so.tilo.app-tabs-instant";
+            let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let st = chrome.borrow_mut();
+            let fixture = group_with_page(&mut st.tree_mut(), APP, 46);
+            let anchor = anchor_for_app(&st.tree(), APP, Some(46));
+            let placement = placement_after(&st, anchor, false);
+            let mut seen_at_launch = None;
+            let held = hold_and_launch(&st, APP, "Instant", placement, || {
+                // The launch starts with the tab already in place.
+                seen_at_launch = Some(group_tabs(&st.tree(), fixture.group));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                seen_at_launch,
+                Some((vec![fixture.page, held, fixture.other], held)),
+                "the opening card sits right after its opener, in front, before any process"
+            );
+            let opened = crate::shell::tab_binding::adopt_toplevel(
+                &mut st.tree_mut(),
+                9_102,
+                Some(APP.into()),
+            );
+            assert_eq!(opened, held, "the window takes the card's place");
+            assert_eq!(
+                group_tabs(&st.tree(), fixture.group).0,
+                vec![fixture.page, held, fixture.other]
+            );
+
+            // A launch refused before any process leaves no card behind.
+            let placement = placement_after(&st, anchor, false);
+            let refused = hold_and_launch(&st, APP, "Instant", placement, || {
+                Err(launcher::LaunchError::NotInstalled {
+                    package_id: APP.into(),
+                })
+            });
+            assert!(matches!(refused, Err(AppTabError::Refused(_))));
+            assert_eq!(
+                group_tabs(&st.tree(), fixture.group).0,
+                vec![fixture.page, held, fixture.other]
+            );
         }
 
         // Phase `an_unknown_app_or_undeclared_target_opens_nothing`.

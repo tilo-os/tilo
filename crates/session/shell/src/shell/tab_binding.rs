@@ -1200,14 +1200,17 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         .and_then(|group| group.tabs.get(tab_idx))
         .is_some_and(|tab| {
             matches!(&tab.tile, TileContent::Foreign { .. }) || tab.tile.is_device_local()
-        });
+        })
+        || !tree.doc_holds_tab(strip_id, group_id, tab_id, remove_group);
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
-    // insertion and resurrect it. A newly adopted `Foreign` surface, and
-    // the device-local workspace-activity window, may never have entered
-    // the replicated document; absence there is therefore already the
-    // desired durable state, not a failed close.
+    // insertion and resurrect it. A newly adopted `Foreign` surface, the
+    // device-local workspace-activity window, and a tab placed since the
+    // document last took the cache (an opening card whose launch was
+    // refused in the same frame) may never have entered the replicated
+    // document; absence there is therefore already the desired durable
+    // state, not a failed close.
     if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !cache_only {
         return false;
     }

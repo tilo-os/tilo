@@ -914,6 +914,22 @@ pub fn upsert_effect_receipt(
 /// Delete one tab, or its whole group when the tab was the group's last.
 /// The narrow mirror of a user-driven close, so a later merge cannot
 /// resurrect the tab.
+/// Whether `doc` holds what [`remove_tab`] with the same arguments would
+/// delete: the tab, or with `remove_group` its whole group.
+pub fn holds_tab(
+    doc: &AutoCommit,
+    strip_id: StripId,
+    group_id: GroupId,
+    tab_id: TabId,
+    remove_group: bool,
+) -> bool {
+    if remove_group {
+        group_anywhere(doc, group_id).is_some()
+    } else {
+        tab_in_strip(doc, strip_id, tab_id).is_some()
+    }
+}
+
 pub fn remove_tab(
     doc: &mut AutoCommit,
     strip_id: StripId,

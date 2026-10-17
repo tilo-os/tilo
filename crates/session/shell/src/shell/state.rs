@@ -4016,6 +4016,23 @@ impl WorkspaceTree {
     /// well when that tab was the group's last member. The in-memory tree is
     /// still the source of truth; this is the narrow document mirror used by
     /// user-driven close so a later merge cannot resurrect the closed tab.
+    /// Whether the document holds what [`Self::doc_remove_tab`] would delete.
+    pub(crate) fn doc_holds_tab(
+        &self,
+        strip_id: StripId,
+        group_id: GroupId,
+        tab_id: TabId,
+        remove_group: bool,
+    ) -> bool {
+        tilo_desktop_model::desktop_doc::holds_tab(
+            &self.doc,
+            strip_id,
+            group_id,
+            tab_id,
+            remove_group,
+        )
+    }
+
     pub(crate) fn doc_remove_tab(
         &mut self,
         strip_id: StripId,
