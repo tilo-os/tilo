@@ -2412,18 +2412,6 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
-        fn ctrl_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Ctrl".to_string()]),
-                key: key.to_string(),
-            }
-        }
-        fn ctrl_shift_chord(key: &str) -> KeyChord {
-            KeyChord {
-                modifiers: BTreeSet::from(["Ctrl".to_string(), "Shift".to_string()]),
-                key: key.to_string(),
-            }
-        }
         fn ctrl_alt_chord(key: &str) -> KeyChord {
             KeyChord {
                 modifiers: BTreeSet::from(["Alt".to_string(), "Ctrl".to_string()]),
@@ -2449,11 +2437,14 @@ impl Default for ShortcutConfig {
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
             (ShortcutAction::FocusNextWindow, super_chord("right")),
-            // Conventional application tab cycling belongs to the focused
-            // Tilo window group too. Keeping this distinct from Super+Tab
-            // means the overview is never opened while changing tabs.
-            (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
-            (ShortcutAction::NextTab, ctrl_chord("tab")),
+            // Ctrl+Tab and Ctrl+Shift+Tab belong to the focused app first:
+            // browsers, editors and terminals switch their own tabs with
+            // them, and a Tilo app hands them to the window group only when
+            // no widget used them (`ui::shell_tabs`). Super on top of the
+            // same chord is the desktop's and works whatever the app is.
+            // Plain Super+Tab is the overview.
+            (ShortcutAction::PreviousTab, super_ctrl_shift_chord("tab")),
+            (ShortcutAction::NextTab, super_ctrl_chord("tab")),
             (ShortcutAction::TabMenu, super_chord("f10")),
             // Super+Up/Down are the Windows and GNOME maximize and restore.
             // Strips are one level out, on Ctrl+Super; Shift carries the
@@ -2491,9 +2482,11 @@ impl Default for ShortcutConfig {
             ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
-            // Restore the most recently closed frame in this workspace.
-            // Plain Super+T keeps adding a tab.
-            (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
+            // Restore the most recently closed frame in this workspace, as
+            // Super+T adds one and Super+W closes one. Ctrl+Shift+T stays
+            // the focused app's and reopens a tab only where the app left it
+            // unhandled (`ui::shell_tabs`).
+            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
             // Super+number goes to a strip (the shared Lounge strip, at the
             // top, is 1); Ctrl+Super+number to a window of the strip.
             (ShortcutAction::FocusStrip1, super_chord("1")),
@@ -2584,6 +2577,11 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::FocusGroup7, &["Super"], "7"),
     (ShortcutAction::FocusGroup8, &["Super"], "8"),
     (ShortcutAction::FocusGroup9, &["Super"], "9"),
+    // The Ctrl tab chords went back to the focused app; the desktop's own
+    // spelling adds Super.
+    (ShortcutAction::PreviousTab, &["Ctrl", "Shift"], "tab"),
+    (ShortcutAction::NextTab, &["Ctrl"], "tab"),
+    (ShortcutAction::ReopenClosedTab, &["Ctrl", "Shift"], "t"),
 ];
 
 impl ShortcutConfig {
@@ -3054,48 +3052,41 @@ mod tests {
     }
 
     #[test]
-    fn reopen_closed_tab_defaults_to_ctrl_shift_t_without_colliding() {
+    fn tab_chords_default_to_super_and_leave_the_ctrl_chords_to_apps() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(
-            cfg.bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Ctrl+Shift+T").unwrap()
-        );
-        assert!(cfg.validate().is_ok(), "no other default claims the chord");
+        let shown = |action| cfg.bindings[&action].display();
+        assert_eq!(shown(ShortcutAction::NextTab), "Super+Ctrl+Tab");
+        assert_eq!(shown(ShortcutAction::PreviousTab), "Super+Ctrl+Shift+Tab");
+        assert_eq!(shown(ShortcutAction::ReopenClosedTab), "Super+Shift+t");
+        for app_chord in ["Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+T"] {
+            let chord = KeyChord::parse(app_chord).unwrap();
+            assert!(
+                cfg.bindings.values().all(|bound| *bound != chord),
+                "{app_chord} belongs to the focused app, not to a desktop default"
+            );
+        }
+        assert!(cfg.validate().is_ok(), "no other default claims the chords");
     }
 
     #[test]
-    fn saved_reopen_default_migrates_without_overwriting_a_custom_chord() {
-        let mut loaded = ShortcutConfig::default();
-        loaded.bindings.insert(
-            ShortcutAction::ReopenClosedTab,
-            KeyChord::parse("Super+Shift+T").unwrap(),
-        );
-        assert_eq!(
-            ShortcutConfig::normalise(loaded.clone()).bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Ctrl+Shift+T").unwrap()
-        );
-        loaded.bindings.insert(
-            ShortcutAction::ReopenClosedTab,
-            KeyChord::parse("Alt+Shift+T").unwrap(),
-        );
-        assert_eq!(
-            ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Alt+Shift+T").unwrap()
-        );
-    }
-
-    #[test]
-    fn reopening_migrates_the_old_default_and_preserves_custom_bindings() {
+    fn saved_tab_defaults_migrate_without_overwriting_a_custom_chord() {
+        for (action, saved) in [
+            (ShortcutAction::ReopenClosedTab, "Super+Shift+T"),
+            (ShortcutAction::ReopenClosedTab, "Ctrl+Shift+T"),
+            (ShortcutAction::NextTab, "Ctrl+Tab"),
+            (ShortcutAction::PreviousTab, "Ctrl+Shift+Tab"),
+        ] {
+            let mut old = ShortcutConfig::default();
+            old.bindings.insert(action, KeyChord::parse(saved).unwrap());
+            let migrated = ShortcutConfig::normalise(old);
+            assert_eq!(
+                migrated.bindings[&action],
+                ShortcutConfig::default().bindings[&action],
+                "{saved} was a default and follows the new one"
+            );
+            assert!(migrated.validate().is_ok());
+        }
         let action = ShortcutAction::ReopenClosedTab;
-        let mut old = ShortcutConfig::default();
-        old.bindings
-            .insert(action, KeyChord::parse("Super+Shift+T").unwrap());
-        let migrated = ShortcutConfig::normalise(old);
-        assert_eq!(
-            migrated.bindings[&action],
-            KeyChord::parse("Ctrl+Shift+T").unwrap()
-        );
-        assert!(migrated.validate().is_ok());
         let custom = KeyChord::parse("Ctrl+Alt+Shift+T").unwrap();
         let mut edited = ShortcutConfig::default();
         edited.set(action, custom.clone()).unwrap();
@@ -3289,7 +3280,7 @@ mod tests {
             );
             assert_eq!(
                 repaired.bindings[&ShortcutAction::NextTab].display(),
-                "Ctrl+Tab",
+                "Super+Ctrl+Tab",
                 "the duplicate action deterministically falls back to default"
             );
             assert!(repaired.validate().is_ok());
@@ -3361,9 +3352,12 @@ mod tests {
             );
             assert_eq!(
                 cfg.bindings[&ShortcutAction::PreviousTab].display(),
-                "Ctrl+Shift+Tab"
+                "Super+Ctrl+Shift+Tab"
             );
-            assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
+            assert_eq!(
+                cfg.bindings[&ShortcutAction::NextTab].display(),
+                "Super+Ctrl+Tab"
+            );
             // Reordering within a display keeps Super+Shift+arrows; moving to
             // the neighbouring display adds Ctrl to the same gesture.
             assert_eq!(

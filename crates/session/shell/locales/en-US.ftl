@@ -247,6 +247,7 @@ guide-unassigned = Unassigned
 guide-unassigned-inline = unassigned
 guide-pointer = Pointer: click a window to focus it, drag tabs or groups to reorder them, drag an edge to resize
 guide-strip-jump = Go straight to a strip with { $first } … { $last }; strip 1 is the top one
+guide-app-tab-chords = { $next }, { $previous } and { $reopen } go to the app first; the desktop’s tab shortcuts here always work
 guide-your-shortcuts = Your shortcuts: { $shortcuts }
 guide-vim-mode = Vim keys: h j k l
 guide-a11y-name = Keyboard shortcuts

@@ -1596,10 +1596,12 @@ Each instance keeps its own record; what it shows comes back on restart or
 reopen through its continuity metadata, not through a session file of the
 app's own.
 
-Ctrl+T (another instance), Ctrl+W (close this tab) and Ctrl+Shift+T (reopen
-the last closed tab) — Cmd on macOS — reach these requests whenever the
-focused widget leaves the chord unhandled; Ctrl+Tab and Ctrl+Shift+Tab are
-the shell's own tab bindings. Outside a Tilo session the same calls open a
+Ctrl+T (another instance), Ctrl+W (close this tab), Ctrl+Shift+T (reopen
+the last closed tab), Ctrl+Tab and Ctrl+Shift+Tab (next and previous tab of
+the group) — Cmd on macOS — reach these requests whenever the focused widget
+leaves the chord unhandled. A widget that uses one of them keeps it: the
+desktop answers its own Super spellings (Super+Ctrl+Tab, Super+Shift+T)
+before any app, never these. Outside a Tilo session the same calls open a
 new window of the app and close this one. The `tab.open-beside` shell action
 is the same open for agents and scripts.
 

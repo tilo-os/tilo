@@ -1052,7 +1052,7 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
     ));
     assert!(h.key_with_modifiers(
         Key::Named(NamedKey::Tab),
-        ModifiersState::CONTROL | ModifiersState::SHIFT,
+        ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT,
         false,
     ));
     assert!(

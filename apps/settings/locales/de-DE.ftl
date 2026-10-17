@@ -264,6 +264,7 @@ shortcut-category-accessibility = Bedienungshilfen
 settings-shortcut-unassigned = Nicht belegt
 settings-shortcut-or = oder
 settings-shortcuts-vim = Vim-Navigation (H J K L)
+settings-shortcuts-app-tab-chords = { $next }, { $previous } und { $reopen } erreichen zuerst die App und wechseln oder öffnen Tabs nur, wenn die App sie nicht selbst nutzt. Die Tastenkürzel für Nächster Tab, Vorheriger Tab und Geschlossenen Tab wieder öffnen wirken immer.
 settings-shortcuts-actions = Aktionen
 settings-shortcuts-actions-caption = Der Tastatur-Auslöser eines gespeicherten Kurzbefehls belegt hier seine Tastenkombination; ändere oder entferne ihn im Kurzbefehl.
 
