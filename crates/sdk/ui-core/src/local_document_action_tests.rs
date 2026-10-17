@@ -172,14 +172,14 @@ fn original_broker_continuations_and_native_work_are_not_local_user_actions() {
 }
 
 #[test]
-fn missing_published_invocation_refuses_legacy_dispatch_before_mutation() {
+fn missing_published_invocation_refuses_observation_not_legacy_edits() {
     let queue = Queue::new();
     let _scope = queue.enter("snapshot".into());
     let mut doc = AutoCommit::new();
     let before = doc.get_heads();
     let mut host = crate::action_host::ActionHost::new();
-    assert!(host.try_dispatch(&mut doc, "put", &Put(1)).is_err());
-    assert_eq!(doc.get_heads(), before);
+    host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
+    assert_ne!(doc.get_heads(), before);
     assert!(!queue.take_refusals().is_empty());
     assert!(queue.drain().is_empty());
 }

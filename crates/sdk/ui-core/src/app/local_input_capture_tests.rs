@@ -33,7 +33,8 @@ fn local_component_action_drains_exact_pre_execution_snapshot_and_alias() {
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
-    let revision = capture_bound_directory(&mut fixture);
+    fixture.app.publish_action_surface();
+    let revision = fixture.app.action_directory_revision();
     let alias = fixture
         .app
         .actions
