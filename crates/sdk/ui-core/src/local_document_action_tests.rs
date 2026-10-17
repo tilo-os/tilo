@@ -35,6 +35,18 @@ fn published() -> InvocationScope {
 }
 
 #[test]
+fn legacy_local_action_keeps_behavior_without_fabricating_admission() {
+    let queue = Queue::new();
+    let _scope = queue.enter("snapshot".into());
+    let mut doc = AutoCommit::new();
+    let mut host = crate::action_host::ActionHost::new();
+    host.try_dispatch(&mut doc, "put", &Put(7)).unwrap();
+    assert!(!doc.get_heads().is_empty());
+    assert!(queue.drain().is_empty());
+    assert!(!queue.take_refusals().is_empty());
+}
+
+#[test]
 fn capture_debug_does_not_disclose_private_intent() {
     let private = "private note body";
     let capture = CapturedAction {

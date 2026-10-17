@@ -252,6 +252,13 @@ pub(crate) fn reserve(
         return Ok(None);
     };
     let mut published = PUBLISHED.with(|published| published.borrow().clone());
+    if published.is_none() {
+        // Compatibility actions have no exact semantic address to attest.
+        // Preserve their local behavior, but make the observation gap visible;
+        // never invent an action from an encoded type or a display label.
+        active.queue.0.borrow_mut().refused = true;
+        return Ok(None);
+    }
     if let (Some(invocation), Some(aliases)) = (&mut published, &active.aliases) {
         let Some(alias) = aliases.get(&invocation.resource) else {
             active.queue.0.borrow_mut().refused = true;
