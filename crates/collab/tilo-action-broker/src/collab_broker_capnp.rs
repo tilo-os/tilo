@@ -7636,6 +7636,7 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }

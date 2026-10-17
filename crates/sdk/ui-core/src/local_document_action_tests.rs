@@ -57,7 +57,7 @@ fn capture_debug_does_not_disclose_private_intent() {
             action: "set".into(),
             arguments: serde_json::Map::from_iter([("text".into(), private.into())]),
         }),
-        encoded: EncodedAction::encode("test.private", &private).unwrap(),
+        encoded: EncodedAction::encode("test.private", &Paste(private.into())).unwrap(),
         context: Some(ActionContext::default().with_purpose(private)),
         original_heads: Vec::new(),
         mutation_hashes: Vec::new(),
