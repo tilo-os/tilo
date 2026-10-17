@@ -927,10 +927,10 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the worker has a connect/query in flight
-        // so its result lands without further input.
-        self.session.busy()
-            || self.effect_reply.is_some()
+        // A connect or query in flight wakes the app when the worker replies
+        // (its waking channel). An action's caller may cancel, and a save
+        // dialog answers on a channel of its own: those are still polled.
+        self.effect_reply.is_some()
             || self.export_rx.is_some()
             || self.shell.needs_animation_frame()
     }

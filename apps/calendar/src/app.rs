@@ -740,7 +740,9 @@ impl CalendarApp {
             .iter()
             .map(|(calendar, token)| (calendar.clone(), token.clone()))
             .collect();
-        let (tx, rx) = std::sync::mpsc::channel();
+        // The worker's reply wakes the app (`waking_channel`): nothing polls
+        // for it frame by frame while a slow server keeps the request open.
+        let (tx, rx) = ui::wake::waking_channel();
         let today = self.today;
         for id in &sync_account_ids {
             if let Err(error) = accounts::AccountSyncReporter::new(id.clone()).started() {
@@ -4299,12 +4301,10 @@ impl Widget for CalendarApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop ticking while a background CalDAV pull is running
-        // so its result is drained in `sync` the moment it arrives, without
-        // waiting for an unrelated input event — and while a scroll container is
-        // still settling momentum / fading its bar.
-        self.syncing
-            || self.timeline.needs_animation_frame()
+        // A background CalDAV pull wakes the app when it replies
+        // (`waking_channel`); frames are only for a scroll container still
+        // settling momentum or fading its bar.
+        self.timeline.needs_animation_frame()
             || self.agenda.needs_animation_frame()
             || self.tasks.needs_animation_frame()
     }
