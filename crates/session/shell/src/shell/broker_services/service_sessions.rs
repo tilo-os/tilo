@@ -40,8 +40,7 @@ impl NativeBrowserServiceSessions {
         let owner = self
             .owner
             .owner
-            .as_ref()
-            .ok_or("Native Browser owner unavailable")?;
+            .opened("Native Browser owner unavailable")?;
         owner.with_current(room, |view| {
             let certificate = context.read_context().certificate();
             if !view.peer().certificates().contains(certificate) {
@@ -50,6 +49,7 @@ impl NativeBrowserServiceSessions {
             let now = std::time::SystemTime::now();
             if admin {
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(certificate.device_public_key, now)?;
             }
             let member = view
