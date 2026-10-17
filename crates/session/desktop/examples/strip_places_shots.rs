@@ -126,13 +126,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut frame = bar(width, theme);
         Framed::harness(&frame).render_png(&out.join(format!("{name}-counts.png")));
         if name == "narrow" {
-            // A narrow bar keeps its strips in the overflow menu.
             continue;
         }
         click(&mut frame, "topbar_strip_Games");
         Framed::harness(&frame).render_png(&out.join(format!("{name}-switched.png")));
-        click(&mut frame, "topbar_strip_add");
+        // New desk, as the workspace menu asks for it: named in place.
+        frame.begin_new_desk();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        click(&mut frame, "topbar_strip_name_field");
         Framed::harness_mut(&mut frame).type_text("Games night");
+
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         Framed::harness(&frame).render_png(&out.join(format!("{name}-naming.png")));
         Framed::harness_mut(&mut frame).key("Enter");

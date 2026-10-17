@@ -1,5 +1,6 @@
 use super::*;
-use crate::{record::chat, resource::Chat};
+use crate::messages::chat_part;
+use crate::parts::ChatPart;
 use ui::tilo_resource::Id;
 
 #[test]
@@ -18,7 +19,7 @@ fn nonempty_replies_cannot_be_reused_and_oversized_output_creates_no_reply() {
             "x".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES + 1),
         ),
     ] {
-        let invoke = Chat::STREAM_OUTPUT.with(chat::StreamOutput {
+        let invoke = ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
             channel: Id::from_raw("c_crit"),
             reply: id.into(),
             name: None,
@@ -29,12 +30,11 @@ fn nonempty_replies_cannot_be_reused_and_oversized_output_creates_no_reply() {
             })
             .unwrap(),
         });
-        assert!(crate::testing::apply_as(&mut doc, crate::model::ME, invoke).is_err());
+        assert!(crate::testing::apply_part_as(&mut doc, crate::model::ME, invoke).is_err());
     }
-    let state = crate::projection::read(&doc);
     assert_eq!(
-        state.message_row(&reply).unwrap().text,
+        doc.message_row(&reply).unwrap().text,
         "Keep the existing answer"
     );
-    assert!(state.message_row("oversized_reply").is_none());
+    assert!(doc.message_row("oversized_reply").is_none());
 }

@@ -17,7 +17,12 @@ set -euo pipefail
 epoch=0
 for ref in "$@"; do
   [ -n "$ref" ] || { echo "image-epoch.sh: empty image reference" >&2; exit 2; }
-  created="$(skopeo inspect "docker://$ref" | jq -er .Created)"
+  # A localhost/ image is one this build made (an RPM snapshot not yet published).
+  case $ref in
+    localhost/*) transport=containers-storage: ;;
+    *) transport=docker:// ;;
+  esac
+  created="$(skopeo inspect "$transport$ref" | jq -er .Created)"
   seconds="$(date -u -d "$created" +%s)"
   if (( seconds > epoch )); then epoch=$seconds; fi
 done

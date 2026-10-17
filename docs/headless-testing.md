@@ -353,7 +353,8 @@ TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
 For multi-monitor behaviour, replace the one output with a real arrangement
 instead (the two variables are mutually exclusive):
 ```bash
-# A named fixture: docked-laptop, vertical-stack, portrait-plus-4k, mixed-scale-offset
+# A named fixture: docked-laptop, laptop-beside-1080p, vertical-stack,
+# portrait-plus-4k, mixed-scale-offset
 TILO_HEADLESS_OUTPUTS=docked-laptop cargo run --bin shell -- --backend headless
 # Or a spec: WxH mode, then optional @SCALE, ~HZ, rDEGREES, +X+Y per output
 TILO_HEADLESS_OUTPUTS=2560x1600@2,1920x1080@1+2560+0 cargo run --bin shell -- --backend headless

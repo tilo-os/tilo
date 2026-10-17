@@ -70,8 +70,12 @@ const OPEN_SETTLE: Duration = Duration::from_secs(8);
 const MOST_NEWLY_OPENED: usize = 40;
 /// Wall-clock budget of one task's loop: model turns and steps together.
 const MAX_LOOP_TIME: Duration = Duration::from_secs(300);
-/// The most one model turn may take.
-const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(30);
+/// The most one model turn may take: the model gateway's own ceiling for a
+/// provider call, and a managed agent's model budget. Hosted reasoning
+/// models answer most turns in seconds but take up to a minute on some
+/// (Gemini on Vertex AI did on several turns of one session); cutting a turn
+/// shorter fails it after the provider already did, and billed, the work.
+const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(60);
 /// Bound Stop latency while the provider is silent without polling the host
 /// on every token. The broker remains the authority for the exact run/lease.
 const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
@@ -1473,9 +1477,20 @@ impl Session {
     /// searching the web, reading or changing an application's documents,
     /// or finding out what an application can do. `None` for a call that
     /// is no step of its own (finishing, reading on in a long result).
-    fn step_of(&mut self, state: &LoopState, call: &StreamedCall) -> Option<TaskStep> {
+    fn step_of(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &LoopState,
+        call: &StreamedCall,
+    ) -> Option<TaskStep> {
         let catalogue = self.task_catalogue();
+        // The application's name as the person sees it: the selection's
+        // application names itself, an openable one is offered under its
+        // name, and any other is named by its id's last part.
         let app_name = |app: &str| {
+            if let Some(subject) = run.subject.as_ref().filter(|subject| subject.app_id == app) {
+                return subject.app_label.clone();
+            }
             catalogue
                 .offers
                 .iter()
@@ -1483,7 +1498,13 @@ impl Session {
                     offer.app == app && offer.descriptor.resource_kind == surface::APPLICATION_KIND
                 })
                 .map_or_else(
-                    || app.rsplit('.').next().unwrap_or(app).to_owned(),
+                    || {
+                        let last = app.rsplit('.').next().unwrap_or(app).replace('-', " ");
+                        let mut chars = last.chars();
+                        chars.next().map_or_else(String::new, |first| {
+                            first.to_uppercase().chain(chars).collect()
+                        })
+                    },
                     |offer| offer.descriptor.resource_label.clone(),
                 )
         };
@@ -1533,7 +1554,7 @@ impl Session {
         state: &mut LoopState,
         call: &StreamedCall,
     ) -> Result<()> {
-        let Some(step) = self.step_of(state, call) else {
+        let Some(step) = self.step_of(run, state, call) else {
             return Ok(());
         };
         let note = step.note();

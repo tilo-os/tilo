@@ -178,7 +178,7 @@ impl StoreApp {
                         children.push(Box::new(Actions::new(acquire)));
                     }
                     children.push(self.technical_properties_section(vec![
-                        Property::new(ui::i18n!("store-runtime-reference"), &review.runtime),
+                        Property::new(ui::i18n!("store-runtime-repair-reference"), &review.runtime),
                         Property::new(ui::i18n!("store-runtime-package"), &offer.package_id),
                         Property::new(ui::i18n!("store-runtime-version"), &offer.version),
                         Property::new(ui::i18n!("store-runtime-publisher"), &offer.publisher),

@@ -38,15 +38,11 @@ pub struct SelectorFinish {
 }
 
 impl SelectorFinish {
-    /// The stock finish: a rim that fades over the top half, a hover strong
-    /// enough to clear the selection step on an opaque ground
-    /// (`crate::chrome::SELECTION_MIN_STEP`), and a solid strip. The frosted
-    /// strip ([`StripMaterial::Floating`]) is a theme's choice for now: the
-    /// shell's retained presenter drops its pan layers, scroll copies and
-    /// sparse damage for every frame that has a blurred surface on screen,
-    /// and a strip is on screen in every frame.
+    /// The stock finish: a frosted strip, a rim that fades over the top
+    /// half, and a hover strong enough to clear the selection step on an
+    /// opaque ground (`crate::chrome::SELECTION_MIN_STEP`).
     pub const STOCK: Self = Self {
-        strip: StripMaterial::Opaque,
+        strip: StripMaterial::Floating,
         rim_span: 0.55,
         rim_alpha: 0.22,
         hover_alpha: 0.75,
@@ -84,6 +80,15 @@ impl SelectorFinish {
     pub fn rim(&self) -> Option<Color> {
         (self.rim_alpha > 0.0 && self.rim_span > 0.0)
             .then(|| Color::WHITE.with_alpha(self.rim_alpha.clamp(0.0, 1.0)))
+    }
+
+    /// What a frosted strip of `ground` tinted at `opacity` can look like at
+    /// its darkest and its lightest: the tint over black and over white.
+    /// Ink on the strip holds against both, whatever the desktop is.
+    #[must_use]
+    pub fn frosted_extremes(ground: Color, opacity: f32) -> [Color; 2] {
+        [Color::BLACK, Color::WHITE]
+            .map(|backdrop| crate::tokens::colors::over(backdrop, ground, opacity))
     }
 
     /// The finish actually painted: where nothing may be translucent (forced

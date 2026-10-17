@@ -1286,7 +1286,6 @@ COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
     os/usr/libexec/tilo-verified-update \
     /tilo-components/usr/libexec/
-COPY os/dev/hardware_profile.py /tilo-components/dev/
 COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
@@ -2148,6 +2147,7 @@ COPY \
     os/scripts/verify-runtime-crypto-packages.sh \
     os/scripts/verify-no-ui-toolkits.sh \
     os/scripts/verify-no-cisco-openh264.sh \
+    os/scripts/verify-no-python-runtime.sh \
     /usr/local/bin/
 
 # Confine the collaborative filesystem daemon in its own SELinux domain
@@ -2452,15 +2452,18 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
 # The relay's static account: a desktop set up as a node runs the relay
-# (tilo-node-relay@) under it, as the host image runs tilo-relay.service.
+# (tilo-node-relay@) under it, as the host image runs tilo-relay.service. Its
+# snippet ships with the relay component (os/components.toml), which arrives
+# with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     /usr/lib/sysusers.d/
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
+RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-relay.conf,target=/run/tilo-relay-sysusers.conf,ro \
+    systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf \
+ && systemd-sysusers /run/tilo-relay-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.
@@ -3016,7 +3019,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     done; \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
-    install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
     # -B: the script imports hardware_profile from /run, and its bytecode
     # (which records the checkout's mtime) would otherwise stay in the layer.
     python3 -B /run/tilo-prepare-hardware-profile.py \
@@ -3357,8 +3359,11 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && bash /usr/local/bin/verify-no-cisco-openh264.sh \
+    # The rpmdb finaliser ran after every package change; none comes now.
+    && rm -f /usr/libexec/tilo/finalize-rpmdb \
+    && bash /usr/local/bin/verify-no-python-runtime.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
-             /usr/local/bin/verify-no-cisco-openh264.sh \
+             /usr/local/bin/verify-no-cisco-openh264.sh /usr/local/bin/verify-no-python-runtime.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
     # directory's time, so those are pinned to the epoch first, the time the

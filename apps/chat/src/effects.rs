@@ -737,6 +737,7 @@ const READ_LATEST: usize = 20;
 /// and the latest messages of `channel`, each with the message it answers.
 pub(crate) fn read_workspace(
     chat: &Chat,
+    held: &crate::messages::Messages,
     workspace: &str,
     message: Option<&str>,
     channel: Option<&str>,
@@ -759,8 +760,7 @@ pub(crate) fn read_workspace(
         .into_iter()
         .collect();
     if let Some(channel) = channel {
-        let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = chat
-            .messages
+        let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
             .iter()
             .filter(|(_, found)| found.channel.as_str() == channel)
             .collect();
@@ -771,7 +771,7 @@ pub(crate) fn read_workspace(
     // Each with the message it answers, once.
     let answered: Vec<tilo_resource::Id> = wanted
         .iter()
-        .filter_map(|id| chat.messages.get(id)?.parent.clone())
+        .filter_map(|id| held.get(id)?.parent.clone())
         .collect();
     wanted.extend(answered);
     let mut messages = Vec::new();
@@ -780,7 +780,7 @@ pub(crate) fn read_workspace(
         if !seen.insert(id.clone()) {
             continue;
         }
-        if let Some(found) = chat.messages.get(&id) {
+        if let Some(found) = held.get(&id) {
             messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
         }
     }
@@ -1035,11 +1035,23 @@ impl ChatApp {
             badge: agent.then(|| "agent".to_owned()),
             preview: None,
         });
-        if message
-            .work
-            .as_ref()
-            .and_then(|work| work.stream.as_ref())
-            .is_some_and(|stream| !stream.reasoning.is_empty())
+        // The record keeps no message (they are in its parts), so the row
+        // carries what the record offers on each: its reads and views.
+        let item = tilo_resource::Id::from_raw(id);
+        let effects = <Chat as tilo_resource::Resource>::item_effects("messages", &item);
+        let offers_reasoning = effects.iter().any(|spec| spec.id == "show-agent-reasoning");
+        for spec in effects {
+            row = row.operation(spec);
+        }
+        for view in item_views("messages", &item) {
+            row = row.view(view);
+        }
+        if !offers_reasoning
+            && message
+                .work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_some_and(|stream| !stream.reasoning.is_empty())
         {
             row = row.effect(&ChatEffect::ShowAgentReasoning {
                 message: id.to_owned(),

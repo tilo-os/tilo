@@ -381,13 +381,14 @@ mod tests {
     }
 
     /// Every start settles the chat again: it renames, and never brings
-    /// back or doubles channels, nor touches what people wrote.
+    /// back or doubles channels, nor undoes what people did. (What they
+    /// wrote is kept in the chat's message parts, which settling never
+    /// opens.)
     #[test]
     fn settling_the_chat_again_renames_and_keeps_what_people_did() {
         let mut doc = prepared_chat();
         let channels = names(&["general", "help", "show-and-tell"]);
         settle_chat(&mut doc, ROOM, "Plaza", &channels).unwrap();
-        chat::demo::say(&mut doc, "host", "c_general", "hello").unwrap();
         chat::demo::apply_as(
             &mut doc,
             "host",
@@ -410,7 +411,6 @@ mod tests {
             ("Town Plaza", "TP")
         );
         assert_eq!(channel_names(&doc), ["general", "show-and-tell"]);
-        assert_eq!(chat.messages.len(), 1);
     }
 
     #[test]

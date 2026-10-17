@@ -6,14 +6,20 @@
     800
   ],
   "budget": {
-    "clicks": 3,
+    "clicks": 5,
     "keys": 0
   },
   "steps": [
     {
       "op": "input",
       "action": {
-        "click_named": "semantic:topbar:overview"
+        "click_named": "semantic:topbar:workspace-settings"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:Overview"
       }
     },
     {
@@ -46,7 +52,13 @@
     {
       "op": "input",
       "action": {
-        "click_named": "semantic:topbar:workspace-up"
+        "click_named": "semantic:topbar:workspace-settings"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:Home"
       }
     },
     {

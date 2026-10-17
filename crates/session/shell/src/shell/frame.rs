@@ -849,7 +849,8 @@ pub struct FrameBuilder {
     /// Pixel-exact final app frames shown only while a newly authorised
     /// secondary surface is preparing its first buffer.
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
-    osk_anchor_x: Option<f64>,
+    /// The centre of the field the on-screen keyboard types into.
+    osk_anchor: Option<vello::kurbo::Point>,
     osk_active: bool,
     /// [`crate::compositor::state::State::osk_commits`], for the state dump.
     osk_commits: u64,
@@ -1185,7 +1186,7 @@ impl FrameBuilder {
             session_locked: false,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
-            osk_anchor_x: None,
+            osk_anchor: None,
             osk_active: false,
             osk_commits: 0,
             osk_serves_shell: false,
@@ -1979,18 +1980,20 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
-    /// Dock the keyboard at the bottom of the output it serves. The release
-    /// gate taps its keys from the same placement
+    /// Dock the keyboard at the bottom of the output it serves: the one
+    /// holding the field it types into, else the display the person is
+    /// working on. The release gate taps its keys from the same placement
     /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
         if self.osk_overlay.is_none() {
             return;
         }
         let outputs = self.effective_outputs();
-        let anchor = self.osk_anchor_x.unwrap_or(0.0);
-        let output = outputs
-            .iter()
-            .find(|o| anchor >= o.x && anchor < o.x + o.width)
+        let focused = self.host.overlay_area().center();
+        let output = self
+            .osk_anchor
+            .and_then(|anchor| outputs.iter().find(|o| o.rect().contains(anchor)))
+            .or_else(|| outputs.iter().find(|o| o.rect().contains(focused)))
             .or_else(|| outputs.first());
         let Some(output) = output else { return };
 
@@ -2000,7 +2003,9 @@ impl FrameBuilder {
             .clamp(220.0, 380.0)
             .min((output.height - margin * 2.0).max(1.0));
         let x0 = output.x + (output.width - width) / 2.0;
-        let y0 = (output.height - height - margin).max(0.0);
+        // From the output's own top: a display beside a taller one, or
+        // below another, does not start at the desktop's top edge.
+        let y0 = output.y + (output.height - height - margin).max(0.0);
         if let Some(keyboard) = self.osk_overlay.as_mut() {
             keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
         }
@@ -2228,7 +2233,6 @@ impl FrameBuilder {
                     blur_px: surface.blur_px * scale,
                     below: self.below_to_scene(below),
                     ground: surface.ground,
-                    over_desktop: surface.over_desktop,
                 })
             })
             .collect();
@@ -4769,10 +4773,17 @@ impl FrameBuilder {
     ) {
         let anchor = focused_surface
             .and_then(|id| self.host.foreign_surface_rect(id))
-            .map(|rect| rect.center().x)
-            .or_else(|| shell_field.map(|field| f64::from(field.x) + f64::from(field.width) / 2.0));
+            .map(|rect| rect.center())
+            .or_else(|| {
+                shell_field.map(|field| {
+                    vello::kurbo::Point::new(
+                        f64::from(field.x) + f64::from(field.width) / 2.0,
+                        f64::from(field.y) + f64::from(field.height) / 2.0,
+                    )
+                })
+            });
         self.osk_serves_shell = shell_field.is_some();
-        self.osk_anchor_x = anchor;
+        self.osk_anchor = anchor;
         self.osk_active = active;
         match surface_id {
             Some(id)
@@ -6193,7 +6204,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn workspace_switches_keep_record_rooms_chevrons_and_passive_activity() {
+    fn workspace_switches_keep_record_rooms_menu_and_passive_activity() {
         fn record_bring_keeps_its_authorized_room_across_workspace_switch() {
             use crate::shell::search::action_api::{ActionArgs, ArgValue};
             use crate::shell::search::providers::ActionsProvider;
@@ -6357,93 +6368,75 @@ mod tests {
             );
         }
 
-        /// The top bar's workspace chevrons follow the *live* active workspace:
-        /// the bar refreshes `workspace_index` in `Widget::update` when the
-        /// chrome revision bumps. Drives the per-frame path (`pump_apps` → paint)
-        /// and reads chevron state the way a scenario would.
-        fn topbar_workspace_chevrons_track_the_live_active_workspace() {
+        /// The workspace name opens the workspace menu, which lists the
+        /// *live* workspaces, and choosing another goes there. Drives the
+        /// per-frame path (`pump_apps` → paint) and presses the pill the way
+        /// a person would.
+        fn topbar_workspace_menu_tracks_the_live_active_workspace() {
+            use winit::event::{ElementState, MouseButton};
             let mut fb = FrameBuilder::new((1600, 900));
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mut frame = |fb: &mut FrameBuilder| {
-                fb.pump_apps(&mut doc, &root);
-                fb.relayout();
-                let _ = fb.paint();
-                fb.widget_registry()
-            };
-
-            let reg = frame(&mut fb);
-            assert!(
-                reg.contains_key("topbar_workspace_up"),
-                "the up-chevron click target is always published"
-            );
-            assert!(
-                !reg.contains_key("topbar_workspace_up_enabled"),
-                "booted on the first workspace: nothing above it, up must read disabled"
-            );
-            let booted_with_more_below = fb.chrome().tree().desktop.workspaces.len() > 1;
-            assert_eq!(
-                reg.contains_key("topbar_workspace_down_enabled"),
-                booted_with_more_below,
-                "down reads enabled exactly when a workspace follows the active one"
-            );
-
-            // A new workspace is appended last and made active, so the one
-            // we booted on is now above us: up must go live, down must not.
             fb.with_chrome(|st| {
                 st.add_workspace("second");
             });
-            let reg = frame(&mut fb);
-            assert!(
-                reg.contains_key("topbar_workspace_up_enabled"),
-                "after switching to a later workspace the up-chevron must read enabled"
+            fb.pump_apps(&mut doc, &root);
+            fb.relayout();
+            let _ = fb.paint();
+            let pill = *fb
+                .widget_registry()
+                .get("topbar_workspace_pill")
+                .expect("the workspace pill is published");
+            let mut focus = None;
+            for event in [
+                ui::synthetic_input::cursor_moved(pill.center().x, pill.center().y),
+                ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+                ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+            ] {
+                fb.dispatch_event(
+                    &event,
+                    &winit::event::Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &mut focus,
+                );
+            }
+            let labels: Vec<String> = fb
+                .host()
+                .workspace_menu_labels()
+                .expect("pressing the workspace name opens its menu")
+                .into_iter()
+                .flatten()
+                .collect();
+            let names: Vec<String> = fb
+                .chrome()
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .map(|w| w.name.clone())
+                .collect();
+            for name in &names {
+                assert!(labels.contains(name), "{name} is listed: {labels:?}");
+            }
+            assert!(labels.iter().any(|label| label == "Overview"));
+            let first = names.first().expect("a workspace").clone();
+            assert!(fb.host_mut().choose_in_workspace_menu(&first));
+            let tree = fb.chrome().tree().clone();
+            assert_eq!(
+                tree.desktop.workspaces.first().map(|w| w.id),
+                Some(tree.desktop.active),
+                "choosing the first workspace goes there"
             );
             assert!(
-                !reg.contains_key("topbar_workspace_down_enabled"),
-                "on the last workspace the down-chevron must read disabled"
-            );
-
-            // One step back up: still below the boot workspace, so both
-            // chevrons are live — the bar must track each switch, not just
-            // the first one after it was built.
-            fb.with_chrome(|st| {
-                assert!(st.switch_workspace(-1));
-            });
-            let reg = frame(&mut fb);
-            let idx = |fb: &FrameBuilder| {
-                let tree = fb.chrome().tree().clone();
-                tree.desktop
-                    .workspaces
-                    .iter()
-                    .position(|w| w.id == tree.desktop.active)
-                    .expect("active workspace is in the tree")
-            };
-            assert!(
-                idx(&fb) > 0,
-                "one step up from the last workspace cannot be the first"
-            );
-            assert!(
-                reg.contains_key("topbar_workspace_down_enabled"),
-                "with the new workspace below, the down-chevron must read enabled"
-            );
-
-            // All the way back to the top: up goes dark, down stays live.
-            fb.with_chrome(|st| while st.switch_workspace(-1) {});
-            let reg = frame(&mut fb);
-            assert_eq!(idx(&fb), 0);
-            assert!(
-                !reg.contains_key("topbar_workspace_up_enabled"),
-                "back on the first workspace the up-chevron must read disabled again"
-            );
-            assert!(
-                reg.contains_key("topbar_workspace_down_enabled"),
-                "with a workspace below, the down-chevron must read enabled"
+                fb.host().workspace_menu_labels().is_none(),
+                "and closes the menu"
             );
         }
 
         record_bring_keeps_its_authorized_room_across_workspace_switch();
         startup_keeps_unread_activity_passive();
-        topbar_workspace_chevrons_track_the_live_active_workspace();
+        topbar_workspace_menu_tracks_the_live_active_workspace();
     }
 
     #[test]

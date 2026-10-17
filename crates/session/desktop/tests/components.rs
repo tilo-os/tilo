@@ -283,20 +283,18 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
     let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
-    for (instance, resource, action, param, value) in [
+    for (instance, resource, action, arguments) in [
         (
             11,
-            chat::projection::item_id("channels", "c_general"),
+            tilo_app::framework::chain_resource_id(&chat::parts::chain()),
             "post",
-            "text",
-            "Shared desktop message",
+            serde_json::json!({ "channel": "c_general", "text": "Shared desktop message" }),
         ),
         (
             12,
             "notes.notebook".to_owned(),
             "new-note",
-            "title",
-            "Shared desktop page",
+            serde_json::json!({ "title": "Shared desktop page" }),
         ),
     ] {
         frame
@@ -305,7 +303,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
                     instance_id: instance,
                     address: tilo_actions::ActionAddress::new(resource, action),
                 },
-                serde_json::json!({ param: value }).as_object().unwrap(),
+                arguments.as_object().unwrap(),
             )
             .unwrap();
     }
@@ -325,9 +323,14 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
             "Shared desktop page",
         ),
     ] {
-        let checkout = tilo_desktop::records::component_record(app, id, kind);
+        // Chat keeps its messages in parts beside its record.
+        let record = if app == "so.tilo.chat" {
+            chat::parts::part(0)
+        } else {
+            tilo_desktop::records::component_record(app, id, kind).id
+        };
         let body = store
-            .read(&checkout.id, |doc| {
+            .read(&record, |doc| {
                 serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
             })
             .unwrap();

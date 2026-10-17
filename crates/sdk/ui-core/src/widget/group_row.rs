@@ -537,6 +537,13 @@ pub struct GroupRow {
     /// where the window's widgets last drew, so such a window is drawn,
     /// never replayed.
     overlay_groups: Vec<u64>,
+    /// Per lane: the canvas shift of the pan its strips last read the
+    /// desktop at, whether the lane's last draw was in screen space, and
+    /// the shift it was drawn at.
+    strip_desktop_shift: Vec<(usize, f64, bool, f64)>,
+    /// The desktop's coordinates in the scene the current lane is drawn
+    /// into ([`WindowGroup::draw_docked_strip`]).
+    drawing_desktop: Affine,
 }
 
 /// What of a group at `rect` the draw viewport shows across, measured from
@@ -1358,7 +1365,7 @@ impl GroupRow {
             if rect.area() <= 0.0 {
                 continue;
             }
-            group.draw_docked_strip(scene, transform, theme);
+            group.draw_docked_strip(scene, (transform, Affine::IDENTITY), theme);
             group.draw(scene, transform, text_renderer, theme, presence);
             rects.push(rect);
         }
@@ -1428,6 +1435,8 @@ impl GroupRow {
             pan_theme: None,
             pan_drawn_frame: None,
             overlay_groups: Vec::new(),
+            strip_desktop_shift: Vec::new(),
+            drawing_desktop: Affine::IDENTITY,
             pan_unkept: Vec::new(),
         }
     }
@@ -1576,7 +1585,7 @@ impl GroupRow {
                 transform,
                 &rect.inflate(16.0, 16.0),
             );
-            self.groups[i].draw_docked_strip(scene, transform, theme);
+            self.groups[i].draw_docked_strip(scene, (transform, self.drawing_desktop), theme);
             self.groups[i].draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -4697,6 +4706,29 @@ impl Widget for GroupRow {
             };
             let shift = if unbake { scroll + pad } else { 0.0 };
             let shifted = shift.abs() > f64::EPSILON;
+            // A strip reads the desktop where it last rested: the same
+            // drawing through a pan (a presenter moves its frosting with
+            // it), read again from the second frame it rests in screen
+            // space, so the first such frame is still the one the pan's
+            // layers already show.
+            let rested = scroll + pad;
+            let kept = if let Some((_, kept, was_screen, drawn)) = self
+                .strip_desktop_shift
+                .iter_mut()
+                .find(|(lane, ..)| *lane == k)
+            {
+                if !unbake && *was_screen {
+                    *kept = rested;
+                }
+                *was_screen = !unbake;
+                *drawn = rested;
+                *kept
+            } else {
+                self.strip_desktop_shift.push((k, rested, !unbake, rested));
+                rested
+            };
+            let desktop_shift = if unbake { kept } else { kept - rested };
+            self.drawing_desktop = Affine::translate((desktop_shift, 0.0));
             if shifted {
                 self.offset_lane(k, shift);
             }
@@ -4980,6 +5012,15 @@ impl Widget for GroupRow {
         if self.scroll_dirty {
             return true;
         }
+        // A strip come to rest still shows the desktop where its pan began:
+        // it reads it again on the next frame.
+        if self
+            .strip_desktop_shift
+            .iter()
+            .any(|(_, kept, was_screen, drawn)| *was_screen && (kept - drawn).abs() > f64::EPSILON)
+        {
+            return true;
+        }
         // A change inside an app past the row's edges shows nothing until
         // the strip moves, and moving it redraws the row.
         self.groups
@@ -5246,8 +5287,17 @@ impl GroupRow {
             // drawing still stands on a strip whose blur is recorded. Only
             // where the screen shows the group: a strip drawn off screen
             // would spend a blurred region on nothing.
+            // A damage part of its own: a strip that reads the desktop again
+            // repaints only itself.
             if seen_across(presence, rect).is_none_or(|(x0, x1)| x1 > x0) {
-                self.groups[i].draw_docked_strip(scene, t, theme);
+                let key = crate::scene_parts::PartKey::new("ui.docked-strip", id);
+                let bounds =
+                    vec![t.transform_rect_bbox(self.groups[i].bar_rect().inflate(2.0, 2.0))];
+                let desktop = self.drawing_desktop;
+                let group = &mut self.groups[i];
+                crate::scene_parts::part(scene, key, bounds, |scene| {
+                    group.draw_docked_strip(scene, (t, desktop), theme);
+                });
             }
             match self.apart_window {
                 // Only a group at rest in its slot: one moving, lifted or

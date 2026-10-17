@@ -59,7 +59,11 @@ fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
         let summary = collaborators_screen_exposure(&state).expect("live disclosure");
         assert!(summary.contains(&crate::shell::state::session_handle(7)));
         assert!(summary.contains("unidentified session"));
-        assert!(summary.contains("views surface 42"));
+        assert!(summary.contains("views a window"), "{summary}");
+        assert!(
+            !summary.contains("42"),
+            "a surface number means nothing to people: {summary}"
+        );
     }
 
     people_overlay_publishes_live_roster_and_focusable_status_controls();

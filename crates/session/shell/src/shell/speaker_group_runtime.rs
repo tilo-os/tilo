@@ -1554,6 +1554,12 @@ impl SpeakerMembershipView {
         }
     }
 
+    /// The catalogue key naming what selecting this membership's row does.
+    #[must_use]
+    pub const fn action_key(&self) -> &'static str {
+        self.key("qs-devices-action-leave", "qs-devices-action-stop")
+    }
+
     fn args(&self, sentence: impl Fn(&str) -> String) -> Vec<(&'static str, ui::i18n::ArgValue)> {
         let mut args = vec![
             ("group", self.name.as_str().into()),

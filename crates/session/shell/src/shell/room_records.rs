@@ -107,6 +107,13 @@ struct ScanState {
     /// insufficient: replacing one record with another must invalidate a
     /// pagination cursor even though the cardinality did not move.
     revision: u64,
+    /// The data home the scan walks, where apps' room documents are found
+    /// on demand ([`LocalRecordReader::room_documents`]).
+    root: Option<PathBuf>,
+    /// Apps' room documents found so far, by the id they are read under.
+    /// They name no record identity of their own, so they are read by
+    /// location alone and never join the searchable records.
+    room_documents: BTreeMap<RecordId, ValidatedRecordLocation>,
 }
 
 impl ScanState {
@@ -231,9 +238,30 @@ impl RoomRecords {
     /// `$XDG_DATA_HOME`, and serve what it found.
     #[cfg(test)]
     pub(crate) fn scan_now_for_test(&mut self, root: &Path) {
-        let mut state = ScanState::default();
+        let mut state = ScanState {
+            root: Some(root.to_path_buf()),
+            ..ScanState::default()
+        };
         state.replace(scan_record_stores(root));
         self.scan = Some(Arc::new(Mutex::new(state)));
+    }
+
+    /// Where package `package_id` keeps its document for room `room` under
+    /// `root`, as an app's sandbox writes it.
+    #[cfg(test)]
+    pub(crate) fn room_document_path_for_test(
+        root: &Path,
+        package_id: &str,
+        room: RoomId,
+    ) -> PathBuf {
+        root.join(launcher::appdir::ROOMS_DIR)
+            .join(room.to_string())
+            .join(package_id)
+            .join(&*SANDBOX_DATA_SUBDIR)
+            .join(package_id)
+            .join(app_state::ROOMS_DIR)
+            .join(room.to_string())
+            .join(app_state::DOCUMENT_FILE)
     }
 
     /// Where the scan under `root` finds package `package_id`'s record
@@ -612,9 +640,12 @@ fn rooms_dir() -> PathBuf {
 fn shared_scan() -> Arc<Mutex<ScanState>> {
     static SCAN: OnceLock<Arc<Mutex<ScanState>>> = OnceLock::new();
     SCAN.get_or_init(|| {
-        let state = Arc::new(Mutex::new(ScanState::default()));
-        let handle = Arc::clone(&state);
         let root = cli::data_home();
+        let state = Arc::new(Mutex::new(ScanState {
+            root: Some(root.clone()),
+            ..ScanState::default()
+        }));
+        let handle = Arc::clone(&state);
         std::thread::Builder::new()
             .name("tilo-record-scan".into())
             .spawn(move || {
@@ -726,14 +757,73 @@ impl LocalRecordReader {
     /// are revalidated on every read so a stale or replaced scan result
     /// fails closed. Reads the disk: never on the compositor loop.
     pub(crate) fn load(&self, id: &RecordId) -> Option<AutoCommit> {
+        if let Some(location) = self.room_document(id) {
+            return read_room_document(&location);
+        }
         read_validated_record_document(id, &self.location(id, true)?)
+    }
+
+    /// The location of room document `id`, once [`Self::room_documents`]
+    /// found it.
+    fn room_document(&self, id: &RecordId) -> Option<ValidatedRecordLocation> {
+        self.scan.lock().ok()?.room_documents.get(id).cloned()
+    }
+
+    /// The documents apps keep for room `room` on this device: an app
+    /// whose content is the room's own document (Notes' notebook, Files'
+    /// queue) keeps it beside its records, not as one. Each is named by an
+    /// id derived from its app and room, read by location, so history and
+    /// undo see what was done in it. Lists the disk: never on the
+    /// compositor loop.
+    pub(crate) fn room_documents(&self, room: RoomId) -> Vec<RoomDocument> {
+        let Some(root) = self.scan.lock().ok().and_then(|scan| scan.root.clone()) else {
+            return Vec::new();
+        };
+        let Ok(scan_root) = root.canonicalize() else {
+            return Vec::new();
+        };
+        let room_key = room.to_string();
+        let Ok(packages) =
+            std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
+        else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for package in packages.flatten() {
+            let Some(package_id) = package.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if package_id == SHELL_PACKAGE_ID {
+                continue;
+            }
+            let document = package
+                .path()
+                .join(&*SANDBOX_DATA_SUBDIR)
+                .join(&package_id)
+                .join(app_state::ROOMS_DIR)
+                .join(&room_key)
+                .join(app_state::DOCUMENT_FILE);
+            let Some(location) = validate_record_location(&scan_root, &document) else {
+                continue;
+            };
+            let Some(id) = room_document_id(room, &package_id) else {
+                continue;
+            };
+            if let Ok(mut scan) = self.scan.lock() {
+                scan.room_documents.insert(id.clone(), location);
+            }
+            found.push(RoomDocument { id, package_id });
+        }
+        found
     }
 
     /// A witness of the bytes [`Self::load`] would read for `id` now: the
     /// document's length and modification time, from one `stat`. `None`
     /// when the record has no scanned location.
     pub(crate) fn revision(&self, id: &RecordId) -> Option<u64> {
-        let location = self.location(id, false)?;
+        let location = self
+            .room_document(id)
+            .or_else(|| self.location(id, false))?;
         let metadata = std::fs::metadata(&location.document).ok()?;
         let modified = metadata
             .modified()
@@ -774,6 +864,42 @@ fn validate_record_location(scan_root: &Path, document: &Path) -> Option<Validat
         document,
         scan_root: scan_root.to_path_buf(),
     })
+}
+
+/// An app's room document, found by [`LocalRecordReader::room_documents`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RoomDocument {
+    /// The id it is read under: derived from its app and room.
+    pub id: RecordId,
+    pub package_id: String,
+}
+
+/// The id app `package_id`'s document for room `room` is read under: the
+/// same on every device and every start, and never a record's own id.
+pub(crate) fn room_document_id(room: RoomId, package_id: &str) -> Option<RecordId> {
+    let hash = blake3::Hasher::new_derive_key("Tilo app room document id v1")
+        .update(package_id.as_bytes())
+        .update(&[0])
+        .update(room.to_string().as_bytes())
+        .finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[..16]);
+    let id = uuid::Builder::from_custom_bytes(bytes).into_uuid();
+    RecordId::parse(&format!("uuid:{id}"))
+}
+
+/// Read an app's room document from its validated location.
+fn read_room_document(location: &ValidatedRecordLocation) -> Option<AutoCommit> {
+    let current = validate_record_location(&location.scan_root, &location.document)?;
+    let bytes = std::fs::read(&current.document).ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD_DOC_BYTES {
+        return None;
+    }
+    AutoCommit::load_with_options(
+        &bytes,
+        LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+    )
+    .ok()
 }
 
 fn read_validated_record_document(

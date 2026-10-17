@@ -331,8 +331,7 @@ pub enum ChromeIntent {
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
     ToggleTiloMenu,
-    /// Open or close the menu behind the workspace name
-    /// ([`crate::topbar::TopBarChrome::with_workspace_menu`]), under
+    /// Open or close the menu behind the workspace name, under
     /// [`crate::topbar::TopBarChrome::workspace_menu_rect`].
     ToggleWorkspaceMenu,
     /// Open or close the card behind the person's own avatar, under

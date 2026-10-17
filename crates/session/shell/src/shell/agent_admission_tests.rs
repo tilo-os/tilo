@@ -397,13 +397,18 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
                 )
             })
             .collect();
-        // Each prompt names its own client, its pid and the agent it becomes.
+        // Each prompt names its own client and the agent it becomes; a
+        // process id means nothing to the person deciding.
         assert!(
-            shown[0].0.contains("pid 100") && shown[0].1.contains("agent t"),
+            shown[0].0.starts_with("t (") && shown[0].1.contains("agent t"),
             "{shown:?}"
         );
         assert!(
-            shown[1].0.contains("pid 200") && shown[1].1.contains("agent claude-code"),
+            shown[1].0.starts_with("claude-code (") && shown[1].1.contains("agent claude-code"),
+            "{shown:?}"
+        );
+        assert!(
+            shown.iter().all(|(who, _)| !who.contains("pid")),
             "{shown:?}"
         );
     }

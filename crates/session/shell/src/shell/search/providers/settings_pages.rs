@@ -110,7 +110,10 @@ impl SettingsPagesProvider {
                 move |_doc, _root, chrome| {
                     crate::shell::uri_open::open_in_workspace(&uri, chrome)
                         .map(|_| ())
-                        .map_err(|error| ActionError::Refused(format!("{error:?}")))
+                        .map_err(|error| {
+                            tracing::info!(?error, %uri, "settings page did not open");
+                            ActionError::Explained(error.user_message())
+                        })
                 },
             ));
         }

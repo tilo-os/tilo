@@ -13,8 +13,9 @@
 #                                  left in IN, into OUT as `build` writes it, with OUT/board
 #
 # A development build compiles the apps and the desktop of its own commit (no published
-# collection or payload), without LTO, against the frozen RPM snapshot, the pinned base and the
-# signed kernel, all of which os/dev/build-image.sh resolves and verifies itself. It stops at
+# collection or payload), without LTO, against the frozen RPM snapshot (the published one, else
+# this run's image-rpms-ARCH: rpms_snapshot), the pinned base and the signed kernel, which
+# os/dev/build-image.sh verifies. It stops at
 # the container (TILO_IMAGE_ONLY=1): its UKI seals a placeholder composefs digest, so it is no
 # install source; dev disks and releases reseal it after installing. It holds no secrets: apps
 # it compiles are signed with a throwaway publisher, which no trust list names.
@@ -140,6 +141,30 @@ build_board() {
   rm -rf "$work"
 }
 
+# The frozen RPM snapshot the build installs from, as RPMS_REF: the published one for this
+# tree's package set, verified as every build verifies it. Only stable publishes snapshots, so
+# on main and branches a changed package set has none until it reaches stable; the build then
+# installs from the set image-rpms-ARCH built in this run from the same os/Containerfile.rpms,
+# which build-image.sh takes unsigned (TILO_RPMS_TRUST=unsigned) and labels so
+# (org.tilo.rpms.trust), and which nothing signs or publishes.
+rpms_snapshot() {
+  local arch=$1 built=/target/publish/rpms/$1 status=0 id
+  bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+  case $status in
+    0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
+    1)
+      [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
+      [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
+      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+      RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
+      podman tag "$id" "$RPMS_REF"
+      export TILO_RPMS_TRUST=unsigned
+      printf 'no published RPM snapshot for this package set: installing from image-rpms-%s (%s), unsigned\n' \
+        "$arch" "$(cat "$built/digest")" ;;
+    *) die 'could not ask the registry for the published RPM snapshot' ;;
+  esac
+}
+
 case ${1:-} in
   build)
     arch=${2:?usage: os-image.sh build ARCH OUT}
@@ -148,7 +173,7 @@ case ${1:-} in
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     . os/base-snapshot.env
-    RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh)
+    rpms_snapshot "$arch"
     export BASE_REF RPMS_REF
     # Layers are dated by the base and the RPM snapshot, not the commit, so builds of different
     # commits share every layer whose content is the same.

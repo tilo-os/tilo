@@ -21,6 +21,10 @@ packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' '
 assets=$scratch/github-assets
 TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
   virtio-win-0.1.302-1.noarch.rpm
+# The snapshot is dated when its packages were resolved, not at oci-build.sh's fixed epoch (a
+# later --timestamp wins): an OS build sets its offline dnf clock to the newest of its base's and
+# its snapshot's dates (os/dev/image-epoch.sh), and rpm refuses a package signed after that clock,
+# as every update signed since the base was mirrored is.
 bash tools/ci/publish/oci-build.sh . os/Containerfile.rpms "$out" --platform "$platform" \
-  --build-context "github-assets=$assets" \
+  --timestamp "$(date -u +%s)" --build-context "github-assets=$assets" \
   --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$packages"

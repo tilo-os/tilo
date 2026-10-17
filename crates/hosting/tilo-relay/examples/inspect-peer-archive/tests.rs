@@ -301,16 +301,24 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
         "tab:0000000000000001".into(),
     )];
     let before = writer.base_heads();
-    let writer_export = readable("so.tilo.word-processor", writer).unwrap();
+    let writer_export = readable("so.tilo.word-processor", "tab:0000000000000001", writer).unwrap();
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
     let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
     let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
-    chat::demo::say(&mut chat, "test-person", &channel, "Sent archive content").unwrap();
+    let mut part = AutoCommit::new();
+    chat::demo::say_in_part(
+        &mut part,
+        &chat::projection::read(&chat),
+        "test-person",
+        &channel,
+        "Sent archive content",
+    )
+    .unwrap();
     chat::demo::set_draft(&mut chat, "test-person", &channel, "Unsent shared draft").unwrap();
     chat.commit();
     let before = chat.base_heads();
-    let export = readable("so.tilo.chat", &chat).unwrap();
+    let export = readable("so.tilo.chat", "", &chat).unwrap();
     let row = export["channels"]
         .as_array()
         .unwrap()
@@ -318,6 +326,15 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
         .find(|c| c["id"] == channel)
         .unwrap();
     assert_eq!(row["draft"], "Unsent shared draft");
+    assert_eq!(chat.base_heads(), before);
+    let part_before = part.base_heads();
+    let export = readable("so.tilo.chat", chat::parts::part(0).as_str(), &part).unwrap();
+    let row = export["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == channel)
+        .unwrap();
     assert!(
         row["messages"]
             .as_array()
@@ -325,7 +342,7 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
             .iter()
             .any(|m| m["text"] == "Sent archive content")
     );
-    assert_eq!(chat.base_heads(), before);
+    assert_eq!(part.base_heads(), part_before);
 }
 
 #[test]

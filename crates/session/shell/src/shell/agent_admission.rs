@@ -62,7 +62,6 @@ impl ClientFacts {
             &[
                 ("client", self.client.clone().into()),
                 ("program", program.into()),
-                ("pid", self.pid.to_string().into()),
             ],
         );
         match &self.host_app {

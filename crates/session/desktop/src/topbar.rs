@@ -58,18 +58,7 @@ fn editor_text_width(width: f64) -> f32 {
     }
 }
 
-mod responsive;
-use responsive::ResponsiveBar;
 mod strips;
-
-/// What the bar leads with: the overview, workspace switches and settings
-/// controls, or the workspace's name as one menu that holds them, with the
-/// person's own avatar at the other end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BarLead {
-    Navigation,
-    WorkspaceMenu,
-}
 
 /// Where a layout stood the bar: in the column above the windows, or over
 /// it, hidden by the person and shown while reached for.
@@ -114,15 +103,15 @@ pub fn topbar_height(theme: &Theme) -> f32 {
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 
-/// Below this width the bar with the workspace menu narrows its centre lane
-/// to the time alone.
+/// Below this width the bar narrows its centre lane to the time alone,
+/// leaving the rest to the workspace name and the people beside it.
 const NARROW_MENU_BAR_PX: f64 = 720.0;
 
 /// Low enough that the sparkline reads as backdrop, not a fourth element
 /// competing with the three metric labels.
 const SPARKLINE_FILL_ALPHA: f32 = 0.30;
 
-/// Height of every control in the bar — the nav cluster, the workspace
+/// Height of every control in the bar — the Tilo mark, the workspace
 /// pill, the centre widget, the tray pill and the media indicator — so they
 /// share one top and bottom edge: the toolkit's bar control height less two
 /// `s1` steps, a caption line with `s1` of air.
@@ -139,11 +128,10 @@ const AVATAR_STEP: f64 = 20.0;
 const CENTER_INSET_PX: f64 = 12.0;
 
 /// Diameter of the small Lucide glyph beside the workspace name (the
-/// settings gear) and inside the up/down switches (the chevrons).
+/// chevron opening its menu).
 const SMALL_GLYPH_PX: f64 = 12.0;
 
-/// Diameter of the bar's larger glyphs: the overview grid and the status
-/// icons.
+/// Diameter of the bar's larger glyphs: the status icons.
 const BAR_GLYPH_PX: f64 = 14.0;
 
 /// Scroll-wheel over the center band cycles between these. Nothing marks
@@ -339,14 +327,12 @@ struct CacheFingerprint {
     workspace_lens_open: bool,
     focused: bool,
     focused_control: Option<String>,
-    toolbar_focus: Vec<bool>,
+
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
     continuity: Option<String>,
     strips: strips::StripsKey,
     tilo_mark: Option<bool>,
-    host_label: Option<String>,
-    workspace_menu: bool,
     own: Option<crate::chrome::OwnChip>,
 }
 
@@ -638,7 +624,6 @@ enum FocusOrigin {
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
-    responsive: ResponsiveBar,
     explicit_local_user: Option<String>,
     rect: Rect,
     /// Where the last layout stood the bar.
@@ -683,22 +668,14 @@ pub struct TopBarChrome {
     /// `Some(menu open)` when the bar leads with the Tilo mark
     /// ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
-    /// Where the shown workspace is hosted, as a quiet pill before its name;
-    /// `None` on the person's own desktop.
-    host_label: Option<String>,
-    /// What the bar leads with ([`TopBarChrome::with_workspace_menu`]).
-    lead: BarLead,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
     tilo_mark_rect: Rect,
-    overview_btn_rect: Rect,
-    up_btn_rect: Rect,
-    down_btn_rect: Rect,
     ws_pill_rect: Rect,
-    /// The settings gear inside the workspace pill, kept so a test can
+    /// The chevron inside the workspace pill, kept so a test can
     /// prove the pill's trailing padding equals its leading padding.
-    ws_gear_rect: Rect,
+    ws_chevron_rect: Rect,
     tray_pill_rect: Rect,
     /// Application tray icons, right to left, as last painted.
     app_tray: Vec<AppTraySlot>,
@@ -770,7 +747,7 @@ pub struct TopBarChrome {
     focused_control: Option<String>,
     /// Whether the bar's focus came from (or was last touched by) the
     /// pointer. Its ring is for keyboard focus only: a click on the bar used
-    /// to light the overview button in your colour, which says nothing to a
+    /// to light its first control in your colour, which says nothing to a
     /// pointer user.
     focus_origin: FocusOrigin,
     /// When the time the bar shows next goes stale: the end of the current
@@ -952,7 +929,7 @@ impl TopBarChrome {
     /// three position dots at the large-text setting.
     fn center_band_width(&self, theme: &Theme) -> f64 {
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
-        if self.has_workspace_menu() && self.rect.width() < NARROW_MENU_BAR_PX {
+        if self.rect.width() < NARROW_MENU_BAR_PX {
             // A phone-wide bar keeps the time and gives the rest of the
             // lane to the workspace name and the people beside it.
             return 64.0 + text_headroom;
@@ -1058,7 +1035,6 @@ impl TopBarChrome {
 
     fn from_tree_with_identity(tree: &DesktopTree, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
-            responsive: ResponsiveBar::new(),
             explicit_local_user,
             rect: Rect::ZERO,
             laid_out: BarStanding::InColumn,
@@ -1081,15 +1057,10 @@ impl TopBarChrome {
             telemetry: TelemetrySnapshot::default(),
             synced_revision: 0,
             tilo_mark: None,
-            host_label: None,
-            lead: BarLead::Navigation,
             own_avatar_rect: Rect::ZERO,
             tilo_mark_rect: Rect::ZERO,
-            overview_btn_rect: Rect::ZERO,
-            up_btn_rect: Rect::ZERO,
-            down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
-            ws_gear_rect: Rect::ZERO,
+            ws_chevron_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
             app_tray: Vec::new(),
             app_tray_images: HashMap::new(),
@@ -1180,7 +1151,6 @@ impl TopBarChrome {
                 .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings),
             focused: self.focused,
             focused_control: self.focused_control.clone(),
-            toolbar_focus: self.responsive.paint_focus_state(),
             clock_activity: self.chrome.as_ref().and_then(|chrome| {
                 chrome
                     .snapshot()
@@ -1191,8 +1161,6 @@ impl TopBarChrome {
             continuity: self.continuity_label(),
             strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
-            host_label: self.host_label.clone(),
-            workspace_menu: self.has_workspace_menu(),
             own: self.own_chip(),
         }
     }
@@ -1425,30 +1393,9 @@ impl TopBarChrome {
         }
     }
 
-    /// Name the host of the workspace shown (`example.org`) in a quiet
-    /// pill before its name; `None` (the person's own desktop) shows none.
-    pub fn set_host_label(&mut self, host: Option<String>) {
-        self.host_label = host.filter(|host| !host.trim().is_empty());
-    }
-
-    /// Lead with the workspace's name as one menu, which asks for
-    /// [`ChromeIntent::ToggleWorkspaceMenu`] (the workspaces, where it is
-    /// hosted, joining and leaving, renaming, the overview, a new desk),
-    /// show desks only when there is more than one, and end with the
-    /// person's own avatar, which asks for [`ChromeIntent::ToggleProfile`].
-    /// The host shows both.
-    #[must_use]
-    pub fn with_workspace_menu(mut self) -> Self {
-        self.lead = BarLead::WorkspaceMenu;
-        self
-    }
-
-    /// Whether the bar leads with the workspace menu.
-    fn has_workspace_menu(&self) -> bool {
-        self.lead == BarLead::WorkspaceMenu
-    }
-
-    /// Where the workspace name was last drawn, for anchoring its menu.
+    /// Where the workspace name was last drawn, for anchoring its menu
+    /// ([`ChromeIntent::ToggleWorkspaceMenu`]: the workspaces, where it is
+    /// hosted, joining and leaving, renaming, the overview, a new desk).
     pub fn workspace_menu_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS)
     }
@@ -1467,7 +1414,7 @@ impl TopBarChrome {
 
     /// The person's own avatar, when the bar shows it.
     fn own_chip(&self) -> Option<crate::chrome::OwnChip> {
-        if !self.has_workspace_menu() || self.is_compact() {
+        if self.is_compact() {
             return None;
         }
         self.chrome.as_ref()?.snapshot().own
@@ -1588,20 +1535,8 @@ impl TopBarChrome {
     /// they survive the optional avatar/media controls appearing and
     /// disappearing between frames.
     const CONTROL_TILO_MARK: &'static str = "topbar:tilo-mark";
-    const CONTROL_OVERVIEW: &'static str = "topbar:overview";
-    const CONTROL_WORKSPACE_UP: &'static str = "topbar:workspace-up";
-    const CONTROL_WORKSPACE_DOWN: &'static str = "topbar:workspace-down";
-    const WORKSPACE_SETTINGS_ICON: ui::icons::Icon = ui::icons::Icon::Pencil;
+    /// The glyph closing the workspace pill: it opens a menu.
     const WORKSPACE_MENU_ICON: ui::icons::Icon = ui::icons::Icon::ChevronDown;
-
-    /// The glyph closing the workspace pill: what pressing it opens.
-    fn workspace_pill_icon(&self) -> ui::icons::Icon {
-        if self.has_workspace_menu() {
-            Self::WORKSPACE_MENU_ICON
-        } else {
-            Self::WORKSPACE_SETTINGS_ICON
-        }
-    }
     const CONTROL_PROFILE: &'static str = "topbar:profile";
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     const CONTROL_CENTER_CLOCK: &'static str = "topbar:center:clock";
@@ -1865,13 +1800,10 @@ impl TopBarChrome {
                             })
                             .map(|tab| (workspace, tab))
                     })
+                    // A window the tree does not list has no name a person
+                    // knows; its surface number would mean nothing to them.
                     .map_or_else(
-                        || {
-                            t_args(
-                                "topbar-sharing-surface",
-                                &[("surface", surface.to_string().into())],
-                            )
-                        },
+                        || t("topbar-sharing-unknown-window"),
                         |(workspace, tab)| {
                             if workspace.id == tree.active {
                                 tab.title.clone()
@@ -1913,13 +1845,6 @@ impl TopBarChrome {
         if self.tilo_mark.is_some() {
             controls.push(Self::CONTROL_TILO_MARK);
         }
-        if !self.has_workspace_menu() {
-            controls.extend([
-                Self::CONTROL_OVERVIEW,
-                Self::CONTROL_WORKSPACE_UP,
-                Self::CONTROL_WORKSPACE_DOWN,
-            ]);
-        }
         controls.push(Self::CONTROL_WORKSPACE_SETTINGS);
         controls.extend(
             self.widget_config
@@ -1953,24 +1878,8 @@ impl TopBarChrome {
     }
 
     fn control_rect(&self, target: &str) -> Rect {
-        if self.responsive.active
-            && !matches!(
-                target,
-                Self::CONTROL_REMOVE_CLOCK
-                    | Self::CONTROL_REMOVE_MONITOR
-                    | Self::CONTROL_REMOVE_CALENDAR
-                    | Self::CONTROL_ADD_CLOCK
-                    | Self::CONTROL_ADD_MONITOR
-                    | Self::CONTROL_ADD_CALENDAR
-            )
-        {
-            return self.responsive.rect_for(target);
-        }
         match target {
             Self::CONTROL_TILO_MARK => self.tilo_mark_rect,
-            Self::CONTROL_OVERVIEW => self.overview_btn_rect,
-            Self::CONTROL_WORKSPACE_UP => self.up_btn_rect,
-            Self::CONTROL_WORKSPACE_DOWN => self.down_btn_rect,
             Self::CONTROL_WORKSPACE_SETTINGS => self.ws_pill_rect,
             // The editor, and the keyboard and assistive choices of the
             // centre widget, all stand on the widget itself, which has no
@@ -2022,22 +1931,15 @@ impl TopBarChrome {
     fn control_name(&self, target: &str) -> String {
         match target {
             Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
-            Self::CONTROL_OVERVIEW => t("topbar-open-overview"),
-            Self::CONTROL_WORKSPACE_UP => t("topbar-previous-workspace"),
-            Self::CONTROL_WORKSPACE_DOWN => t("topbar-next-workspace"),
-            Self::CONTROL_WORKSPACE_SETTINGS if self.has_workspace_menu() => t_args(
+            Self::CONTROL_WORKSPACE_SETTINGS => t_args(
                 "topbar-workspace-menu",
                 &[("workspace", self.workspace_name.as_str().into())],
             ),
             Self::CONTROL_PROFILE => self.profile_control_name(),
-            Self::CONTROL_WORKSPACE_SETTINGS => t_args(
-                "topbar-workspace-settings",
-                &[("workspace", self.workspace_name.as_str().into())],
-            ),
             Self::CONTROL_CENTER_CLOCK => t("topbar-show-clock"),
             Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
             Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
-            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => t("topbar-editor-title"),
+            Self::CONTROL_EDIT_WIDGETS => t("topbar-editor-title"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
@@ -2115,16 +2017,6 @@ impl TopBarChrome {
         }
     }
 
-    fn control_is_disabled(&self, target: &str) -> bool {
-        matches!(
-            target,
-            Self::CONTROL_WORKSPACE_UP if !self.can_switch_up()
-        ) || matches!(
-            target,
-            Self::CONTROL_WORKSPACE_DOWN if !self.can_switch_down()
-        )
-    }
-
     fn activate_editor_control(&mut self, target: &str) -> bool {
         let Some((widget, remove)) = Self::editor_widget(target) else {
             return false;
@@ -2194,10 +2086,6 @@ impl TopBarChrome {
     pub fn sparkline_fill(&self, theme: &Theme, _k: MetricKind) -> Color {
         self.metric_label_color(theme, MetricKind::Cpu)
             .with_alpha_factor(SPARKLINE_FILL_ALPHA)
-    }
-
-    pub fn overview_btn_rect(&self) -> Rect {
-        self.overview_btn_rect
     }
 
     /// Whether the last layout stood the bar in or over the column other
@@ -2340,159 +2228,6 @@ impl TopBarChrome {
     // The following `draw_*` helpers exist only to keep `Widget::draw`
     // under the line budget; none is meaningful on its own.
 
-    /// Overview icon, divider, and up/down workspace chevrons. Returns
-    /// the x cursor position immediately after the down chevron, where
-    /// the workspace name pill begins.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one compact cluster owns its shared background, three aligned targets, disabled-state colours and returned layout cursor; splitting those would duplicate or desynchronise geometry"
-    )]
-    fn draw_workspace_nav(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        center_y: f64,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let pad_x = f64::from(tokens.spacing.s3);
-        let icon_size = BAR_GLYPH_PX;
-        let control = BAR_CONTROL_PX;
-
-        let mut x = self.draw_tilo_mark(scene, transform, theme, center_y, self.rect.x0 + pad_x);
-        if self.has_workspace_menu() {
-            // The overview and the other workspaces are in the workspace's
-            // own menu: the name, then, is the next thing on the bar, its
-            // capsule's `s2` leading pad past the mark's own gap.
-            self.overview_btn_rect = Rect::ZERO;
-            self.up_btn_rect = Rect::ZERO;
-            self.down_btn_rect = Rect::ZERO;
-            return x + f64::from(tokens.spacing.s2);
-        }
-        // The switches are square targets of the shared control height.
-        let switch_w = BAR_CONTROL_PX;
-        self.overview_btn_rect = Rect::new(
-            x,
-            center_y - control / 2.0,
-            x + control,
-            center_y + control / 2.0,
-        );
-        let overview_open = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().overlays.overview);
-        if overview_open {
-            paint_bar_selector(
-                scene,
-                transform,
-                &RoundedRect::from_rect(
-                    self.overview_btn_rect,
-                    ui::chrome::ChromeRole::Selector.radius(theme, self.overview_btn_rect.height()),
-                ),
-                ui::chrome::SelectionState::active(true),
-                theme,
-            );
-        }
-        let overview_icon_rect = Rect::new(
-            x + (control - icon_size) / 2.0,
-            center_y - icon_size / 2.0,
-            x + f64::midpoint(control, icon_size),
-            center_y + icon_size / 2.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            overview_icon_rect,
-            Self::overview_glyph_icon(),
-            colors.text_primary,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        x += control + f64::from(tokens.spacing.s2);
-
-        // Vertical divider: a separator on the Bar is the Bar's hairline
-        // (HIG §9.5), so it reads on every preset the way the bottom edge does.
-        let divider = Rect::new(
-            x,
-            center_y - SMALL_GLYPH_PX / 2.0,
-            x + 1.0,
-            center_y + SMALL_GLYPH_PX / 2.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &divider,
-        );
-        x += 1.0 + f64::from(tokens.spacing.s2);
-
-        let chev = SMALL_GLYPH_PX;
-        self.up_btn_rect = Rect::new(
-            x,
-            center_y - control / 2.0,
-            x + switch_w,
-            center_y + control / 2.0,
-        );
-        let up_icon_rect = Rect::new(
-            x + (switch_w - chev) / 2.0,
-            center_y - chev / 2.0,
-            x + f64::midpoint(switch_w, chev),
-            center_y + chev / 2.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            up_icon_rect,
-            ui::icons::Icon::ChevronUp,
-            if self.can_switch_up() {
-                colors.text_dim
-            } else {
-                // Disabled ink is the rest ink under the toolkit's disabled
-                // alpha (HIG §9.5), not a border token borrowed as a colour.
-                colors
-                    .text_dim
-                    .with_alpha_factor(ui::widget::DISABLED_ALPHA)
-            },
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        x += switch_w;
-
-        self.down_btn_rect = Rect::new(
-            x,
-            center_y - control / 2.0,
-            x + switch_w,
-            center_y + control / 2.0,
-        );
-        let dn_icon_rect = Rect::new(
-            x + (switch_w - chev) / 2.0,
-            center_y - chev / 2.0,
-            x + f64::midpoint(switch_w, chev),
-            center_y + chev / 2.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            dn_icon_rect,
-            ui::icons::Icon::ChevronDown,
-            if self.can_switch_down() {
-                colors.text_dim
-            } else {
-                colors
-                    .text_dim
-                    .with_alpha_factor(ui::widget::DISABLED_ALPHA)
-            },
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        // Where the workspace pill's label starts: `s3` past the down
-        // switch, which the pill's own `s2` leading pad turns into an `s1`
-        // gutter between the cluster and the pill. The label's x is a
-        // published fact — `navigation-layout.json`'s authored contrast
-        // probes sample its glyphs — so the padding fix moved the capsule,
-        // not the text.
-        x + switch_w + f64::from(tokens.spacing.s3)
-    }
-
     /// The Tilo mark as the bar's leading control, starting at `x`; returns
     /// where the next control starts (`x` itself without the mark).
     fn draw_tilo_mark(
@@ -2538,91 +2273,21 @@ impl TopBarChrome {
         x + control + f64::from(theme.tokens.spacing.s2)
     }
 
-    /// The quiet pill naming where the workspace is hosted, at the label x
-    /// the workspace pill would have had; returns where that pill's label
-    /// starts after it (`x` itself without a host).
-    fn draw_host_pill(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        x: f64,
-    ) -> f64 {
-        // With the workspace menu, where it is hosted is said in the menu.
-        let Some(host) = self
-            .host_label
-            .as_deref()
-            .filter(|_| !self.has_workspace_menu())
-        else {
-            return x;
-        };
-        let tokens = &theme.tokens;
-        let pad = f64::from(tokens.spacing.s2);
-        let style = tokens.typography.style(TextRole::Caption);
-        // A short name's worth at most: the workspace's own name matters more.
-        let host = text_renderer.elide_to_width_style(host, 140.0, &style);
-        let (w, h) = text_renderer.measure_style(&host, None, &style);
-        let pill = Rect::new(
-            x - pad,
-            center_y - BAR_CONTROL_PX / 2.0,
-            x + f64::from(w) + pad,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &RoundedRect::from_rect(
-                pill.inset(-0.5),
-                ui::chrome::ChromeRole::Selector.radius(theme, pill.height()),
-            ),
-        );
-        text_renderer.draw_style(
-            scene,
-            &host,
-            tokens.colors.text_dim,
-            at(transform, (x, center_y - f64::from(h) / 2.0)),
-            None,
-            &style,
-        );
-        pill.x1 + f64::from(tokens.spacing.s1) + pad
-    }
-
     fn workspace_label(
         &self,
         text_renderer: &mut TextRenderer,
         ws_text_style: &TextStyle,
         label_budget: f32,
     ) -> String {
-        // Workspace identity has priority over a redundant single-workspace
-        // count; the workspace menu lists the others instead.
-        let position_suffix = if self.workspace_total <= 1 || self.has_workspace_menu() {
-            String::new()
-        } else {
-            format!(
-                "  {}/{}",
-                self.workspace_index.saturating_add(1),
-                self.workspace_total
-            )
-        };
-        let ws_weight = self.workspace_name_text_weight();
-        let suffix_width = text_renderer
-            .measure_style(
-                &position_suffix,
-                None,
-                &ws_text_style.clone().with_weight(ws_weight),
-            )
-            .0;
-        let name_budget = (label_budget - suffix_width).max(0.0);
-        let visible_name = text_renderer.elide_to_width_style(
+        // The name alone: the workspace menu lists the others, so no
+        // position count.
+        text_renderer.elide_to_width_style(
             &self.workspace_name,
-            name_budget,
-            &ws_text_style.clone().with_weight(ws_weight),
-        );
-        format!("{visible_name}{position_suffix}")
+            label_budget.max(0.0),
+            &ws_text_style
+                .clone()
+                .with_weight(self.workspace_name_text_weight()),
+        )
     }
 
     /// How wide the workspace name may grow in `room`. Named strips follow
@@ -2643,8 +2308,8 @@ impl TopBarChrome {
         ui::num::f32_of_f64((room - strips_room).max(room.min(96.0)).clamp(32.0, 260.0))
     }
 
-    /// Workspace-name pill (click toggles workspace settings) and its
-    /// trailing gear glyph, starting at `x`.
+    /// Workspace-name pill (click toggles the workspace menu) and its
+    /// trailing chevron, starting at `x`.
     fn draw_workspace_pill(
         &mut self,
         scene: &mut Scene,
@@ -2662,19 +2327,17 @@ impl TopBarChrome {
         let ws_weight = self.workspace_name_text_weight();
         // The centre carousel owns a fixed central lane.  Long translated or
         // user-authored workspace names must yield to it instead of painting
-        // underneath it. Preserve the compact position suffix while eliding
-        // only the user-authored portion, so even the compact layout says where
-        // the current workspace sits.
+        // underneath it.
         let center_left =
             f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
         // Capsule chrome around the label: a leading pad, the gap to the
-        // gear, the gear itself and a trailing pad of the same size — so
+        // chevron, the chevron itself and a trailing pad of the same size — so
         // the pill reads centred on its contents. The `s4` beyond that is
         // the breathing room `long_workspace_name_yields_to_the_center_lane`
         // keeps between the pill and the centre selector.
         let pad = f64::from(tokens.spacing.s2);
-        let gear = SMALL_GLYPH_PX;
-        let pill_chrome = pad * 3.0 + gear;
+        let chevron = SMALL_GLYPH_PX;
+        let pill_chrome = pad * 3.0 + chevron;
         let breathing = f64::from(tokens.spacing.s4);
         let label_budget = self.workspace_label_budget(
             text_renderer,
@@ -2745,19 +2408,19 @@ impl TopBarChrome {
             None,
             &ws_text_style.clone().with_weight(ws_weight),
         );
-        let gear_x = x + f64::from(ws_w) + pad;
-        let gear_rect = Rect::new(
-            gear_x,
-            center_y - gear / 2.0,
-            gear_x + gear,
-            center_y + gear / 2.0,
+        let chevron_x = x + f64::from(ws_w) + pad;
+        let chevron_rect = Rect::new(
+            chevron_x,
+            center_y - chevron / 2.0,
+            chevron_x + chevron,
+            center_y + chevron / 2.0,
         );
-        self.ws_gear_rect = gear_rect;
+        self.ws_chevron_rect = chevron_rect;
         ui::icons::draw_icon(
             scene,
             transform,
-            gear_rect,
-            self.workspace_pill_icon(),
+            chevron_rect,
+            Self::WORKSPACE_MENU_ICON,
             if workspace_lens_open {
                 colors.intent.inverted
             } else {
@@ -2855,8 +2518,6 @@ impl TopBarChrome {
             return false;
         }
         self.cancel_editor_drag();
-        self.responsive.toolbar.close_menus();
-        self.responsive.dirty = true;
         self.widget_editing = true;
         self.focused_control = self
             .editor_controls()
@@ -4598,18 +4259,8 @@ impl TopBarChrome {
         };
         let intent = if self.tilo_mark.is_some() && self.tilo_mark_rect.contains(p) {
             ChromeIntent::ToggleTiloMenu
-        } else if self.overview_btn_rect.contains(p) {
-            ChromeIntent::ToggleOverview
-        } else if self.up_btn_rect.contains(p) {
-            ChromeIntent::SwitchWorkspace(-1)
-        } else if self.down_btn_rect.contains(p) {
-            ChromeIntent::SwitchWorkspace(1)
         } else if self.ws_pill_rect.contains(p) {
-            if self.has_workspace_menu() {
-                ChromeIntent::ToggleWorkspaceMenu
-            } else {
-                ChromeIntent::ToggleWorkspaceSettings
-            }
+            ChromeIntent::ToggleWorkspaceMenu
         } else if self.own_avatar_rect.contains(p) {
             ChromeIntent::ToggleProfile
         } else if self.tray_hit_rect.contains(p) {
@@ -4928,9 +4579,6 @@ impl TopBarChrome {
     }
 
     fn activate_control(&mut self, target: &str) -> bool {
-        if self.control_is_disabled(target) {
-            return false;
-        }
         if matches!(
             target,
             Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
@@ -4941,7 +4589,7 @@ impl TopBarChrome {
             return self.activate_editor_control(target);
         }
         match target {
-            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR => self.open_widget_editor(),
+            Self::CONTROL_EDIT_WIDGETS => self.open_widget_editor(),
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
             | Self::CONTROL_CENTER_CALENDAR => {
@@ -4953,9 +4601,6 @@ impl TopBarChrome {
                 true
             }
             Self::CONTROL_TILO_MARK
-            | Self::CONTROL_OVERVIEW
-            | Self::CONTROL_WORKSPACE_UP
-            | Self::CONTROL_WORKSPACE_DOWN
             | Self::CONTROL_WORKSPACE_SETTINGS
             | Self::CONTROL_PROFILE
             | Self::CONTROL_QUICK_SETTINGS
@@ -4968,13 +4613,7 @@ impl TopBarChrome {
                     Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => {
                         ChromeIntent::ToggleTiloMenu
                     }
-                    Self::CONTROL_OVERVIEW => ChromeIntent::ToggleOverview,
-                    Self::CONTROL_WORKSPACE_UP => ChromeIntent::SwitchWorkspace(-1),
-                    Self::CONTROL_WORKSPACE_DOWN => ChromeIntent::SwitchWorkspace(1),
-                    Self::CONTROL_WORKSPACE_SETTINGS if self.has_workspace_menu() => {
-                        ChromeIntent::ToggleWorkspaceMenu
-                    }
-                    Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceSettings,
+                    Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
                     Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
                     Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => {
                         ChromeIntent::ToggleQuickSettings
@@ -5888,8 +5527,7 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let responsive_changed = self.consume_responsive(state, path);
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // The time is read when drawing, so nothing else marks the bar
         // dirty when the minute turns over on an idle desktop.
         let time_changed = self.take_time_wake();
@@ -5906,7 +5544,7 @@ impl Widget for TopBarChrome {
                 return true;
             }
         }
-        time_changed || responsive_changed
+        time_changed
     }
 
     /// The end of the time reading on screen. Only a future instant: once
@@ -5924,7 +5562,6 @@ impl Widget for TopBarChrome {
         // A client-requested fullscreen owns the whole output. User maximize
         // still fills the workspace, but keeps the OS-owned top bar available
         // for navigation and session controls.
-        self.responsive.theme = theme.clone();
         let fullscreen = self
             .chrome
             .as_ref()
@@ -5965,20 +5602,11 @@ impl Widget for TopBarChrome {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        self.responsive.configure(self.responsive_specs());
-        let toolbar_node = self.responsive.toolbar.build_layout(taffy, theme, node_map);
-        if let Ok(mut toolbar_style) = taffy.style(toolbar_node).cloned() {
-            toolbar_style.position = taffy::style::Position::Absolute;
-            if let Err(error) = taffy.set_style(toolbar_node, toolbar_style) {
-                tracing::warn!(%error, "topbar: toolbar placement failed");
-            }
-        }
-        let node = match taffy.new_with_children(style, &[toolbar_node]) {
+        let node = match taffy.new_leaf(style) {
             Ok(node) => node,
             Err(err) => {
-                // The only child is the toolbar node allocated above. Keep
-                // the session alive if a future Taffy change rejects this
-                // fresh composition (production uses panic = "abort").
+                // Keep the session alive if a future Taffy change rejects
+                // this fresh leaf (production uses panic = "abort").
                 tracing::error!("topbar: leaf allocation failed: {err}");
                 NodeId::from(0u64)
             }
@@ -6005,11 +5633,6 @@ impl Widget for TopBarChrome {
         } else if previous != self.rect {
             self.cancel_editor_drag();
         }
-
-        let theme = self.responsive.theme.clone();
-        ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.prepare_responsive(&theme, text);
-        });
     }
 
     fn draw(
@@ -6018,7 +5641,7 @@ impl Widget for TopBarChrome {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &PresenceCtx,
+        _presence: &PresenceCtx,
     ) {
         // Zero-height (fullscreen) paints nothing; without this guard
         // the encode below still runs at intrinsic size, overflowing
@@ -6044,11 +5667,7 @@ impl Widget for TopBarChrome {
         }
         self.schedule_time_wake();
         let fp = self.current_fingerprint();
-        if fp == self.cache_fp
-            && self.cache_theme.as_ref() == Some(theme)
-            && fp.rect_px.2 > 0
-            && !self.responsive.dirty
-        {
+        if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
             return;
         }
@@ -6067,51 +5686,36 @@ impl Widget for TopBarChrome {
             self.draw_overlay_surface(scene, transform, theme);
         }
 
-        if self.use_responsive(theme) {
-            self.draw_responsive(scene, text_renderer, theme, presence);
-        } else {
-            let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
-            let after_chevrons = self.draw_host_pill(
-                scene,
-                transform,
-                theme,
-                text_renderer,
-                center_y,
-                after_chevrons,
-            );
-            self.draw_workspace_pill(
-                scene,
-                transform,
-                theme,
-                text_renderer,
-                center_y,
-                after_chevrons,
-            );
-            let center_left =
-                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
-            self.draw_strip_places(
-                scene,
-                transform,
-                theme,
-                text_renderer,
-                center_y,
-                (
-                    self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
-                    center_left - f64::from(theme.tokens.spacing.s4),
-                ),
-            );
+        // The workspace's name leads, after the mark when there is one:
+        // where its label starts, past its capsule's `s2` leading pad.
+        let label_x = self.draw_tilo_mark(
+            scene,
+            transform,
+            theme,
+            center_y,
+            self.rect.x0 + f64::from(theme.tokens.spacing.s3),
+        ) + f64::from(theme.tokens.spacing.s2);
+        self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
+        let center_left =
+            f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+        self.draw_strip_places(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            (
+                self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
+                center_left - f64::from(theme.tokens.spacing.s4),
+            ),
+        );
 
-            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-            if !self.is_compact() {
-                self.draw_session_clusters(scene, theme, text_renderer, center_y);
-            }
+        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+        if !self.is_compact() {
+            self.draw_session_clusters(scene, theme, text_renderer, center_y);
         }
-        if !self.responsive.active {
-            self.draw_activity_badge(scene, transform, theme, text_renderer);
-        }
-        if !self.responsive.active || self.widget_editing {
-            self.draw_focus_indicator(scene, transform, theme);
-        }
+        self.draw_activity_badge(scene, transform, theme, text_renderer);
+        self.draw_focus_indicator(scene, transform, theme);
         self.draw_widget_editor(scene, transform, text_renderer, theme);
         let clock_activity = self.chrome.as_ref().and_then(|chrome| {
             let snapshot = chrome.snapshot();
@@ -6120,13 +5724,6 @@ impl Widget for TopBarChrome {
         if let Some(activity) = clock_activity {
             self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
         }
-
-        if self.responsive.active {
-            self.responsive
-                .toolbar
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        self.responsive.dirty = false;
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
@@ -6155,29 +5752,6 @@ impl Widget for TopBarChrome {
         if self.handle_strip_naming_event(event, ctx) {
             return;
         }
-        if self.responsive.active && !self.widget_editing {
-            if matches!(event, WindowEvent::Focused(false)) {
-                self.responsive.toolbar.set_focus(false);
-                self.responsive.dirty = true;
-                return;
-            }
-            if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor = Some(ctx.logical(position));
-            }
-            if self.responsive.toolbar.traps_focus()
-                || self.responsive.toolbar.wants_pointer_capture()
-            {
-                self.responsive.toolbar.handle_event(event, ctx);
-                self.responsive.dirty = true;
-                return;
-            }
-            if !self.widget_editing && self.clock_overlay_rect.is_zero_area() {
-                self.responsive.toolbar.handle_event(event, ctx);
-                self.responsive.dirty |= *ctx.handled;
-                return;
-            }
-        }
-
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.last_cursor = Some(ctx.logical(position));
@@ -6224,38 +5798,14 @@ impl Widget for TopBarChrome {
         self.clock_drag_offset.is_some()
             || self.widget_edit_drag.is_pending()
             || self.editor_pressed_control.is_some()
-            || (self.responsive.active && self.responsive.toolbar.wants_pointer_capture())
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if self.responsive.active && !self.widget_editing {
-            vec![&self.responsive.toolbar]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.responsive.active && !self.widget_editing {
-            vec![&mut self.responsive.toolbar]
-        } else {
-            Vec::new()
-        }
     }
 
     fn traps_focus(&self) -> bool {
-        self.widget_editing || (self.responsive.active && self.responsive.toolbar.traps_focus())
+        self.widget_editing
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.widget_editing {
-            Some(self.widget_editor_rect)
-        } else {
-            self.responsive
-                .active
-                .then(|| self.responsive.toolbar.modal_capture())
-                .flatten()
-        }
+        self.widget_editing.then_some(self.widget_editor_rect)
     }
 
     fn name(&self) -> &'static str {
@@ -6275,39 +5825,9 @@ impl Widget for TopBarChrome {
             .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
         let mut rects = vec![
             ("topbar_tilo_mark".to_string(), self.tilo_mark_rect()),
-            (
-                "topbar_overview_button".to_string(),
-                self.control_rect(Self::CONTROL_OVERVIEW),
-            ),
-            (
-                "topbar_workspace_up".to_string(),
-                self.control_rect(Self::CONTROL_WORKSPACE_UP),
-            ),
-            (
-                "topbar_workspace_down".to_string(),
-                self.control_rect(Self::CONTROL_WORKSPACE_DOWN),
-            ),
             ("clock_overlay_pause".to_string(), self.clock_pause_rect),
             ("clock_overlay_add_minute".to_string(), self.clock_add_rect),
             ("clock_overlay_close".to_string(), self.clock_close_rect),
-            // Carries the same rect only while the switch would
-            // actually move (`walk_widget` drops zero-area entries).
-            (
-                "topbar_workspace_up_enabled".to_string(),
-                if self.can_switch_up() {
-                    self.control_rect(Self::CONTROL_WORKSPACE_UP)
-                } else {
-                    Rect::ZERO
-                },
-            ),
-            (
-                "topbar_workspace_down_enabled".to_string(),
-                if self.can_switch_down() {
-                    self.control_rect(Self::CONTROL_WORKSPACE_DOWN)
-                } else {
-                    Rect::ZERO
-                },
-            ),
             (
                 "topbar_workspace_pill".to_string(),
                 self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS),
@@ -6359,32 +5879,12 @@ impl Widget for TopBarChrome {
         ];
         rects.extend(self.editor_test_rects());
         rects.extend(self.strip_test_rects());
-        if !self.responsive.active {
-            rects.extend(app_tray);
-        }
+        rects.extend(app_tray);
         rects
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        if self.responsive.active && !self.widget_editing {
-            let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Toolbar)
-                .with_semantic_key("topbar")
-                .with_name(t("topbar-desktop-navigation"));
-            node.children.push(
-                ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
-                    .with_hashed_key("topbar-clock-reading")
-                    .with_name(self.responsive_reading())
-                    .with_description(self.responsive_description())
-                    .with_bounds(self.responsive.reading_rect),
-            );
-            if let Some(clock) = self.clock_accessibility_node() {
-                node.children
-                    .push(clock.with_hashed_key("topbar-clock-overlay"));
-            }
-            return Some(node);
-        }
-
         let mut children: Vec<AccessNode> = self
             .control_targets()
             .into_iter()
@@ -6412,28 +5912,18 @@ impl Widget for TopBarChrome {
                     .with_state(AccessState {
                         focused: self.focused && self.focused_control.as_deref() == Some(target),
                         focusable: true,
-                        disabled: self.control_is_disabled(target),
                         checked,
                         ..Default::default()
                     });
-                if matches!(
-                    target,
-                    Self::CONTROL_WORKSPACE_UP | Self::CONTROL_WORKSPACE_DOWN
-                ) {
+                // The pill names the workspace; where it stands among the
+                // others is said to a reader, as the menu lists them.
+                if target == Self::CONTROL_WORKSPACE_SETTINGS && self.workspace_total > 1 {
                     node = node.with_description(t_args(
                         "topbar-workspace-position",
                         &[
                             ("position", self.workspace_index.saturating_add(1).into()),
                             ("total", self.workspace_total.into()),
                         ],
-                    ));
-                }
-                if target == Self::CONTROL_WORKSPACE_SETTINGS
-                    && let Some(host) = self.host_label.as_deref()
-                {
-                    node = node.with_description(t_args(
-                        "topbar-workspace-host",
-                        &[("host", host.into())],
                     ));
                 }
                 node
@@ -6465,9 +5955,6 @@ impl Widget for TopBarChrome {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        if self.responsive.active && !self.widget_editing {
-            return self.responsive.toolbar.synthetic_accessibility_rect(path);
-        }
         let index = *path.first()?;
         self.control_targets()
             .get(index)
@@ -6475,10 +5962,6 @@ impl Widget for TopBarChrome {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        if self.responsive.active && !self.widget_editing {
-            self.responsive.dirty = true;
-            return self.responsive.toolbar.focus_synthetic_accessibility(path);
-        }
         let Some(index) = path.first().copied() else {
             return false;
         };
@@ -6493,23 +5976,11 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
-        if matches!(
-            target,
-            Self::CONTROL_EDIT_WIDGETS | Self::CONTROL_WIDGET_EDITOR
-        ) && matches!(action, ui::a11y::Action::Activate)
-        {
+        if target == Self::CONTROL_EDIT_WIDGETS && matches!(action, ui::a11y::Action::Activate) {
             return self.open_widget_editor();
-        }
-        if self.responsive.active && !self.widget_editing {
-            let performed = self
-                .responsive
-                .toolbar
-                .perform_semantic_action(target, action, state, path);
-            self.responsive.dirty |= performed;
-            return performed;
         }
         if !matches!(
             action,
@@ -6541,11 +6012,6 @@ impl Widget for TopBarChrome {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.responsive.active
-            && let Some(cursor) = self.responsive.toolbar.cursor_shape(point)
-        {
-            return Some(cursor);
-        }
         if self.clock_drag_offset.is_some() {
             return Some(winit::window::CursorIcon::Grabbing);
         }
@@ -6587,7 +6053,6 @@ impl Widget for TopBarChrome {
         if !focused {
             self.focus_origin = FocusOrigin::Keyboard;
         }
-        self.responsive.toolbar.set_focus(focused);
         if focused && self.focused_control.is_none() {
             self.focused_control = self
                 .control_targets()
@@ -6603,9 +6068,6 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_redraw(&self) -> bool {
-        if self.responsive.active && self.responsive.dirty {
-            return true;
-        }
         if self.presence() != self.cache_fp.presence {
             return true;
         }
@@ -6756,14 +6218,6 @@ mod tests {
         let mut tr = TextRenderer::new();
         let label = bar.workspace_label(&mut tr, &Theme::default().text(TextRole::Label), 112.0);
         assert!(label.contains("Home"), "{label}");
-    }
-
-    #[test]
-    fn workspace_settings_affordance_is_distinct_from_global_controls() {
-        assert_ne!(
-            TopBarChrome::WORKSPACE_SETTINGS_ICON,
-            ui::icons::Icon::Settings2
-        );
     }
 
     #[test]
@@ -7054,7 +6508,7 @@ mod tests {
         assert_eq!(lay_out_over_windows(&mut bar), TOPBAR_HEIGHT_PX, "docked");
         assert!(painted(&mut bar));
         let docked = bar.rect;
-        let overview = bar.overview_btn_rect.center();
+        let menu = bar.ws_pill_rect.center();
 
         chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
         assert!(bar.is_layout_dirty(), "hiding re-lays the column out");
@@ -7070,7 +6524,7 @@ mod tests {
         assert!(!bar.is_layout_dirty());
         assert_eq!(bar.rect, docked, "it keeps its place for when it shows");
         assert!(!painted(&mut bar), "hidden paints nothing");
-        assert!(!click(&mut bar, overview), "hidden takes no press");
+        assert!(!click(&mut bar, menu), "hidden takes no press");
         assert!(chrome.borrow().intents.is_empty());
 
         chrome.borrow_mut().top_bar = TopBarPresence::Shown;
@@ -7081,15 +6535,11 @@ mod tests {
         );
         assert_eq!(lay_out_over_windows(&mut bar), 0.0);
         assert!(painted(&mut bar));
-        assert_eq!(
-            bar.overview_btn_rect.center(),
-            overview,
-            "same place as docked"
-        );
-        assert!(click(&mut bar, overview), "shown, its controls work");
+        assert_eq!(bar.ws_pill_rect.center(), menu, "same place as docked");
+        assert!(click(&mut bar, menu), "shown, its controls work");
         assert_eq!(
             chrome.borrow().intents.as_slice(),
-            &[ChromeIntent::ToggleOverview]
+            &[ChromeIntent::ToggleWorkspaceMenu]
         );
 
         chrome.borrow_mut().top_bar = TopBarPresence::Hidden;
@@ -7101,12 +6551,6 @@ mod tests {
     fn persistent_topbar_controls_have_coherent_targets() {
         let mut bar = sample_chrome();
         lay_out_and_draw(&mut bar, 1280.0);
-        assert!(bar.overview_btn_rect.width() >= BAR_CONTROL_PX);
-        assert!(bar.overview_btn_rect.height() >= BAR_CONTROL_PX);
-        assert!(bar.up_btn_rect.height() >= BAR_CONTROL_PX);
-        assert!(bar.up_btn_rect.width() >= BAR_CONTROL_PX);
-        assert!(bar.down_btn_rect.height() >= BAR_CONTROL_PX);
-        assert!(bar.down_btn_rect.width() >= BAR_CONTROL_PX);
         assert!(bar.ws_pill_rect.height() >= BAR_CONTROL_PX);
         assert!(bar.tray_pill_rect.height() >= BAR_CONTROL_PX);
         assert!(bar.center_rect.height() >= BAR_CONTROL_PX);
@@ -7119,11 +6563,8 @@ mod tests {
     fn bar_controls_share_one_height_and_centre_line() {
         let mut bar = sample_chrome();
         lay_out_and_draw(&mut bar, 1280.0);
-        let reference = bar.overview_btn_rect;
+        let reference = bar.ws_pill_rect;
         let controls = [
-            ("overview", bar.overview_btn_rect),
-            ("workspace up", bar.up_btn_rect),
-            ("workspace down", bar.down_btn_rect),
             ("workspace pill", bar.ws_pill_rect),
             ("centre band", bar.center_rect),
             ("tray pill", bar.tray_pill_rect),
@@ -7136,7 +6577,7 @@ mod tests {
             );
             assert!(
                 (r.y0 - reference.y0).abs() < 0.01 && (r.y1 - reference.y1).abs() < 0.01,
-                "{name} {r:?} does not share the nav cluster's edges {reference:?}"
+                "{name} {r:?} does not share the workspace pill's edges {reference:?}"
             );
         }
         let bar_centre = f64::midpoint(bar.rect.y0, bar.rect.y1);
@@ -7164,38 +6605,37 @@ mod tests {
     }
 
     /// The workspace capsule pads its label on the left exactly as much
-    /// as it pads the gear on the right, and the gear sits on the pill's
-    /// centre line — so the pill reads centred on its contents.
+    /// as it pads the chevron on the right, and the chevron sits on the
+    /// pill's centre line — so the pill reads centred on its contents.
     #[test]
-    fn workspace_pill_pads_its_label_and_gear_symmetrically() {
+    fn workspace_pill_pads_its_label_and_chevron_symmetrically() {
         let mut bar = sample_chrome();
         let theme = Theme::default();
         lay_out_and_draw_with_theme(&mut bar, 1280.0, &theme);
         let pad = f64::from(theme.tokens.spacing.s2);
-        // `draw_workspace_nav` hands the pill an x one `s3` past the
-        // down switch; the label starts there, one `s2` inside the pill,
-        // which leaves an `s1` gutter between the cluster and the capsule.
-        let text_x = bar.down_btn_rect.x1 + f64::from(theme.tokens.spacing.s3);
+        // Without the mark the pill leads the bar, `s3` in from its edge;
+        // its label starts one `s2` inside it.
+        let edge = f64::from(theme.tokens.spacing.s3);
+        assert!(
+            (bar.ws_pill_rect.x0 - bar.rect.x0 - edge).abs() < 0.01,
+            "the pill stands {} in from the bar's edge, not {edge}",
+            bar.ws_pill_rect.x0 - bar.rect.x0
+        );
+        let text_x = bar.rect.x0 + edge + pad;
         assert!(
             (text_x - bar.ws_pill_rect.x0 - pad).abs() < 0.01,
             "leading pad is {} not {pad}",
             text_x - bar.ws_pill_rect.x0
         );
-        let gutter = f64::from(theme.tokens.spacing.s1);
         assert!(
-            (bar.ws_pill_rect.x0 - bar.down_btn_rect.x1 - gutter).abs() < 0.01,
-            "the gutter between the nav cluster and the pill is {} not {gutter}",
-            bar.ws_pill_rect.x0 - bar.down_btn_rect.x1
-        );
-        assert!(
-            (bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1 - pad).abs() < 0.01,
+            (bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1 - pad).abs() < 0.01,
             "trailing pad is {} not {pad}",
-            bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1
+            bar.ws_pill_rect.x1 - bar.ws_chevron_rect.x1
         );
         assert!(
-            (bar.ws_gear_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
-            "gear {:?} is off the pill's centre line {:?}",
-            bar.ws_gear_rect,
+            (bar.ws_chevron_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
+            "chevron {:?} is off the pill's centre line {:?}",
+            bar.ws_chevron_rect,
             bar.ws_pill_rect
         );
     }
@@ -7467,8 +6907,8 @@ mod tests {
     }
 
     /// Your colour rings a top-bar control only for keyboard focus. Clicking
-    /// the bar used to light the overview button, the bar's first stop, in
-    /// your colour, though no keyboard was involved.
+    /// the bar used to light its first stop in your colour, though no
+    /// keyboard was involved.
     #[test]
     fn the_focus_ring_follows_the_keyboard_not_a_click() {
         let mut bar = sample_chrome();
@@ -7517,24 +6957,22 @@ mod tests {
         assert!(bar.is_focused());
         assert_eq!(
             bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
+            Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
         );
 
+        let second = bar.control_targets()[1];
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowRight
         ));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_WORKSPACE_UP)
-        );
+        assert_eq!(bar.focused_control.as_deref(), Some(second));
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowLeft
         ));
         assert_eq!(
             bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
+            Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
         );
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
         assert_eq!(
@@ -7544,7 +6982,7 @@ mod tests {
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Home));
         assert_eq!(
             bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_OVERVIEW)
+            Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
         );
 
         // Removing an optional target leaves the focus stop intact and End
@@ -7558,7 +6996,7 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_activation_matches_pointer_actions_and_respects_disabled_workspaces() {
+    fn keyboard_activation_matches_pointer_actions() {
         let tree = two_workspace_tree();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
@@ -7568,21 +7006,12 @@ mod tests {
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
         assert_eq!(bar.center_widget, CenterWidget::SystemMonitor);
 
-        bar.focused_control = Some(TopBarChrome::CONTROL_OVERVIEW.to_string());
+        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS.to_string());
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Space));
-        assert!(chrome.borrow().overlays.overview);
-
-        // The first workspace cannot move upward: keyboard activation must
-        // report unhandled just like a disabled pointer target.
-        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_UP.to_string());
-        assert!(!press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let first_id = tree.workspaces.first().expect("first workspace").id;
-        assert_eq!(chrome.borrow().tree().active, first_id);
-
-        bar.focused_control = Some(TopBarChrome::CONTROL_WORKSPACE_DOWN.to_string());
-        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
-        let second_id = tree.workspaces.get(1).expect("second workspace").id;
-        assert_eq!(chrome.borrow().tree().active, second_id);
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::ToggleWorkspaceMenu)
+        );
     }
 
     #[test]
@@ -7619,16 +7048,15 @@ mod tests {
             assert_eq!(child.semantic_key.as_deref(), Some(target));
         }
 
-        let up = node
+        let workspace = node
             .children
             .iter()
             .find(|child| {
-                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_UP)
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
             })
-            .expect("workspace up semantics");
-        assert_eq!(up.role, ui::a11y::Role::Button);
-        assert!(up.state.disabled);
-        assert_eq!(up.description.as_deref(), Some("Workspace 1 of 2"));
+            .expect("workspace menu semantics");
+        assert_eq!(workspace.role, ui::a11y::Role::Button);
+        assert_eq!(workspace.description.as_deref(), Some("Workspace 1 of 2"));
 
         let monitor = node
             .children
@@ -7694,7 +7122,7 @@ mod tests {
             mark.width() >= BAR_CONTROL_PX && mark.height() >= BAR_CONTROL_PX,
             "{mark:?}"
         );
-        assert!(mark.x1 <= bar.overview_btn_rect.x0, "the mark leads");
+        assert!(mark.x1 <= bar.ws_pill_rect.x0, "the mark leads");
         assert!(
             bar.test_rects()
                 .iter()
@@ -7725,11 +7153,11 @@ mod tests {
         assert_eq!(asked, 2, "a click and Enter each ask once");
     }
 
-    /// The bar a browser shows a room with: the mark, the workspace's name
-    /// as one menu, desks only when there are several, and the person's own
-    /// avatar opening their profile card.
+    /// The bar leads with the mark and the workspace's name as one menu,
+    /// shows desks only when there are several, and ends with the person's
+    /// own avatar opening their profile card.
     #[test]
-    fn the_workspace_menu_bar_leads_with_one_menu_and_ends_with_you() {
+    fn the_bar_leads_with_one_menu_and_ends_with_you() {
         let tree = two_workspace_tree();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
@@ -7740,19 +7168,10 @@ mod tests {
             Some(crate::chrome::StripPlaces::in_active_workspace(&tree, &[]));
         let mut bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())
-            .with_tilo_mark()
-            .with_workspace_menu();
-        bar.set_host_label(Some("tilo.coffee".into()));
+            .with_tilo_mark();
         lay_out_and_draw(&mut bar, 1280.0);
 
         let targets = bar.control_targets();
-        for gone in [
-            TopBarChrome::CONTROL_OVERVIEW,
-            TopBarChrome::CONTROL_WORKSPACE_UP,
-            TopBarChrome::CONTROL_WORKSPACE_DOWN,
-        ] {
-            assert!(!targets.contains(&gone), "{gone} is in the workspace menu");
-        }
         assert_eq!(
             &targets[..2],
             &[
@@ -7767,11 +7186,11 @@ mod tests {
         assert!(mark.x1 < menu.x0, "the workspace follows the mark");
         assert!(
             menu.x0 - mark.x1 <= f64::from(ui::tokens::Spacing::BASE.s3),
-            "with no host chip or switches between them"
+            "with nothing between them"
         );
         assert!(own.x1 < bar.tray_hit_rect.x0, "you, then quick settings");
         assert!(own.x0 > bar.center_rect.x1, "on the right");
-        assert_eq!(bar.ws_gear_rect.width(), SMALL_GLYPH_PX);
+        assert_eq!(bar.ws_chevron_rect.width(), SMALL_GLYPH_PX);
         let style = Theme::default().tokens.typography.style(TextRole::Caption);
         assert_eq!(
             bar.workspace_label(&mut TextRenderer::new(), &style, 400.0),
@@ -7813,33 +7232,6 @@ mod tests {
                 ChromeIntent::ToggleWorkspaceMenu
             ]
         );
-    }
-
-    #[test]
-    fn a_room_host_is_named_beside_the_workspace_and_nothing_on_ones_own() {
-        let tree = two_workspace_tree();
-        let mut own = TopBarChrome::from_tree(&tree);
-        own.set_host_label(Some(String::new()));
-        lay_out_and_draw(&mut own, 1280.0);
-        let mut hosted = TopBarChrome::from_tree(&tree);
-        hosted.set_host_label(Some("example.org".into()));
-        lay_out_and_draw(&mut hosted, 1280.0);
-        assert!(
-            hosted.ws_pill_rect.x0 > own.ws_pill_rect.x0,
-            "the host pill sits before the workspace pill"
-        );
-        let described = |bar: &TopBarChrome| {
-            bar.accessibility()
-                .expect("topbar semantics")
-                .children
-                .into_iter()
-                .find(|child| {
-                    child.action_target.as_deref() == Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
-                })
-                .and_then(|child| child.description)
-        };
-        assert_eq!(described(&hosted).as_deref(), Some("Hosted at example.org"));
-        assert!(!described(&own).is_some_and(|text| text.contains("Hosted")));
     }
 
     #[test]
@@ -8074,6 +7466,30 @@ mod tests {
         );
     }
 
+    /// A strip whose windows show the given foreign surfaces under the
+    /// given titles, so sharing disclosure can name them.
+    fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
+        let mut strip = Strip::new(tilo_desktop_model::StripId(2), "Main");
+        for (surface, title) in surfaces {
+            strip.window_groups.push(WindowGroup {
+                id: surface.saturating_add(1000),
+                tabs: vec![Tab {
+                    id: *surface,
+                    title: (*title).into(),
+                    tile: TileContent::Foreign {
+                        app_id: "so.tilo.editor".into(),
+                        surface_id: *surface,
+                    },
+                }],
+                active_tab: *surface,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        }
+        strip
+    }
+
     #[test]
     fn live_share_is_persistent_visible_named_and_accessible() {
         let mut tree = DesktopTree {
@@ -8088,6 +7504,9 @@ mod tests {
         tree.workspaces[0]
             .collaborators
             .push(tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7));
+        tree.workspaces[0]
+            .strips
+            .push(shared_windows(&[(42, "Budget")]));
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome
             .borrow_mut()
@@ -8107,7 +7526,7 @@ mod tests {
         assert!(node.children.iter().any(|child| {
             child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
                 && child.name.as_deref().is_some_and(|name| {
-                    name.contains("visible to Ada (person): can control surface 42")
+                    name.contains("visible to Ada (person): can control Budget")
                 })
         }));
     }
@@ -8124,6 +7543,11 @@ mod tests {
             tilo_desktop_model::Collaborator::new("ada", "Ada").with_session(7),
             tilo_desktop_model::Collaborator::new("lin", "Lin").with_session(9),
         ]);
+        tree.workspaces[0].strips.push(shared_windows(&[
+            (42, "Notes"),
+            (43, "Budget"),
+            (44, "Slides"),
+        ]));
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().set_active_exposures(vec![
             crate::chrome::ActiveExposure {
@@ -8145,15 +7569,15 @@ mod tests {
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
         let disclosure = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
         assert!(
-            disclosure.contains("Ada (person): can control surface 44; view only surface 42"),
+            disclosure.contains("Ada (person): can control Slides; view only Notes"),
             "{disclosure}"
         );
         assert!(
-            disclosure.contains("Lin (person): can control surface 43"),
+            disclosure.contains("Lin (person): can control Budget"),
             "{disclosure}"
         );
-        assert!(!disclosure.contains("Ada (person): can control surface 43"));
-        assert!(!disclosure.contains("Lin (person): can control surface 42"));
+        assert!(!disclosure.contains("Ada (person): can control Budget"));
+        assert!(!disclosure.contains("Lin (person): can control Notes"));
     }
 
     #[test]
@@ -8191,13 +7615,13 @@ mod tests {
 
         let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
         assert!(
-            name.contains("Release Notes Agent (agent): view only surface 42"),
+            name.contains("Release Notes Agent (agent): view only a window"),
             "{name}"
         );
         assert!(!name.contains("Release Notes Agent (person"), "{name}");
         assert_eq!(
             bar.sharing_label().as_deref(),
-            Some("AGENT VIEWING · Release Notes Agent"),
+            Some("Agent watching: Release Notes Agent"),
             "critical privacy state must precede the elidable display name"
         );
     }
@@ -8597,7 +8021,6 @@ mod tests {
         );
         assert_eq!(TOPBAR_HEIGHT_PX, 24.0);
         for (label, rect) in [
-            ("overview", bar.overview_btn_rect),
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
@@ -9253,10 +8676,8 @@ mod tests {
     fn composed_narrow_editor_preserves_both_semantic_targets_and_interruptions() {
         use ui::a11y::Action;
         use winit::{event::ElementState as E, keyboard::NamedKey as K};
-        for target in [
-            TopBarChrome::CONTROL_EDIT_WIDGETS,
-            TopBarChrome::CONTROL_WIDGET_EDITOR,
-        ] {
+        {
+            let target = TopBarChrome::CONTROL_EDIT_WIDGETS;
             let mut frame = ui::headless::Framed::new(
                 ui::State::new(),
                 sample_chrome(),
@@ -9295,7 +8716,6 @@ mod tests {
                 .unwrap();
             assert!(!frame.widget_editing);
             assert!(!frame.traps_focus());
-            assert!(!frame.responsive.toolbar.is_overflow_open());
         }
     }
     #[test]
@@ -9314,7 +8734,8 @@ mod tests {
                 Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
             ),
         ] {
-            let mut frame = Framed::new(ui::State::new(), sample_chrome(), (320, 600), theme);
+            let mut frame =
+                Framed::new(ui::State::new(), sample_chrome(), (320, 600), theme.clone());
             let mut doc = AutoCommit::new();
             assert!(frame.perform_semantic_action(
                 TopBarChrome::CONTROL_EDIT_WIDGETS,
@@ -9323,7 +8744,6 @@ mod tests {
                 &automerge::ROOT,
             ));
             Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            assert!(frame.responsive.active);
             assert!(frame.widget_editing);
             assert!(frame.modal_capture().is_some());
             let geometry = &frame.editor_geometry;
@@ -9343,11 +8763,7 @@ mod tests {
                         remove.width(),
                         geometry.compact_rows,
                     )
-                    .title_elided(
-                        *row,
-                        &mut TextRenderer::new(),
-                        &frame.responsive.theme
-                    ),
+                    .title_elided(*row, &mut TextRenderer::new(), &theme),
                     "{name}: configured widget labels stay readable at narrow scale"
                 );
                 assert!(remove.x0 >= row.x0 && remove.x1 <= row.x1);
@@ -9395,9 +8811,6 @@ mod fixture {
         pub strip_places: Option<StripPlaces>,
     }
     impl State {
-        pub fn tree(&self) -> &DesktopTree {
-            &self.tree
-        }
         pub fn publish_activity_glance(
             &mut self,
             headline: Option<String>,
@@ -9502,7 +8915,7 @@ mod fixture {
 }
 
 #[cfg(test)]
-mod responsive_tests {
+mod narrow_tests {
     use super::*;
     use ui::headless::Framed;
 
@@ -9523,7 +8936,7 @@ mod responsive_tests {
     }
 
     #[test]
-    fn responsive_primary_bar_visible_targets_do_not_overlap_at_320() {
+    fn a_phone_wide_bar_keeps_its_targets_apart_at_320() {
         let frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
         let bar = &*frame;
         let visible: Vec<_> = bar
@@ -9538,308 +8951,13 @@ mod responsive_tests {
         );
         for (index, (left, a)) in visible.iter().enumerate() {
             assert!(a.x0 >= 0.0 && a.x1 <= 320.0, "{left} escapes: {a:?}");
-            for (right, b) in visible.iter().skip(index + 1) {
+            // The centre widget's choices and its editor share one target.
+            for (right, b) in visible.iter().skip(index + 1).filter(|(_, b)| b != a) {
                 assert!(
                     a.intersect(*b).is_zero_area(),
                     "{left} {a:?} overlaps {right} {b:?}"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn responsive_primary_bar_leads_with_the_painted_tilo_mark() {
-        use ui::a11y::Action;
-        let workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
-        let tree = DesktopTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        let chrome = super::fixture::FixtureChrome::new(tree.clone());
-        let bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into())
-            .with_chrome(chrome.clone())
-            .with_tilo_mark();
-        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
-        assert!(frame.responsive.active);
-        let mark = frame.tilo_mark_rect();
-        assert!(!mark.is_zero_area(), "the mark stays on a narrow bar");
-        let overview = frame.control_rect(TopBarChrome::CONTROL_OVERVIEW);
-        assert!(mark.x1 <= overview.x0, "{mark:?} leads {overview:?}");
-        Framed::harness_mut(&mut frame).click_at(mark.center().x, mark.center().y);
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.item.0", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let intents = &chrome.borrow().intents;
-        assert_eq!(intents.len(), 2, "{intents:?}");
-        assert!(
-            intents
-                .iter()
-                .all(|intent| matches!(intent, ChromeIntent::ToggleTiloMenu))
-        );
-        let audit = Framed::harness(&frame).native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-    }
-
-    #[test]
-    fn responsive_primary_bar_overflow_native_actions_cancel_and_resize() {
-        use ui::a11y::Action;
-        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
-        let audit = Framed::harness(&frame).native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-        assert!(frame.responsive.toolbar.has_overflow());
-        for _ in 0..3 {
-            Framed::harness_mut(&mut frame)
-                .perform_named("toolbar.overflow", &Action::Activate)
-                .expect("admitted overflow");
-            Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            assert!(frame.responsive.toolbar.is_overflow_open());
-            Framed::harness_mut(&mut frame).key("Escape");
-            Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            assert!(
-                !frame.responsive.toolbar.is_overflow_open(),
-                "Escape must close the menu"
-            );
-        }
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.overflow", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness_mut(&mut frame).resize((1000, 480)).unwrap();
-        assert!(!frame.responsive.active);
-        assert!(!frame.responsive.toolbar.is_overflow_open());
-        Framed::harness_mut(&mut frame).resize((320, 480)).unwrap();
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.overflow", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness_mut(&mut frame).click_at(10.0, 450.0);
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(
-            !frame.responsive.toolbar.is_overflow_open(),
-            "outside click cancels"
-        );
-    }
-
-    #[test]
-    fn responsive_primary_bar_delivers_pointer_and_semantic_intents_once() {
-        use ui::a11y::Action;
-        let workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId(1), "Design review");
-        let tree = DesktopTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        let chrome = super::fixture::FixtureChrome::new(tree.clone());
-        let bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into())
-            .with_chrome(chrome.clone());
-        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
-        let rect = frame.control_rect(TopBarChrome::CONTROL_OVERVIEW);
-        assert!(!rect.is_zero_area());
-        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert_eq!(chrome.borrow().intents.len(), 1);
-        assert!(matches!(
-            chrome.borrow().intents[0],
-            ChromeIntent::ToggleOverview
-        ));
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.item.0", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert_eq!(chrome.borrow().intents.len(), 2);
-        assert!(
-            !chrome.borrow().overlays.overview,
-            "repeated activation toggles closed"
-        );
-        let audit = Framed::harness(&frame).native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-    }
-
-    #[test]
-    fn responsive_primary_bar_editor_opens_from_overflow_and_escape_closes() {
-        use ui::a11y::Action;
-        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.overflow", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let out = std::path::PathBuf::from("target/primary-bar-shots");
-        std::fs::create_dir_all(&out).unwrap();
-        Framed::harness(&frame).render_png(&out.join("dark-before-editor.png"));
-        let rect = Framed::harness(&frame)
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some(t("topbar-editor-title").as_str()))
-            .and_then(|control| control.bounds)
-            .expect("painted editor command");
-        assert!(!rect.is_zero_area(), "editor row must actually be painted");
-        assert!(rect.y0 >= 0.0 && rect.y1 <= 480.0, "{rect:?}");
-        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(frame.widget_editing);
-        assert!(!frame.responsive.toolbar.is_overflow_open());
-        let out = std::path::PathBuf::from("target/primary-bar-shots");
-        std::fs::create_dir_all(&out).unwrap();
-        Framed::harness(&frame).render_png(&out.join("dark-editor.png"));
-        let audit = Framed::harness(&frame).native_app_audit();
-        assert!(audit.is_certified(), "{audit:?}");
-        Framed::harness_mut(&mut frame)
-            .perform_named(TopBarChrome::CONTROL_REMOVE_MONITOR, &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(
-            !frame
-                .widget_config
-                .widgets
-                .contains(&TopBarWidget::SystemMonitor)
-        );
-        Framed::harness_mut(&mut frame).key("Escape");
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(!frame.widget_editing);
-        assert!(!frame.wants_pointer_capture());
-    }
-
-    #[test]
-    fn responsive_primary_bar_focus_loss_closes_without_activation() {
-        use ui::a11y::Action;
-        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.overflow", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(frame.responsive.toolbar.is_overflow_open());
-        Framed::harness_mut(&mut frame).send_host_event(&WindowEvent::Focused(false));
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(!frame.responsive.toolbar.is_overflow_open());
-        assert!(!frame.wants_pointer_capture());
-        assert!(!frame.widget_editing);
-    }
-
-    #[test]
-    fn responsive_primary_bar_offline_status_is_named_and_painted() {
-        let mut bar = fixture_bar();
-        bar.status.link = Some(crate::chrome::LinkStatus {
-            kind: crate::chrome::LinkKind::Offline,
-            name: None,
-            signal: 0,
-        });
-        bar.notification_badge = 3;
-        let frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
-        let expected = format!(
-            "{} · {}",
-            frame.control_name(TopBarChrome::CONTROL_QUICK_SETTINGS),
-            t("topbar-network-offline")
-        );
-        assert!(
-            Framed::harness(&frame)
-                .controls()
-                .iter()
-                .any(|control| control.name.as_deref() == Some(expected.as_str()))
-        );
-        let out = std::path::PathBuf::from("target/primary-bar-shots");
-        std::fs::create_dir_all(&out).unwrap();
-        Framed::harness(&frame).render_png(&out.join("dark-offline.png"));
-    }
-
-    #[test]
-    fn responsive_primary_bar_semantic_focus_changes_actual_pixels() {
-        use ui::a11y::Action;
-        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
-        let out = std::path::PathBuf::from("target/primary-bar-shots");
-        std::fs::create_dir_all(&out).unwrap();
-        let before = out.join("dark-before-keyboard-focus.png");
-        let after = out.join("dark-keyboard-focus.png");
-        Framed::harness(&frame).render_png(&before);
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.item.4", &Action::Focus)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness(&frame).render_png(&after);
-        assert!(
-            std::fs::read(&before).unwrap() != std::fs::read(&after).unwrap(),
-            "a certified semantic focus operation must paint visible focus"
-        );
-        assert!(
-            !frame.needs_redraw(),
-            "an idle focused bar must not request continuous paint"
-        );
-    }
-
-    #[test]
-    fn responsive_primary_bar_selected_monitor_and_calendar_show_their_readings() {
-        use ui::a11y::Action;
-        let mut bar = fixture_bar();
-        bar.telemetry.cpu_percent = Some(71);
-        bar.clock.date = "7 October".into();
-        let mut frame = Framed::new(ui::State::new(), bar, (320, 480), Theme::dark());
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.item.5", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let expected = t_args("topbar-cpu-reading", &[("value", "71%".into())]);
-        assert!(
-            frame
-                .accessibility()
-                .unwrap()
-                .children
-                .iter()
-                .any(|node| node.name.as_deref() == Some(expected.as_str()))
-        );
-        let out = std::path::PathBuf::from("target/primary-bar-shots");
-        std::fs::create_dir_all(&out).unwrap();
-        Framed::harness(&frame).render_png(&out.join("dark-monitor.png"));
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.overflow", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        Framed::harness_mut(&mut frame)
-            .perform_named("toolbar.item.6", &Action::Activate)
-            .unwrap();
-        Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        assert!(
-            frame
-                .accessibility()
-                .unwrap()
-                .children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("7 October"))
-        );
-        Framed::harness(&frame).render_png(&out.join("dark-calendar.png"));
-    }
-
-    #[test]
-    fn responsive_primary_bar_production_capture_matrix_is_written() {
-        let out = std::env::var_os("TILO_PRIMARY_BAR_SHOTS").map_or_else(
-            || std::path::PathBuf::from("target/primary-bar-shots"),
-            std::path::PathBuf::from,
-        );
-        std::fs::create_dir_all(&out).expect("capture directory");
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high-contrast", Theme::high_contrast()),
-            ("large-text", Theme::dark().with_text_scale(2.0)),
-            (
-                "ui-text-scaled",
-                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
-            ),
-        ] {
-            let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), theme);
-            let path = out.join(format!("{name}-row.png"));
-            Framed::harness(&frame).render_png(&path);
-            assert!(path.is_file(), "missing actual production capture");
-            Framed::harness_mut(&mut frame)
-                .perform_named("toolbar.overflow", &ui::a11y::Action::Activate)
-                .unwrap();
-            Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            let path = out.join(format!("{name}-overflow.png"));
-            Framed::harness(&frame).render_png(&path);
-            assert!(path.is_file(), "missing actual overflow capture");
         }
     }
 }

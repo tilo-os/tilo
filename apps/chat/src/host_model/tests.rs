@@ -70,46 +70,37 @@ fn backend(text: &str) -> Rc<Backend> {
     })
 }
 
-fn chat(backend: Rc<Backend>) -> (ChatApp, automerge::AutoCommit) {
-    let mut doc = automerge::AutoCommit::new();
+fn chat(backend: Rc<Backend>) -> (ChatApp, crate::testing::Room) {
+    let mut doc = crate::testing::Room::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
     crate::testing::say(&mut doc, crate::model::ME, "c_general", "Question");
     let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend));
+    app.attach_room(&doc);
     app.reload(&doc);
     app.ensure_selection();
     app.reload(&doc);
     (app, doc)
 }
 
-fn pump(app: &mut ChatApp, doc: &mut automerge::AutoCommit) {
+fn pump(app: &mut ChatApp, doc: &mut crate::testing::Room) {
     app.pump_model();
     app.land(doc);
     app.reload(doc);
 }
 
-fn reply(doc: &automerge::AutoCommit, id: &serde_json::Value) -> crate::model::Message {
-    crate::projection::read(doc)
-        .message_row(id.as_str().unwrap())
-        .unwrap()
+fn reply(doc: &crate::testing::Room, id: &serde_json::Value) -> crate::model::Message {
+    doc.message_row(id.as_str().unwrap()).unwrap()
 }
 
 fn mounted_reply(
     backend: Rc<Backend>,
 ) -> (ui::framework::testing::TestApp<crate::ChatShell>, String) {
-    use crate::{record::chat, resource::Chat};
     let mut app = ui::framework::testing::TestApp::<crate::ChatShell>::for_person_with_lent(
         crate::model::ME,
         Models::new(backend),
     )
     .unwrap();
-    app.invoke(Chat::POST.with(chat::Post {
-        channel: ui::tilo_resource::Id::from_raw("c_general"),
-        text: "Question".into(),
-        parent: None,
-        body: None,
-        attachment: None,
-    }))
-    .unwrap();
+    crate::testing::mounted_post(&mut app, "c_general", "Question");
     let result = app
         .call_on(
             &crate::testing::item("channels", "c_general"),
@@ -132,9 +123,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
             backend.stop.set(StopReason::EndTurn);
         }
         let (mut app, id) = mounted_reply(backend.clone());
-        let original = app
-            .state()
-            .message_rows("c_general")
+        let original = crate::testing::mounted_rows(&mut app, "c_general")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -171,9 +160,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
         );
         assert!(requests[1].tools.is_empty());
         assert_eq!(requests[1].tool_choice, ToolChoice::None);
-        let retained = app
-            .state()
-            .message_rows("c_general")
+        let retained = crate::testing::mounted_rows(&mut app, "c_general")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -187,9 +174,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
     let oversized = "🦀".repeat(MAX_REASONING_BYTES);
     *backend.reasoning.borrow_mut() = oversized.clone();
     let (mut app, id) = mounted_reply(backend);
-    let message = app
-        .state()
-        .message_rows("c_general")
+    let message = crate::testing::mounted_rows(&mut app, "c_general")
         .into_iter()
         .find(|row| row.id == id)
         .unwrap();
@@ -222,9 +207,7 @@ fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
         backend.finish.set(true);
         backend.stop.set(StopReason::EndTurn);
         app.settle();
-        let message = app
-            .state()
-            .message_rows("c_general")
+        let message = crate::testing::mounted_rows(&mut app, "c_general")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -591,9 +574,8 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
 
 #[test]
 fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() {
-    use crate::{ChatShell, record::chat, resource::Chat};
+    use crate::ChatShell;
     use ui::framework::testing::TestApp;
-    use ui::tilo_resource::{Id, Resource as _};
     let first = backend("First mount");
     first.finish.set(true);
     first.stop.set(StopReason::EndTurn);
@@ -603,14 +585,7 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
             .unwrap();
     let b =
         TestApp::<ChatShell>::for_person_with_lent("other", Models::new(second.clone())).unwrap();
-    a.invoke(Chat::POST.with(chat::Post {
-        channel: Id::from_raw("c_general"),
-        text: "Question".into(),
-        parent: None,
-        body: None,
-        attachment: None,
-    }))
-    .unwrap();
+    crate::testing::mounted_post(&mut a, "c_general", "Question");
     let channel = crate::testing::item("channels", "c_general");
     let acknowledged = a
         .call_on(
@@ -623,12 +598,12 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
     assert_eq!(acknowledged["started"], true);
     let reply = acknowledged["reply"].as_str().unwrap();
     let message_row = crate::testing::item("messages", reply);
+    let chain = crate::testing::chain();
     let surface = a.agent_surface();
     for (resource, action) in [
         (channel.as_str(), "model-control"),
         (message_row.as_str(), "show-agent-reasoning"),
-        (Chat::KIND, "stream-output"),
-        (Chat::KIND, "record-work"),
+        (chain.as_str(), "stream-output"),
     ] {
         assert!(
             surface
@@ -663,7 +638,8 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
         .unwrap();
     assert_eq!(first.requests.borrow().len(), 1);
     assert!(second.requests.borrow().is_empty());
-    assert!(b.state().message_rows("c_general").is_empty());
+    let mut b = b;
+    assert!(crate::testing::mounted_rows(&mut b, "c_general").is_empty());
     assert!(
         a.call_by(
             ui::tilo_actions::ActionInvoker::actor("remote-agent"),

@@ -25,12 +25,21 @@ use super::{
 };
 
 /// Why an invocation did not happen, or did not complete.
+///
+/// Agents read every variant's text. People only ever see
+/// [`ActionError::user_message`]: a refusal's reason is written for agents
+/// and logs (it may name types, ids or backend errors), so a surface that
+/// shows it would put implementation details on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionError {
     /// The arguments did not satisfy the declared parameters; nothing ran.
     Arguments(ArgError),
-    /// Address and arguments were both good, but there was nothing to act on.
+    /// Address and arguments were both good, but there was nothing to act
+    /// on. The reason is diagnostic English for agents and logs.
     Refused(String),
+    /// As [`ActionError::Refused`], with a catalogue sentence for people
+    /// that names the outcome and the next step.
+    Explained(String),
 }
 
 impl ActionError {
@@ -38,7 +47,16 @@ impl ActionError {
     pub fn code(&self) -> &'static str {
         match self {
             ActionError::Arguments(_) => "invalid_arguments",
-            ActionError::Refused(_) => "action_failed",
+            ActionError::Refused(_) | ActionError::Explained(_) => "action_failed",
+        }
+    }
+
+    /// What a person sees about this failure, in their language.
+    pub fn user_message(&self) -> String {
+        match self {
+            ActionError::Explained(message) => message.clone(),
+            ActionError::Arguments(_) => crate::shell::i18n::t("host-action-check-values"),
+            ActionError::Refused(_) => crate::shell::i18n::t("host-action-try-again"),
         }
     }
 }
@@ -47,7 +65,7 @@ impl std::fmt::Display for ActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ActionError::Arguments(e) => write!(f, "{e}"),
-            ActionError::Refused(why) => write!(f, "{why}"),
+            ActionError::Refused(why) | ActionError::Explained(why) => write!(f, "{why}"),
         }
     }
 }

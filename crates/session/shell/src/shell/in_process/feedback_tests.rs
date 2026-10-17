@@ -379,7 +379,9 @@ fn assert_canonical_report(owner: &DestinationOwner, submission: &Submission) {
         .read(&RecordId::package_primary(), |doc| {
             assert_eq!(chat::feedback::reports(doc).unwrap().len(), 1);
             assert_eq!(
-                chat::projection::read(doc).message_rows("feedback").len(),
+                chat::projection::read(doc)
+                    .message_rows(&chat::messages::Messages::default(), "feedback")
+                    .len(),
                 1
             );
             chat::feedback::report(doc, &submission.id)
@@ -543,4 +545,189 @@ fn assert_sent_about_notes(sends: &[Submission]) {
             .contains("Shopping list"),
         "the window's title never leaves the device"
     );
+}
+
+/// The desktop drives the private composer only through the actions it
+/// offers this device, resolved and invoked the way `tilo-control actions
+/// invoke` does: describe, include the app, review, send while the
+/// destination is offline, retry, and one attributed report arrives.
+#[test]
+fn the_desktop_drives_the_private_composer_through_its_device_local_actions() {
+    use crate::shell::window_actions::{Destination as Place, open_hosted};
+    let root = tempfile::tempdir().unwrap();
+    let mut apps = InProcessApps::at(&root.path().join("profile"), AUTHOR).unwrap();
+    let owner = destination_owner(&mut apps);
+    apps.install_feedback(
+        owner.borrow().destination.clone(),
+        Box::new(AdmittedHost(owner.clone())),
+    )
+    .unwrap();
+    let inputs =
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
+            .unwrap();
+    let mut fb = crate::shell::frame::FrameBuilder::with_tree_and_inputs(
+        &crate::shell::state::WorkspaceTree::bootstrap_default(),
+        (1280, 800),
+        inputs,
+    );
+    let chrome = fb.chrome_handle();
+    open_hosted(
+        &mut chrome.borrow_mut(),
+        crate::shell::state::AppKind::Other("Notes".into()),
+        "Notes",
+        Place::Beside,
+    );
+    crate::shell::feedback_entry::open(&mut chrome.borrow_mut()).unwrap();
+    fb.paint_settled();
+    let mut door = DeviceLocalDoor::new(chrome.clone());
+    door.invoke(
+        &mut fb,
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "Saving lost my edit; write to jana@example.org"}}),
+    )
+    .unwrap();
+    door.invoke(
+        &mut fb,
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "include_context"}], "op": "set", "value": true}}),
+    )
+    .unwrap();
+    door.invoke(&mut fb, "review", &json!({})).unwrap();
+    owner.borrow_mut().offline = true;
+    let _queued = door.invoke(&mut fb, "submit", &json!({}));
+    let pump = |fb: &mut crate::shell::frame::FrameBuilder| {
+        chrome
+            .borrow()
+            .hosted_inputs
+            .in_process()
+            .unwrap()
+            .borrow_mut()
+            .pump_feedback();
+        fb.paint_settled();
+    };
+    for _ in 0..20 {
+        pump(&mut fb);
+    }
+    assert!(
+        owner.borrow().sends.is_empty(),
+        "nothing reached an offline destination"
+    );
+    owner.borrow_mut().offline = false;
+    // Retry until the destination has the report: the local save may still
+    // be committing when the first retry runs.
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
+    while owner.borrow().sends.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the retry never reached the destination"
+        );
+        pump(&mut fb);
+        let _retried = door.invoke(&mut fb, "retry", &json!({}));
+        owner.borrow_mut().deliver();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Another retry re-sends the same approved report; it stays one.
+    door.invoke(&mut fb, "retry", &json!({})).unwrap();
+    owner.borrow_mut().deliver();
+    owner.borrow_mut().receipts = true;
+    for _ in 0..20 {
+        pump(&mut fb);
+    }
+    drop(fb);
+    let sent = owner.borrow().sends.clone();
+    assert!(sent.iter().all(|report| report == &sent[0]));
+    assert_sent_about_notes(&sent);
+    assert_canonical_report(&owner.borrow(), &sent[0]);
+}
+
+/// The desktop's catalogue of private windows' actions, as `tilo-control`
+/// resolves and invokes them.
+struct DeviceLocalDoor {
+    chrome: crate::shell::chrome_state::Chrome,
+    registry: crate::shell::search::SearchRegistry,
+    doc: automerge::AutoCommit,
+}
+
+impl DeviceLocalDoor {
+    fn new(chrome: crate::shell::chrome_state::Chrome) -> Self {
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(
+            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+        ));
+        Self {
+            chrome,
+            registry,
+            doc: automerge::AutoCommit::new(),
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        fb: &mut crate::shell::frame::FrameBuilder,
+        action: &str,
+        arguments: &serde_json::Value,
+    ) -> Option<crate::shell::search::ActionReceipt> {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let offered = |chrome: &crate::shell::chrome_state::Chrome| {
+            chrome
+                .borrow()
+                .device_local_windows
+                .iter()
+                .find_map(|window| {
+                    window
+                        .actions
+                        .iter()
+                        .find(|descriptor| descriptor.address.action == action)
+                        .map(|descriptor| (window.tab, descriptor.address.clone()))
+                })
+        };
+        let mut found = offered(&self.chrome);
+        for _ in 0..5 {
+            if found.is_some() {
+                break;
+            }
+            // A window opened this frame publishes after it mounts.
+            fb.paint_settled();
+            fb.host_mut().run_device_local_actions();
+            found = offered(&self.chrome);
+        }
+        let (tab, address) =
+            found.unwrap_or_else(|| panic!("the composer offers {action} on this device"));
+        let resource = ResourceRef::new(
+            crate::shell::device_local_actions::PROVIDER_ID,
+            crate::shell::device_local_actions::row_id(tab, &address),
+        );
+        let catalogue = ActionCatalog::build_for_resource(
+            &self.registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &self.chrome.borrow(),
+            &self.doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let disposition = catalogue
+            .select(&resource)
+            .expect("the listed action resolves by its address")
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut self.doc),
+                &automerge::ROOT,
+                &self.chrome,
+                arguments.as_object().unwrap(),
+            )
+            .ok()?;
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("a private window's action runs in the overlay host");
+        };
+        fb.host_mut().run_device_local_actions();
+        fb.paint_settled();
+        Some(
+            ticket()
+                .ok()?
+                .expect("the overlay host ran the queued action"),
+        )
+    }
 }

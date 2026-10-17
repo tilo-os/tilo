@@ -14,8 +14,10 @@ pub(super) fn sample() -> Plan {
             accounts: true,
         },
         home_policy: HomePolicy::Copy,
-        home: Home {
-            volume: SourceVolume {
+        // The backend keeps the home's identity fields private; a plan
+        // reaches the frontend only as the record it reads.
+        home: serde_json::from_value(serde_json::json!({
+            "volume": SourceVolume {
                 disk_guid: "11111111-1111-4111-8111-111111111111".into(),
                 disk_bytes: 64 << 30,
                 sector_bytes: 512,
@@ -25,11 +27,12 @@ pub(super) fn sample() -> Plan {
                 filesystem_uuid: "33333333-3333-4333-8333-333333333333".into(),
                 filesystem: Filesystem::Ext4,
             },
-            relative: NativePath::encode(Path::new("home/person")),
-            inode: 1234,
-            original_uid: 1000,
-            subvolume: None,
-        },
+            "relative": NativePath::encode(Path::new("home/person")),
+            "inode": 1234,
+            "original_uid": 1000,
+            "subvolume": null,
+        }))
+        .unwrap(),
     }
 }
 

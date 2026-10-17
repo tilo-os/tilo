@@ -24,9 +24,7 @@ LIMIT = 2 * 1024 * 1024
 ALLOWLIST = frozenset({
     'usr/libexec/tilo-install',
     'usr/libexec/tilo-boot-mount-contract',
-    'usr/lib/tilo/hardware_profile.py',
 })
-SOURCE_PATHS = {'usr/lib/tilo/hardware_profile.py': 'dev/hardware_profile.py'}
 
 
 def require(ok, message):
@@ -94,7 +92,7 @@ def bundle(root, revision, dirty):
     rows = []
     for relative in sorted(ALLOWLIST):
         path = root
-        for part in Path(SOURCE_PATHS.get(relative, relative)).parts:
+        for part in Path(relative).parts:
             path = path / part
             require(not path.is_symlink(), 'code refresh source contains a symlink')
         if not path.exists():

@@ -108,10 +108,10 @@ mod tests {
     use super::*;
     use ui::widget::Collaborative;
 
-    fn room() -> (automerge::AutoCommit, crate::ChatApp) {
-        let mut doc = automerge::AutoCommit::new();
-        crate::demo::seed(&mut doc).unwrap();
+    fn room() -> (crate::testing::Room, crate::ChatApp) {
+        let doc = crate::testing::demo_doc();
         let mut app = crate::app::ChatApp::new_ephemeral();
+        app.attach_room(&doc);
         app.reload(&doc);
         app.active_ws = "ws_acme".into();
         app.active_channel = "c_crit".into();
@@ -129,6 +129,7 @@ mod tests {
         presenter.scroll = 180.0;
         let contribution = presenter.view_state().unwrap();
         let mut follower = crate::app::ChatApp::new_ephemeral();
+        follower.attach_room(&doc);
         follower.reload(&doc);
         follower.active_ws = "ws_acme".into();
         follower.active_channel = "c_general".into();
@@ -137,7 +138,7 @@ mod tests {
         follower
             .answer_effect(crate::effects::ChatEffect::ShareLiveContext)
             .unwrap();
-        let mut app = ui::App::new(ui::State::from_doc(doc), Box::new(follower));
+        let mut app = ui::App::new(ui::State::from_doc(doc.chat), Box::new(follower));
         let frame = |scroll| CollabEvent::RemotePresenceUpdate {
             user_id: "presenter".into(),
             key: ui::presence::PresenceKey::view(&ui::view::ViewSubset {

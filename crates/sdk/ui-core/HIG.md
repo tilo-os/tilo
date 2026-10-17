@@ -224,6 +224,24 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   videos" → "Search"; no "no ads" pill).
 - No internal / implementation labels in user-facing chrome (e.g. "CRDT-synced",
   "Stored in the document CRDT", a leaked `/var/workspace` path).
+- Copy states what the person needs: the state ("Offline"), the outcome
+  ("Version restored."), or the next step ("Unlock the keyring and try
+  again"). It never narrates what the software does ("Tilo checks the account
+  before it saves", "Your files appear here", "This page shows…") and never
+  speaks implementation ("compositor", "the workspace document did not…",
+  "certified", "admitted", a job, surface or process number, Rust `{:?}`
+  output). An error is mapped to its outcome and next step and shown once,
+  on the surface that failed.
+- One clause per row: sentence case, no all-caps words, at most one " · "
+  (a name and its value). A row that is one action shows a button named for
+  it ("Stop", "Try again"), never "select to stop". A confirming button names
+  its outcome ("Move", "Allow"), never "Continue" or "OK".
+- One thing has one name everywhere; `tools/policy/copy_glossary.toml` lists
+  the names that had rivals ("Password", "Power", "Keyboard shortcuts").
+- `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
+  these classes (old copy is listed per catalogue in
+  `copy_language_baseline/`, which only shrinks), and `tilo_copy_lint`
+  rejects `{:?}` handed to a copy builder.
 - Settings toggles live in **Settings**, not duplicated as always-on top-bar
   chips.
 - Never present fabricated content as live data (no synthesized "video feed"
@@ -913,20 +931,24 @@ stands on and paints with `chrome::paint_selector`:
 |---|---|---|---|
 | idle | none | none | none |
 | hover | the active lift as a film, at the theme's hover opacity | none | none |
-| **active** | `lift_on(ground, 1.0)`, opaque | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
+| **active** | one surface step of the ground, opaque (toward the light on a light palette, where the ground has room) | `hairline_on(ground, 26)` | light across the top, fading over the theme's rim span |
 | pressed | as active, scaled 0.97 | as active | as active |
 
-The active fill is `selection_tier_on`'s lift, so a chosen tab and a selected
+The active fill is a surface step of the ground, as `selection_tier_on`'s is, so a chosen tab and a selected
 row move the same distance off the same ground; the hover film, composited
 on an opaque ground, also clears `SELECTION_MIN_STEP` and stays short of the
 active step. The window group's tab strip stands on a body of its own,
 `SelectorRole::Strip`, one body behind the whole strip rather than one per
-tab: the panel ground, or where the theme makes it frosted
-(`StripMaterial::Floating`) the floating material over the desktop behind
-it (blur and 72 % panel-ground tint, as menus and the palette). Frosted is
-not the stock finish while the shell's retained presenter gives up its pan
-layers, scroll copies and sparse damage for any frame with a blurred surface
-on screen. In-app
+tab: the floating material (blur and 72 % panel-ground tint, as menus and
+the palette) over the desktop behind it. Windows never overlap, so that is
+all that is behind a strip: the desktop's painter publishes itself blurred
+once per wallpaper, size and radius (`backdrop::desktop`), and the strip is
+an ordinary image fill of it, so it costs no blur pass per frame, a tab's
+hover damages only the tab, and a strip panned as a retained layer carries
+its frosting along until it rests. On a light palette the active tab rises
+toward the light (white on the frosted strip) wherever the ground leaves a
+full `SELECTION_MIN_STEP` above it; a hover raises its film's opacity where
+the theme's would not clear that step. In-app
 tabs stand on the window ground and have no strip: there is nothing behind
 them to blur, and the same tiers make them read as the same family. The
 rim span, rim and hover opacity and what the strip is made of are the

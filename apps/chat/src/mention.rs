@@ -42,6 +42,8 @@
 //! same structure, and no edit can leave an offset pointing at the wrong run.
 
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource::{self, JsonSchema};
 
 use crate::model::Id;
 
@@ -49,7 +51,7 @@ use crate::model::Id;
 ///
 /// See the [module docs](self) for the full contract. `user` is authoritative;
 /// `start`/`len` locate the run inside [`crate::model::Message::text`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Mention {
     /// The participant referred to — the same id used for message attribution,
     /// the room roster and presence.

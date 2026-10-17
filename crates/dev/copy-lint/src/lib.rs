@@ -56,6 +56,11 @@ const BUILDER_CALLS: &[&str] = &[
     "draw_more_row(",
 ];
 
+/// Calls whose argument is a sentence for people even though it is not
+/// painted by the call itself: an error that carries the catalogue text a
+/// surface shows.
+const USER_TEXT_CALLS: &[&str] = &["Explained("];
+
 /// Struct fields that carry copy.
 const COPY_FIELDS: &[&str] = &[
     "title",
@@ -153,6 +158,12 @@ impl<'a> CopyLint<'a> {
                 .to_string_lossy()
                 .replace('\\', "/");
             let source = std::fs::read_to_string(&path).expect("read source file");
+            for line in debug_formatted_copy(&source) {
+                offenders.push(format!(
+                    "{relative}:{line}: Debug output (`{{:?}}`) handed to people; \
+                     say the outcome from the catalogue and log the value"
+                ));
+            }
             for (line, literal) in english_copy(&source) {
                 let allowance = self
                     .allowed
@@ -211,6 +222,74 @@ pub fn english_copy(source: &str) -> Vec<(usize, String)> {
         .into_iter()
         .filter(|(_, literal)| reads_as_english(literal))
         .collect()
+}
+
+/// The 1-based lines in `source`'s non-test code where a copy builder, a
+/// copy field or a user-text call is given a `format!` that uses Debug
+/// formatting: `{:?}` prints type names, field names and quotes
+/// (`NoHandler { scheme: "settings" }`), never words a person reads.
+#[must_use]
+pub fn debug_formatted_copy(source: &str) -> Vec<usize> {
+    let source = without_test_items(source);
+    let line_of = |offset: usize| source[..offset].matches('\n').count() + 1;
+    let mut starts = Vec::new();
+    for call in BUILDER_CALLS.iter().chain(USER_TEXT_CALLS) {
+        starts.extend(
+            source
+                .match_indices(call)
+                .map(|(start, _)| (start, start + call.len())),
+        );
+    }
+    for field in COPY_FIELDS {
+        let pattern = format!("{field}:");
+        for (start, _) in source.match_indices(&pattern) {
+            let starts_field = source[..start]
+                .chars()
+                .next_back()
+                .is_none_or(|c| c.is_whitespace() || matches!(c, '{' | '(' | ','));
+            if starts_field {
+                starts.push((start, start + pattern.len()));
+            }
+        }
+    }
+    let mut lines: Vec<usize> = starts
+        .into_iter()
+        .filter_map(|(start, after)| {
+            let rest = source[after..].trim_start();
+            let rest = rest.strip_prefix("Some(").unwrap_or(rest);
+            let rest = rest.strip_prefix('&').unwrap_or(rest);
+            let body = rest
+                .strip_prefix("format!(")?
+                .trim_start()
+                .strip_prefix('"')
+                .and_then(literal_body)?;
+            uses_debug_format(body).then(|| line_of(start))
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// Whether a format string has a `{…:?}` or `{…:#?}` placeholder (`{{` is
+/// an escaped brace, not a placeholder).
+fn uses_debug_format(format: &str) -> bool {
+    let mut rest = format;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        if let Some(escaped) = after.strip_prefix('{') {
+            rest = escaped;
+            continue;
+        }
+        let Some((inside, tail)) = after.split_once('}') else {
+            return false;
+        };
+        if inside.ends_with(":?") || inside.ends_with(":#?") {
+            return true;
+        }
+        rest = tail;
+    }
+    false
 }
 
 /// A literal that reads as English words rather than an id or key.
@@ -365,6 +444,25 @@ mod tests {
                 "Application unavailable",
             ]
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the fixture is Rust source whose format strings are what the scan reads"
+    )]
+    fn debug_formatting_handed_to_people_is_found() {
+        let source = r#"
+            let a = ActionError::Explained(format!("{error:?}"));
+            let b = Row { subtitle: Some(format!("{} {:#?}", x, y)) };
+            let c = notice.with_body(&format!("{count} items"));
+            let d = ActionError::Refused(format!("{error:?}"));
+            tracing::info!("{error:?}");
+            let e = Row { title: format!("{{literal:?}}") };
+            #[cfg(test)]
+            mod tests { fn f() { ActionError::Explained(format!("{e:?}")); } }
+        "#;
+        assert_eq!(debug_formatted_copy(source), [2, 3]);
     }
 
     #[test]

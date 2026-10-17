@@ -314,9 +314,8 @@ impl FileExplorerWidget {
         {
             if let Some((id, _)) = self.cloud.transfer.take() {
                 self.cloud_finished(&outcome);
-                self.local_outcomes.insert(id.clone(), outcome.clone());
+                self.local_outcomes.insert(id, outcome.clone());
                 self.settle_op(
-                    &id,
                     OpFollowUp::Paste {
                         count: outcome.result().len(),
                         cut: false,

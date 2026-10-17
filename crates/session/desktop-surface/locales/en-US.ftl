@@ -2,26 +2,21 @@
 continuity-dismiss = Dismiss
 topbar-workspace-fallback = Workspace
 topbar-calendar-none = No calendar connected
-topbar-sharing-agent-controls = AGENT CONTROLS · { $name }
-topbar-sharing-agent-viewing = AGENT VIEWING · { $name }
-topbar-sharing-person-controls = CONTROLS · { $name }
-topbar-sharing-person-viewing = VIEWING · { $name }
-topbar-sharing-session-controls = SESSION CONTROLS · { $name }
-topbar-sharing-session-viewing = SESSION VIEWING · { $name }
-topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
-topbar-sharing-count = { $viewers } VIEWING
+topbar-sharing-agent-controls = Agent in control: { $name }
+topbar-sharing-agent-viewing = Agent watching: { $name }
+topbar-sharing-person-controls = In control: { $name }
+topbar-sharing-person-viewing = Watching: { $name }
+topbar-sharing-session-controls = In control: { $name }
+topbar-sharing-session-viewing = Watching: { $name }
+topbar-sharing-count-controlling = { $viewers } watching, { $controllers } in control
+topbar-sharing-count = { $viewers } watching
+topbar-sharing-unknown-window = a window
 topbar-watching-count = +{ $count } watching
 topbar-watching-description = { $count } { $count ->
         [one] person
        *[other] people
     } watching without joining
-topbar-sharing-surface = surface { $surface }
-topbar-open-overview = Open overview
 topbar-tilo-menu = Tilo menu
-topbar-previous-workspace = Previous workspace
-topbar-next-workspace = Next workspace
-topbar-workspace-settings = Workspace settings for { $workspace }
-topbar-workspace-host = Hosted at { $host }
 topbar-show-clock = Show clock
 topbar-show-system-monitor = Show system monitor
 topbar-show-calendar = Show calendar
@@ -37,9 +32,6 @@ topbar-viewer-entry = { $name } ({ $kind ->
 topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborators
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
-topbar-network-offline = Offline
-topbar-tray-open = Open { $app }
-topbar-tray-menu = Menu for { $app }
 topbar-editor-control = Top bar editor control
 topbar-editor-remove-clock = Remove clock from top bar
 topbar-editor-remove-system-monitor = Remove system monitor from top bar
@@ -77,13 +69,11 @@ topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
 topbar-strips = Strips in this workspace
-topbar-strip-count = { $name } · { $count }
 topbar-strip-go = Go to { $name }, { $count ->
     [0] nobody there
     [one] one person there
    *[other] { $count } people there
 }
-topbar-strip-add = Add a strip
 topbar-strips-more-label = +{ $count }
 topbar-strips-more = { $count ->
     [one] One more strip
@@ -204,7 +194,7 @@ activity-more = More…
 activity-pane-timeline = Timeline
 activity-pane-browse = Browse
 activity-pane-details = Details
-activity-resume-heading = YOU LEFT OFF
+activity-resume-heading = Where you left off
 activity-resume-context = { $app } · { $when }
 activity-resume-button = Resume →
 activity-pending-edits = Waiting for current edits to finish
@@ -347,14 +337,14 @@ activity-tasks-pending = Tasks are waiting for current edits to finish
 activity-tasks-empty = No tasks yet
 activity-tasks-empty-hint = Create one here, or ask an agent from any app.
 activity-task-new = + New task
-activity-task-queue = WORKSPACE QUEUE
+activity-task-queue = Workspace queue
 activity-task-composer-title = Create work without leaving the desktop
 activity-task-placeholder = What needs doing?
-activity-task-executor-manual = Executor · You or another collaborator · no model
-activity-task-executor-none = Executor · No agent available · task stays unassigned
-activity-task-executor-agent = Executor · Agent · { $agent }
+activity-task-executor-manual = Done by you or another collaborator
+activity-task-executor-none = No agent available. The task stays unassigned.
+activity-task-executor-agent = Agent: { $agent }
 activity-task-no-attachment = No resource attached · task stays workspace-wide
-activity-task-attached = Attached · { $app } · { $resource }
+activity-task-attached = Attached: { $resource } in { $app }
 activity-task-attached-workspace = Workspace
 activity-task-cancel-compose = Cancel
 activity-task-create = Create
@@ -365,7 +355,7 @@ activity-task-mark-started = Mark started
 activity-task-mark-done = Mark done
 activity-task-cancel = Cancel task
 activity-task-retry-agent = Retry agent
-activity-task-audit-trail = AUDIT TRAIL
+activity-task-audit-trail = Audit trail
 activity-task-audit-noted = { $what }: { $note }
 workspace-create-task = { $manual ->
     [true] Created the task “{ $title }” to do by hand
@@ -754,7 +744,7 @@ workspace-settings-you-manage = You manage
 workspace-settings-view-only = View only
 workspace-settings-members-empty-title = No one else is in this workspace
 workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
-workspace-settings-people-header = PEOPLE
+workspace-settings-people-header = People
 workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
 workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
 workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
@@ -774,23 +764,23 @@ workspace-settings-agents-help = Agents are visibly non-human collaborators. Adm
 workspace-settings-add-agent = Add agent
 workspace-settings-agents-empty-title = No agents have access
 workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
-workspace-settings-agents-header = AGENTS
-workspace-settings-service-member = Service member · { $access ->
-    [admin] administers
-    [write] reads and edits
-    [comment] reads and comments
-   *[read] reads
-} end-to-end encrypted content · { $until } · device { $device }
+workspace-settings-agents-header = Agents
+workspace-settings-service-member = { $access ->
+    [admin] Administers
+    [write] Reads and edits
+    [comment] Reads and comments
+   *[read] Reads
+} encrypted content · { $until }
 workspace-settings-service-until-removed = until removed
 workspace-settings-service-ends-soon = access ends within a minute
 workspace-settings-service-ends-minutes = access ends in { $minutes } min
 workspace-settings-service-ends-hours = access ends in { $hours } h
-workspace-settings-badge-service = SERVICE
-workspace-settings-badge-agent = AGENT
+workspace-settings-badge-service = Service
+workspace-settings-badge-agent = Agent
 workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · no scoped permissions — review required
-    [one] { $admission } · { $profile } profile · 1 scoped permission
-   *[other] { $admission } · { $profile } profile · { $count } scoped permissions
+    [0] { $admission } · No permissions yet, review needed
+    [one] { $admission } · { $profile }, 1 permission
+   *[other] { $admission } · { $profile }, { $count } permissions
 }
 workspace-settings-admitted = Admitted
 workspace-settings-review-access = Review access
@@ -806,7 +796,7 @@ workspace-settings-agent-access-inherited = Follows its admission
 workspace-settings-agent-access-set-here = set here
 workspace-settings-agent-access-default = default
 workspace-settings-agent-access-reset = Use defaults
-workspace-settings-agent-access-always = ALWAYS ALLOWED · { $count }
+workspace-settings-agent-access-always = Always allowed · { $count }
 workspace-settings-agent-access-stop = Ask again
 workspace-settings-agent-access-empty = No apps in this workspace yet.
 workspace-settings-answer-allow = Allow
@@ -819,10 +809,10 @@ workspace-settings-admission-comment = Comment admission
 workspace-settings-admission-read = Read admission
 workspace-settings-unavailable-app = Unavailable app
 workspace-settings-apps-empty-title = No file handlers installed
-workspace-settings-apps-empty-detail = Apps appear here after they declare supported file types.
+workspace-settings-apps-empty-detail = No app declares a supported file type yet.
 workspace-settings-apps-intro-title = Defaults without lock-in
 workspace-settings-apps-intro-detail = The workspace supplies a baseline; each person can explicitly choose something else.
-workspace-settings-apps-header = DEFAULT APPLICATIONS
+workspace-settings-apps-header = Default apps
 workspace-settings-workspace-choice = Workspace choice
 workspace-settings-your-choice = Your choice
 workspace-settings-resource-extension = .{ $ext } files
@@ -848,10 +838,10 @@ workspace-settings-permissions-empty-title = No permissions granted
 workspace-settings-permissions-empty-detail = Apps get nothing until it is granted here or approved in a prompt.
 workspace-settings-more = +{ $count } more
 workspace-settings-who = Who
-workspace-settings-who-agent = Who · AGENT (only this surface; no ambient workspace access)
+workspace-settings-who-agent = Who: an agent, with access to this window only
 workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
 workspace-settings-what-it-allows = What it allows
-workspace-settings-grant-header = GRANT A PERMISSION
+workspace-settings-grant-header = Grant a permission
 workspace-settings-saved-roles = Manage roles ({ $count })
 workspace-settings-expiry-caption = Until
 workspace-settings-grant = Grant
@@ -872,12 +862,12 @@ workspace-settings-revoke-permission = Revoke permission
 workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
 workspace-settings-workspace-fallback = Workspace
 workspace-settings-identity-caption = Workspace · { $role }
-workspace-settings-current-workspace = CURRENT WORKSPACE
+workspace-settings-current-workspace = Current workspace
 workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
-workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
+workspace-settings-invite-hint = Choose a person and a role. The invite is signed and lasts one hour.
 workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
 workspace-settings-invite-create = Create
 workspace-settings-devices-title = Your devices
@@ -965,7 +955,7 @@ launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
 
 # Empty-workspace launchpad: the keyboard hint under the cards
-launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
+launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 
 # Peers arriving in and leaving a workspace, batched into one toast
 
@@ -987,7 +977,7 @@ people-panel-stop-following = Stop
 people-panel-invite = Invite
 people-panel-join = Join
 launchpad-subtitle = Choose how to begin. Workspace content syncs; your layout and controls stay local.
-workspace-settings-sheet-keyboard-hint = ↑ ↓ to choose · Enter to confirm · Esc to cancel
+workspace-settings-sheet-keyboard-hint = ↑ ↓ choose, Enter confirms, Esc cancels
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
@@ -1044,8 +1034,8 @@ overview-presence-many = { $count } people are here
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
 browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
-browser-welcome-hint = Arrow keys move  ·  Enter opens  ·  Ctrl+K finds any app
-browser-welcome-hint-mac = Arrow keys move  ·  Enter opens  ·  ⌘K finds any app
+browser-welcome-hint = Arrow keys move, Enter opens, Ctrl+K finds any app
+browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
 
 # The overview panel a host without its own overview draws
 overview-panel-title = Overview
@@ -1076,7 +1066,7 @@ tilo-about-link-source = Source code
 tilo-about-link-community = Community
 
 notification-preview-hidden = Notification preview hidden
-activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
+activity-catch-up-goals = Workspace tasks: { $done } completed, { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
 activity-catch-up-review-goals = Review goals and agent work
 activity-acknowledge-viewed = Acknowledge viewed activity
@@ -1106,7 +1096,7 @@ activity-task-direction-label = Instructions for the agent
 activity-task-direction-placeholder = Describe the change you want the agent to make
 activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
 activity-task-review-saving = Saving…
-activity-task-review-saved = Saved. The agent's response will show up here.
+activity-task-review-saved = Saved. Waiting for the agent's response.
 activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
 
 activity-confirm-waiting = Waiting for your confirmation
@@ -1135,7 +1125,7 @@ activity-confirm-bcc = Bcc
 activity-confirm-subject = Subject
 activity-confirm-body = Message
 activity-confirm-attachments = Attachments
-activity-confirm-confirm = Confirm
+activity-confirm-confirm = Allow
 activity-confirm-edit = Edit
 activity-confirm-discard = Discard changes
 activity-confirm-decline = Decline
@@ -1154,7 +1144,7 @@ activity-confirm-notice-review = Review
 
 activity-task-next = Next task
 activity-task-previous = Previous task
-activity-task-review-source = Workspace owner's copy · version { $generation } · checked { $time }
+activity-task-review-source = Workspace owner's copy, version { $generation } · checked { $time }
 activity-task-review-status = { $status ->
         [queued] { $agent } hasn't started yet
         [in-progress] { $agent } is working on it
@@ -1185,8 +1175,6 @@ activity-task-awaiting-acceptance = Waiting for the agent to pick this up. It ma
 activity-task-run-accepted = The agent picked this up · last update { $time }
 activity-task-run-planning = The agent is planning the steps · last update { $time }
 activity-task-run-executing = The agent is making changes · last update { $time }
-topbar-cpu-reading = CPU { $value }
-topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
@@ -1194,7 +1182,7 @@ activity-morning-empty = Morning sources: choose a resource in History → Detai
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = This source isn't available here
 activity-morning-source-unnamed = Chosen source
-activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
+activity-morning-source = { $source }, last activity { $time } · may be out of date
 
 activity-morning-open = Open morning source
 

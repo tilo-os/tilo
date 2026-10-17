@@ -1072,7 +1072,7 @@ impl ProjectionOverlay {
             .authority
             .as_ref()
             .ok_or_else(|| {
-                crate::shell::search::action_api::ActionError::Refused(t(
+                crate::shell::search::action_api::ActionError::Explained(t(
                     "display-remote-unavailable",
                 ))
             })

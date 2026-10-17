@@ -1073,7 +1073,7 @@ impl InstallerPreview {
         if self.windows.enabled && self.live && !recovery::is_recovery_effect(&effect) {
             return self.apply_windows(effect);
         }
-        if self.live && !{ { self.direct.active } } {
+        if self.live && !self.direct.active {
             match effect {
                 InstallerPreviewEffect::ResumeInstallerPreparation if self.restart.blocks() => {
                     return self.restart.resume();

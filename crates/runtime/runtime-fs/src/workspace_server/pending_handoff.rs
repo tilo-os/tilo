@@ -724,7 +724,7 @@ mod read_release_tests {
             .write_all(&runtime_portal::process_binding::MAGIC)
             .unwrap();
         controller.write_all(&challenge).unwrap();
-        let actual_uid = unsafe { libc::getuid() };
+        let actual_uid = rustix::process::getuid().as_raw();
         let Err(error) = runtime_portal::process_binding::receive(
             &controller,
             &challenge,

@@ -20,6 +20,22 @@ pub enum UriOpenError {
     Launch(LaunchError),
 }
 
+impl UriOpenError {
+    /// What a person sees when a link or page did not open: the outcome and
+    /// what to do about it, never the variant's fields.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::InvalidUri => crate::shell::i18n::t("uri-open-invalid"),
+            Self::NoHandler { scheme } if scheme == "settings" => {
+                crate::shell::i18n::t("uri-open-no-settings")
+            }
+            Self::NoHandler { .. } => crate::shell::i18n::t("uri-open-no-handler"),
+            Self::NoWorkspace => crate::shell::i18n::t("uri-open-no-workspace"),
+            Self::Launch(error) => error.notification_message(),
+        }
+    }
+}
+
 /// # Errors
 ///
 /// Returns [`UriOpenError::InvalidUri`] if `uri` is empty, exceeds

@@ -41,12 +41,12 @@ fn operation(name: &str, args: &ActionArgs) -> Result<PickerOperation, ActionErr
         args.text("entry")
             .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .map(str::to_owned)
-            .ok_or_else(|| ActionError::Refused(t("file-picker-entry-unavailable")))
+            .ok_or_else(|| ActionError::Explained(t("file-picker-entry-unavailable")))
     };
     Ok(match name {
         "inspect" => PickerOperation::Inspect {
             page: usize::try_from(args.integer("page").unwrap_or(0))
-                .map_err(|_| ActionError::Refused(t("file-picker-page-unavailable")))?,
+                .map_err(|_| ActionError::Explained(t("file-picker-page-unavailable")))?,
         },
         "select" => PickerOperation::Select { entry: entry()? },
         "navigate" => PickerOperation::Navigate { entry: entry()? },
@@ -59,7 +59,7 @@ fn operation(name: &str, args: &ActionArgs) -> Result<PickerOperation, ActionErr
         "replace" => PickerOperation::Replace,
         "keep-existing" => PickerOperation::KeepExisting,
         "next-filter" => PickerOperation::NextFilter,
-        _ => return Err(ActionError::Refused(t("file-picker-expired"))),
+        _ => return Err(ActionError::Explained(t("file-picker-expired"))),
     })
 }
 
@@ -184,21 +184,21 @@ impl SearchProvider for FilePickerProvider {
                     ..Default::default()
                 }),
                 on_open: Rc::new(|_, _, _, _| {
-                    Err(ActionError::Refused(t("file-picker-declared-operation")))
+                    Err(ActionError::Explained(t("file-picker-declared-operation")))
                 }),
                 on_invoke: None,
                 on_begin_invoke: Some(Rc::new(move |_, _, chrome, args| {
                     if !authorized(&chrome.borrow(), &subject) {
-                        return Err(ActionError::Refused(t("file-picker-owner-required")));
+                        return Err(ActionError::Explained(t("file-picker-owner-required")));
                     }
                     if grants && args.boolean("confirm") != Some(true) {
-                        return Err(ActionError::Refused(t("file-picker-confirm-param")));
+                        return Err(ActionError::Explained(t("file-picker-confirm-param")));
                     }
                     let state = args.text("state").map(str::to_owned);
                     if state.as_ref().is_some_and(|value| {
                         value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
                     }) {
-                        return Err(ActionError::Refused(t("file-picker-expired")));
+                        return Err(ActionError::Explained(t("file-picker-expired")));
                     }
                     actions
                         .begin(expected, state, operation(name, args)?)

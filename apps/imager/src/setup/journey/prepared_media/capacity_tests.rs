@@ -1,8 +1,8 @@
 use super::*;
 use crate::setup::{
-    account_transfer, browser_profiles, journey::browser::SelectedSources,
-    portable_home_media::HomeSource,
+    account_transfer, journey::browser::SelectedSources, portable_home_media::HomeSource,
 };
+use imager_backend::setup::browser_profiles;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]

@@ -14,6 +14,7 @@ mod agent_actions;
 mod agent_markers;
 mod ask_agent;
 mod axis_navigation;
+mod bar_popovers;
 mod person_markers;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
@@ -852,6 +853,8 @@ pub struct ShellOverlayHost {
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
+    /// Where the hardware-key readout was last painted, `None` while none is.
+    osd_painted: std::cell::Cell<Option<Rect>>,
     /// Last `chrome.revision` seen by [`Self::resync_strips_from_tree`];
     /// a disagreement means the tree changed shape and live
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
@@ -964,6 +967,8 @@ pub struct ShellOverlayHost {
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
     agent_quick_composer_node: Option<NodeId>,
+    /// The workspace menu and the profile card the top bar opens.
+    bar_popovers: bar_popovers::BarPopovers,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The tiles shown and the pointer, kept current for a presence pump
@@ -1552,12 +1557,9 @@ fn collaborators_screen_exposure(
                             }
                         })
                 })
-                .unwrap_or_else(|| {
-                    t_args(
-                        "host-exposure-surface",
-                        &[("surface", exposure.surface.to_string().into())],
-                    )
-                });
+                // A window the tree does not list has no name a person knows;
+                // its surface number would mean nothing to them.
+                .unwrap_or_else(|| t("host-exposure-surface"));
             let args = [
                 ("name", ui::i18n::ArgValue::from(name)),
                 ("kind", ui::i18n::ArgValue::from(kind)),
@@ -1842,10 +1844,8 @@ impl ShellOverlayHost {
         for &(strip, row) in &apart {
             let mut scene = Scene::new();
             // A blurred surface drawn into a strip is recorded as drawn into
-            // the workspace, so the frame producer sees it; the desktop
-            // section is all that is behind its windows' tab strips.
+            // the workspace, so the frame producer sees it.
             ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
-            ui::backdrop::mark_desktop(&scene);
             // Each window group is a damage part of the strip's drawing.
             let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
                 // SAFETY: as above.
@@ -2243,6 +2243,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
@@ -2527,6 +2530,7 @@ impl ShellOverlayHost {
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
+            osd_painted: std::cell::Cell::new(None),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
             peer_picture_wake: None,
@@ -2582,6 +2586,7 @@ impl ShellOverlayHost {
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,
+            bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
@@ -2874,6 +2879,7 @@ impl ShellOverlayHost {
             || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
             || self.person_quick_composer.modal_capture().is_some()
+            || self.bar_popovers.any_open()
     }
 
     /// Whether the pointer is over the shell-owned bar a maximized window
@@ -3035,6 +3041,29 @@ impl ShellOverlayHost {
                 self.top_bar_reveal_geometry()
                     .is_some_and(|(_, bar)| bar.contains(p))
             })
+    }
+
+    /// Whether the pointer is on a notification banner, or a click begun on
+    /// one still owns its release. Banners hang over application windows;
+    /// were the window under one given the pointer, a click on the banner
+    /// would land in the app and the banner could be neither opened nor
+    /// dismissed.
+    pub(crate) fn notification_banner_captures_pointer(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        if chrome.borrow().notifications().is_empty() {
+            return false;
+        }
+        self.notification_stack.wants_pointer_capture()
+            || self
+                .last_cursor
+                .is_some_and(|p| self.notification_stack.rect().contains(p))
+    }
+
+    /// Where the notification banners were last drawn.
+    pub fn notification_banners_rect(&self) -> Rect {
+        self.notification_stack.rect()
     }
 
     /// Test hook: as if the person had turned "hide the top bar" on or off.
@@ -3249,10 +3278,14 @@ impl ShellOverlayHost {
             window.content_mut().set_image(image);
             return;
         }
-        let initial_size = capture_mirror_initial_size(self.rect, pixel_aspect, preferred_size);
+        // On the display holding what was captured (the focused one for a
+        // capture of nothing in particular), and kept on it: across the
+        // whole desktop a corner can be on the other display, or on none.
+        let display = self.surface_area(spawn_from.map(|source| source.center()));
+        let initial_size = capture_mirror_initial_size(display, pixel_aspect, preferred_size);
         let body_w = initial_size.width;
         let body_h = initial_size.height;
-        let visible_spawn = visible_capture_spawn(self.rect, spawn_from);
+        let visible_spawn = visible_capture_spawn(display, spawn_from);
         let content = match crossfade_preview {
             Some(preview) => CaptureMirrorImage::new_crossfade(image, preview, document_aspect),
             None => CaptureMirrorImage::new(image, handoff_layers),
@@ -3272,8 +3305,8 @@ impl ShellOverlayHost {
             body_w.max(ui::widget::MIN_WIDTH),
             body_h.max(ui::widget::MIN_HEIGHT),
         );
-        let origin = capture_mirror_origin(self.rect, visible_spawn, window_size);
-        window.place_at_within(self.rect, origin);
+        let origin = capture_mirror_origin(display, visible_spawn, window_size);
+        window.place_at_within(display, origin);
         self.capture_mirrors.push((id.to_string(), window));
         self.capture_mirrors_structure_dirty = true;
     }
@@ -3290,7 +3323,10 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.capture_studio.set_overlay_rect(self.rect);
+        // The display the studio covers (`place_on_focused_display`), so
+        // "Screen" captures that display and the recording indicator stays
+        // on it.
+        self.capture_studio.set_overlay_rect(self.overlay_area());
         // The screenshot picker is the one live thing over the desktop the
         // compositor holds still while it chooses (`CaptureExecutor`). Drawn
         // into the desktop scene, it was held still with it: frozen on its
@@ -3575,8 +3611,14 @@ impl ShellOverlayHost {
         };
         let chrome = chrome.borrow();
         if let Some(map) = chrome.pad_map.as_ref() {
-            map.draw(scene, transform, text_renderer, theme, self.rect);
+            map.draw(scene, transform, text_renderer, theme, self.overlay_area());
         }
+    }
+
+    /// Where the hardware-key readout (volume, brightness) was last
+    /// painted; `None` while none is up.
+    pub fn osd_rect(&self) -> Option<Rect> {
+        self.osd_painted.get()
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -3587,6 +3629,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.osd_painted.set(None);
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -3611,7 +3654,17 @@ impl ShellOverlayHost {
             return;
         }
 
-        osd.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        // On the display the person is working on: across a 2x panel and a
+        // 1x monitor, the desktop's bottom centre is on the monitor, below
+        // the panel's last row.
+        self.osd_painted.set(osd.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.overlay_area(),
+            alpha,
+        ));
     }
 
     /// Paint the passing acknowledgement ("Enrollment token copied"), if one
@@ -3634,7 +3687,14 @@ impl ShellOverlayHost {
             return;
         };
         let alpha = ack.alpha_at(now, theme.reduce_motion);
-        ack.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        ack.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.overlay_area(),
+            alpha,
+        );
     }
 
     /// The acknowledgement showing now, if any.
@@ -4485,7 +4545,7 @@ impl ShellOverlayHost {
     }
 
     /// Every display's rect; the host's bounds alone before it knows of any.
-    fn layer_outputs(&self) -> Vec<Rect> {
+    pub(super) fn layer_outputs(&self) -> Vec<Rect> {
         if self.outputs.is_empty() {
             vec![self.rect]
         } else {
@@ -4495,21 +4555,11 @@ impl ShellOverlayHost {
 
     /// Where stacked layers may place themselves, over `outputs` from
     /// [`Self::layer_outputs`].
-    fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
-        let focused_output = self
-            .is_partitioned()
-            .then(|| {
-                self.chrome
-                    .as_ref()
-                    .and_then(|chrome| chrome.borrow().tree().desktop.outputs.focused_display())
-            })
-            .flatten()
-            .and_then(|id| self.outputs.iter().find(|output| output.id == id))
-            .map(OutputGeometry::rect);
+    pub(super) fn layer_geometry<'a>(&self, outputs: &'a [Rect]) -> LayerGeometry<'a> {
         LayerGeometry {
             viewport: self.rect,
             outputs,
-            focused_output,
+            focused_output: self.focused_output().map(|output| output.rect()),
         }
     }
 
@@ -4881,7 +4931,7 @@ impl ShellOverlayHost {
             rects.push(rect);
         }
         if self.portal_dialogs.holds_secret()
-            && let Some(layout) = self.portal_dialogs.layout(self.rect)
+            && let Some(layout) = self.portal_dialogs.layout(self.overlay_area())
         {
             rects.push(layout.sheet);
         }
@@ -5601,13 +5651,14 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Capture Studio covers the focused display: its picker bars sit along
-    /// that display's top and bottom edges and "Screen" is that display.
+    /// A full-display surface — Capture Studio, the screenshot markup
+    /// editor — covers the focused display: its bars sit along that
+    /// display's top and bottom edges and "Screen" is that display.
     /// Across the whole desktop of a docked laptop the bars were centred on
     /// the combined width and hung from its tallest edge, which put them on
     /// the other display, partly below the panel's bottom, while the panel
     /// only greyed: Print looked broken until Escape.
-    fn place_capture_studio(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
+    fn place_on_focused_display(&self, taffy: &mut TaffyTree<()>, node: NodeId) {
         let Some(display) = self.focused_output() else {
             return;
         };
@@ -7074,7 +7125,7 @@ impl ShellOverlayHost {
                 ),
             ));
         }
-        if let Some(layout) = self.portal_dialogs.layout(self.rect) {
+        if let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) {
             let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
             targets.push((
                 crate::shell::trusted_ui::PORTAL_DIALOG_TARGET,
@@ -7516,7 +7567,9 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        self.layers.window_switcher.set_host_rect(self.rect);
+        self.layers
+            .window_switcher
+            .set_host_rect(self.overlay_area());
         let began = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -9031,32 +9084,28 @@ impl ShellOverlayHost {
             .retain(|(title, ticket)| match ticket() {
                 Ok(None) => true,
                 Ok(Some(receipt)) => {
+                    // Say what started in the action's own words; the
+                    // broker's job number is not something people know.
+                    tracing::debug!(job = ?receipt.broker_invocation_id, "action admitted");
                     chrome.borrow_mut().push_notification_full(
                         tilo_desktop::notifications::Notification::new(
                             t_args("host-action-started", &[("title", title.as_str().into())]),
-                            t_args(
-                                "host-action-admitted",
-                                &[(
-                                    "job",
-                                    receipt
-                                        .broker_invocation_id
-                                        .unwrap_or_default()
-                                        .to_string()
-                                        .into(),
-                                )],
-                            ),
+                            String::new(),
                         )
                         .with_app_name(t("host-source-app-actions")),
                     );
                     false
                 }
                 Err(error) => {
+                    // The palette row is gone by now, so a notice is the only
+                    // place left to say it.
+                    tracing::info!(code = error.code(), detail = %error, "action was not admitted");
                     chrome.borrow_mut().push_warning_notification(
                         t_args(
                             "host-action-cannot-run",
                             &[("title", title.as_str().into())],
                         ),
-                        error.to_string(),
+                        error.user_message(),
                     );
                     false
                 }
@@ -9720,14 +9769,18 @@ impl ShellOverlayHost {
                                 )
                         })
                         .map(|notice| notice.body.clone());
-                    let detail = reported_detail.unwrap_or_else(|| {
-                        let detail = err.to_string();
-                        chrome.borrow_mut().push_warning_notification(
-                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                            detail.clone(),
-                        );
-                        detail
-                    });
+                    // The failure is told once, on the row that failed. The
+                    // error's own text is for agents and logs; people get
+                    // its catalogue sentence (or the notice the action
+                    // already posted, with its own buttons).
+                    tracing::info!(
+                        provider = %result.provider_id,
+                        action = %result.id,
+                        code = err.code(),
+                        detail = %err,
+                        "palette action did not run"
+                    );
+                    let detail = reported_detail.unwrap_or_else(|| err.user_message());
                     self.palette
                         .set_selected_status(t("host-action-failed-status"), detail);
                     self.palette_layout_dirty = true;
@@ -10645,19 +10698,22 @@ impl ShellOverlayHost {
     }
 
     /// Mirror of the geometry in `draw_quick_settings`: the utility Panel
-    /// width (HIG 9.6), narrowed to the display that holds the tray so it
-    /// never runs off a narrow one.
+    /// width (HIG 9.6), narrowed to the display it opens on so it never runs
+    /// off a narrow one.
     fn quick_settings_width(&self) -> f64 {
-        let area = self.tray_area();
+        let area = self.overlay_area();
         let room = (area.width() - 2.0 * self.qs_panel.margin).max(1.0);
         self.qs_panel.width.min(room)
     }
 
-    /// Under the tray: the Panel margin in from the display's trailing edge,
-    /// the same margin under the top bar, and never past the display's
-    /// bottom margin.
+    /// Under the top bar of the display the person is working on (the
+    /// tray's, when the tray opened it: the press there focused that
+    /// display): the Panel margin in from the display's trailing edge, the
+    /// same margin under the bar, and never past the display's bottom
+    /// margin. Pinned to the primary's tray, a volume key or shortcut
+    /// pressed while working on the other display opened it out of sight.
     fn quick_settings_rect(&self) -> Rect {
-        let area = self.tray_area();
+        let area = self.overlay_area();
         let margin = self.qs_panel.margin;
         let popover_w = self.quick_settings_width();
         let x1 = area.x1 - margin;
@@ -11343,6 +11399,21 @@ impl ShellOverlayHost {
         self.strip_indicators.alpha_at(now, reduce_motion)
     }
 
+    /// The content area the strip ribbon and rail stand at the trailing
+    /// edge of: the focused display's, below its bar. Every display's lane
+    /// leaves [`STRIP_TRAILING_GUTTER_PX`] clear for them; the desktop's
+    /// own edge is only ever the rightmost display's, wherever the person
+    /// works, and its middle is on no display when they are offset.
+    fn strip_indicator_content(&self) -> Rect {
+        let area = self.overlay_area();
+        Rect::new(
+            area.x0,
+            area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
+            area.x1,
+            area.y1,
+        )
+    }
+
     /// The strip ribbon for the active workspace, anchored to the content
     /// area's right edge. Costs no layout — it sits in
     /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.
@@ -11352,12 +11423,7 @@ impl ShellOverlayHost {
             .as_ref()
             .map_or((0, 0), |c| c.borrow().strip_focus());
         ui::chrome::shell::StripRibbon {
-            content: Rect::new(
-                self.rect.x0,
-                self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
-                self.rect.x1,
-                self.rect.y1,
-            ),
+            content: self.strip_indicator_content(),
             count,
             focused,
         }
@@ -11381,12 +11447,7 @@ impl ShellOverlayHost {
                   ends right after both are computed"
     )]
     fn strip_rail(&self) -> ui::chrome::shell::StripRail {
-        let content = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
-            self.rect.x1,
-            self.rect.y1,
-        );
+        let content = self.strip_indicator_content();
         let empty = ui::chrome::shell::StripRail {
             content,
             count: 0,
@@ -11551,7 +11612,7 @@ impl ShellOverlayHost {
     }
 
     pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
-        self.layers.power_menu.action_rects(self.rect)
+        self.layers.power_menu.action_rects(self.overlay_area())
     }
 
     /// May the local user invite into the room they're looking at? Asked
@@ -11637,11 +11698,12 @@ impl ShellOverlayHost {
         if self.shortcut_help_drawn_rect.area() > 0.0 {
             return self.shortcut_help_drawn_rect;
         }
+        let area = self.overlay_area();
         Rect::new(
-            self.rect.x1 - 156.0,
-            self.rect.y1 - 52.0,
-            self.rect.x1 - 16.0,
-            self.rect.y1 - 16.0,
+            area.x1 - 156.0,
+            area.y1 - 52.0,
+            area.x1 - 16.0,
+            area.y1 - 16.0,
         )
     }
 
@@ -11921,7 +11983,8 @@ impl ShellOverlayHost {
     /// A contextual lens docked beside the live workspace. Narrow displays
     /// promote the same surface to a nearly full-width sheet.
     fn ws_settings_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::rect_for(self.rect)
+        // The rect `layout` placed it at: the focused display.
+        WorkspaceSettingsOverlay::rect_for(self.overlay_area())
     }
 
     /// Full ordered list of scopes shown in the banner. Includes
@@ -12508,7 +12571,7 @@ impl ShellOverlayHost {
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
-            || (f.projection && ProjectionOverlay::contains(self.rect, p))
+            || (f.projection && ProjectionOverlay::contains(self.overlay_area(), p))
             || (self.layers.emoji_picker.is_open()
                 && self.layers.emoji_picker.card_rect().contains(p))
     }
@@ -12521,9 +12584,13 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let open = self.overlay_flags().projection;
-        let outcome =
-            self.projection_overlay
-                .handle_event(event, ctx, self.last_cursor, self.rect, open);
+        let outcome = self.projection_overlay.handle_event(
+            event,
+            ctx,
+            self.last_cursor,
+            self.overlay_area(),
+            open,
+        );
         if outcome.close_requested
             && let Some(chrome) = self.chrome.as_ref()
         {
@@ -12677,6 +12744,18 @@ impl ShellOverlayHost {
         ) {
             self.qs_navigation_release_pending = false;
         }
+        // A finger put down on another display works there, as the pointer
+        // arriving there does: an edge swipe or a tap the shell keeps for
+        // itself never becomes pointer motion, and what it opens belongs
+        // on the display it was made on.
+        if let WindowEvent::Touch(touch) = event
+            && touch.phase == winit::event::TouchPhase::Started
+        {
+            self.focus_display_at(Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            ));
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
@@ -12719,7 +12798,10 @@ impl ShellOverlayHost {
         // Runs before everything and absorbs every event: genuinely
         // modal (a D-Bus method in another process is parked on the
         // answer), and a typed filename shares characters with chords.
-        if self.file_picker_overlay.handle_event(self.rect, event, ctx) {
+        if self
+            .file_picker_overlay
+            .handle_event(self.overlay_area(), event, ctx)
+        {
             return true;
         }
 
@@ -13121,7 +13203,7 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+        let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
             return;
         };
         let used = self
@@ -14280,7 +14362,7 @@ impl ShellOverlayHost {
     pub(crate) fn dictation_input_available(&self) -> bool {
         self.onboarding.is_none()
             && self.permission_prompt.is_none()
-            && self.portal_dialogs.layout(self.rect).is_none()
+            && self.portal_dialogs.layout(self.overlay_area()).is_none()
             && !self.display_confirmation_visible()
             && !self.window_switcher_active()
     }
@@ -14355,6 +14437,51 @@ impl ShellOverlayHost {
             if !self.run_shortcut_action(action) {
                 tracing::warn!(?action, "requested shortcut action has no desktop handler");
             }
+        }
+    }
+
+    /// Serve private windows' actions on this device
+    /// ([`crate::shell::device_local_actions`]): run what the catalogue
+    /// queued through each window's door, then publish what every private
+    /// window offers now.
+    pub(crate) fn run_device_local_actions(&mut self) {
+        use crate::shell::device_local_actions::{DeviceLocalWindow, receipt};
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let queued = std::mem::take(&mut chrome.borrow_mut().device_local_invocations);
+        let ran = !queued.is_empty();
+        for invocation in queued {
+            let started = match self.desktop_surface_mut() {
+                Some(surface) => surface.invoke_device_local_action(
+                    invocation.tab,
+                    &invocation.address,
+                    &invocation.arguments,
+                ),
+                None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+            };
+            *invocation.answer.borrow_mut() = Some(receipt(started));
+        }
+        if ran {
+            crate::shell::search::invocation_wake::waker().wake_by_ref();
+        }
+        let windows: Vec<DeviceLocalWindow> = self
+            .desktop_surface_mut()
+            .map(tilo_desktop::composition::DesktopSurface::device_local_windows)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(tab, resources)| DeviceLocalWindow {
+                tab,
+                actions: tilo_actions::door::survey(&resources),
+            })
+            .collect();
+        let mut state = chrome.borrow_mut();
+        if state.device_local_windows != windows {
+            state.device_local_windows = windows;
+            state.device_local_revision = state.device_local_revision.wrapping_add(1);
+            // Read once more after the tree settles: a window opened this
+            // frame mounts after this pass.
+            state.bump();
         }
     }
 
@@ -18079,6 +18206,8 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
+            // So is a popover the bar asked for.
+            self.harvest_bar_popover_request();
             // `/` the app did not type opens search of that app, as Ctrl+K
             // does. A focused field or terminal takes `/` as text.
             if !*ctx.handled
@@ -18158,9 +18287,13 @@ impl ShellOverlayHost {
         let Some((target, tab_count, point, title)) = nearest else {
             return;
         };
-        self.layers
-            .tab_menu
-            .open(target, tab_count, point, title, self.rect);
+        self.layers.tab_menu.open(
+            target,
+            tab_count,
+            point,
+            title,
+            self.surface_area(Some(point)),
+        );
     }
 
     /// Open the shell menu at the focused tab, independent of the pointer.
@@ -18224,15 +18357,11 @@ impl ShellOverlayHost {
         }
         let title = tab.title.clone();
         let tab_count = group.tab_count();
-        let outputs = self.layer_outputs();
-        let viewport = self.layer_geometry(&outputs).display_for(None);
-        self.layers.tab_menu.open(
-            target,
-            tab_count,
-            Point::new(rect.x0, rect.y1),
-            title,
-            viewport,
-        );
+        let at = Point::new(rect.x0, rect.y1);
+        let display = self.surface_area(Some(at));
+        self.layers
+            .tab_menu
+            .open(target, tab_count, at, title, display);
         self.layers.tab_menu.focus_first_action();
         true
     }
@@ -18372,9 +18501,11 @@ impl ShellOverlayHost {
         match intent {
             LayerIntent::TabMenu { target, action } => {
                 let performed = self.perform_tab_menu_action(target, action);
+                let at = self.layers.tab_menu.anchor_point();
+                let display = self.surface_area(Some(at));
                 self.layers
                     .tab_menu
-                    .settle(target, action, performed, self.rect);
+                    .settle(target, action, performed, display);
                 performed
             }
             LayerIntent::Session(action) => {
@@ -18814,6 +18945,9 @@ impl Widget for ShellOverlayHost {
         self.palette.sync(s, p);
         self.agent_quick_composer.sync(s, p);
         self.person_quick_composer.sync(s, p);
+        if self.bar_popovers.profile.is_open() {
+            self.bar_popovers.profile.sync(s, p);
+        }
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -18861,6 +18995,8 @@ impl Widget for ShellOverlayHost {
             | person_activation
             | person_context_dirty
             | person_action_dirty;
+        let bar_popover_dirty =
+            self.bar_popovers.profile.is_open() && self.bar_popovers.profile.update(doc, path);
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
@@ -18949,6 +19085,7 @@ impl Widget for ShellOverlayHost {
         self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
+        self.run_device_local_actions();
         self.latch_overview_transition();
         steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it
@@ -18970,6 +19107,9 @@ impl Widget for ShellOverlayHost {
         // pointer dispatch; and drop a menu whose tab has since gone.
         self.harvest_pending_tab_context_menus();
         self.prune_stale_tab_context_menu();
+        // Same for a popover the bar asked for, and what was chosen in one.
+        self.harvest_bar_popover_request();
+        self.settle_bar_popovers();
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -19074,6 +19214,7 @@ impl Widget for ShellOverlayHost {
         desk_dirty
             || agent_quick_dirty
             || person_quick_dirty
+            || bar_popover_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -19120,7 +19261,7 @@ impl Widget for ShellOverlayHost {
             // dedicated tree so the chooser has both geometry and an input
             // target while OOBE is active.
             let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
-            self.place_capture_studio(taffy, capture_node);
+            self.place_on_focused_display(taffy, capture_node);
             self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
@@ -19189,12 +19330,15 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
-        self.place_capture_studio(taffy, capture_node);
+        self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
             .screenshot_markup
             .as_mut()
             .map(|markup| markup.build_layout(taffy, theme, node_map));
+        if let Some(node) = self.screenshot_markup_node {
+            self.place_on_focused_display(taffy, node);
+        }
         self.capture_mirror_nodes = self
             .capture_mirrors
             .iter_mut()
@@ -19311,6 +19455,7 @@ impl Widget for ShellOverlayHost {
             self.person_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
         );
+        children.extend(self.build_bar_popovers(taffy, theme, node_map));
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -19396,6 +19541,7 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer
                 .apply_layout(taffy, agent_node, self.rect.origin());
         }
+        self.apply_bar_popovers_layout(taffy);
         self.agent_markers.apply(taffy, self.rect.origin());
         self.person_markers.apply(taffy, self.rect.origin());
         if let Some(node) = self.person_quick_composer_node {
@@ -19623,6 +19769,7 @@ impl Widget for ShellOverlayHost {
         }
         self.agent_quick_composer
             .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -19953,6 +20100,9 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            return;
+        }
+        if self.route_bar_popover_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if self.agent_quick_composer.is_open()
@@ -20593,8 +20743,11 @@ impl Widget for ShellOverlayHost {
                                 .iter()
                                 .enumerate()
                                 .map(|(index, item)| {
-                                    let (name, description, ..) =
+                                    let (name, mut description, ..) =
                                         self.qs_device_row_face(&view, selected, item);
+                                    if let Some(action) = item.select_action_key() {
+                                        description = format!("{description}. {}", t(action));
+                                    }
                                     let buttons = Self::qs_device_row_button_names(item)
                                         .into_iter()
                                         .map(|name| AccessNode::new(Role::Button).with_name(name))
@@ -20958,6 +21111,12 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&self.agent_quick_composer);
         }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&self.bar_popovers.profile);
+        }
         out.extend(self.agent_markers.children());
         if self.person_quick_composer.is_open() {
             out.push(&self.person_quick_composer);
@@ -20994,6 +21153,12 @@ impl Widget for ShellOverlayHost {
         if self.agent_quick_composer.is_open() {
             out.push(&mut self.agent_quick_composer);
         }
+        if self.bar_popovers.workspace_menu.is_open() {
+            out.push(&mut self.bar_popovers.workspace_menu);
+        }
+        if self.bar_popovers.profile.is_open() {
+            out.push(&mut self.bar_popovers.profile);
+        }
         out.extend(self.agent_markers.children_mut());
         if self.person_quick_composer.is_open() {
             out.push(&mut self.person_quick_composer);
@@ -21005,6 +21170,7 @@ impl Widget for ShellOverlayHost {
     fn take_focus_reset(&mut self) -> bool {
         self.agent_quick_composer.take_focus_reset()
             | self.person_quick_composer.take_focus_reset()
+            | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
@@ -21070,6 +21236,7 @@ impl Widget for ShellOverlayHost {
             | self.person_quick_composer.take_structure_dirty()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
+            | self.bar_popovers.structure_stale()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -21866,21 +22033,21 @@ impl ShellOverlayHost {
                 .borrow()
                 .visual_alert_active(std::time::Instant::now())
         });
+        // Along every display's own edges: the desktop's bounding box puts
+        // a shorter display's bottom edge, or a stacked one's sides, on no
+        // display at all.
+        let displays = self.layer_outputs();
         overlay_part(scene, "shell.visual-alert", desktop, |scene| {
             if visual_alert {
-                let edge = Rect::new(
-                    self.rect.x0 + 4.0,
-                    self.rect.y0 + 4.0,
-                    self.rect.x1 - 4.0,
-                    self.rect.y1 - 4.0,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(7.0),
-                    transform,
-                    theme.tokens.colors.intent.inverted,
-                    None,
-                    &edge,
-                );
+                for display in &displays {
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(7.0),
+                        transform,
+                        theme.tokens.colors.intent.inverted,
+                        None,
+                        &display.inset(-4.0),
+                    );
+                }
             }
             None
         });
@@ -22492,7 +22659,7 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &CollaboratorsModel {
-                    host: self.rect,
+                    host: self.overlay_area(),
                     rows: &rows,
                     own_label: &own_label,
                     // Native names come from the account, renamed in Settings.
@@ -22856,11 +23023,14 @@ impl ShellOverlayHost {
             f64::from(spacing.s4),
         );
         let min_h = f64::from(theme.tokens.metrics.min_pointer_target + spacing.s1);
+        // The focused display's corner: the desktop's bottom-right corner
+        // is on no display at all when the displays are stacked offset.
+        let area = self.overlay_area();
         self.shortcut_help_drawn_rect = Rect::new(
-            self.rect.x1 - (f64::from(w) + pad_x) - inset,
-            self.rect.y1 - (f64::from(h) + pad_y).max(min_h) - inset,
-            self.rect.x1 - inset,
-            self.rect.y1 - inset,
+            area.x1 - (f64::from(w) + pad_x) - inset,
+            area.y1 - (f64::from(h) + pad_y).max(min_h) - inset,
+            area.x1 - inset,
+            area.y1 - inset,
         );
         let rect = self.shortcut_help_button_rect();
         let colors = &theme.tokens.colors;
@@ -23745,7 +23915,7 @@ impl ShellOverlayHost {
         // drawn over, read, or dismissed by that app.
         overlay_part(scene, "shell.file-picker", desktop, |scene| {
             self.file_picker_overlay.draw(
-                self.rect,
+                self.overlay_area(),
                 scene,
                 transform,
                 text_renderer,
@@ -23876,7 +24046,7 @@ impl ShellOverlayHost {
             let Some(view) = self.portal_dialogs.view() else {
                 return;
             };
-            let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+            let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
                 return;
             };
             draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
@@ -25216,9 +25386,11 @@ impl ShellOverlayHost {
         // attachment glyph is orbiting their avatar.
         let detail = t("follow-detail");
         let detail = detail.as_str();
-        let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
-        let center_x = self.rect.center().x;
-        let y0 = self.rect.y0 + 54.0;
+        // Over the display in use, not over the seam between two.
+        let area = self.overlay_area();
+        let width = 344.0_f64.min((area.width() - 24.0).max(220.0));
+        let center_x = area.center().x;
+        let y0 = area.y0 + 54.0;
         self.follow_chip_rect = Rect::new(
             center_x - width / 2.0,
             y0,
@@ -25978,6 +26150,12 @@ impl ShellOverlayHost {
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
+    /// The named button of a row whose whole face is one action. Selecting
+    /// anywhere on the row does it; the button says what it is.
+    fn qs_device_row_select_action(row: Rect) -> Rect {
+        Rect::new(row.x1 - 84.0, row.y0 + 12.0, row.x1 - 8.0, row.y1 - 12.0)
+    }
+
     fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
         (
             [
@@ -26099,21 +26277,15 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The health clause a device row adds after its status: only what a
+    /// person acts on (its power). Reachability is already the status, and
+    /// latency or route counts are diagnostics.
     fn fabric_health_detail(
         health: &crate::shell::spatial_calibration::DeviceHealthView,
-    ) -> String {
-        use crate::shell::spatial_calibration::{DevicePower, DeviceReachability};
-        let reachability = match health.reachability {
-            DeviceReachability::Online => "online",
-            DeviceReachability::Stale => "stale",
-            DeviceReachability::Offline => "offline",
-        };
-        let latency = health.latency_ms.map_or_else(
-            || t("qs-devices-latency-unknown"),
-            |ms| t_args("qs-devices-latency", &[("ms", ms.into())]),
-        );
+    ) -> Option<String> {
+        use crate::shell::spatial_calibration::DevicePower;
         let power = match health.power {
-            DevicePower::Unknown => t("qs-devices-battery-unknown"),
+            DevicePower::Unknown => return None,
             DevicePower::External => t("qs-devices-external-power"),
             DevicePower::Charging(percent) => {
                 t_args("qs-devices-charging", &[("percent", percent.into())])
@@ -26122,19 +26294,7 @@ impl ShellOverlayHost {
                 t_args("qs-devices-battery", &[("percent", percent.into())])
             }
         };
-        t_args(
-            "qs-devices-health",
-            &[
-                ("reachability", reachability.into()),
-                ("latency", latency.into()),
-                ("power", power.into()),
-                (
-                    "saver",
-                    if health.energy_saver { "yes" } else { "no" }.into(),
-                ),
-                ("routes", health.active_routes.into()),
-            ],
-        )
+        Some(t_args("qs-devices-health", &[("power", power.into())]))
     }
 
     #[allow(
@@ -26856,9 +27016,10 @@ impl ShellOverlayHost {
                     .device_health
                     .iter()
                     .find(|health| health.peer == device.id)
+                    .and_then(Self::fabric_health_detail)
                 {
                     detail.push_str(" · ");
-                    detail.push_str(&Self::fabric_health_detail(health));
+                    detail.push_str(&health);
                 }
                 (
                     device.label.clone(),
@@ -26986,17 +27147,31 @@ impl ShellOverlayHost {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) =
                 self.qs_device_row_face(&view, selected, item);
-            let accessible = format!("{title}. {detail}");
+            let buttons = Self::qs_device_row_button_names(item);
+            // A row whose whole face is one action names it on a button.
+            let action = if buttons.is_empty() {
+                item.select_action_key().map(t)
+            } else {
+                None
+            };
+            let accessible = action.as_ref().map_or_else(
+                || format!("{title}. {detail}"),
+                |action| format!("{title}. {detail}. {action}"),
+            );
+            let row_hovered = enabled && self.last_cursor.is_some_and(|point| row.contains(point));
             let mut face = ButtonFace::new(row, "")
-                .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                .hovered(row_hovered)
                 .disabled(!enabled)
                 .accessible_name(&accessible);
             if selected_row {
                 face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
-            let buttons = Self::qs_device_row_button_names(item);
-            let trailing = if buttons.is_empty() { 0.0 } else { 86.0 };
+            let trailing = if buttons.is_empty() && action.is_none() {
+                0.0
+            } else {
+                86.0
+            };
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -27097,6 +27272,16 @@ impl ShellOverlayHost {
                             .accessible_name(name),
                     );
                 }
+            } else if let Some(action) = &action {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(Self::qs_device_row_select_action(row), action)
+                        .hovered(row_hovered)
+                        .disabled(!enabled),
+                );
             }
         }
         if rows.len() > visible_rows {
@@ -27951,6 +28136,10 @@ mod resync_strips_tests;
 #[cfg(test)]
 #[path = "peer_cursor_tests.rs"]
 mod peer_cursor_tests;
+
+#[cfg(test)]
+#[path = "multi_display_tests.rs"]
+mod multi_display_tests;
 
 /// The collaborators dropdown lists live people and agents together, and
 /// says which is which. Dormant membership stays in workspace settings:

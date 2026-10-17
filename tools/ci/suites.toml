@@ -144,6 +144,7 @@ suites = [
   "os/tests/installer_offline_target_test.py",
   "os/tests/local_boot_esp.sh",
   "os/tests/test_no_ui_toolkits.py",
+  "os/tests/test_no_python_runtime.py",
   "os/tests/test_flatpak_defaults.py",
   "os/tests/test_hardlink_identical.py",
   "os/tests/test_seed_env_runtime.py",

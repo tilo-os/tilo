@@ -40,6 +40,14 @@ pub trait PersistedRecordHistory {
     fn revision(&self, _id: &RecordId) -> Option<u64> {
         None
     }
+
+    /// The documents apps keep for `room` itself rather than as records
+    /// (Notes keeps its notebook there), as this device holds them: they
+    /// are part of the room's history as much as its records are. None by
+    /// default.
+    fn room_documents(&self, _room: RoomId) -> Vec<RecordCheckout> {
+        Vec::new()
+    }
 }
 
 /// The most frontiers whose unread changes are remembered per persisted
@@ -834,6 +842,17 @@ impl WorkspaceHistoryIndex {
             candidates
                 .entry(checkout.id.clone())
                 .or_insert_with(|| checkout.clone());
+        }
+        if let Some(local) = local {
+            let rooms = query
+                .rooms
+                .clone()
+                .unwrap_or_else(|| query.room.into_iter().collect());
+            for room in rooms {
+                for checkout in local.room_documents(room) {
+                    candidates.entry(checkout.id.clone()).or_insert(checkout);
+                }
+            }
         }
         let mut candidates: Vec<_> = candidates.into_values().collect();
         candidates.sort();

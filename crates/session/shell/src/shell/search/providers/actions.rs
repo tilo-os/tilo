@@ -63,7 +63,7 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     let supplied = args.text("name").unwrap_or(&default_name);
     let name = supplied.trim();
     if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
-        return Err(ActionError::Refused(t(
+        return Err(ActionError::Explained(t(
             "search-action-workspace-create-invalid-name",
         )));
     }
@@ -1244,7 +1244,7 @@ impl Action {
             "search-action-axis-gather-subtitle",
             |st, _| {
                 if !st.axis_navigation_enabled() {
-                    return Err(ActionError::Refused(t("axis-navigation-disabled")));
+                    return Err(ActionError::Explained(t("axis-navigation-disabled")));
                 }
                 active_workspace_id(st)?;
                 st.request_axis_gather();
@@ -1639,7 +1639,7 @@ impl Action {
                 let revision = args
                     .integer("revision")
                     .and_then(|value| u64::try_from(value).ok())
-                    .ok_or_else(|| ActionError::Refused(t("display-remote-stale")))?;
+                    .ok_or_else(|| ActionError::Explained(t("display-remote-stale")))?;
                 shared_display_actions::include(
                     state,
                     args.text("device").unwrap_or_default(),
@@ -2076,7 +2076,7 @@ impl Action {
             |st, _| {
                 if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
                 {
-                    return Err(ActionError::Refused(t(
+                    return Err(ActionError::Explained(t(
                         "search-action-tab-menu-unavailable",
                     )));
                 }
@@ -2089,7 +2089,7 @@ impl Action {
             "search-action-tab-drag-cancel-subtitle",
             |st, _| {
                 if st.session_locked() {
-                    return Err(ActionError::Refused(t(
+                    return Err(ActionError::Explained(t(
                         "search-action-tab-drag-cancel-unavailable",
                     )));
                 }
@@ -6382,7 +6382,7 @@ mod tests {
             &chrome,
             &ActionArgs::none(),
         );
-        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert!(matches!(result, Err(ActionError::Explained(_))));
         assert!(
             chrome
                 .borrow_mut()
@@ -6673,7 +6673,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "shortcut-help.toggle")
                 .expect("shortcut help action");
-            assert_eq!(t(action.label), "Show desktop help");
+            assert_eq!(t(action.label), "Show keyboard shortcuts");
             let subtitle = t(action.subtitle);
             assert!(subtitle.contains("Super+/"));
             assert!(subtitle.contains("F1"));

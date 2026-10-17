@@ -218,16 +218,26 @@ fn e2e_open_close_overview() {
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
-    // Pre-click frame — also primes `overview_btn_rect` for the probe below.
     h.draw_to(Some(&mut offscreen), &out_dir.join("e2e-01-desktop.png"));
 
-    // The probe only computes the button's centre; the click flows through
-    // `ShellOverlayHost::handle_event`, narrowed to the sidebar wheel's y-range.
-    let hit = overview_btn_hit(&tree, &theme, h.chrome.clone());
+    // The probe only computes the workspace name's centre; the click flows
+    // through `ShellOverlayHost::handle_event` and opens the workspace
+    // menu, whose Overview row opens the overview.
+    let hit = workspace_pill_hit(&tree, &theme, h.chrome.clone());
     h.click(hit.x, hit.y);
+    let host = h
+        .root
+        .as_any_mut()
+        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+        .expect("the root is the shell overlay host");
+    assert!(
+        host.workspace_menu_labels().is_some(),
+        "root-level click on the workspace name should open the workspace menu"
+    );
+    assert!(host.choose_in_workspace_menu("Overview"));
     assert!(
         h.chrome.borrow().overlays.overview,
-        "root-level click on the overview button should open the overview overlay"
+        "the workspace menu's Overview row should open the overview overlay"
     );
 
     // `tick_overview_transition` only latches `transition_started` on the
@@ -358,9 +368,9 @@ fn e2e_launch_failure_notifications_visual_review() {
     println!("launch-failure review PNGs: {}", out_dir.display());
 }
 
-/// Centre of the topbar's overview-toggle icon, from a sibling
-/// `TopBarChrome` — topbar geometry is width-driven, so its rect matches.
-fn overview_btn_hit(
+/// Centre of the topbar's workspace name, from a sibling `TopBarChrome` —
+/// topbar geometry is width-driven, so its rect matches.
+fn workspace_pill_hit(
     tree: &WorkspaceTree,
     theme: &Theme,
     chrome: shell::shell::chrome_state::Chrome,
@@ -369,7 +379,7 @@ fn overview_btn_hit(
         tree,
         theme,
         chrome,
-        shell::shell::topbar_chrome::TopBarChrome::overview_btn_rect,
+        shell::shell::topbar_chrome::TopBarChrome::workspace_menu_rect,
     );
     centre
 }

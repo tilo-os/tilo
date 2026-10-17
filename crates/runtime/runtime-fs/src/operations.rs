@@ -4135,7 +4135,11 @@ pub(super) mod tests {
         use std::io::Write;
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        assert_eq!(unsafe { libc::geteuid() }, 0, "root fixture host required");
+        assert_eq!(
+            rustix::process::geteuid().as_raw(),
+            0,
+            "root fixture host required"
+        );
         let marker = "TILO_NATIVE_REPLACEMENT_PERMISSION_CASE";
         if std::env::var(marker).as_deref() != Ok(test) {
             let outer = tempfile::tempdir().unwrap();
@@ -4287,9 +4291,9 @@ pub(super) mod tests {
         assert_eq!(unsafe { libc::setgroups(1, [SHARED_GID].as_ptr()) }, 0);
         assert_eq!(unsafe { libc::setgid(ORIGINAL_GID) }, 0);
         assert_eq!(unsafe { libc::setuid(ORIGINAL_UID) }, 0);
-        assert_eq!(unsafe { libc::getuid() }, ORIGINAL_UID);
-        assert_eq!(unsafe { libc::geteuid() }, ORIGINAL_UID);
-        assert_eq!(unsafe { libc::getgid() }, ORIGINAL_GID);
+        assert_eq!(rustix::process::getuid().as_raw(), ORIGINAL_UID);
+        assert_eq!(rustix::process::geteuid().as_raw(), ORIGINAL_UID);
+        assert_eq!(rustix::process::getgid().as_raw(), ORIGINAL_GID);
         let mut groups = [0_u32; 1];
         assert_eq!(unsafe { libc::getgroups(1, groups.as_mut_ptr()) }, 1);
         assert_eq!(groups, [SHARED_GID]);
@@ -5227,7 +5231,7 @@ pub(super) mod tests {
         }
         fn bind_removal(&self) {
             assert_eq!(
-                unsafe { libc::geteuid() },
+                rustix::process::geteuid().as_raw(),
                 0,
                 "root native namespace fixture required"
             );

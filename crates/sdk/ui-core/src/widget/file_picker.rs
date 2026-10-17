@@ -80,6 +80,8 @@ struct PickerMetrics {
     min_button_w: f64,
     /// The Save field's label column.
     name_label_w: f64,
+    /// The band under the Save field that says why a name can't be used.
+    error_h: f64,
     /// The Size and Modified columns, and the list width that shows them.
     size_w: f64,
     date_w: f64,
@@ -115,6 +117,7 @@ impl PickerMetrics {
             scrollbar_w: f64::from(sp.s1),
             min_button_w: icon_lg * 4.0,
             name_label_w: icon_lg * 3.5,
+            error_h: line(TextRole::Caption) + f64::from(sp.s2),
             size_w: icon_lg * 3.5,
             date_w: icon_lg * 6.5,
             columns_min_w: icon_lg * 20.0,
@@ -379,6 +382,26 @@ pub enum FilePickerMode {
     Directory,
 }
 
+/// Where a typed Save name points.
+#[derive(Debug, PartialEq, Eq)]
+enum SaveName {
+    /// A folder to open (the name ended in `/`).
+    Folder(PathBuf),
+    /// A file `name` in `folder`.
+    File { folder: PathBuf, name: String },
+}
+
+/// Why a typed Save name can't be used.
+#[derive(Debug, PartialEq, Eq)]
+enum SaveNameError {
+    /// Not a file name (`..`, `/`, `~` without a home).
+    Invalid,
+    /// The folder it names doesn't exist.
+    NoFolder(PathBuf),
+    /// The folder is outside what the asking app may write.
+    NotAllowed(PathBuf),
+}
+
 pub struct FilePicker {
     rect: Rect,
     title: String,
@@ -406,6 +429,13 @@ pub struct FilePicker {
 
     /// Set on Open / Cancel. `None` until resolved.
     pending_outcome: Option<FilePickerOutcome>,
+    /// Why the typed Save name can't be used, shown under the field until
+    /// the name changes. Save never closes the dialog on a name it refuses.
+    name_error: Option<String>,
+    /// The person's home folder, for a typed `~/…` name.
+    home: Option<PathBuf>,
+    /// The start of a name being typed into the list.
+    typing: crate::type_ahead::TypeAhead,
     /// A Save target that already exists, waiting for the person to say
     /// whether to replace it. While set, the prompt is the only thing on the
     /// picker that takes input.
@@ -516,6 +546,9 @@ impl FilePicker {
                 .with_placeholder(tr("widget-filepicker-name-placeholder")),
             first_visible: 0,
             pending_outcome: None,
+            name_error: None,
+            home: None,
+            typing: crate::type_ahead::TypeAhead::default(),
             replace_prompt: None,
             open_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
@@ -562,6 +595,7 @@ impl FilePicker {
     pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
         self.places = default_places(&self.accessible_roots, home.as_deref());
         self.place_cursor = None;
+        self.home = home;
         self
     }
 
@@ -634,6 +668,7 @@ impl FilePicker {
     /// Put `name` in the filename field with the name selected but not its
     /// extension, so typing replaces the name and keeps the type.
     fn set_filename(&mut self, name: &str) {
+        self.name_error = None;
         self.filename.set_text(name);
         let stem = name.rfind('.').filter(|&i| i > 0).unwrap_or(name.len());
         self.filename.set_selection(0, stem);
@@ -788,6 +823,7 @@ impl FilePicker {
     }
 
     pub fn refresh_entries(&mut self) {
+        self.typing.reset();
         self.entries.clear();
         let idx = self.active_filter.min(self.filters.len().saturating_sub(1));
         let Some(filter) = self.filters.get(idx) else {
@@ -835,7 +871,12 @@ impl FilePicker {
         let m = self.metrics;
         let buttons = 2.0 * m.pad + m.control_h;
         if self.mode == FilePickerMode::Save {
-            buttons + m.control_h + m.section
+            let error = if self.name_error.is_some() {
+                m.error_h
+            } else {
+                0.0
+            };
+            buttons + m.control_h + m.section + error
         } else {
             buttons
         }
@@ -1187,10 +1228,10 @@ impl FilePicker {
     fn can_commit_open(&self) -> bool {
         match self.mode {
             FilePickerMode::Open => self.validated_selected_files().is_some(),
+            // A typed name is always worth trying: one that can't be used
+            // is explained under the field, never silently refused.
             FilePickerMode::Save => {
-                (!self.filename().trim().is_empty()
-                    && self.safe_save_target(self.filename().trim()).is_some())
-                    || self.first_selected_file().is_some()
+                !self.filename().trim().is_empty() || self.first_selected_file().is_some()
             }
             FilePickerMode::Directory => self.validated_directory_choice().is_some(),
         }
@@ -1483,15 +1524,29 @@ impl FilePicker {
     fn commit_open(&mut self) {
         match self.mode {
             FilePickerMode::Save => {
-                let name = self.filename().trim();
-                let target = if name.is_empty() {
-                    self.first_selected_file()
-                } else {
-                    self.safe_save_target(name)
-                };
-                match target {
-                    Some(target) => self.commit_save(target),
-                    None => self.pending_outcome = Some(FilePickerOutcome::Cancelled),
+                let name = self.filename().trim().to_owned();
+                if name.is_empty() {
+                    if let Some(target) = self.first_selected_file() {
+                        self.commit_save(target);
+                    }
+                    return;
+                }
+                match self.resolve_save_name(&name) {
+                    Ok(SaveName::Folder(folder)) => {
+                        self.navigate_to(&folder);
+                        self.set_filename("");
+                        self.focus_control(PickerFocus::Filename);
+                    }
+                    Ok(SaveName::File { folder, name }) => {
+                        if folder != self.current_dir {
+                            // Show where the file goes, so a replace prompt
+                            // (or the next Save) is about the folder in view.
+                            self.navigate_to(&folder);
+                            self.set_filename(&name);
+                        }
+                        self.commit_save(folder.join(&name));
+                    }
+                    Err(error) => self.show_name_error(&error),
                 }
             }
             FilePickerMode::Open => {
@@ -1533,19 +1588,95 @@ impl FilePicker {
         }
     }
 
-    /// Resolve a Save filename without allowing the editable footer to turn
-    /// into an unrestricted path input. The name must be one ordinary path
-    /// component, and the real parent directory must still be beneath one of
-    /// the real chooser roots (symlink navigation must not escape the scope).
-    fn safe_save_target(&self, name: &str) -> Option<PathBuf> {
-        let mut components = Path::new(name).components();
-        let component = components.next()?;
-        if components.next().is_some() || !matches!(component, std::path::Component::Normal(_)) {
-            return None;
+    /// Resolve a typed Save name: a plain name in the folder in view, or a
+    /// path to another folder — relative to this one, from home (`~/`) or
+    /// absolute — with the file's name as its last part. A name ending in
+    /// `/` is a folder to open. The folder must exist and its real path must
+    /// lie beneath one of the real chooser roots, so neither `..` nor a
+    /// symlink can take a save outside what the caller may write.
+    fn resolve_save_name(&self, typed: &str) -> Result<SaveName, SaveNameError> {
+        use std::path::Component;
+        let wants_folder = typed.ends_with('/');
+        let expanded = match typed.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let home = self.home.as_ref().ok_or(SaveNameError::Invalid)?;
+                home.join(rest.trim_start_matches('/'))
+            }
+            _ => PathBuf::from(typed),
+        };
+        // Lexical, so the folder shown is the one the person named; the real
+        // path is checked against the roots below.
+        let mut path = if expanded.is_absolute() {
+            PathBuf::new()
+        } else {
+            self.current_dir.clone()
+        };
+        for component in expanded.components() {
+            match component {
+                Component::RootDir | Component::Prefix(_) => path.push(component),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    path.pop();
+                }
+                Component::Normal(part) => path.push(part),
+            }
         }
-        let current = fs::canonicalize(&self.current_dir).ok()?;
-        let inside_root = current.is_dir() && self.canonical_path_is_inside_roots(&current);
-        inside_root.then(|| self.current_dir.join(name))
+        let allowed = |folder: &Path| -> Result<(), SaveNameError> {
+            let real = fs::canonicalize(folder)
+                .ok()
+                .filter(|real| real.is_dir())
+                .ok_or_else(|| SaveNameError::NoFolder(folder.to_path_buf()))?;
+            if self.canonical_path_is_inside_roots(&real) && self.can_navigate_to(folder) {
+                Ok(())
+            } else {
+                Err(SaveNameError::NotAllowed(folder.to_path_buf()))
+            }
+        };
+        if wants_folder {
+            allowed(&path)?;
+            return Ok(SaveName::Folder(path));
+        }
+        let ends_in_name = matches!(
+            expanded.components().next_back(),
+            Some(Component::Normal(_))
+        );
+        let (Some(name), Some(folder), true) = (path.file_name(), path.parent(), ends_in_name)
+        else {
+            return Err(SaveNameError::Invalid);
+        };
+        allowed(folder)?;
+        Ok(SaveName::File {
+            folder: folder.to_path_buf(),
+            name: name.to_string_lossy().into_owned(),
+        })
+    }
+
+    fn show_name_error(&mut self, error: &SaveNameError) {
+        let folder_name = |folder: &Path| {
+            folder.file_name().map_or_else(
+                || folder.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        };
+        let message = match error {
+            SaveNameError::Invalid => tr("widget-filepicker-name-invalid"),
+            SaveNameError::NoFolder(folder) => crate::i18n::widget_format(
+                "widget-filepicker-name-no-folder",
+                &[("folder", folder_name(folder).into())],
+            ),
+            SaveNameError::NotAllowed(folder) => crate::i18n::widget_format(
+                "widget-filepicker-name-not-allowed",
+                &[("folder", folder_name(folder).into())],
+            ),
+        };
+        self.name_error = Some(message);
+        self.focus_control(PickerFocus::Filename);
+        self.apply_layout_helper();
+    }
+
+    /// Why the typed name can't be saved, while it is shown.
+    pub fn name_error(&self) -> Option<&str> {
+        self.name_error.as_deref()
     }
 
     fn first_selected_file(&self) -> Option<PathBuf> {
@@ -1674,25 +1805,16 @@ impl FilePicker {
         self.scroll_to(next);
     }
 
-    fn type_ahead(&mut self, ch: char) {
-        let lower = ch.to_ascii_lowercase();
-        let start = self.selection.primary().map_or(0, |i| i.saturating_add(1));
-        let n = self.entries.len();
-        for off in 0..n {
-            let i = start.saturating_add(off).checked_rem(n).unwrap_or(0);
-            let Some(entry) = self.entries.get(i) else {
-                continue;
-            };
-            if entry
-                .name
-                .chars()
-                .next()
-                .is_some_and(|c| c.to_ascii_lowercase() == lower)
-            {
-                self.selection.select_only(i);
-                self.scroll_to(i);
-                return;
-            }
+    /// Move to the row whose name begins with what is being typed.
+    fn type_ahead(&mut self, text: &str) {
+        self.typing.type_text(text, crate::time::now());
+        let current = self.selection.primary();
+        if let Some(i) = self
+            .typing
+            .target(self.entries.iter().map(|e| e.name.as_str()), current)
+        {
+            self.selection.select_only(i);
+            self.scroll_to(i);
         }
     }
 }
@@ -1766,7 +1888,15 @@ impl Widget for FilePicker {
         if self.is_filename_input(event) {
             self.has_keyboard_focus = true;
             self.sync_filename_focus();
+            let before = self
+                .name_error
+                .is_some()
+                .then(|| self.filename().to_owned());
             self.filename.handle_event(event, ctx);
+            if before.is_some_and(|before| before != self.filename()) {
+                self.name_error = None;
+                self.apply_layout_helper();
+            }
             self.ensure_valid_focus();
             *ctx.handled = true;
             return;
@@ -1928,15 +2058,22 @@ impl Widget for FilePicker {
                                     .expanded(self.filter_open),
                             ),
                         PickerFocus::Filename => {
-                            AccessNode::new(Role::TextInput)
+                            let node = AccessNode::new(Role::TextInput)
                                 .with_name(tr("widget-filepicker-name-accessible"))
                                 .with_value(self.filename().to_owned())
                                 .with_text_selection(filename_anchor, filename_cursor)
                                 .with_key(control.id())
                                 .with_bounds(self.filename_rect)
-                                .with_state(AccessState::new().focusable(true).focused(
-                                    self.has_keyboard_focus && self.focus == Some(control),
-                                ))
+                                .with_state(AccessState {
+                                    invalid: self.name_error.is_some(),
+                                    ..AccessState::new().focusable(true).focused(
+                                        self.has_keyboard_focus && self.focus == Some(control),
+                                    )
+                                });
+                            match &self.name_error {
+                                Some(error) => node.with_description(error.clone()),
+                                None => node,
+                            }
                         }
                         PickerFocus::Cancel | PickerFocus::Confirm => {
                             let (label, rect, enabled) = if control == PickerFocus::Cancel {
@@ -2785,6 +2922,20 @@ impl FilePicker {
                 &style,
             );
             self.draw_filename_field(scene, transform, text_renderer, theme, presence);
+            if let Some(error) = &self.name_error {
+                let style = theme.text(TextRole::Caption);
+                text_renderer.draw_style(
+                    scene,
+                    error,
+                    crate::widget::Tone::Danger.colour(theme),
+                    transform.pre_translate(Vec2::new(
+                        self.filename_rect.x0 + m.inset_x,
+                        self.filename_rect.y1 + m.gap / 2.0,
+                    )),
+                    Some(px(self.filename_rect.width() - m.inset_x)),
+                    &style,
+                );
+            }
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             self.draw_filter_chip(scene, transform, text_renderer, theme);
@@ -2907,7 +3058,9 @@ impl FilePicker {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
+            if self.name_error.is_some() {
+                tokens.colors.semantic.danger
+            } else if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
                 tokens.colors.border_focus
             } else {
                 crate::surface::edge_on(tokens.colors.surfaces.base)
@@ -3241,10 +3394,8 @@ impl FilePicker {
                 *handled = true;
             }
             Key::Character(s) if self.focus == Some(PickerFocus::List) => {
-                if let Some(ch) = s.chars().next() {
-                    self.type_ahead(ch);
-                    *handled = true;
-                }
+                self.type_ahead(s);
+                *handled = true;
             }
             _ => {}
         }
@@ -4014,19 +4165,78 @@ mod tests {
 
         fn save_mode_rejects_absolute_and_traversal_filenames() {
             let (_guard, root) = temp_tree();
-            for unsafe_name in ["/tmp/stolen", "../outside", "sub/file", ".", ".."] {
+            for unsafe_name in [
+                "/tmp/stolen",
+                "../outside",
+                "sub/file",
+                ".",
+                "..",
+                "nested/..",
+            ] {
                 let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
                     .with_mode(FilePickerMode::Save)
                     .with_filename(unsafe_name);
-                // The disabled UI action cannot be activated; exercise the
-                // resolver directly so this remains a security regression test.
-                picker.commit_open();
+                picker.click_open();
+                // Refused names keep the dialog open and say why: a save is
+                // never reported as a cancel, and never escapes the scope.
                 assert_eq!(
                     picker.take_outcome(),
-                    Some(FilePickerOutcome::Cancelled),
-                    "save name {unsafe_name:?} escaped the picker scope"
+                    None,
+                    "save name {unsafe_name:?} resolved outside the picker scope"
                 );
+                assert!(
+                    picker.name_error().is_some(),
+                    "save name {unsafe_name:?} was refused without a reason"
+                );
+                assert_eq!(picker.current_dir(), root.as_path());
             }
+        }
+
+        fn save_mode_follows_a_typed_path_inside_the_roots() {
+            let (_guard, root) = temp_tree();
+            let home = root.clone();
+            for (typed, folder) in [
+                ("nested/report.md", root.join("nested")),
+                ("~/nested/notes.md", root.join("nested")),
+                ("nested/../top.md", root.clone()),
+            ] {
+                let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
+                    .with_home(Some(home.clone()))
+                    .with_mode(FilePickerMode::Save)
+                    .with_filename(typed);
+                picker.click_open();
+                let name = Path::new(typed).file_name().unwrap();
+                assert_eq!(
+                    picker.take_outcome(),
+                    Some(FilePickerOutcome::Selected(vec![folder.join(name)])),
+                    "{typed:?}"
+                );
+                assert_eq!(picker.current_dir(), folder.as_path(), "{typed:?}");
+            }
+            // A trailing slash names a folder: open it, keep the dialog up.
+            let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename("nested/");
+            picker.click_open();
+            assert_eq!(picker.take_outcome(), None);
+            assert_eq!(picker.current_dir(), root.join("nested").as_path());
+            assert_eq!(picker.filename(), "");
+            // Fixing the name takes the reason away.
+            let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename("missing/a.txt");
+            picker.click_open();
+            assert!(picker.name_error().is_some());
+            let node = Widget::accessibility(&picker).expect("dialog semantics");
+            let field = node
+                .children
+                .iter()
+                .find(|child| child.role == crate::a11y::Role::TextInput)
+                .expect("Filename field");
+            assert!(field.state.invalid);
+            Widget::set_focus(&mut picker, true);
+            dispatch(&mut picker, &key_char("x"));
+            assert_eq!(picker.name_error(), None);
         }
 
         #[cfg(unix)]
@@ -4043,14 +4253,16 @@ mod tests {
             // Navigation is lexically within `root`; commit must catch where it
             // actually resolves before returning a privileged save target.
             picker.navigate_to(&escape);
-            picker.commit_open();
-            assert_eq!(picker.take_outcome(), Some(FilePickerOutcome::Cancelled));
+            picker.click_open();
+            assert_eq!(picker.take_outcome(), None);
+            assert!(picker.name_error().is_some());
         }
 
         save_mode_uses_save_label();
         save_mode_typed_filename_resolves_target();
         save_filename_uses_the_same_focus_ring_and_accessibility_target();
         save_mode_rejects_absolute_and_traversal_filenames();
+        save_mode_follows_a_typed_path_inside_the_roots();
         #[cfg(unix)]
         save_mode_revalidates_a_symlinked_current_directory();
     }

@@ -382,7 +382,7 @@ impl ui::resources::PublishesResources for GreeterApp {
                 vec![ActionParam::required(
                     "password",
                     ParamType::Secret,
-                    "Passcode; transient authentication input only",
+                    "Password; transient authentication input only",
                 )],
             ),
             console_action(

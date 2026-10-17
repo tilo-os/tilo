@@ -776,7 +776,7 @@ fn retirement_result() -> SearchResult {
         on_open: Rc::new(|_, _, _, _| Ok(())),
         on_invoke: Some(Rc::new(|_, _, chrome, _| {
             if !retirement_admin(&chrome.borrow()) {
-                return Err(crate::shell::search::action_api::ActionError::Refused(t(
+                return Err(crate::shell::search::action_api::ActionError::Explained(t(
                     "portal-auth-local-admin-required",
                 )));
             }

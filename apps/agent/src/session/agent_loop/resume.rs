@@ -46,8 +46,14 @@ impl Session {
             .offers
             .iter()
             .find(|offer| {
+                // A window publishes its resources under an alias naming
+                // that window, and a restart opens a new one: the step is
+                // the same resource of the same app, whichever window now
+                // publishes it.
                 offer.app == paused.app
-                    && offer.descriptor.address.resource == paused.resource
+                    && tilo_actions::selection::logical_resource_id(
+                        &offer.descriptor.address.resource,
+                    ) == tilo_actions::selection::logical_resource_id(&paused.resource)
                     && offer.descriptor.address.action == paused.action
             })
             .cloned();

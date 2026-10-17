@@ -166,10 +166,6 @@ pub enum FilesEffect {
     /// Open terminal here.
     #[effect(kind = "read")]
     OpenTerminal,
-    /// Undo move to Trash.
-    ///
-    /// Puts back what this window last moved to Trash.
-    UndoTrash,
     /// Empty Trash.
     ///
     /// Deletes everything in Trash for good, from the Trash folder.
