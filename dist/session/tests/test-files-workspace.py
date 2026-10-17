@@ -102,7 +102,14 @@ class FilesWorkspaceTest(unittest.TestCase):
             root = Path(temporary)
             binaries = root / "bin"
             binaries.mkdir()
-            for name in ["shell", "tilo-launcher", "tilo-unlock-helper", "imager"]:
+            for name in [
+                "shell",
+                "tilo-launcher",
+                "tilo-unlock-helper",
+                "tilo-flight-recorder",
+                "tilo-session-report",
+                "imager",
+            ]:
                 path = binaries / name
                 path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)

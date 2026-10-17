@@ -185,7 +185,7 @@ build_one() {
 }
 
 build_shell_pair() {
-    note "debug-building shell and its matched launcher in one cached Cargo invocation"
+    note "debug-building shell, its matched launcher and the flight recorder in one cached Cargo invocation"
     container_run "set -euo pipefail
         export SCCACHE_SERVER_PORT='$sccache_port'
         export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
@@ -203,7 +203,7 @@ build_shell_pair() {
           RUSTC_WRAPPER=sccache \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked -p shell --bin shell --no-default-features --features dev-session \\
-            -p launcher --bin tilo-launcher"
+            -p launcher --bin tilo-launcher -p tilo-session-record --bin tilo-flight-recorder"
 }
 
 cmd_build() {
@@ -333,10 +333,8 @@ deploy_one() {
         # private path carrying this marker.  Set up precisely that contract.
         wrapper=$repo_root/dist/session/tilo-session-dev
         runner=$repo_root/dist/session/tilo-session-runner
-        recorder=$repo_root/dist/session/tilo-flight-recorder.py
         [[ -x $wrapper ]] || die "developer session wrapper is missing: $wrapper"
         [[ -x $runner ]] || die "session lifecycle runner is missing: $runner"
-        [[ -x $recorder ]] || die "flight recorder is missing: $recorder"
         ssh_base "set -eu
             shell_path=\"\$HOME/$vm_root/shell\"
             grep -aFq 'tilo-app-session-build-marker-v1' \"\$shell_path\"
@@ -353,7 +351,12 @@ deploy_one() {
             sudo install -m 0755 \"\$wrapper\" /usr/libexec/tilo-session-dev" <"$wrapper"
         remote_install "$runner" tilo-session-runner
         ssh_base "sudo install -m 0755 \"\$HOME/$vm_root/tilo-session-runner\" /usr/libexec/tilo-session-runner"
-        remote_install "$recorder" tilo-flight-recorder
+        local recorder_transfer
+        recorder_transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-flight-recorder.XXXXXX")
+        dev_transfer_image "$repo_root/$target_rel/debug/tilo-flight-recorder" "$recorder_transfer"
+        assert_vm_runtime_compatible "$recorder_transfer" tilo-flight-recorder
+        remote_install "$recorder_transfer" tilo-flight-recorder
+        rm -f -- "$recorder_transfer"
         ssh_base "sudo install -m 0755 \"\$HOME/$vm_root/tilo-flight-recorder\" /usr/libexec/tilo-flight-recorder"
     fi
     rm -f -- "$transfer"

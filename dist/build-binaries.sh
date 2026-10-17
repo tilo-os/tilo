@@ -11,7 +11,7 @@ if [[ -n ${TILO_CARGO_TARGET:-} ]]; then
 fi
 
 cd "$repo_root"
-cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper
+cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper -p tilo-session-record
 cargo build "${cargo_args[@]}" -p imager --bin imager
 # The host package deliberately excludes the test-control socket. Video
 # codecs come from the distribution's GStreamer at runtime.
