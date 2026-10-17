@@ -17797,6 +17797,7 @@ dependencies = [
  "libc",
  "postcard",
  "rand_core 0.10.0",
+ "registry-types",
  "runtime-identity",
  "rustix 1.1.4",
  "serde",
