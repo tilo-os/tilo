@@ -59,6 +59,33 @@ const PAN_MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 /// Finger history a direct pan keeps: enough to resample between reports
 /// and to read the release velocity over.
 const PAN_SAMPLE_WINDOW: Duration = Duration::from_millis(100);
+/// How close to a lane's left or right edge a drag has to be for the strip
+/// to pan under it ([`DragReach`]).
+const DRAG_EDGE_BAND_PX: f64 = 32.0;
+/// How fast the strip pans under a drag pressed right against the edge; it
+/// starts from nothing at the band's inner side and grows with depth.
+const DRAG_EDGE_PAN_PX_PER_S: f64 = 1600.0;
+/// Longest frame step the edge pan integrates, so a stalled frame does not
+/// fling the strip.
+const DRAG_EDGE_MAX_STEP: Duration = Duration::from_millis(50);
+/// How long a drag rests on a background tab before it comes to the front.
+const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
+
+/// What a drag (a tab, or content the compositor carries) is reaching for
+/// beyond what is on screen. Strips are unbounded and windows hold several
+/// tabs, so the drop target is usually off screen or behind another tab:
+/// resting the drag at a lane's edge pans the strip under it, faster the
+/// deeper it is, and resting it on a background tab brings that tab to the
+/// front, so the drop can land there without dropping, panning and dragging
+/// again.
+#[derive(Clone, Copy, Debug, Default)]
+struct DragReach {
+    /// When the edge pan last advanced; `None` while the drag is not in an
+    /// edge band.
+    edge_tick: Option<Instant>,
+    /// The background tab under the drag, its group, and since when.
+    tab: Option<(u64, u64, Instant)>,
+}
 /// Release velocity (px/s) below which lifted fingers leave the strip where
 /// it is rather than throwing it.
 const FLING_MIN_VELOCITY: f64 = 60.0;
@@ -379,6 +406,11 @@ pub struct GroupRow {
     /// different strip. Kept separate so the shell can clear cross-strip
     /// routing without disturbing compositor-owned content drag feedback.
     cross_strip_drop_target: Option<TabDropTarget>,
+    /// Content the compositor carries is being dragged over this row
+    /// ([`Self::set_external_content_drag_hover`]).
+    external_drag_over: bool,
+    /// Edge pan and spring-loaded tabs for a drag in flight.
+    drag_reach: DragReach,
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
@@ -1386,6 +1418,8 @@ impl GroupRow {
             structure_dirty: false,
             tab_drop_target: None,
             cross_strip_drop_target: None,
+            external_drag_over: false,
+            drag_reach: DragReach::default(),
             pan: Pan::default(),
             scroll_quantum: None,
             drawn_apart: false,
@@ -3244,6 +3278,7 @@ impl GroupRow {
     /// than by one of this row's tabs. `None` retires the indicator when the
     /// protocol drag leaves or finishes.
     pub fn set_external_content_drag_hover(&mut self, cursor: Option<Point>) {
+        self.external_drag_over = cursor.is_some();
         self.tab_drop_target = cursor.and_then(|p| {
             self.last_cursor = p;
             self.tab_drop_target_with_hysteresis(p)
@@ -3257,6 +3292,112 @@ impl GroupRow {
             };
             group.set_external_drag_hover(hover);
         }
+    }
+
+    /// Whether a drag that can drop into this row is in flight over it: one
+    /// of its own tabs, a tab from another strip, or compositor content.
+    fn drag_over_row(&self) -> bool {
+        self.external_drag_over || self.cross_strip_drop_target.is_some() || self.tab_drag_active()
+    }
+
+    /// How fast, in px/s, the lane under `p` pans for a drag at `p`:
+    /// negative leftwards, `0` outside the edge bands or with nowhere to go.
+    fn drag_edge_velocity(&self, p: Point) -> f64 {
+        let pan = self.pan_of_lane(self.lane_at(p).unwrap_or(self.focus_lane));
+        let view = pan.viewport;
+        if !view.contains(p) || view.width() <= DRAG_EDGE_BAND_PX * 2.0 {
+            return 0.0;
+        }
+        let into_left = DRAG_EDGE_BAND_PX - (p.x - view.x0);
+        let into_right = DRAG_EDGE_BAND_PX - (view.x1 - p.x);
+        if into_left > 0.0 && pan.scroll_x > 0.0 {
+            -DRAG_EDGE_PAN_PX_PER_S * (into_left / DRAG_EDGE_BAND_PX).min(1.0)
+        } else if into_right > 0.0 && pan.scroll_x < pan.max_scroll_x() {
+            DRAG_EDGE_PAN_PX_PER_S * (into_right / DRAG_EDGE_BAND_PX).min(1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// The background tab of another window under `p`: its group and tab.
+    /// The tab a window already shows, and the bar a drag started from (it
+    /// is reordering its own tabs), are never spring-loaded.
+    fn background_tab_at(&self, p: Point) -> Option<(u64, u64)> {
+        self.groups
+            .iter()
+            .filter(|group| !group.is_closing() && !group.drag_in_flight())
+            .find_map(|group| {
+                let index = group.tab_rects().iter().position(|r| r.contains(p))?;
+                let tab = group.tabs().get(index)?.id;
+                (tab != group.active_tab_id()).then_some((group.id, tab))
+            })
+    }
+
+    /// Advance [`DragReach`] to `now`: pan the lane under a drag resting in
+    /// an edge band, and bring a background tab rested on long enough to the
+    /// front. Returns whether anything moved.
+    fn advance_drag_reach(&mut self, now: Instant) -> bool {
+        if !self.drag_over_row() {
+            self.drag_reach = DragReach::default();
+            return false;
+        }
+        let p = self.last_cursor;
+        let mut moved = false;
+        let velocity = self.drag_edge_velocity(p);
+        if velocity.abs() < f64::EPSILON {
+            self.drag_reach.edge_tick = None;
+        } else {
+            let step = self
+                .drag_reach
+                .edge_tick
+                .map_or(Duration::ZERO, |last| now.saturating_duration_since(last))
+                .min(DRAG_EDGE_MAX_STEP);
+            self.drag_reach.edge_tick = Some(now);
+            let lane = self.lane_at(p).unwrap_or(self.focus_lane);
+            let pan = self.pan_of_lane_mut(lane);
+            let next =
+                (pan.scroll_x + velocity * step.as_secs_f64()).clamp(0.0, pan.max_scroll_x());
+            if (next - pan.scroll_x).abs() > f64::EPSILON {
+                pan.absolute = false;
+                pan.jump_to(next);
+                self.scroll_dirty = true;
+                moved = true;
+            }
+        }
+        match (self.background_tab_at(p), self.drag_reach.tab) {
+            (Some((group, tab)), Some((g, t, since))) if g == group && t == tab => {
+                if now.saturating_duration_since(since) >= DRAG_SPRING_LOAD {
+                    self.drag_reach.tab = None;
+                    moved |= self.set_group_active_tab(group, tab);
+                }
+            }
+            (Some((group, tab)), _) => self.drag_reach.tab = Some((group, tab, now)),
+            (None, _) => self.drag_reach.tab = None,
+        }
+        if moved {
+            // What is under the resting pointer changed: re-aim the preview.
+            if self.external_drag_over {
+                self.set_external_content_drag_hover(Some(p));
+            } else if self.cross_strip_drop_target.is_some() {
+                self.set_cross_strip_tab_drag_hover(Some(p));
+            } else {
+                self.refresh_tab_drop_preview();
+            }
+        }
+        moved
+    }
+
+    /// Whether [`Self::advance_drag_reach`] has work on the next frame.
+    fn drag_reach_pending(&self) -> bool {
+        self.drag_over_row()
+            && (self.drag_edge_velocity(self.last_cursor).abs() >= f64::EPSILON
+                || self.drag_reach.tab.is_some())
+    }
+
+    /// [`Self::advance_drag_reach`] at an explicit time, for tests.
+    #[cfg(test)]
+    fn advance_drag_reach_for_test(&mut self, now: Instant) -> bool {
+        self.advance_drag_reach(now)
     }
 
     /// Resolve one pointer position into the strip's complete tab-drop
@@ -4154,6 +4295,7 @@ impl Widget for GroupRow {
         if !self.hidden {
             let now = self.snap_clock(crate::time::now());
             self.tick_snap_at(now);
+            self.advance_drag_reach(crate::time::now());
         }
         let mut any = false;
         for g in &mut self.groups {
@@ -5058,6 +5200,7 @@ impl Widget for GroupRow {
         // the strip edge must not keep the desktop at the refresh rate.
         self.snap_in_flight()
             || self.shift_in_flight()
+            || self.drag_reach_pending()
             || self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
             || self
                 .group_resist_back
@@ -10622,6 +10765,117 @@ mod tests {
         assert_eq!(row.output_pan(0).expect("lane").scroll_x(), 0.0);
         let last = rect_of(&row, 600);
         assert!(last.x1 <= 1800.5 && last.x0 >= 1000.0, "{last:?}");
+    }
+
+    #[test]
+    fn a_drag_resting_at_an_edge_pans_the_strip_under_it() {
+        let (mut row, _taffy, _root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        row.set_content_w_for_test(row.content_width());
+        let max = row.max_scroll_x();
+        assert!(max > 700.0, "fixture: most of the strip is off screen");
+        let t0 = crate::time::now();
+        let frame = Duration::from_millis(16);
+
+        // In the middle of the screen nothing pans.
+        row.set_external_content_drag_hover(Some(Point::new(350.0, 300.0)));
+        assert!(!row.drag_reach_pending());
+        assert!(!row.advance_drag_reach_for_test(t0));
+
+        // Pressed into the right edge: the strip pans right, frame by frame.
+        row.set_external_content_drag_hover(Some(Point::new(698.0, 300.0)));
+        assert!(row.drag_reach_pending(), "the edge pan asks for frames");
+        let mut now = t0;
+        row.advance_drag_reach_for_test(now);
+        for _ in 0..10 {
+            now += frame;
+            assert!(row.advance_drag_reach_for_test(now));
+        }
+        let fast = row.scroll_x();
+        assert!(fast > 100.0, "about 1.5 px/ms near the edge: {fast}");
+
+        // Shallower in the band is slower.
+        let (mut slow_row, _t, _r) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        slow_row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        slow_row.set_content_w_for_test(slow_row.content_width());
+        slow_row.set_external_content_drag_hover(Some(Point::new(700.0 - 24.0, 300.0)));
+        let mut slow_now = t0;
+        slow_row.advance_drag_reach_for_test(slow_now);
+        for _ in 0..10 {
+            slow_now += frame;
+            slow_row.advance_drag_reach_for_test(slow_now);
+        }
+        assert!(slow_row.scroll_x() > 0.0 && slow_row.scroll_x() < fast / 2.0);
+
+        // It stops at the end of the strip, and pans back at the left edge.
+        for _ in 0..200 {
+            now += frame;
+            row.advance_drag_reach_for_test(now);
+        }
+        assert!((row.scroll_x() - max).abs() < 1e-6);
+        assert!(
+            !row.drag_reach_pending(),
+            "nowhere further to go: no frames"
+        );
+        row.set_external_content_drag_hover(Some(Point::new(2.0, 300.0)));
+        now += frame;
+        row.advance_drag_reach_for_test(now);
+        now += frame;
+        assert!(row.advance_drag_reach_for_test(now));
+        assert!(row.scroll_x() < max);
+
+        // The drag leaving the row ends it.
+        let at = row.scroll_x();
+        row.set_external_content_drag_hover(None);
+        now += frame;
+        assert!(!row.advance_drag_reach_for_test(now));
+        assert!((row.scroll_x() - at).abs() < f64::EPSILON);
+        assert!(!row.drag_reach_pending());
+    }
+
+    #[test]
+    fn a_drag_resting_on_a_background_tab_brings_it_to_the_front() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1, 2], &[3]]);
+        assert_eq!(row.groups[0].active_tab_id(), 1);
+        let background = row.groups[0].tab_rects()[1].center();
+        let t0 = crate::time::now();
+
+        row.set_external_content_drag_hover(Some(background));
+        assert!(!row.advance_drag_reach_for_test(t0));
+        assert!(
+            row.drag_reach_pending(),
+            "a pending spring keeps frames coming"
+        );
+        assert!(!row.advance_drag_reach_for_test(t0 + Duration::from_millis(300)));
+        assert_eq!(
+            row.groups[0].active_tab_id(),
+            1,
+            "passing over is not resting"
+        );
+        assert!(row.advance_drag_reach_for_test(t0 + Duration::from_millis(520)));
+        assert_eq!(
+            row.groups[0].active_tab_id(),
+            2,
+            "the rested-on tab is in front"
+        );
+
+        // Moving off before the delay springs nothing.
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1, 2], &[3]]);
+        let background = row.groups[0].tab_rects()[1].center();
+        row.set_external_content_drag_hover(Some(background));
+        row.advance_drag_reach_for_test(t0);
+        row.set_external_content_drag_hover(Some(Point::new(background.x, 400.0)));
+        row.advance_drag_reach_for_test(t0 + Duration::from_millis(600));
+        assert_eq!(row.groups[0].active_tab_id(), 1);
+
+        // Without a drag, hovering a tab is just hovering.
+        row.set_external_content_drag_hover(None);
+        row.last_cursor = background;
+        assert!(!row.advance_drag_reach_for_test(t0));
+        assert!(!row.advance_drag_reach_for_test(t0 + Duration::from_secs(2)));
+        assert_eq!(row.groups[0].active_tab_id(), 1);
     }
 }
 #[cfg(test)]
