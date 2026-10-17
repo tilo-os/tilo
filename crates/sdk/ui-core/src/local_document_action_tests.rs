@@ -246,6 +246,94 @@ fn context_wire_budget_refuses_before_mutation() {
 }
 
 #[test]
+fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
+    for arguments in [
+        serde_json::Map::new(),
+        serde_json::Map::from_iter([("text".into(), "quotes: \" \\ \n café 🦀".into())]),
+    ] {
+        let queue = Queue::new();
+        let _scope = queue.enter("snapshot".into());
+        let _invocation = with_invocation(PublishedInvocation {
+            resource: "body".into(),
+            action: "set".into(),
+            arguments: arguments.clone(),
+        });
+        let mut doc = AutoCommit::new();
+        let mut host = crate::action_host::ActionHost::new();
+        // Include an existing head and context (including a duplicated group).
+        doc.put(ROOT, "existing", true).unwrap();
+        let context = ActionContext::default()
+            .with_purpose("quoted \" purpose\n")
+            .with_group("gesture", "Quoted \" group", "edit");
+        host.try_dispatch_with_context(&mut doc, "put", &Put(1), context)
+            .unwrap();
+        let bytes = queue.0.borrow().bytes;
+        let actions = queue.drain_leased();
+        let action = &actions[0].0;
+        let mut report = runtime_collab::LocalDocumentActionReport {
+            version: 1,
+            invocation: action.invocation,
+            revision: action.revision.clone(),
+            resource: "body".into(),
+            action: "set".into(),
+            argument: (!arguments.is_empty()).then(|| {
+                format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments)
+                )
+            }),
+            encoded: action.encoded.clone(),
+            context: action.context.clone(),
+            group: action.context.as_ref().and_then(|cx| cx.group.clone()),
+            original_heads: Vec::new(),
+            mutation_hashes: Vec::new(),
+        };
+        let base = report.encode().unwrap().len();
+        assert_eq!(bytes, base + (130 - 1) + (256 * 130 - 1));
+        report.original_heads.clone_from(&action.original_heads);
+        report.mutation_hashes.clone_from(&action.mutation_hashes);
+        assert!(report.encode().unwrap().len() <= bytes);
+    }
+}
+
+#[test]
+fn reservation_accepts_exact_wire_limit_and_refuses_one_extra_byte() {
+    let queue = Queue::new();
+    let _scope = queue.enter("snapshot".into());
+    let _invocation = published();
+    let mut host = crate::action_host::ActionHost::new();
+    host.try_dispatch_with_context(
+        &mut AutoCommit::new(),
+        "put",
+        &Put(1),
+        ActionContext::default().with_purpose("x"),
+    )
+    .unwrap();
+    let baseline = queue.0.borrow().bytes;
+    drop(queue.drain());
+    for extra in [0, 1] {
+        let mut doc = AutoCommit::new();
+        let result = host.try_dispatch_with_context(
+            &mut doc,
+            "put",
+            &Put(1),
+            ActionContext::default().with_purpose("x".repeat(64 * 1024 - baseline + 1 + extra)),
+        );
+        if extra == 0 {
+            result.unwrap();
+            assert_eq!(queue.0.borrow().bytes, 64 * 1024);
+            assert_eq!(queue.drain().len(), 1);
+        } else {
+            assert!(result.is_err());
+            assert!(doc.get_heads().is_empty());
+            assert!(queue.drain().is_empty());
+            assert!(!queue.take_refusals().is_empty());
+        }
+    }
+}
+
+#[test]
 fn input_without_any_pinned_directory_refuses_before_mutation() {
     let _scope = enter_input(Vec::new());
     let _invocation = published();

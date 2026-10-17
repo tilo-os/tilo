@@ -2,6 +2,10 @@
 //! against permissions, applies, records for undo and history, and
 //! replicates.
 
+#[cfg(test)]
+#[path = "dispatch_tests.rs"]
+mod tests;
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -1244,7 +1248,9 @@ impl<R: Resource> Dispatcher<R> {
                 .as_ref()
                 .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
         let context = self.core.step_context(context, step, continues);
-        let fallback = if ui_core::local_document_action::has_invocation() {
+        let fallback = if !ui_core::local_document_action::input_is_active()
+            || ui_core::local_document_action::has_invocation()
+        {
             None
         } else {
             Some(Invoke::<R>::apply(action).map_err(ActionError::Encode)?)
@@ -1354,7 +1360,8 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         invoke: &Invoke<R>,
     ) -> Option<ui_core::local_document_action::InvocationScope> {
-        if self.core.custody.is_some()
+        if !ui_core::local_document_action::input_is_active()
+            || self.core.custody.is_some()
             || super::effect::acting_for().is_some()
             || ui_core::local_document_action::has_invocation()
         {

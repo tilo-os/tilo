@@ -100,7 +100,8 @@ impl Drop for Scope {
     }
 }
 
-pub(crate) fn input_is_active() -> bool {
+/// Whether synchronous local input is being observed on this thread.
+pub fn input_is_active() -> bool {
     ACTIVE.with_borrow(Option::is_some) || INPUT_ROUTES.with_borrow(|routes| !routes.is_empty())
 }
 
@@ -391,6 +392,89 @@ impl Drop for Lease {
     }
 }
 
+// Borrowed wire shape of LocalDocumentActionReport. Tests compare its count to
+// the transport encoder so changes to that envelope cannot silently underbudget.
+#[derive(serde::Serialize)]
+struct BudgetReport<'a> {
+    version: u8,
+    invocation: uuid::Uuid,
+    revision: &'a str,
+    resource: &'a str,
+    action: &'a str,
+    argument: Option<ReportArgument<'a>>,
+    encoded: &'a EncodedAction,
+    context: Option<&'a ActionContext>,
+    original_heads: &'a [[u8; 32]],
+    mutation_hashes: &'a [[u8; 32]],
+    group: Option<&'a tilo_actions::ActionGroup>,
+}
+
+struct ReportArgument<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+impl serde::Serialize for ReportArgument<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl std::fmt::Display for ReportArgument<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(tilo_actions::ARGUMENTS_JSON_PREFIX)?;
+        serde_json::to_writer(ArgumentFormatter(formatter), self.0).map_err(|_| std::fmt::Error)
+    }
+}
+
+// Stream the inner JSON through the outer JSON string escaper, rather than
+// allocating a cloned argument tree, an argument string and a report buffer.
+struct ArgumentFormatter<'a, 'b>(&'a mut std::fmt::Formatter<'b>);
+
+impl std::io::Write for ArgumentFormatter<'_, '_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let text = std::str::from_utf8(bytes).map_err(std::io::Error::other)?;
+        self.0.write_str(text).map_err(std::io::Error::other)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ReportCounter {
+    bytes: usize,
+}
+
+impl ReportCounter {
+    fn add(&mut self, bytes: usize) -> std::io::Result<()> {
+        if bytes > (64 * 1024_usize).saturating_sub(self.bytes) {
+            return Err(std::io::Error::other(
+                "local action exceeds report wire budget",
+            ));
+        }
+        self.bytes += bytes;
+        Ok(())
+    }
+}
+
+impl std::io::Write for ReportCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.add(bytes.len())?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_report_field(field: &str) -> Result<(), String> {
+    if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+        return Err("invalid local document report field".into());
+    }
+    Ok(())
+}
+
 fn report_budget(
     revision: &str,
     published: Option<&PublishedInvocation>,
@@ -402,33 +486,52 @@ fn report_budget(
     if before.len() > 256 {
         return Err("local action exceeds head budget".into());
     }
-    let report = runtime_collab::LocalDocumentActionReport {
-        version: 1,
-        invocation: uuid::Uuid::new_v4(),
-        revision: revision.into(),
-        resource: published.resource.clone(),
-        action: published.action.clone(),
-        argument: (!published.arguments.is_empty()).then(|| {
-            format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(published.arguments.clone())
-            )
-        }),
-        encoded: encoded.clone(),
-        context: context.cloned(),
-        group: context.and_then(|cx| cx.group.clone()),
-        original_heads: Vec::new(),
-        mutation_hashes: Vec::new(),
-    };
-    // Validate the same envelope as transport. Each decimal byte needs at most
-    // three digits plus a comma; each hash adds brackets and a separator.
-    let base = report.encode()?.len();
-    let bytes = base + (before.len() + 256) * (32 * 4 + 3);
-    if bytes > 64 * 1024 {
-        return Err("local action exceeds report wire budget".into());
+    for field in [
+        revision,
+        published.resource.as_str(),
+        published.action.as_str(),
+    ] {
+        validate_report_field(field)?;
     }
-    Ok(bytes)
+    validate_report_field(&encoded.type_id)?;
+    // Validate without constructing a second JSON tree for the typed payload.
+    serde_json::from_slice::<serde::de::IgnoredAny>(&encoded.payload)
+        .map_err(|error| error.to_string())?;
+    let group = context.and_then(|cx| cx.group.as_ref());
+    if let Some(group) = group {
+        for field in [&group.id, &group.label, &group.kind] {
+            validate_report_field(field)?;
+        }
+    }
+    let mut counter = ReportCounter::default();
+    serde_json::to_writer(
+        &mut counter,
+        &BudgetReport {
+            version: 1,
+            // UUIDs have fixed wire width; budgeting must not request randomness.
+            invocation: uuid::Uuid::from_u128(1),
+            revision,
+            resource: &published.resource,
+            action: &published.action,
+            argument: (!published.arguments.is_empty())
+                .then_some(ReportArgument(&published.arguments)),
+            encoded,
+            context,
+            original_heads: &[],
+            mutation_hashes: &[],
+            group,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    // A worst-case decimal hash occupies 129 bytes, plus its separator.
+    // Replace the empty arrays with bounded hash lists, without allocating them.
+    let hashes = [before.len(), 256]
+        .into_iter()
+        .filter(|count| *count != 0)
+        .map(|count| count * 130 - 1)
+        .sum::<usize>();
+    counter.add(hashes).map_err(|error| error.to_string())?;
+    Ok(counter.bytes)
 }
 
 #[cfg(test)]
