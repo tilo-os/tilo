@@ -1279,12 +1279,18 @@ fn shortcut_guide_teaches_maximize_and_strip_chords() {
     )));
     let mut config = ShortcutConfig::default();
     let note = shortcuts::shortcut_strip_jump_note(&config);
-    assert!(note.contains("Super+1") && note.contains("Super+9"), "{note}");
+    assert!(
+        note.contains("Super+1") && note.contains("Super+9"),
+        "{note}"
+    );
     config
         .set(A::FocusStrip1, KeyChord::parse("Alt+Shift+1").unwrap())
         .unwrap();
     let note = shortcuts::shortcut_strip_jump_note(&config);
-    assert!(note.contains("Alt+Shift+1"), "the note follows a rebind: {note}");
+    assert!(
+        note.contains("Alt+Shift+1"),
+        "the note follows a rebind: {note}"
+    );
 }
 
 #[test]

@@ -4,15 +4,15 @@
 //! Deliberately a separate provider under a separate [`ResourceKind`]
 //! rather than more rows under [`ApplicationsProvider`]: a Tilo app runs
 //! sandboxed with one writable directory, a host app runs unconfined with
-//! the user's own files. Own chip ("Host Apps"), own group header, and a
-//! row that says "unconfined" outright.
+//! the user's own files. Own chip ("Host Apps") and own group header: the
+//! header says where the rows come from, so each row is just the app's name.
 //!
 //! [`ApplicationsProvider`]: super::applications::ApplicationsProvider
 
 use super::background_index::BackgroundIndex;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
-use crate::shell::i18n::{t, t_args};
+use crate::shell::i18n::t;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -180,29 +180,29 @@ impl HostApplicationsProvider {
             .iter()
             .filter_map(|hit| {
                 let app = apps.get(usize::try_from(hit.key).ok()?)?;
-                Some(self.row(app, score_for(needle, hit.rank)))
+                Some(self.row(app, score_for(needle, hit.rank), apps))
             })
             .collect()
     }
 
-    /// The open row for `app`.
-    fn row(&self, app: &HostApp, score: i32) -> SearchResult {
+    /// The open row for `app`, titled by its name. Its second line is empty:
+    /// the "Host Apps" group already says where it comes from, and its id is
+    /// searchable but never shown. Only when another of `apps` has the same
+    /// name does the row say which one it is (Flatpak or System).
+    fn row(&self, app: &HostApp, score: i32, apps: &[HostApp]) -> SearchResult {
+        let twin = apps
+            .iter()
+            .filter(|other| other.name.eq_ignore_ascii_case(&app.name))
+            .nth(1)
+            .is_some();
         let desktop_id = app.desktop_id.clone();
         let notify_name = app.name.clone();
         SearchResult::nullary(
             ResourceKind::HostApplication,
             self.id(),
             app.desktop_id.clone(),
-            t_args("search-host-app-open", &[("app", app.name.as_str().into())]),
-            // "Unconfined" is not decoration: this app is about to get
-            // the user's real home directory.
-            Some(t_args(
-                "search-host-app-subtitle",
-                &[
-                    ("source", app.source_display().into()),
-                    ("id", app.desktop_id.as_str().into()),
-                ],
-            )),
+            app.name.clone(),
+            twin.then(|| app.source_display()),
             score,
             move |_doc, _root, chrome: &Chrome| {
                 // Decided now, while the layout is still true; a
@@ -334,6 +334,18 @@ impl SearchProvider for HostApplicationsProvider {
     fn id(&self) -> &'static str {
         "host-applications"
     }
+    fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
+        result.id.eq_ignore_ascii_case(app_id)
+            || self.snapshot().is_some_and(|snapshot| {
+                snapshot.apps.iter().any(|app| {
+                    app.desktop_id == result.id
+                        && app
+                            .window_identities
+                            .iter()
+                            .any(|identity| identity.eq_ignore_ascii_case(app_id))
+                })
+            })
+    }
     fn name(&self) -> &str {
         HOST_APPLICATIONS_KIND
     }
@@ -400,7 +412,7 @@ impl SearchProvider for HostApplicationsProvider {
                         .installed_ids
                         .contains(&app.desktop_id.to_ascii_lowercase())
             })
-            .map(|app| self.row(app, score_for(ctx.needle, None)))
+            .map(|app| self.row(app, score_for(ctx.needle, None), &snapshot.apps))
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -438,7 +450,7 @@ impl SearchProvider for HostApplicationsProvider {
                 let app = usize::try_from(hit.key)
                     .ok()
                     .and_then(|at| snapshot.apps.get(at))?;
-                Some(self.row(app, score_for(ctx.needle, hit.rank)))
+                Some(self.row(app, score_for(ctx.needle, hit.rank), &snapshot.apps))
             },
         )
     }
@@ -537,7 +549,7 @@ mod tests {
             let p = HostApplicationsProvider::new();
             let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
             assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Open Spotify");
+            assert_eq!(out[0].title, "Spotify");
             assert_eq!(out[0].id, "com.spotify.Client");
             assert_eq!(out[0].kind, ResourceKind::HostApplication);
         }
@@ -628,7 +640,7 @@ mod tests {
                 &AllVisible,
             );
             if let Some(action) = catalog.select(&target) {
-                assert_eq!(action.title(), "Open Calculator");
+                assert_eq!(action.title(), "Calculator");
                 break;
             }
             assert!(
@@ -709,7 +721,7 @@ mod tests {
         let last = format!("org.fixture.App{:03}", count - 1);
         assert_eq!(
             select(&last).as_deref(),
-            Some(format!("Open App {:03}", count - 1).as_str()),
+            Some(format!("App {:03}", count - 1).as_str()),
             "an app past the first page must still open by its address"
         );
         assert_eq!(
@@ -785,7 +797,7 @@ mod tests {
             },
         );
         assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Open unique-tail");
+        assert_eq!(page.results[0].title, "unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
         assert!(!provider.index.building());
     }
@@ -877,36 +889,39 @@ mod tests {
                 max_work: 1,
             },
         );
-        assert_eq!(page.results[0].title, "Open unique-source-tail");
+        assert_eq!(page.results[0].title, "unique-source-tail");
     }
 
     #[test]
     fn host_app_rows_are_a_separate_lower_ranked_kind_that_names_its_provenance() {
-        // Phase `the_row_names_the_source_and_says_it_is_unconfined`.
-        // "Unconfined" in the subtitle is the whole point of the separate kind.
+        // Phase `the_row_is_the_app_name_without_metadata`.
+        // The group header says "Host Apps"; ids, provenance and "unconfined"
+        // are not row text. The id stays searchable.
         {
             let p = HostApplicationsProvider::new();
             let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
-            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-            assert!(subtitle.contains("Flatpak"), "{subtitle}");
-            assert!(
-                subtitle.contains("unconfined"),
-                "the user must be able to tell a confined Tilo app from an \
-                 unconfined host app without opening anything: {subtitle}"
-            );
-            assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
+            assert_eq!(out[0].title, "Spotify");
+            assert_eq!(out[0].subtitle, None, "no metadata under a lone app");
+            let by_id =
+                p.results_against("com.spotify", &[app("com.spotify.Client", "Spotify")], &[]);
+            assert_eq!(by_id.len(), 1, "the id is still searchable");
         }
 
-        // Phase `a_system_app_row_names_system_provenance`.
+        // Phase `two_apps_of_one_name_say_which_is_which`.
         {
             let p = HostApplicationsProvider::new();
             let system = HostApp {
                 source_label: "System",
                 ..app("org.gnome.Console", "Terminal")
             };
-            let out = p.results_against("terminal", &[system], &[]);
-            let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
-            assert!(subtitle.starts_with("System · unconfined host app ·"));
+            let flatpak = app("org.example.Terminal", "Terminal");
+            let out = p.results_against("terminal", &[system, flatpak], &[]);
+            let mut subtitles: Vec<_> = out
+                .iter()
+                .map(|row| row.subtitle.clone().expect("a twin names its source"))
+                .collect();
+            subtitles.sort();
+            assert_eq!(subtitles, ["Flatpak", "System"]);
         }
 
         // Phase `host_apps_are_a_separate_kind_from_tilo_applications`.

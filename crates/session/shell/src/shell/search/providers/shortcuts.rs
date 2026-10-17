@@ -28,7 +28,7 @@ use tilo_automation::{SHORTCUTS_APP_ID, quick_action_arguments, quick_action_inp
 use crate::shell::automation_host::run_target;
 use crate::shell::chrome_state::SearchResourceScope;
 use crate::shell::collab_broker::AppActionBroker;
-use crate::shell::i18n::{t, t_args};
+use crate::shell::i18n::t_args;
 use crate::shell::remote_actions::BrokerActionHost;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
@@ -120,11 +120,7 @@ impl ShortcutsProvider {
             ),
             title: descriptor.action_label.clone(),
             subtitle,
-            badge: Some(if quick.is_some() {
-                t("search-badge-quick-action")
-            } else {
-                t("search-badge-shortcut")
-            }),
+            badge: None,
             score,
             params,
             contract: Some(descriptor.contract),
@@ -402,7 +398,10 @@ mod tests {
         let offered = query(&provider, &chrome);
         assert_eq!(ids(&offered), ["shortcuts.shortcut:archive-file#run"]);
         let row = &offered[0];
-        assert_eq!(row.badge.as_deref(), Some("Quick action"));
+        assert_eq!(
+            row.badge, None,
+            "the trailing slot is for live state, not the kind"
+        );
         assert_eq!(row.subtitle.as_deref(), Some("Run on receipt.pdf"));
         assert_eq!(
             row.params

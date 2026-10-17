@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::shell::chrome_state::Chrome;
-use crate::shell::i18n::{t, t_args};
+use crate::shell::i18n::t_args;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 use tilo_tray_host::{Tray, TrayItem, TrayRequest};
@@ -78,7 +78,7 @@ fn row(
             "search-tray-in-top-bar",
             &[("item", item.title.as_str().into())],
         )),
-        badge: Some(t("search-badge-tray")),
+        badge: None,
         score,
         params: Vec::new(),
         contract: Some(tilo_actions::ActionContract {

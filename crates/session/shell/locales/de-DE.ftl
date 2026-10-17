@@ -1195,15 +1195,24 @@ search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
 search-provider-files = Dateien
+search-kind-answers = Antworten
+search-kind-people = Personen
+search-group-recent = Zuletzt
+search-provider-quick-answers = Schnelle Antworten
+search-provider-people = Personen
+search-answer-sum = { $expression } =
+search-answer-copied = Kopiert
+search-answer-open-address = { $address } öffnen
+search-answer-web = Im Web nach „{ $query }“ suchen
+search-answer-no-browser = Keine App auf diesem Desktop öffnet Webadressen.
+search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
+search-people-invited = Eingeladen
+search-action-emoji-picker = Emoji auswählen
+search-action-emoji-picker-subtitle = Dort einfügen, wo du schreibst
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
 
 # Kennzeichen von Suchergebnissen
-search-badge-media = Medien
-search-badge-session = Sitzung
-search-badge-quick-action = Schnellaktion
-search-badge-shortcut = Kurzbefehl
-search-badge-tray = Statusbereich
 
 # Suche: Wiedergabesteuerung eines laufenden Players
 search-media-pause = { $player } pausieren
@@ -1220,9 +1229,11 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 
 # Suche: Dateien
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
+search-files-folder-failed = Dateien konnte diesen Ordner nicht öffnen.
+search-files-home = Persönlicher Ordner
+search-files-location = { $folder } · { $age }
 
 # Suche: Host-Apps
-search-host-app-subtitle = { $source } · nicht isolierte Host-App · { $id }
 
 # Suche: Aufträge und Ressourcen von App-Aktionen
 search-app-job = Aktionsauftrag { $id }
@@ -1271,7 +1282,7 @@ search-action-feedback-open-subtitle = Ein Problem oder eine Idee zum Fenster im
 feedback-action-unavailable = Feedback ist auf diesem Desktop nicht verfügbar
 search-action-topbar-editor = Obere Leiste bearbeiten
 search-action-topbar-editor-subtitle = Widgets der oberen Leiste neu anordnen, hinzufügen oder entfernen
-search-action-overview-toggle = Arbeitsbereichsübersicht ein- oder ausblenden
+search-action-overview-toggle = Arbeitsbereichsübersicht zeigen
 search-action-overview-toggle-subtitle = Alle Arbeitsbereiche in der Radansicht zeigen
 search-action-settings-open = Arbeitsbereichseinstellungen öffnen
 search-action-settings-open-subtitle = Identität, Personen, Datenschutz, Apps und Dateien dieses Arbeitsbereichs
@@ -1310,7 +1321,7 @@ search-action-display-change-keep-subtitle = Die gerade angewendete Bildschirman
 search-action-display-change-revert = Bildschirmeinstellungen zurücksetzen
 search-action-display-change-revert-subtitle = Die Bildschirmanordnung von vor der letzten Änderung wiederherstellen
 search-action-display-outputs-inspect = Bildschirme prüfen
-search-action-display-outputs-inspect-subtitle = Angeschlossene Bildschirme mit Skalierung, Position, Modus und Hauptbildschirm, die aktuelle Anordnung und eine Änderung, die auf Bestätigung wartet
+search-action-display-outputs-inspect-subtitle = Skalierung, Position und Modus jedes Bildschirms
 search-action-bluetooth-pairing-decline = Bluetooth-Kopplung ablehnen
 search-action-bluetooth-pairing-decline-subtitle = Die angezeigte Kopplungsanfrage ablehnen oder die Kopplung beenden, deren Code angezeigt wird
 search-action-capture-open = Bildschirmfoto oder Bildschirmbereich schweben lassen
@@ -1387,16 +1398,16 @@ search-action-tab-move-to-group-previous = Diesen Tab in die linke Gruppe versch
 search-action-tab-move-to-group-previous-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe links verschieben
 search-action-tab-move-to-group-next = Diesen Tab in die rechte Gruppe verschieben
 search-action-tab-move-to-group-next-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe rechts verschieben
-search-action-notifications-dnd-toggle = „Bitte nicht stören“ umschalten
-search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner stummschalten; zurückgehaltene Benachrichtigungen landen im Verlauf
-search-action-appearance-theme-dark = Dunkles Theme setzen
-search-action-appearance-theme-dark-subtitle = Dunkle Erscheinung für Chrome und Apps verwenden
-search-action-appearance-theme-light = Helles Theme setzen
-search-action-appearance-theme-light-subtitle = Helle Erscheinung für Chrome und Apps verwenden
-search-action-appearance-high-contrast = Hohen Kontrast setzen
-search-action-appearance-high-contrast-subtitle = Kontrast der aktuellen Erscheinung erhöhen
-search-action-appearance-language = Sprache festlegen
-search-action-appearance-language-subtitle = Desktop-Sprache in den Einstellungen ändern
+search-action-notifications-dnd-toggle = Bitte nicht stören
+search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner zurückhalten, bis du wieder da bist
+search-action-appearance-theme-dark = Dunkles Design
+search-action-appearance-theme-dark-subtitle = Dunkle Oberfläche und Apps
+search-action-appearance-theme-light = Helles Design
+search-action-appearance-theme-light-subtitle = Helle Oberfläche und Apps
+search-action-appearance-high-contrast = Hoher Kontrast
+search-action-appearance-high-contrast-subtitle = Mehr Kontrast im aktuellen Design
+search-action-appearance-language = Sprache ändern
+search-action-appearance-language-subtitle = Die Sprache des Desktops, in den Einstellungen
 search-action-identity-connect = Vorhandene Identität hinzufügen
 search-action-identity-connect-subtitle = Identitätszugangsdaten importieren und in diesem Arbeitsbereich verwenden
 search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
@@ -1453,14 +1464,14 @@ search-action-agent-remove = Agenten entfernen
 search-action-agent-remove-subtitle = Einen Agenten aus diesem Arbeitsbereich nehmen und sofort alles widerrufen, was er hier tun durfte
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
-search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen
-search-action-quick-settings-brightness-set-subtitle = Die Helligkeit eines Monitors in Prozent festlegen: die Hintergrundbeleuchtung des Panels oder ein externer Monitor über DDC/CI
-search-action-quick-settings-volume-set = Ausgabelautstärke festlegen
-search-action-quick-settings-volume-set-subtitle = Die Standard-Audioausgabe dieses Geräts in Prozent festlegen
+search-action-quick-settings-brightness-set = Helligkeit
+search-action-quick-settings-brightness-set-subtitle = Helligkeit eines Bildschirms festlegen
+search-action-quick-settings-volume-set = Lautstärke
+search-action-quick-settings-volume-set-subtitle = Lautstärke der Tonausgabe festlegen
 search-action-quick-settings-wifi-set-enabled = WLAN ein- oder ausschalten
 search-action-quick-settings-wifi-set-enabled-subtitle = Das WLAN-Funkmodul dieses Geräts ein- oder ausschalten
-search-action-quick-settings-power-profile-set = Energieprofil festlegen
-search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung für dieses Gerät wählen
+search-action-quick-settings-power-profile-set = Energiemodus
+search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung
 search-action-quick-settings-vpn-set-enabled = VPN ein- oder ausschalten
 search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbindung auf diesem Gerät ein- oder ausschalten
 search-action-quick-settings-bluetooth-set-enabled = Bluetooth ein- oder ausschalten
@@ -1512,12 +1523,11 @@ search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
 # Suche: Anwendungen
-search-apps-detail-grouped = { $group } · { $detail }
-search-apps-open = { $app } öffnen
 search-apps-shortcut-subtitle = Verknüpfung
 search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
 search-apps-verification-pending = Prüfung durch die Registry ausstehend
 search-apps-store-subtitle = App Store · { $trust } · { $detail }
+search-apps-store-subtitle-bare = App Store · { $trust }
 search-apps-view-in-store = { $app } im App Store ansehen
 search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
 
@@ -2494,8 +2504,8 @@ session-diagnostics-profile-already-recording = Es wird bereits ein Profil in { 
 session-diagnostics-profile-not-created = Das Profil konnte nicht angelegt werden: { $error }
 
 device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht verfügbar. Aktualisieren und erneut versuchen.
-search-action-activity-acknowledge = Gesehene Aktivitäten bestätigen
-search-action-activity-acknowledge-subtitle = Ungesehene Änderungen und wartende Aufgaben bleiben offen
+search-action-activity-acknowledge = Aktivität als gesehen markieren
+search-action-activity-acknowledge-subtitle = Was du angesehen hast, zählt nicht mehr als neu
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
 search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
 search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
@@ -2532,7 +2542,6 @@ device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschö
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
 
 search-provider-system-settings = Systemeinstellungen
-search-badge-settings = Einstellungen
 setting-never = Nie
 setting-minutes = { $minutes ->
         [one] 1 Minute
@@ -2546,9 +2555,6 @@ setting-mode-automatic = Automatisch
 setting-mode-unset = Folgt dem Design
 setting-get = { $name }: { $value }
 setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
-setting-current = Aktuell { $value }
-setting-set = { $name } ändern
-setting-toggle = { $name } umschalten
 setting-power-lock-after = Bildschirm sperren nach
 setting-power-lock-after-words = automatisch sperren sperrzeit inaktivität lock screen
 setting-power-blank-after = Bildschirm ausschalten nach
@@ -2605,7 +2611,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-search-host-app-open = { $app } öffnen
 palette-show-all = Alle { $count } zeigen
 palette-value-on = Ein
 palette-value-off = Aus
@@ -2693,15 +2698,12 @@ agent-quick-stop-refused = Konnte nicht gestoppt werden. Versuch es noch einmal.
 ## die Listen aller Sprachen, gleich welche Sprache der Desktop spricht.
 search-kind-settings-pages = Einstellungen
 search-settings-page-subtitle = Persönliche Einstellungen
-search-toggle-wifi-on = WLAN einschalten
-search-toggle-wifi-off = WLAN ausschalten
-search-toggle-wifi-subtitle = Das WLAN-Funkmodul dieses Geräts schalten
-search-toggle-bluetooth-on = Bluetooth einschalten
-search-toggle-bluetooth-off = Bluetooth ausschalten
-search-toggle-bluetooth-subtitle = Das Bluetooth-Funkmodul dieses Geräts schalten
-search-toggle-airplane-mode-on = Flugmodus einschalten
-search-toggle-airplane-mode-off = Flugmodus ausschalten
-search-toggle-airplane-mode-subtitle = Alle Funkmodule dieses Geräts ausschalten
+search-toggle-wifi = WLAN
+search-toggle-wifi-subtitle = WLAN ein- oder ausschalten
+search-toggle-bluetooth = Bluetooth
+search-toggle-bluetooth-subtitle = Bluetooth ein- oder ausschalten
+search-toggle-airplane-mode = Flugmodus
+search-toggle-airplane-mode-subtitle = Alle Funkverbindungen ausschalten
 search-badge-state-current = Aktuell
 search-provider-settings-pages = Einstellungsseiten
 search-kw-dictation-toggle = diktieren, diktat, sprache zu text, spracheingabe, mikrofon
@@ -2790,6 +2792,7 @@ search-kw-quick-settings-wifi-toggle = wlan, wifi, wi-fi, drahtlos, internet, ne
 search-kw-quick-settings-bluetooth-toggle = bluetooth, kopfhörer, koppeln, drahtlos
 search-kw-quick-settings-airplane-mode-toggle = flugmodus, flugzeugmodus, funk aus, offline
 search-kw-session-lock = sperren, bildschirm sperren, sperrbildschirm, sperre, bildschirmschoner
+search-kw-emoji-picker = emoji, emojis, smiley, emoticon, gesicht, :
 search-kw-session-switch-user = benutzer wechseln, konto wechseln, anderer benutzer
 search-kw-session-suspend = ruhezustand, standby, energiesparmodus, schlafen, bereitschaft
 search-kw-session-restart = neu starten, neustart, rechner neu starten, reboot
