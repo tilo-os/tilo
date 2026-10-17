@@ -89,7 +89,9 @@ impl Fixture for Scenario {
     }
 
     fn validate(&self, root: &Path) -> Result<Inputs> {
-        assert_eq!(fs::read(root.join("kernel/7/vmlinuz"))?, b"kernel");
+        if fs::read(root.join("kernel/7/vmlinuz"))? != b"kernel" {
+            return Err(Error("fixture kernel differs from expected bytes".into()));
+        }
         Ok(Inputs {
             version: "7".into(),
             kernel: root.join("kernel/7/vmlinuz"),
@@ -106,7 +108,11 @@ impl Fixture for Scenario {
         selected: &Selected,
     ) -> Result<String> {
         self.promoted.set(true);
-        assert_eq!(selected.update_origin.as_deref(), Some("registry/test"));
+        if selected.update_origin.as_deref() != Some("registry/test") {
+            return Err(Error(
+                "fixture update origin differs from registry/test".into(),
+            ));
+        }
         let digest = "c".repeat(128);
         let uki = esp.join(format!("EFI/Linux/bootc/bootc_composefs-{digest}.efi"));
         let mut bytes = pe(b"root=tilo-auto");
