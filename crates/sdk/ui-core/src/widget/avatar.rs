@@ -1054,8 +1054,11 @@ mod tests {
             .with_widget_mut::<Avatar, _>(|avatar| (std::ptr::from_ref(avatar), avatar.get_rect()))
             .unwrap();
         name.set("Ada Lovelace".to_owned());
-        // Pump the actual retained widget binding and layout; a name edit must
-        // not rebuild the neighbouring editor or replace its presentation state.
+        // Run the root's production update/sync/layout passes before inspecting
+        // the widgets: with_widget_mut invokes its visitor before pumping a frame.
+        // A name edit must not rebuild the neighbouring editor or replace its
+        // presentation state.
+        harness.relayout();
         harness
             .with_widget_mut::<Avatar, _>(|avatar| {
                 assert_eq!(std::ptr::from_ref(avatar), original.0);
