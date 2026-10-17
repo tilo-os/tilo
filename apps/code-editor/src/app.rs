@@ -524,8 +524,8 @@ pub struct CodeApp {
     bound_node: Option<TreeId>,
     /// One-time seed guard for the CRDT buffers.
     seeded: bool,
-    /// The file whose disk text was last submitted to the document, and
-    /// when: the submission is repeated until the document holds the text.
+    /// The file whose disk text the document refused last, and when: the
+    /// recording is tried again until the document holds the text.
     text_seed: Option<(String, std::time::Instant)>,
 
     /// The embedded system terminal, spawned lazily the first time the Terminal
@@ -1114,14 +1114,6 @@ impl CodeApp {
         }
     }
 
-    /// Submit `action` through the framework's door; it applies after the
-    /// event.
-    fn submit(&self, action: &actions::Action) {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.apply(action);
-        }
-    }
-
     /// Keep the open buffers' saved-on-disk comparison current, and bind the
     /// editor to the active buffer's text. Reads only: a buffer's text is
     /// seeded when its file is opened ([`Self::open_node`]).
@@ -1163,8 +1155,6 @@ impl CodeApp {
             }
         }
 
-        self.record_missing_text(doc);
-
         // Bind the editor to the active buffer.
         let active = self.session.active_buffer().map(|b| (b.node, b.language));
         match active {
@@ -1185,13 +1175,17 @@ impl CodeApp {
         }
     }
 
-    /// Record again the disk text of the file the window shows while the
-    /// document does not hold it. Opening a file submits its text once, and
-    /// that submission can be refused — a launch hands the editor its file
-    /// before its record takes changes — which left the file open with an
-    /// empty editor and nothing to select or edit. Repeated at most once a
-    /// second; recording text the document already holds changes nothing.
-    fn record_missing_text(&mut self, doc: &AutoCommit) {
+    /// Record the disk text of the file the window shows when the document
+    /// does not hold it yet: the first time the file is opened in the
+    /// project, once its entry is recorded. Applied in the settlement as
+    /// the person's own edit, like their typing. Opening used to queue this
+    /// recording from the open itself, and a launch that hands the editor its
+    /// file queued it before the record would take it, which left the file
+    /// open over an empty "No file open" editor with nothing to select or
+    /// edit. Text already there — a collaborator's or an earlier session's
+    /// unsaved edits — is kept. A refused recording is tried again at most
+    /// once a second.
+    fn record_missing_text(&mut self, doc: &mut ui::widget::Edits<'_>) {
         const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
         let Some(buffer) = self.session.active_buffer() else {
             return;
@@ -1208,17 +1202,26 @@ impl CodeApp {
         {
             return;
         }
+        // The file's own entry is recorded first (`record_disk_entries`):
+        // text for a file the project does not hold yet is not taken.
+        if EditorDoc::file(doc, &key).is_none() {
+            return;
+        }
         let now = std::time::Instant::now();
         if self
             .text_seed
             .as_ref()
-            .is_some_and(|(seeded, at)| *seeded == key && now.duration_since(*at) < RETRY)
+            .is_some_and(|(refused, at)| *refused == key && now.duration_since(*at) < RETRY)
         {
             return;
         }
         let text = buffer.saved_text.clone();
-        self.text_seed = Some((key.clone(), now));
-        self.submit(&actions::record_text_action(key, text));
+        if let Err(error) = self.submit_now(doc, &actions::record_text_action(key.clone(), text)) {
+            tracing::warn!(%error, file = %key, "the shown file's text was not recorded");
+            self.text_seed = Some((key, now));
+        } else {
+            self.text_seed = None;
+        }
     }
 
     /// Ask for the text of the file the window shows, and only that.
@@ -1260,15 +1263,8 @@ impl CodeApp {
         let name = buffer.name.clone();
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
-                let key = self.buffer_key(node);
-                let already_opened = self
-                    .live_state
-                    .as_ref()
-                    .is_some_and(|live| live.with(|state| state.buffers.contains_key(&key)));
-                if !already_opened {
-                    self.text_seed = Some((key.clone(), std::time::Instant::now()));
-                    self.submit(&actions::record_text_action(key, text.clone()));
-                }
+                // The text itself is recorded by the next settlement
+                // ([`Self::record_missing_text`]), as the person's own edit.
                 let path = self.session.project.disk_path_of(node);
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
                     buffer.path = path;
@@ -3066,6 +3062,7 @@ impl Widget for CodeApp {
                 Err("file could not be saved".into())
             });
         }
+        self.record_missing_text(state);
         self.dispatch_editor_text_edits(state);
         self.drive_find(state);
         for child in self.children_mut() {

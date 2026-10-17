@@ -59,6 +59,9 @@ mod tests {
                 "mail-setup-tls",
                 "mail-setup-advanced",
                 "mail-setup-save",
+                "mail-setup-saving",
+                "mail-setup-sign-in",
+                "mail-setup-signing-in",
                 "mail-setup-cancel",
                 "mail-setup-remove",
                 "mail-compose-label-to",
@@ -73,6 +76,7 @@ mod tests {
                 "mail-compose-prompt-link",
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
+                "mail-contact-write",
                 "mail-setup-oauth-provider-fallback",
                 "mail-setup-oauth-note-unavailable",
             ] {
