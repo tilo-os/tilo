@@ -134,6 +134,14 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::ExternalModeration { .. } => {
                 // No host authority here: dropping response custody refuses the request.
             }
+            CollabRequest::ReportLocalDocumentAction { request_id, .. } => {
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::LocalDocumentActionReported {
+                        request_id,
+                        result: Err("memory relay has no authenticated admission authority".into()),
+                    });
+                }
+            }
             CollabRequest::Document { mutation, .. } => {
                 let mutation = relay_mutation(mutation);
                 let event = document_event(&mutation, &from);

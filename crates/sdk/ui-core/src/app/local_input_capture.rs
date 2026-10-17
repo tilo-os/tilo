@@ -20,6 +20,13 @@ struct PendingCapture {
     _lease: crate::local_document_action::Lease,
 }
 
+impl LocalInputCapture {
+    #[cfg(test)]
+    pub(super) fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+}
+
 fn retained_size(capture: &crate::local_document_action::CapturedAction, admission: &str) -> usize {
     // Include allocations duplicated in the typed and published forms.
     capture.encoded.payload.len()
