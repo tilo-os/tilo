@@ -13,7 +13,13 @@ async fn publish_receipt_read(rig: &Rig, env: &Environment) {
 }
 
 fn receipt_record(rig: &Rig, wire: u64) -> DurableInvocation {
-    let key = rig.state.pending_invocations.lock().unwrap()[&wire]
+    let key = rig
+        .state
+        .pending_invocations
+        .lock()
+        .unwrap()
+        .get(&wire)
+        .expect("invocation remains pending")
         .journal_key
         .clone()
         .expect("automatic journal admission");
@@ -94,7 +100,7 @@ fn assert_receipt_substitution_refused(
     }
     let mut forged = receipt.clone();
     forged.intent_commitment[0] ^= 1;
-    assert!(crate::action_evidence::verify(&forged, &expected).is_err());
+    assert!(crate::action_evidence::verify(&forged, expected).is_err());
 }
 
 async fn assert_receipt_observation(
@@ -150,13 +156,23 @@ async fn assert_receipt_observation(
         "observation replay neither appends nor dispatches"
     );
     use crate::test_support::{Grants as _, KindSet};
-    env.membership.write().workspaces[0].admit_agent("receipt-observer", KindSet::READ);
-    env.membership.write().workspaces[0].allow_app(
-        tilo_action_policy::Subject::agent("receipt-observer"),
-        &env.route.app_id,
-        KindSet::ALL,
-    );
-    let stranger = rig.caller(&env, 904, Some("receipt-observer")).await;
+    env.membership
+        .write()
+        .workspaces
+        .get_mut(0)
+        .expect("workspace exists")
+        .admit_agent("receipt-observer", KindSet::READ);
+    env.membership
+        .write()
+        .workspaces
+        .get_mut(0)
+        .expect("workspace exists")
+        .allow_app(
+            tilo_action_policy::Subject::agent("receipt-observer"),
+            &env.route.app_id,
+            KindSet::ALL,
+        );
+    let stranger = rig.caller(env, 904, Some("receipt-observer")).await;
     assert!(
         stranger
             .handle
@@ -559,9 +575,8 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
                 serde_json::json!({"substituted": field})
             };
             std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
-            let error = match InvocationJournal::open(&root) {
-                Ok(_) => panic!("tampered retained {field} was accepted"),
-                Err(error) => error,
+            let Err(error) = InvocationJournal::open(&root) else {
+                panic!("tampered retained {field} was accepted");
             };
             let expected_error = if field == "actor" {
                 "admission facts do not match"

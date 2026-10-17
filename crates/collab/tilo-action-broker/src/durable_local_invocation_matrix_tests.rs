@@ -51,7 +51,7 @@ mod durable_local_matrix {
                 .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity_host::provisioning::ensure_collaboration_identity(
                 &root.path().join("config/tilo/identity"),
-                &tilo_user_identity::IdentityPaths::under(&root.path().join("identity")),
+                &tilo_user_identity::IdentityPaths::under(root.path().join("identity")),
                 tilo_identity_host::provisioning::IdentityStorage::Files,
             )
             .expect("provision real host receipt signer");
@@ -1120,12 +1120,15 @@ mod durable_local_matrix {
                     wait_ms: None,
                     appearance: None,
                 };
-                assert!(matches!(
-                    rig.state
-                        .action_invoke_with_origin(&caller, None, None, Some(&origin), &request,)
-                        .poll_ready(),
-                    tilo_actions::remote::PendingPoll::Ready(Ok(_))
-                ));
+                local_host_answer(rig.state.action_invoke_with_origin(
+                    &caller,
+                    None,
+                    None,
+                    Some(&origin),
+                    &request,
+                ))
+                .await
+                .expect("the broker admits the queued original caller");
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 let request = ui::invocation_scope::PublishedInvocationRequest {
                     wire_id: delivered.id,

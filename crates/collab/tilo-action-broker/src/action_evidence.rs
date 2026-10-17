@@ -178,6 +178,10 @@ pub(crate) fn mint_terminal(
 }
 
 /// Apply the same independent signer trust policy as for [`verify`].
+///
+/// # Errors
+/// Returns an error if admission or terminal encoding fails, the terminal
+/// references another admission, or its certificate, signer or signature is invalid.
 pub fn verify_terminal(
     terminal: &TerminalReceipt,
     admission: &AdmissionReceipt,
@@ -248,6 +252,10 @@ fn mint_with_signer(
 /// and certificate validity policy. Supply expected facts from trusted state,
 /// not by copying them from an untrusted receipt. Replays with identical facts
 /// still verify: the durable journal owns invocation uniqueness and dispatch.
+///
+/// # Errors
+/// Returns an error if the facts differ, encoding fails, or the certificate,
+/// signer key or receipt signature is invalid.
 pub fn verify(receipt: &AdmissionReceipt, expected_facts: &AdmissionFacts) -> Result<(), String> {
     if receipt.facts != *expected_facts {
         return Err("admission facts do not match".into());
@@ -273,6 +281,10 @@ impl AdmissionEvidence {
 
     /// Validate recovered private journal data without retaining plaintext.
     /// Caller must also apply signer trust policy as documented on [`verify`].
+    ///
+    /// # Errors
+    /// Returns an error if receipt verification fails or the private opening
+    /// does not match the receipt's intent commitment.
     pub fn validate(&self, expected_facts: &AdmissionFacts) -> Result<(), String> {
         verify(&self.receipt, expected_facts)?;
         self.opening.validate_commitment(&self.receipt)
@@ -288,6 +300,9 @@ impl AdmissionEvidence {
     /// Release the private opening only for the exact original owner. The
     /// caller must authenticate the live observer before supplying its actor;
     /// equality with a deserialized identity is not authentication.
+    ///
+    /// # Errors
+    /// Returns an error if the observer is not the original owner.
     pub fn opening_for_owner(&self, observer: &VerifiedActor) -> Result<&IntentOpening, String> {
         if observer != &self.receipt.facts.actor {
             return Err("admission opening belongs to another owner".into());
@@ -300,6 +315,10 @@ impl IntentOpening {
     /// Check the complete original intent against this opening and receipt.
     /// Also call [`verify`] with independently expected facts and trust policy;
     /// a commitment check alone does not authenticate the receipt.
+    ///
+    /// # Errors
+    /// Returns an error if intent encoding fails, the intent digest differs,
+    /// or this opening does not match the receipt's intent commitment.
     pub fn verify(&self, receipt: &AdmissionReceipt, exact_intent: &Value) -> Result<(), String> {
         if intent_digest(exact_intent)? != self.intent_digest {
             return Err("admission intent does not match".into());
@@ -358,7 +377,7 @@ fn canonical_bytes(value: &Value) -> Result<Vec<u8>, String> {
         match value {
             Value::Object(map) => {
                 let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                entries.sort_unstable_by_key(|(key, _)| *key);
                 Value::Object(
                     entries
                         .into_iter()

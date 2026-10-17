@@ -386,7 +386,7 @@ impl OriginalRoom {
             .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity_host::provisioning::ensure_collaboration_identity(
             &fixture_root.path().join("config/tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(&fixture_root.path().join("identity")),
+            &tilo_user_identity::IdentityPaths::under(fixture_root.path().join("identity")),
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");

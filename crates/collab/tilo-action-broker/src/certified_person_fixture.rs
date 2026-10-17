@@ -46,7 +46,7 @@ pub fn certified_person_fixture_for_seeds(
 ) -> CertifiedPersonFixture {
     let evidence_home = tilo_test_env::TestHome::new().unwrap();
     let identity_paths =
-        tilo_user_identity::IdentityPaths::under(&evidence_home.root().join("system-identity"));
+        tilo_user_identity::IdentityPaths::under(evidence_home.root().join("system-identity"));
     let mut evidence_env = tilo_test_env::ScopedEnv::new();
     evidence_env
         .set(

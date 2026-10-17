@@ -192,18 +192,17 @@ impl CapnpBrokerState {
                                 host,
                                 catalogue: serde_json::Value::Null,
                             }),
-                            Some(evidence) => Ok(state
-                                .peer_action(
-                                    &directories,
-                                    evidence,
-                                    request.poll,
-                                    request.notification,
-                                    policy_time.as_ref(),
-                                )
-                                .await
-                                .unwrap_or_else(|refusal| ActionMessage::Rejected {
-                                    code: refusal.code().into(),
-                                })),
+                            Some(evidence) => Ok(Box::pin(state.peer_action(
+                                &directories,
+                                evidence,
+                                request.poll,
+                                request.notification,
+                                policy_time.as_ref(),
+                            ))
+                            .await
+                            .unwrap_or_else(|refusal| ActionMessage::Rejected {
+                                code: refusal.code().into(),
+                            })),
                         },
                     };
                     // Dropped reply is uncertainty, never rollback/re-execution.
