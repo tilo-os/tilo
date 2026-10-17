@@ -20,6 +20,12 @@ pub struct RoomPolicy {
     pub owner: Option<String>,
     /// Members other than the owner and the role preset each holds.
     pub members: BTreeMap<String, Role>,
+    /// When the room admitted each member, Unix milliseconds, by person id.
+    /// Recorded once, by whoever admitted them, and kept through role
+    /// changes; a member admitted before rooms recorded it has none. People
+    /// who share a name are numbered in this order.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub joined: BTreeMap<String, u64>,
     /// Every grant in the room, role presets included.
     pub grants: Vec<Grant>,
 }
@@ -173,6 +179,7 @@ impl RoomPolicy {
             room,
             owner: Some(owner),
             members: BTreeMap::new(),
+            joined: BTreeMap::new(),
             grants,
         }
     }
@@ -186,6 +193,7 @@ impl RoomPolicy {
             room,
             owner: None,
             members: BTreeMap::new(),
+            joined: BTreeMap::new(),
             grants,
         }
     }
@@ -220,6 +228,17 @@ impl RoomPolicy {
             return Some(Role::Owner);
         }
         self.members.get(person).copied()
+    }
+
+    /// When the room admitted `person`, Unix milliseconds: as recorded, or
+    /// for an owner the room has no time for, `0`, as they hold it since it
+    /// began. `None` for a non-member or a member admitted unrecorded.
+    #[must_use]
+    pub fn joined_at(&self, person: &str) -> Option<u64> {
+        self.joined
+            .get(person)
+            .copied()
+            .or_else(|| self.is_owner(person).then_some(0))
     }
 
     /// Whether `person` is blocked: their own grants deny every kind on the
@@ -523,7 +542,11 @@ impl RoomPolicy {
         self.check_change(actor_person, actor, &change, cx)?;
         self.spend(&spent);
         match change {
-            Change::AddMember { person, role } | Change::SetRole { person, role } => {
+            Change::AddMember { person, role } => {
+                self.joined.entry(person.clone()).or_insert(cx.now_unix_ms);
+                self.members.insert(person, role);
+            }
+            Change::SetRole { person, role } => {
                 self.members.insert(person, role);
             }
             Change::RemoveMember { person } => self.drop_member(&person),
@@ -562,6 +585,7 @@ impl RoomPolicy {
     /// The member and every grant naming them leave the room.
     fn drop_member(&mut self, person: &str) {
         self.members.remove(person);
+        self.joined.remove(person);
         let subject = Subject::Person(person.to_owned());
         self.grants.retain(|grant| grant.subject != subject);
     }

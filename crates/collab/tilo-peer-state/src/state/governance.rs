@@ -717,6 +717,7 @@ impl PeerGovernanceMut<'_> {
         ));
         if member {
             doc.delete(&members, person.as_str()).map_err(err)?;
+            crate::state::delete_member_joined(&mut doc, &person)?;
         }
         for id in personal {
             doc.delete(&grants, id.as_str()).map_err(err)?;

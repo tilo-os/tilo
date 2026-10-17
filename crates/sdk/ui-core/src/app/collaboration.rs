@@ -1163,6 +1163,10 @@ impl App {
                 crate::permissions::UserId(participant.id.clone()),
                 participant.is_agent,
             );
+            self.presence_ctx.set_joined_at(
+                crate::permissions::UserId(participant.id.clone()),
+                participant.joined_at,
+            );
         }
         if let Some(me) = collaborators.iter().find(|c| c.is_self) {
             self.presence_ctx

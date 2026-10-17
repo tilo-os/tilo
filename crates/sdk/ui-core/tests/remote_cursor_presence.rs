@@ -76,6 +76,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
                 colour: None,
                 is_agent: true,
                 is_self: false,
+                joined_at: None,
             }],
             permissions: vec![],
         });

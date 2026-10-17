@@ -49,6 +49,9 @@ pub const ROOM_AUTOMATIONS_KEY: &str = "automations_v1";
 pub const ROOM_PRESETS_KEY: &str = "presets_v1";
 /// Key of the map from member person id to the role preset they hold.
 pub const ROOM_MEMBERS_KEY: &str = "members";
+/// Key of the map from member person id to when the room admitted them,
+/// Unix milliseconds (JSON bytes). Written once by the admitting authority.
+pub const ROOM_MEMBERS_JOINED_KEY: &str = "members_joined_v1";
 /// Key of the map from grant id to the grant (JSON bytes).
 pub const ROOM_GRANTS_KEY: &str = "grants";
 /// Key of the map from sandbox capability id to the capability (JSON bytes).
@@ -454,6 +457,12 @@ pub fn project_room_policy(
     ensure_map(doc, ROOM_MEMBERS_KEY)?;
     ensure_map(doc, ROOM_GRANTS_KEY)?;
     project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
+    let joined = policy
+        .joined
+        .iter()
+        .filter_map(|(person, at)| Some((person.clone(), serde_json::to_vec(at).ok()?)))
+        .collect();
+    project_blob_map(doc, ROOM_MEMBERS_JOINED_KEY, joined)?;
     let grants = policy
         .grants
         .iter()
@@ -531,6 +540,9 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         .flatten()
         .and_then(|(value, _)| value.into_string().ok());
     let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
+    let joined = blob_map_of(doc, ROOM_MEMBERS_JOINED_KEY)
+        .into_iter()
+        .collect();
     let open = open_task_ids(doc);
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
@@ -542,6 +554,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         room: room.to_owned(),
         owner,
         members,
+        joined,
         grants,
     }
 }

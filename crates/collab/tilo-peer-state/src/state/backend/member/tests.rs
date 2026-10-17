@@ -83,6 +83,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
     let policy = crate::cached_document::PolicyData {
         owner: room_policy.owner.clone(),
         members: room_policy.members.clone(),
+        joined: room_policy.joined.clone(),
         grants: room_policy.grants.clone(),
         identities,
     };

@@ -7,6 +7,11 @@ pub(crate) trait Destination {
     fn owner(&mut self, value: &str) -> Result<(), Self::Error>;
     fn grant(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
     fn member(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
+    /// When a member was admitted; only a destination that shows people
+    /// keeps it.
+    fn member_joined(&mut self, _key: &str, _bytes: &[u8]) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
 }
 pub(crate) fn project<R: RoomRead, D: Destination>(
@@ -17,6 +22,7 @@ pub(crate) fn project<R: RoomRead, D: Destination>(
         GovernanceEntry::Owner(value) => destination.owner(value),
         GovernanceEntry::Grant { bytes, .. } => destination.grant(bytes),
         GovernanceEntry::Member { key, bytes } => destination.member(key, bytes),
+        GovernanceEntry::MemberJoined { key, bytes } => destination.member_joined(key, bytes),
         GovernanceEntry::Identity { key, bytes } => destination.identity(key, bytes),
         GovernanceEntry::Peer { .. } | GovernanceEntry::Sandbox { .. } => Ok(()),
     })
@@ -39,6 +45,12 @@ impl Destination for PolicyData {
         }
         Ok(())
     }
+    fn member_joined(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error> {
+        if let Ok(at) = serde_json::from_slice(bytes) {
+            self.joined.insert(key.to_owned(), at);
+        }
+        Ok(())
+    }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error> {
         self.identities.insert(key.to_owned(), bytes.to_vec());
         Ok(())
@@ -50,6 +62,7 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     let mut value = PolicyData {
         owner: None,
         members: std::collections::BTreeMap::new(),
+        joined: std::collections::BTreeMap::new(),
         grants: Vec::new(),
         identities: std::collections::BTreeMap::new(),
     };

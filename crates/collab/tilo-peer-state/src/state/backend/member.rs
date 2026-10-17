@@ -223,6 +223,8 @@ impl PeerMember<'_> {
             room: self.room.to_owned(),
             owner: self.policy.owner().map(str::to_owned),
             members: self.policy.members().clone(),
+            // Admission times decide no access.
+            joined: BTreeMap::new(),
             grants: self.policy.grants().to_vec(),
         }
     }
