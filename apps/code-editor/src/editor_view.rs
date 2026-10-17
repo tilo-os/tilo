@@ -524,18 +524,34 @@ impl EditorView {
                 .skip(start)
                 .take(end - start)
                 .collect();
+            let lines = self
+                .primary()
+                .selection()
+                .map_or((0, 0), |(from, to)| (from.0.min(to.0), from.0.max(to.0)));
             return Some(
                 SharedSelection::of_text(&selected)
-                    .at(ui::tilo_actions::SelectionPlace::range(file, start, end)),
+                    .at(ui::tilo_actions::SelectionPlace::range(file, start, end))
+                    .within(self.lines_drawn(lines.0, lines.1)),
             );
         }
         let caret = self.primary();
         Some(
-            SharedSelection::default().at(ui::tilo_actions::SelectionPlace::caret(
-                file,
-                self.char_index(caret.line, caret.col),
-            )),
+            SharedSelection::default()
+                .at(ui::tilo_actions::SelectionPlace::caret(
+                    file,
+                    self.char_index(caret.line, caret.col),
+                ))
+                .within(self.lines_drawn(caret.line, caret.line)),
         )
+    }
+
+    /// Where lines `first..=last` are drawn: their rows across the editor,
+    /// clipped to what it shows.
+    fn lines_drawn(&self, first: usize, last: usize) -> Rect {
+        let line = |index: usize| f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+        let top = self.rect.y0 + (line(first) - self.scroll_y) * self.line_h;
+        let bottom = self.rect.y0 + (line(last) + 1.0 - self.scroll_y) * self.line_h;
+        Rect::new(self.rect.x0, top, self.rect.x1, bottom).intersect(self.rect)
     }
 
     /// Bind the authoritative Text while restoring this peer's recent render

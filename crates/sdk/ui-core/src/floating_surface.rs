@@ -376,6 +376,11 @@ pub enum FloatingSurfaceClientMessage {
     /// app's identity is the launcher's, never the message's.
     AskAgent {
         selection: Option<crate::shared_selection::SharedSelection>,
+        /// Where the selection is drawn in this window, in its logical
+        /// coordinates (`[x0, y0, x1, y1]`), so the composer opens beside it
+        /// rather than over it. Absent when the app does not know.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bounds: Option<[f64; 4]>,
     },
 }
 

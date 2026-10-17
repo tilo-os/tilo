@@ -61,19 +61,21 @@ impl ShellOverlayHost {
     }
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
-    /// `selection`: in answer to the chord, or from an "Ask agent…" entry
-    /// in its focused window. Whether the composer opened.
+    /// `selection`, drawn at `area` on the desktop when it said where: in
+    /// answer to the chord, or from an "Ask agent…" entry in its focused
+    /// window. Whether the composer opened.
     pub(crate) fn receive_ask_agent(
         &mut self,
         app_id: &str,
         selection: Option<SharedSelection>,
+        area: Option<Rect>,
     ) -> bool {
         let focused = self.focused_app_id();
         if !self.selection_requests.accept(app_id, focused.as_deref()) {
             return false;
         }
         let label = self.app_label(app_id);
-        self.open_ask_agent(SelectionSeed::new(app_id, label, selection))
+        self.open_ask_agent(SelectionSeed::new(app_id, label, selection).drawn_at(area))
     }
 
     /// The focused window offers no selection of its own: ask about the
@@ -144,7 +146,7 @@ impl ShellOverlayHost {
         self.selection_requests.asked(&room, &agent);
         let viewport = self.overlay_area();
         let window = self.focused_window_rect().unwrap_or(viewport);
-        let (at, protected) = selection_area(window, self.text_caret);
+        let (at, protected) = selection_area(window, self.text_caret, seed.area);
         self.agent_quick_composer.open_about(
             owner,
             &agent,
@@ -260,12 +262,21 @@ impl ShellOverlayHost {
 }
 
 /// Where the composer about a selection in `window` points, and what it must
-/// not cover. A selection carries no screen position, but the focused text
-/// field reports its caret, which ends the selection: the composer then
-/// points at it and keeps clear of that line across the window. Without a
-/// caret in the window it points a third of the way down, where the person
-/// was reading. The popover keeps itself inside the screen either way.
-fn selection_area(window: Rect, caret: Option<Rect>) -> (Rect, Rect) {
+/// not cover. An app that says where its selection is drawn (`area`: the
+/// selected lines, else the text block holding them) gets all of it kept
+/// clear, so the composer opens beside, below or above that text rather
+/// than over its rest. Otherwise the focused text field's caret, which ends
+/// the selection, is all the desktop knows: the composer points at it and
+/// keeps clear of that line across the window. Without either it points a
+/// third of the way down, where the person was reading. The popover keeps
+/// itself inside the screen in every case.
+fn selection_area(window: Rect, caret: Option<Rect>, area: Option<Rect>) -> (Rect, Rect) {
+    if let Some(area) = area
+        .map(|area| area.intersect(window))
+        .filter(|area| area.width() > 0.0 && area.height() > 0.0)
+    {
+        return (area, area);
+    }
     if let Some(caret) = caret.filter(|caret| window.contains(caret.center())) {
         return (caret, Rect::new(window.x0, caret.y0, window.x1, caret.y1));
     }
@@ -285,15 +296,44 @@ mod tests {
         let window = Rect::new(100.0, 50.0, 900.0, 650.0);
         let caret = Rect::new(400.0, 300.0, 402.0, 318.0);
         assert_eq!(
-            selection_area(window, Some(caret)),
+            selection_area(window, Some(caret), None),
             (caret, Rect::new(100.0, 300.0, 900.0, 318.0))
         );
-        let (at, protected) = selection_area(window, Some(Rect::new(5.0, 5.0, 7.0, 20.0)));
+        let (at, protected) = selection_area(window, Some(Rect::new(5.0, 5.0, 7.0, 20.0)), None);
         assert_eq!(
             at, protected,
             "a caret outside the window is not the selection"
         );
         assert_eq!(at.center(), Point::new(500.0, 250.0));
-        assert_eq!(selection_area(window, None), (at, protected));
+        assert_eq!(selection_area(window, None, None), (at, protected));
+    }
+
+    #[test]
+    fn the_composer_keeps_clear_of_all_the_selected_text_it_was_told_of() {
+        let window = Rect::new(100.0, 50.0, 900.0, 650.0);
+        // The caret ends a selection of three lines of a paragraph.
+        let caret = Rect::new(400.0, 300.0, 402.0, 318.0);
+        let paragraph = Rect::new(200.0, 264.0, 800.0, 336.0);
+        assert_eq!(
+            selection_area(window, Some(caret), Some(paragraph)),
+            (paragraph, paragraph),
+            "the whole selected text is kept clear, not only the caret's line"
+        );
+        // Only what is in view of the window counts.
+        let (at, protected) = selection_area(
+            window,
+            Some(caret),
+            Some(Rect::new(200.0, 0.0, 800.0, 336.0)),
+        );
+        assert_eq!((at, protected), (Rect::new(200.0, 50.0, 800.0, 336.0), at));
+        // Bounds wholly out of view say nothing: the caret's line again.
+        assert_eq!(
+            selection_area(
+                window,
+                Some(caret),
+                Some(Rect::new(0.0, 700.0, 50.0, 720.0))
+            ),
+            selection_area(window, Some(caret), None)
+        );
     }
 }

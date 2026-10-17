@@ -519,8 +519,14 @@ impl App {
         }
         for selection in crate::shared_selection::take_agent_requests() {
             let selection = self.selection_for_agent(selection);
+            let bounds = selection
+                .as_ref()
+                .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection },
+                &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
+                    selection,
+                    bounds,
+                },
             )?;
             *changed = true;
         }
@@ -825,10 +831,14 @@ impl App {
                     let selection = self.selection_for_agent(
                         crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
                     );
+                    let bounds = selection
+                        .as_ref()
+                        .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
                     if let Some(client) = &mut self.floating.client {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                                 selection,
+                                bounds,
                             },
                         );
                     }
