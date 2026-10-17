@@ -383,7 +383,8 @@ impl Slider {
     /// Commit each distinct value, including fine steps and exact endpoints.
     /// Returns `true` if the commit happened so callers can flag the event.
     fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
-        if new_value == self.value {
+        // Exact identity, not closeness: a fine step is a distinct value.
+        if new_value.total_cmp(&self.value).is_eq() {
             return false;
         }
         self.value = new_value;
@@ -818,7 +819,10 @@ impl Widget for Slider {
                     self.is_dragging = false;
                     self.fine_from = None;
                     *ctx.handled = true;
-                    let moved = self.drag_from.take().is_some_and(|from| from != self.value);
+                    let moved = self
+                        .drag_from
+                        .take()
+                        .is_some_and(|from| from.total_cmp(&self.value).is_ne());
                     if self.settles
                         && moved
                         && let Some(action) = &mut self.action
