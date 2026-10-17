@@ -164,7 +164,30 @@ resizes, with a hit area at least 24 px wide under touch.
 - **Every drop target is drawn while it would accept**: an insertion bar in a
   gap, a lift on a group to join, the target strip's ribbon segment, the target
   display's outline, a wheel-disc entry. Dragging against a display's outer
-  edge scrolls that lane.
+  edge scrolls that lane, faster the closer to the edge; resting a drag on a
+  background tab for half a second brings that tab to the front.
+
+## Where things open
+
+Things open next to where the person is working, and going away returns
+them there.
+
+- **A new window** (a launch, a search result, Super+T) opens as its own
+  group right of the group you are in; a plain launch from inside a tabbed
+  group joins it as a tab, a search result never does. With nothing focused it
+  takes the border between windows that is on screen.
+- **Its width**: when it and the window it opens beside would not fit on
+  screen together, it takes the room beside that window if that is at least
+  480 px, else the two share the display equally; only a display too narrow
+  for two usable windows pans instead (`width::share_beside`).
+- **Closing** the focused window goes back to the window you came from (per
+  strip, most recently focused first), as closing a tab goes back to the tab
+  you came from; only without such history does the neighbour take focus.
+- **Clipboard history** (Super+V) opens at the caret of the field you are
+  typing in (else over the focused window), and choosing an item pastes it
+  there. Browsed from Quick Settings it opens under the tray and only copies.
+- **Readouts** (volume, brightness, layout) sit bottom centre unless that would
+  cover the caret; then they sit top centre.
 
 ## Overlays
 

@@ -363,6 +363,8 @@ pub enum Action {
     /// clear it entirely with `None` — which is the state rule 3 (place
     /// at a seam) is about.
     SelectGroup(Option<usize>),
+    /// Close the focused window, as its close button or `tab.close` does.
+    CloseFocusedWindow,
     /// Seed the status tray with a named hardware state.
     ///
     /// The live poller is deliberately absent from a `--shots` render —
@@ -1468,6 +1470,14 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                             tree.desktop.active_group.remove(&strip_id);
                         }
                     }
+                }
+                st.bump();
+            });
+        }
+        Action::CloseFocusedWindow => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                if let Some(tab) = shell::shell::window_actions::active_tab_id(st) {
+                    let _ = shell::shell::window_actions::close_tab(st, tab);
                 }
                 st.bump();
             });
@@ -3920,8 +3930,8 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "searched_app_opens_at_rightmost_space",
-            description: "Search for an app with a full strip; it opens in the rightmost visible space before the first off-screen window.",
+            name: "searched_app_opens_beside_focus",
+            description: "Search for an app with a full strip; it opens as its own window right of the one you are in.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(Some(0)),
@@ -3959,6 +3969,54 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SetWindowWidths(333),
                 Action::Wait(8),
                 Action::Snapshot("03-after-open"),
+            ],
+        },
+        Scenario {
+            name: "proximity_open_close_paste",
+            description: "Working in the first of three windows: open an app from search, close it again, \
+                      open clipboard history while typing, and change the volume while typing on the bottom line.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(Some(0)),
+                Action::OpenHostedWindow {
+                    app: "Files",
+                    title: "Files",
+                },
+                Action::SelectGroup(Some(1)),
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("1".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("00-working-in-the-first-window"),
+                Action::EnableNativeAppSearch,
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("Editor"),
+                Action::Wait(2),
+                Action::Snapshot("01-search-result"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("02-opened-from-search"),
+                Action::CloseFocusedWindow,
+                Action::Wait(PLACEMENT_SETTLE_FRAMES * 3),
+                Action::Snapshot("03-closed-it-again"),
+                Action::SetTextCaret(Some(vello::kurbo::Rect::new(220.0, 420.0, 222.0, 440.0))),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("v".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(16),
+                Action::Snapshot("04-super-v-while-typing"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(8),
+                Action::SetTextCaret(Some(vello::kurbo::Rect::new(780.0, 820.0, 782.0, 840.0))),
+                Action::SeedOsd("volume"),
+                Action::Wait(16),
+                Action::Snapshot("05-volume-while-typing-on-the-bottom-line"),
             ],
         },
         Scenario {
