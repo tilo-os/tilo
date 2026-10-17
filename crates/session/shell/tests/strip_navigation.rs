@@ -1999,3 +1999,70 @@ fn the_first_frame_after_a_chord_shows_the_final_layout() {
     assert_ne!(plane(&h).0[0].1, order, "the action reordered the strip");
     settles_within_fast(&mut h, "group.move-right");
 }
+
+/// A window that opens beside another on a 1280 px display is placed whole
+/// on screen with it, at a usable width, however wide the two would be on
+/// their own: they share the display, and the share is saved like a resize.
+#[test]
+fn a_window_opened_beside_another_fits_on_a_1280_display_with_it() {
+    let (mut tree, strip, groups, tabs) = strip_tree();
+    {
+        let ws = tree
+            .desktop
+            .active_workspace_mut()
+            .expect("the fixture's workspace");
+        let only = &mut ws.strips[0].window_groups;
+        only.truncate(1);
+        // One tab: a launch from a tabbed group would join it as a tab.
+        only[0].tabs.truncate(1);
+        only[0].width = WindowWidth::Normal;
+    }
+    let mut h = Harness::with_tree(&tree, strip, groups[..1].to_vec(), tabs[..1].to_vec());
+    // A launch beside the window in use: the production open path.
+    h.key(
+        Key::Character("t".into()),
+        ModifiersState::CONTROL | ModifiersState::ALT,
+    );
+    for _ in 0..4 {
+        h.host
+            .update(&automerge::AutoCommit::new(), &automerge::ROOT);
+        h.tick();
+    }
+
+    let rects: Vec<Rect> = (0..2)
+        .map(|idx| {
+            h.host
+                .group_at_for_tests(strip, idx)
+                .unwrap_or_else(|| panic!("group {idx} is live in the strip"))
+                .get_rect()
+        })
+        .collect();
+    for (idx, rect) in rects.iter().enumerate() {
+        assert!(
+            rect.x0 >= -0.5 && rect.x1 <= f64::from(W) + 0.5,
+            "window {idx} is wholly on screen: {rects:?}"
+        );
+        assert!(
+            rect.width() >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
+            "window {idx} opened at a usable width: {rects:?}"
+        );
+    }
+    let widths: Vec<WindowWidth> = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|ws| ws.strips[0].window_groups.iter().map(|g| g.width).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        widths.len(),
+        2,
+        "the launch opened a second window: {widths:?}"
+    );
+    assert_ne!(
+        widths[1],
+        WindowWidth::Normal,
+        "the width the new window opened at is saved, so it survives a restart"
+    );
+}

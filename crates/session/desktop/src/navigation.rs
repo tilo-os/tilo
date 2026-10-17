@@ -21,6 +21,9 @@ pub(crate) struct Navigation {
     /// What started the latest focus change, until it is framed: a reveal
     /// can wait for a layout pass that places its group.
     reveal_source: Option<MotionSource>,
+    /// Windows that opened without being selected (an actor's view beside
+    /// the person's), still to be brought into view with the selection.
+    opened: Vec<(StripId, GroupId)>,
 }
 
 /// Geometry excludes the current pan and animated positions. Text edits and
@@ -56,6 +59,14 @@ impl Navigation {
     pub(crate) fn clear_framing(&mut self) {
         self.framed.clear();
         self.manual_pan = None;
+    }
+
+    /// `group` has just opened on `strip`: the next framing shows it whole
+    /// along with that strip's selected window.
+    pub(crate) fn reveal_opened(&mut self, strip: StripId, group: GroupId) {
+        self.opened.retain(|(s, _)| *s != strip);
+        self.opened.push((strip, group));
+        self.framed.remove(&strip);
     }
 }
 
@@ -275,8 +286,31 @@ impl DesktopSurface {
                 continue;
             }
             let source = self.navigation.reveal_source.unwrap_or_default();
+            let opened = self
+                .navigation
+                .opened
+                .iter()
+                .find(|(s, _)| *s == strip)
+                .map(|(_, opened)| *opened);
+            let beside = opened.filter(|opened| *opened != group);
+            if beside.is_some_and(|opened| {
+                !self
+                    .row(strip)
+                    .is_some_and(|row| row.group_is_laid_out(opened))
+            }) {
+                // Framed once it has a place, in a later layout.
+                pending = true;
+                continue;
+            }
             if let Some(row) = self.row_mut(strip) {
-                row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                if let Some(opened) = beside {
+                    row.scroll_groups_into_view_animated(group, opened, ui::time::now(), source);
+                } else {
+                    row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                }
+            }
+            if opened.is_some() {
+                self.navigation.opened.retain(|(s, _)| *s != strip);
             }
             self.navigation.framed.insert(strip, key);
         }

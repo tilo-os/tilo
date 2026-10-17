@@ -532,6 +532,51 @@ fn navigation_focus_retries_new_layout_and_tracks_resize_reorder_removal() {
     assert!(!row.groups[1].focused());
 }
 
+/// A window an actor opens beside the person's (a view an agent needs) is
+/// shown whole on screen with it, without taking the person's focus: the two
+/// share the display, the shares are handed back to be saved, and the
+/// person's window stays selected.
+#[test]
+fn navigation_a_window_opened_beside_the_selection_is_shown_whole_with_it() {
+    let mut tree = tree();
+    tree.active_strip.insert(tree.active, StripId(2));
+    tree.active_group.insert(StripId(2), 3);
+    let mut test = NavigationFrame::new(tree, 1280);
+    test.finish_pan();
+    let mut beside = test.tree.workspaces[0].strips[0].window_groups[0].clone();
+    beside.id = 4;
+    beside.tabs[0].id = 20;
+    beside.tabs[0].title = "Notes".into();
+    beside.active_tab = 20;
+    test.tree.workspaces[0].strips[0].window_groups.push(beside);
+    test.reconcile();
+    test.finish_pan();
+    test.finish_pan();
+    test.assert_visible(StripId(2), 3);
+    test.assert_visible(StripId(2), 4);
+    let row = test.surface().row(StripId(2)).unwrap();
+    assert!(
+        row.groups[0].focused(),
+        "the person's window keeps the focus"
+    );
+    assert!(!row.groups[1].focused());
+    let widths: Vec<_> = test
+        .surface_mut()
+        .take_intents()
+        .into_iter()
+        .filter_map(|intent| match intent {
+            tilo_desktop::intents::DesktopIntent::Local(
+                tilo_desktop::intents::LocalViewIntent::Width { group, width },
+            ) => Some((group, width)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        widths.iter().any(|(group, _)| *group == 4),
+        "the width the new window opened at is handed back to be saved: {widths:?}"
+    );
+}
+
 #[test]
 fn navigation_focus_fallback_cross_strip_closing_and_lone_group_match_native() {
     let mut tree = navigation_tree();

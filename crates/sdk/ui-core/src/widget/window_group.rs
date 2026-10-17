@@ -1069,6 +1069,14 @@ impl WindowGroup {
                 self.retarget_width(visual, self.resolved_width_px());
             }
         }
+        // A width set since the last one stamped supersedes it: the host
+        // must not later save the older one over it.
+        if self
+            .pending_width_change
+            .is_some_and(|pending| pending != self.width.permille())
+        {
+            self.pending_width_change = None;
+        }
     }
 
     /// Converts to a fraction immediately so nothing downstream ever
@@ -1101,6 +1109,11 @@ impl WindowGroup {
 
     pub fn stamp_pending_width_change(&mut self) {
         self.pending_width_change = Some(self.width.permille());
+    }
+    /// A width change the host has not yet persisted: until it does, its
+    /// saved width is the old one and must not be reapplied over it.
+    pub fn has_pending_width_change(&self) -> bool {
+        self.pending_width_change.is_some()
     }
     pub fn take_pending_width_change(&mut self) -> Option<u16> {
         self.pending_width_change.take()
