@@ -546,7 +546,6 @@ host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
 host-search-scope-app = { $title } app
-host-json-arguments = JSON arguments: {"{"}{ $names }{"}"}
 host-a11y-filter-all = Filter: All
 host-a11y-filter-more = Filter: More
 host-a11y-filter-kind = Filter: { $kind }
@@ -1184,6 +1183,19 @@ search-kind-window-groups = Window groups
 search-scope-this-app = This app
 search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
+
+palette-show-all = Show all { $count }
+palette-value-on = On
+palette-value-off = Off
+palette-value-not-whole-number = Enter a whole number
+palette-value-not-number = Enter a number
+palette-value-not-on-off = Enter on or off
+palette-value-not-understood = Enter a value this setting takes
+palette-open-tab-here = As a tab here
+palette-open-beside = Beside
+palette-more-actions = More
+palette-open-containing-folder = Open containing folder
+palette-copy-path = Copy path
 
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing

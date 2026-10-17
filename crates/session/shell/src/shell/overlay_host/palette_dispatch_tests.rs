@@ -551,18 +551,30 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .expect("identity action")
         };
         let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
-        host.pending_palette_action = Some(action);
-        host.palette
-            .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
-        host.activate_selected_result(
+        // The steps collected an unknown identity and a refusal to confirm.
+        let mut values = serde_json::Map::new();
+        values.insert("id".into(), serde_json::Value::from("does-not-exist"));
+        values.insert("confirm".into(), serde_json::Value::Bool(false));
+        host.palette_visible = true;
+        host.param_flow = Some(palette_flow::ParamFlow {
+            result: action,
+            values,
+            pending: Vec::new(),
+            asked: Vec::new(),
+            choices: Vec::new(),
+            query: String::new(),
+            prefill: None,
+        });
+        host.finish_param_flow(
             &mut ui::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         );
 
         assert!(
-            host.pending_palette_action.is_some(),
+            host.param_flow.is_some(),
             "refused palette action remains editable"
         );
+        assert!(host.palette_visible, "and the palette stays open on it");
         assert_eq!(
             chrome.borrow().tree().desktop.workspaces[0].sandbox,
             before,

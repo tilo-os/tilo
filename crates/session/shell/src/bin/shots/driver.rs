@@ -319,6 +319,9 @@ impl ShellDriver {
     /// `Key(Tab)` then sees `is_mod = true` inside the host.
     pub fn set_modifiers(&mut self, state: ModifiersState) {
         self.modifiers = Modifiers::from(state);
+        // As the compositor does on `ModifiersChanged`: an open search
+        // previews what Enter does with the modifier held.
+        let _ = self.host_mut().note_held_modifiers(state);
     }
 
     /// Dispatch a single `WindowEvent` through the host's `handle_event`

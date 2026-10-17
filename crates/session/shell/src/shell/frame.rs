@@ -6734,13 +6734,16 @@ mod tests {
             // Rebuild through the actual viewport path while search owns focus.
             frame.set_viewport(viewport);
             frame.relayout();
-            assert!(frame.dispatch_event(
-                &key_press(Key::Named(NamedKey::Escape)),
-                &Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &mut focus
-            ));
+            // The first Escape clears what was typed; the second closes.
+            for _ in 0..2 {
+                assert!(frame.dispatch_event(
+                    &key_press(Key::Named(NamedKey::Escape)),
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus
+                ));
+            }
             assert!(!frame.host.palette_visible());
             let _ = frame.paint_settled();
             frame.reconcile_native_focus(&mut focus);
