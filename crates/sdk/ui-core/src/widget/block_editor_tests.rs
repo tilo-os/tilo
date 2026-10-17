@@ -2654,3 +2654,36 @@ fn ctrl_backspace_and_word_selection_edit_by_words() {
         "Ctrl+Delete deletes the next word and the space after it"
     );
 }
+
+/// A selection across paragraphs, handed to an agent, says where all of it
+/// is drawn: the blocks it spans, not only the caret's line, so the shell's
+/// composer can keep clear of every selected line.
+#[test]
+fn a_selection_for_an_agent_is_drawn_across_every_block_it_spans() {
+    use crate::presence::capability::PublishesPresence as _;
+    let theme = Theme::dark();
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Ideas for the launch"),
+        Block::paragraph("Read more on the homepage"),
+        Block::paragraph("Tilo is a collaborative desktop"),
+        Block::paragraph("Untouched"),
+    ]);
+    layout_and_draw_editor(&mut editor, &theme);
+    editor.focused = Some(2);
+    Widget::set_focus(editor.blocks[2].line.inner_mut(), true);
+    editor.document_selection = Some(DocumentSelection {
+        anchor: DocumentPosition { block: 1, byte: 5 },
+        cursor: DocumentPosition { block: 2, byte: 7 },
+    });
+    let selection = editor.shared_selection().expect("a selection");
+    let spanned =
+        Widget::get_rect(&editor.blocks[1].line).union(Widget::get_rect(&editor.blocks[2].line));
+    assert!(spanned.area() > 0.0, "the editor was laid out");
+    assert_eq!(selection.bounds, Some(spanned));
+    let untouched = Widget::get_rect(&editor.blocks[3].line);
+    assert!(
+        selection.bounds.unwrap().y1 <= untouched.y0,
+        "a block outside the selection is no part of it"
+    );
+}

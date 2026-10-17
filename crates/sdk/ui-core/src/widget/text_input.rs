@@ -6311,7 +6311,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         self.is_focused
             .then(|| self.shareable_selection())
             .flatten()
-            .map(crate::shared_selection::SharedSelection::of_text)
+            .map(|text| crate::shared_selection::SharedSelection::of_text(text).within(self.rect))
     }
 }
 

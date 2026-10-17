@@ -429,6 +429,12 @@ impl State {
         ids
     }
 
+    /// Where the window holding the keyboard is on the desktop: the frame a
+    /// focused app's window-local geometry (a selection it reports) is in.
+    pub(crate) fn keyboard_focus_desktop_rect(&self) -> Option<Rect> {
+        self.surface_desktop_rect(self.client_input.keyboard_focus?)
+    }
+
     /// Who holds the seat's keyboard focus, for logs: `app_id` (or `none`).
     pub(crate) fn keyboard_focus_holder(&self) -> String {
         self.client_input

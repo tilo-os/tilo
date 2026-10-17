@@ -2338,13 +2338,21 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .note_selection_capable(connection, &app_id);
                 }
-                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection } => {
+                ui::floating_surface::FloatingSurfaceClientMessage::AskAgent {
+                    selection,
+                    bounds,
+                } => {
                     // The app id is the launcher's: a selection is only ever
                     // credited to the app that holds it, and only while it
-                    // is focused.
+                    // is focused — so the focused window is the one its
+                    // window-local bounds are in.
+                    let area = crate::shell::selection_agent::desktop_area(
+                        bounds,
+                        state.keyboard_focus_desktop_rect(),
+                    );
                     changed |= frame_builder
                         .host_mut()
-                        .receive_ask_agent(&app_id, selection);
+                        .receive_ask_agent(&app_id, selection, area);
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
