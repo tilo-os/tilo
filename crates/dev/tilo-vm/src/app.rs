@@ -4775,17 +4775,18 @@ impl App {
             remote.hello.base.cargo_lock_hash.as_deref(),
         )?;
         let configured = self.registry()?.remote_builders.get(&arch).cloned();
-        let builder = match builder {
-            None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
-            other => other,
+        let builder = if vm.entry.hypervisor == hypervisor::DEVICE {
+            Some(plan_device_app_build(
+                dir,
+                builder,
+                &arch,
+                std::env::consts::ARCH,
+                cfg!(target_os = "linux"),
+                configured.as_ref().is_some_and(|line| !line.is_empty()),
+            )?)
+        } else {
+            builder
         };
-        if vm.entry.hypervisor == hypervisor::DEVICE && !matches!(builder, Some(Builder::Remote)) {
-            return Err(CliError::Unsupported {
-                what: "building an app on a physical device or the caller's host".into(),
-                alternative:
-                    "use --builder remote with the device architecture's configured builder".into(),
-            });
-        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -5898,22 +5899,91 @@ pub fn plan_apps_runtime_build(
     linux_host: bool,
     remote_configured: bool,
 ) -> Result<AppsRuntimeBuild, CliError> {
-    let local_possible = linux_host && host_arch == device_arch;
-    match builder {
-        Some(Builder::Vm) => Err(CliError::Unsupported {
+    if builder == Some(Builder::Vm) {
+        return Err(CliError::Unsupported {
             what: "a VM-only cargo build for the paired apps+runtime assembly".into(),
             alternative: "tilo-vm swap apps+runtime --builder host (a Linux host of the device's architecture) or --builder remote".into(),
-        }),
+        });
+    }
+    plan_local_or_remote(
+        "apps+runtime",
+        builder,
+        device_arch,
+        host_arch,
+        linux_host,
+        remote_configured,
+    )
+}
+
+/// Choose the builder for `swap app:<dir>` on a physical device.
+///
+/// The `.tapp` is self-signed and the device's own installer checks it like
+/// any other (architecture, publisher, the installed runtime's ABI), exactly
+/// as for a VM, so the builder only decides where cargo runs: this host when
+/// it is a Linux machine of the device's architecture (the default when no
+/// remote builder is configured), or the remote builder. The device itself
+/// never compiles an app.
+///
+/// # Errors
+/// `--builder vm`, and `--builder host` where this host cannot build for the
+/// device.
+pub fn plan_device_app_build(
+    dir: &str,
+    builder: Option<Builder>,
+    device_arch: &str,
+    host_arch: &str,
+    linux_host: bool,
+    remote_configured: bool,
+) -> Result<Builder, CliError> {
+    if builder == Some(Builder::Vm) {
+        return Err(CliError::Unsupported {
+            what: "building an app on the physical device itself".into(),
+            alternative: format!(
+                "tilo-vm swap app:{dir} --builder host (a Linux host of the device's architecture) or --builder remote"
+            ),
+        });
+    }
+    let what = format!("app:{dir}");
+    Ok(
+        match plan_local_or_remote(
+            &what,
+            builder,
+            device_arch,
+            host_arch,
+            linux_host,
+            remote_configured,
+        )? {
+            AppsRuntimeBuild::Local => Builder::Host,
+            AppsRuntimeBuild::Remote => Builder::Remote,
+        },
+    )
+}
+
+/// Builds for a device run on this host when it is a Linux machine of the
+/// device's architecture (asked for, or by default without a remote builder),
+/// else on the configured remote builder.
+fn plan_local_or_remote(
+    what: &str,
+    builder: Option<Builder>,
+    device_arch: &str,
+    host_arch: &str,
+    linux_host: bool,
+    remote_configured: bool,
+) -> Result<AppsRuntimeBuild, CliError> {
+    let local_possible = linux_host && host_arch == device_arch;
+    match builder {
         Some(Builder::Host) if local_possible => Ok(AppsRuntimeBuild::Local),
         Some(Builder::Host) => Err(CliError::Unsupported {
             what: format!(
-                "building apps+runtime on this {} host for a {device_arch} device",
+                "building {what} on this {} host for a {device_arch} device",
                 if linux_host { host_arch } else { "non-Linux" }
             ),
-            alternative: "the cohort must be built on a Linux machine of the device's architecture: tilo-vm swap apps+runtime --builder remote".into(),
+            alternative: format!(
+                "it must be built on a Linux machine of the device's architecture: tilo-vm swap {what} --builder remote"
+            ),
         }),
         None if !remote_configured && local_possible => Ok(AppsRuntimeBuild::Local),
-        Some(Builder::Remote) | None => Ok(AppsRuntimeBuild::Remote),
+        Some(Builder::Remote | Builder::Vm) | None => Ok(AppsRuntimeBuild::Remote),
     }
 }
 
@@ -7678,6 +7748,42 @@ mod tests {
                     matches!(refused, Err(CliError::Unsupported { .. })),
                     "{refused:?}"
                 );
+            }
+        }
+
+        // Phase: device_app_builds_on_a_matching_host_without_a_remote_builder.
+        {
+            let plan =
+                |b, dev, host, linux, cfg| plan_device_app_build("notes", b, dev, host, linux, cfg);
+            assert_eq!(
+                plan(None, "aarch64", "aarch64", true, false).unwrap(),
+                Builder::Host
+            );
+            assert_eq!(
+                plan(Some(Builder::Host), "aarch64", "aarch64", true, true).unwrap(),
+                Builder::Host
+            );
+            assert_eq!(
+                plan(None, "aarch64", "aarch64", true, true).unwrap(),
+                Builder::Remote
+            );
+            assert_eq!(
+                plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                Builder::Remote
+            );
+            assert_eq!(
+                plan(None, "aarch64", "aarch64", false, false).unwrap(),
+                Builder::Remote
+            );
+            for refused in [
+                plan(Some(Builder::Host), "aarch64", "x86_64", true, false),
+                plan(Some(Builder::Host), "aarch64", "aarch64", false, false),
+                plan(Some(Builder::Vm), "aarch64", "aarch64", true, false),
+            ] {
+                let Err(CliError::Unsupported { alternative, .. }) = &refused else {
+                    panic!("{refused:?}");
+                };
+                assert!(alternative.contains("app:notes"), "{alternative}");
             }
         }
 
