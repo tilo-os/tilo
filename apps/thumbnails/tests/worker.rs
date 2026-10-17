@@ -261,6 +261,7 @@ mod cases {
                 arch: None,
                 identity: Some(&identity_file),
                 extra_libs: &[],
+                extra_bins: &[],
             },
         )
         .expect("the runtime build bakes from this machine's loader and C library");
