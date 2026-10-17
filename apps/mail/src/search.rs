@@ -61,6 +61,24 @@ pub fn message_entries(mailbox: &Mailbox) -> Vec<SearchEntry> {
         .collect()
 }
 
+/// How much of a body search reads: the part a person remembers a mail
+/// by. The search source is rebuilt from every kept message whenever
+/// someone searches, so a mailbox of thousands of long mails must not hand
+/// it whole bodies.
+const BODY_SEARCHED: usize = 4 * 1024;
+
+/// The start of `body`, at most [`BODY_SEARCHED`] bytes, cut on a character.
+fn searched_part(body: &str) -> &str {
+    if body.len() <= BODY_SEARCHED {
+        return body;
+    }
+    let mut end = BODY_SEARCHED;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    body.get(..end).unwrap_or_default()
+}
+
 fn message_entry(message: &Message) -> SearchEntry {
     let title = if message.subject.trim().is_empty() {
         NO_SUBJECT.to_owned()
@@ -69,7 +87,7 @@ fn message_entry(message: &Message) -> SearchEntry {
     };
     // Ranked as the mailbox ranks them: the subject first, then who sent
     // it, the address typed verbatim, the labels, and the body last.
-    SearchEntry::new(title, message.body.clone())
+    SearchEntry::new(title, searched_part(&message.body).to_owned())
         .field(message.from.email.clone(), SearchWeight::Identity)
         .field(message.labels.join(" "), SearchWeight::Metadata)
         .anchored(format!("mail.message:{}", message.id))

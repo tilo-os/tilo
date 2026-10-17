@@ -447,6 +447,9 @@ pub struct MailApp {
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// Where fetched mail is kept on this device.
     store: crate::store::Store,
+    /// Accounts whose watched inbox changed: fetched once the engine's
+    /// events are drained.
+    pending_watch_fetches: Vec<AccountConfig>,
     /// Whether each account's folder has older mail on its server than the
     /// oldest message held, as the last sync of it found.
     has_older: HashMap<(String, Folder), bool>,
@@ -743,6 +746,7 @@ impl MailApp {
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
             store: crate::store::Store::nowhere(),
+            pending_watch_fetches: Vec::new(),
             has_older: HashMap::new(),
             older_pending: HashMap::new(),
             kept_registered: true,
@@ -2265,9 +2269,11 @@ impl MailApp {
                 .active_account()
                 .map(|account| account.id.clone());
         }
-        // Connect + fetch the freshly-saved account through the engine.
+        // Connect + fetch the freshly-saved account through the engine, and
+        // watch its inbox from now on.
         self.post_engine(EngineRequest::connect(cfg.clone()));
-        self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
+        self.post_engine(EngineRequest::fetch(cfg.clone(), Folder::Inbox));
+        self.post_engine(EngineRequest::watch(cfg));
         self.close_setup();
     }
 
@@ -2500,6 +2506,23 @@ impl MailApp {
             self.last_auto_refresh_min = now;
             let _ = self.refresh_active_folder();
             self.fetch_other_inboxes();
+        }
+    }
+
+    /// Have the engine watch every account's inbox, so new mail shows as it
+    /// arrives rather than at the next periodic refresh.
+    fn watch_inboxes(&mut self) {
+        let accounts: Vec<AccountConfig> = self
+            .shared
+            .borrow()
+            .accounts
+            .accounts
+            .iter()
+            .map(|account| account.config.clone())
+            .filter(|config| !config.email.is_empty())
+            .collect();
+        for account in accounts {
+            self.post_engine(EngineRequest::watch(account));
         }
     }
 
@@ -2915,6 +2938,19 @@ impl MailApp {
                     Some("Signed in"),
                 );
             }
+            // A watch outlives its request: what it hears is answered for
+            // any account this device still holds.
+            EngineEvent::Arrived { account_id, .. } => {
+                let account = st
+                    .accounts
+                    .accounts
+                    .iter()
+                    .find(|account| account.config.email == account_id)
+                    .map(|account| account.config.clone());
+                if let Some(account) = account {
+                    self.pending_watch_fetches.push(account);
+                }
+            }
             EngineEvent::Error {
                 request_id,
                 kind,
@@ -3121,6 +3157,9 @@ impl MailApp {
                 self.apply_engine_event(doc, &mut state, event);
             }
             state.dirty = true;
+        }
+        for account in std::mem::take(&mut self.pending_watch_fetches) {
+            self.post_engine(EngineRequest::fetch(account, Folder::Inbox));
         }
         self.awaiting_engine = !self.pending_engine_requests.is_empty();
     }
@@ -4102,6 +4141,19 @@ impl Widget for MailApp {
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
         self.drain_compose_attachment();
+        if self.compose.wants_address_book() {
+            let book = {
+                let st = self.shared.borrow();
+                let own: Vec<String> = st
+                    .accounts
+                    .accounts
+                    .iter()
+                    .map(|account| account.config.email.clone())
+                    .collect();
+                crate::address_book::AddressBook::of(&st.mailbox, &own)
+            };
+            self.compose.set_address_book(book);
+        }
         self.compose.sync(state, path);
         self.show_status();
 
@@ -4120,6 +4172,7 @@ impl Widget for MailApp {
                 self.post_engine(EngineRequest::connect(cfg.clone()));
                 self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
                 self.fetch_other_inboxes();
+                self.watch_inboxes();
                 self.connect_requested = true;
             }
             self.shared.borrow_mut().seeded = true;
@@ -6181,6 +6234,36 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert_eq!(kept_uids, [1, 3, 4]);
+    }
+
+    /// A watched inbox that changed is fetched at once, for the account it
+    /// belongs to; a watch for an account no longer held is ignored.
+    #[test]
+    fn a_watched_inbox_that_changed_is_fetched_at_once() {
+        let (mut app, mut doc) = app();
+        let (outgoing, requests) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let account = app.shared.borrow().accounts.accounts[1].config.clone();
+        for account_id in [account.email.clone(), "gone@nowhere.example".to_owned()] {
+            incoming
+                .send(EngineEvent::Arrived {
+                    request_id: uuid::Uuid::new_v4(),
+                    account_id,
+                })
+                .unwrap();
+        }
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        let posted: Vec<EngineRequest> = requests.try_iter().collect();
+        assert_eq!(posted.len(), 1, "{posted:?}");
+        assert!(matches!(
+            &posted[0],
+            EngineRequest::Fetch { account: fetched, folder: Folder::Inbox, .. }
+                if fetched.email == account.email
+        ));
     }
 
     struct InterleavedEngineFixture {
