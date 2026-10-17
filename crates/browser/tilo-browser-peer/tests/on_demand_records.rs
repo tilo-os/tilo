@@ -9,6 +9,7 @@
     clippy::expect_used,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
+    clippy::future_not_send,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

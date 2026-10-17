@@ -124,7 +124,8 @@ impl WorkspaceStore {
     /// to. A channel this store has not seen is learned from the body's
     /// route; a body that names none reaches everyone.
     pub(crate) fn frame_reach(&self, channel: &[u8; 32], body: &[u8]) -> Reach {
-        if let Some(reach) = self.classes().reach(channel) {
+        let known = self.classes().reach(channel);
+        if let Some(reach) = known {
             return reach;
         }
         let Some((route, _)) = self.payloads.open_document(body) else {

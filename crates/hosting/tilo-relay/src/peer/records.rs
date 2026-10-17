@@ -12,9 +12,15 @@ pub(super) async fn handle_open_record(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
-    workspace_id: u64,
-    channel: [u8; 32],
+    envelope: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
+    let Envelope::OpenRecord {
+        workspace_id,
+        channel,
+    } = envelope
+    else {
+        return Ok(None);
+    };
     let refused = |reason: &str| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
