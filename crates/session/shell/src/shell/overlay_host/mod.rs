@@ -14,6 +14,7 @@ mod agent_actions;
 mod agent_markers;
 mod ask_agent;
 mod axis_navigation;
+mod person_markers;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -956,6 +957,9 @@ pub struct ShellOverlayHost {
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
     agent_markers: agent_markers::AgentMarkers,
+    person_markers: tilo_desktop::person_cursor::PersonCursors,
+    person_quick_composer: crate::shell::person_quick_composer::PersonQuickComposer,
+    person_quick_composer_node: Option<NodeId>,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
@@ -2571,6 +2575,10 @@ impl ShellOverlayHost {
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
             agent_markers: agent_markers::AgentMarkers::default(),
+            person_markers: tilo_desktop::person_cursor::PersonCursors::default(),
+            person_quick_composer:
+                crate::shell::person_quick_composer::PersonQuickComposer::default(),
+            person_quick_composer_node: None,
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,
@@ -2865,6 +2873,7 @@ impl ShellOverlayHost {
             || self.capture_studio.modal_capture().is_some()
             || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
+            || self.person_quick_composer.modal_capture().is_some()
     }
 
     /// Whether the pointer is over the shell-owned bar a maximized window
@@ -18804,6 +18813,7 @@ impl Widget for ShellOverlayHost {
         }
         self.palette.sync(s, p);
         self.agent_quick_composer.sync(s, p);
+        self.person_quick_composer.sync(s, p);
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -18829,6 +18839,12 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let mut steps = UpdateSteps::start();
+        let person_activation = self.pump_person_cursor_activation();
+        let person_context_dirty = self.validate_person_composer();
+        let person_action_dirty = {
+            let person_source = self.marker_action_session_source();
+            self.person_quick_composer.pump(person_source)
+        };
         let (doc, path) = ui::doc::document_ref(doc, path);
         let action_dirty = self
             .agent_actions
@@ -18841,6 +18857,10 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer.sync(doc, path);
         }
         let agent_quick_dirty = action_dirty | self.agent_quick_composer.update(doc, path);
+        let person_quick_dirty = self.person_quick_composer.update(doc, path)
+            | person_activation
+            | person_context_dirty
+            | person_action_dirty;
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
@@ -19053,6 +19073,7 @@ impl Widget for ShellOverlayHost {
         drop(steps);
         desk_dirty
             || agent_quick_dirty
+            || person_quick_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -19161,6 +19182,10 @@ impl Widget for ShellOverlayHost {
         // or query. Visibility changes retire/rebuild the map below.
         self.agent_quick_composer_node = self.agent_quick_composer.is_open().then(|| {
             self.agent_quick_composer
+                .build_layout(taffy, theme, node_map)
+        });
+        self.person_quick_composer_node = self.person_quick_composer.is_open().then(|| {
+            self.person_quick_composer
                 .build_layout(taffy, theme, node_map)
         });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
@@ -19281,6 +19306,11 @@ impl Widget for ShellOverlayHost {
             None => vec![content_node, palette_node, capture_node],
         };
         children.extend(self.agent_quick_composer_node);
+        children.extend(self.person_quick_composer_node);
+        children.extend(
+            self.person_markers
+                .build(taffy, theme, node_map, self.rect.origin()),
+        );
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -19367,6 +19397,11 @@ impl Widget for ShellOverlayHost {
                 .apply_layout(taffy, agent_node, self.rect.origin());
         }
         self.agent_markers.apply(taffy, self.rect.origin());
+        self.person_markers.apply(taffy, self.rect.origin());
+        if let Some(node) = self.person_quick_composer_node {
+            self.person_quick_composer
+                .apply_layout(taffy, node, self.rect.origin());
+        }
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
         if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
@@ -19567,10 +19602,25 @@ impl Widget for ShellOverlayHost {
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         let suppress_agent_markers = self.agent_quick_composer.is_open()
+            || self.person_quick_composer.is_open()
             || self.onboarding_active()
             || self.inner_surface_captures_input()
             || self.modal_sheet_owns_keyboard();
         self.agent_markers.refresh(presence, suppress_agent_markers);
+        self.person_markers.refresh(suppress_agent_markers);
+        self.person_markers
+            .draw(scene, transform, text_renderer, theme, presence);
+        // Native confirmation and authentication sheets keep the top layer.
+        // Keep the retained private draft, but never paint it above a sheet.
+        if !self.modal_sheet_owns_keyboard() && !self.onboarding_active() {
+            self.person_quick_composer.draw_overlay(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
         self.agent_quick_composer
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
@@ -19911,6 +19961,21 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled || self.agent_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
+        if self.person_quick_composer.is_open()
+            && let Some(node) = self.person_quick_composer_node
+        {
+            self.person_quick_composer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled || self.person_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
+        if !self.person_cursor_controls_suppressed() {
+            self.person_markers.route_event(event, ctx);
+            if *ctx.handled {
                 return;
             }
         }
@@ -20631,6 +20696,14 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with("participant:") && target.ends_with(":chat") {
+            if self.person_cursor_controls_suppressed() {
+                return true;
+            }
+            return self
+                .person_markers
+                .semantic_action(target, action, state, path);
+        }
         if target.starts_with(agent_markers::TARGET_PREFIX) {
             if self.accessible_agent_marker_request_is_inert(target) {
                 return true;
@@ -20886,6 +20959,10 @@ impl Widget for ShellOverlayHost {
             out.push(&self.agent_quick_composer);
         }
         out.extend(self.agent_markers.children());
+        if self.person_quick_composer.is_open() {
+            out.push(&self.person_quick_composer);
+        }
+        out.extend(self.person_markers.children());
         out
     }
 
@@ -20918,11 +20995,16 @@ impl Widget for ShellOverlayHost {
             out.push(&mut self.agent_quick_composer);
         }
         out.extend(self.agent_markers.children_mut());
+        if self.person_quick_composer.is_open() {
+            out.push(&mut self.person_quick_composer);
+        }
+        out.extend(self.person_markers.children_mut());
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
         self.agent_quick_composer.take_focus_reset()
+            | self.person_quick_composer.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
@@ -20983,6 +21065,9 @@ impl Widget for ShellOverlayHost {
             | workspace_layout
             | pairing
             | self.agent_markers.take_structure_dirty()
+            | self.person_markers.take_structure_dirty()
+            | (self.person_quick_composer.is_open() != self.person_quick_composer_node.is_some())
+            | self.person_quick_composer.take_structure_dirty()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
     }
@@ -21002,6 +21087,8 @@ impl Widget for ShellOverlayHost {
                     .filter_map(agent_actions::AgentActions::deadline),
             )
             .chain(self.agent_quick_composer.next_wake_deadline())
+            .chain(self.person_quick_composer.next_wake_deadline())
+            .chain(self.person_quick_composer.deadline())
             .min()
     }
 }
@@ -25270,9 +25357,13 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let peers = self.workspace_peers(presence, theme.reduce_motion);
+        let cursors = self.painted_person_cursors(presence, theme, &peers);
+        self.follow_person_composer_anchor(&cursors);
+        self.person_markers
+            .publish(cursors, &t("person-quick-message"));
         let key = ui::scene_parts::PartKey::new("shell.peer-presence", ());
         ui::scene_parts::part_drawn(scene, key, |scene| {
-            let peers = self.workspace_peers(presence, theme.reduce_motion);
             let mut painted = ui::presence::draw_peer_presence(
                 scene,
                 transform,

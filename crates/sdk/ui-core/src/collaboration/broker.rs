@@ -210,6 +210,62 @@ pub fn speaker_command(
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
 
+pub(crate) fn subscribe_person_chat(
+    peer: String,
+    original: Vec<u8>,
+    token: uuid::Uuid,
+    cancel: tokio::sync::watch::Receiver<()>,
+) -> Result<(), String> {
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "private person bridge unavailable")?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or("private conversations need the certified native host")?;
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::SubscribePersonChat {
+            peer,
+            original,
+            token,
+            cancel,
+        },
+        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
+    ) {
+        return Err("private subscription queue unavailable".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8>, String> {
+    if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
+        return Err("invalid private conversation request".into());
+    }
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "private person bridge unavailable")?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or("private conversations need the certified native host")?;
+    let (reply, receiver) = mpsc::sync_channel(1);
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::PersonChat {
+            command,
+            original,
+            reply,
+        },
+        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
+    ) {
+        return Err("private conversation queue unavailable".into());
+    }
+    receiver
+        .recv_timeout(Duration::from_secs(4))
+        .map_err(|_| "private conversation reply unavailable".to_string())?
+}
+
 /// Ask the native host to inspect or change its display transaction. Call off
 /// the frame thread; the existing bridge and response wait remain bounded.
 ///
@@ -511,6 +567,7 @@ impl BrokerTransport {
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
+            crate::person_chat::invalidate();
             *bridge = Some(self.outbound_tx.downgrade());
             self.wifi_bridge_registered = true;
         }
@@ -859,6 +916,17 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
+    },
+    SubscribePersonChat {
+        peer: String,
+        original: Vec<u8>,
+        token: uuid::Uuid,
+        cancel: tokio::sync::watch::Receiver<()>,
+    },
+    PersonChat {
+        command: Vec<u8>,
+        original: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
@@ -1353,6 +1421,14 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::DisplayControl { command, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
+        SdkCommand::SubscribePersonChat { peer, original, .. } => std::mem::size_of::<SdkCommand>()
+            .checked_add(peer.capacity())?
+            .checked_add(original.capacity()),
+        SdkCommand::PersonChat {
+            command, original, ..
+        } => std::mem::size_of::<SdkCommand>()
+            .checked_add(command.capacity())?
+            .checked_add(original.capacity()),
         SdkCommand::Speakers {
             app_id, command, ..
         } => {
@@ -4253,6 +4329,13 @@ async fn drive_shovel(
     media_rx: native_media::Receiver,
     inbound_tx: InboundBridge,
 ) {
+    struct PrivatePersonSnapshotLifetime;
+    impl Drop for PrivatePersonSnapshotLifetime {
+        fn drop(&mut self) {
+            crate::person_chat::invalidate();
+        }
+    }
+    let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
         presentation,
         participant_kind,
@@ -4373,6 +4456,7 @@ async fn drive_shovel(
                     Ok(result) => result.map(|()| spec),
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
+                crate::person_chat::invalidate();
                 primary = primary_result.is_ok().then_some(key);
                 // The startup file splits the owner's wait for `PrimaryReady`.
                 tilo_startup_metrics::startup_mark("collab-route-joined");
@@ -4620,6 +4704,76 @@ async fn drive_shovel(
                         .map_err(|error| error.to_string())
                 } else {
                     Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
+            }
+            SdkCommand::SubscribePersonChat {
+                peer,
+                original,
+                token,
+                mut cancel,
+            } => {
+                if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get(key)
+                {
+                    let channel = route.channel.clone();
+                    tokio::task::spawn_local(async move {
+                        let follow = async {
+                            let stream = channel
+                                .subscribe_person_chat(&peer, &original)
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            loop {
+                                stream.next().await.map_err(|error| error.to_string())?;
+                                if !crate::person_chat::subscription_current(token, &peer) {
+                                    return Ok::<(), String>(());
+                                }
+                                let bytes =
+                                    tokio::time::timeout(Duration::from_secs(3), stream.read())
+                                        .await
+                                        .map_err(|_| {
+                                            "private conversation refresh timed out".to_string()
+                                        })?
+                                        .map_err(|error| error.to_string())?;
+                                crate::person_chat::subscription_snapshot(token, &peer, &bytes)?;
+                            }
+                        };
+                        tokio::select! {
+                            _ = cancel.changed() => {}
+                            result = follow => {
+                                if result.is_err() {
+                                    crate::person_chat::subscription_failed(token, &peer);
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    crate::person_chat::subscription_failed(token, &peer);
+                }
+            }
+            SdkCommand::PersonChat {
+                command,
+                original,
+                reply,
+            } => {
+                let result = if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get_mut(key)
+                {
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        if let Ok(request) = serde_json::from_slice::<
+                            runtime_collab::private_draft::Request,
+                        >(&command)
+                        {
+                            route.channel.private_draft(&request, &original).await
+                        } else {
+                            route.channel.person_chat(&command, &original).await
+                        }
+                    })
+                    .await
+                    .map_err(|_| "private conversation host timed out".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                } else {
+                    Err("private conversation primary channel unavailable".into())
                 };
                 let _ = reply.send(result);
             }
@@ -5047,6 +5201,14 @@ async fn spawn_context_stream(
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
+            struct PrivateContextLifetime;
+            impl Drop for PrivateContextLifetime {
+                fn drop(&mut self) {
+                    crate::person_chat::invalidate();
+                }
+            }
+            let _private_context_lifetime = PrivateContextLifetime;
+            let mut private_person_basis = None;
             while let Ok(context) = stream.read().await {
                 if context.snapshot_requested {
                     if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
@@ -5094,6 +5256,22 @@ async fn spawn_context_stream(
                         break;
                     }
                     continue;
+                }
+                // Membership/permission replacement fences cached private bodies
+                // before delivering the new public context. Presentation changes
+                // alone must not cause a private contacts refresh.
+                let mut people: Vec<_> = context
+                    .collaborators
+                    .iter()
+                    .map(|person| (person.user_id.clone(), person.is_agent, person.is_self))
+                    .collect();
+                people.sort();
+                let mut permissions = context.permissions.clone();
+                permissions.sort();
+                let basis = (people, permissions);
+                if private_person_basis.as_ref() != Some(&basis) {
+                    crate::person_chat::invalidate();
+                    private_person_basis = Some(basis);
                 }
                 let collaborators = context
                     .collaborators

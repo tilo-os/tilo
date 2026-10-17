@@ -1,3 +1,13 @@
+person-quick-accessible-name = Nachricht an Person
+person-quick-message = Nachricht
+person-quick-title = { $person }
+person-quick-placeholder = Private Nachricht schreiben…
+person-quick-editor-name = Entwurf einer privaten Nachricht
+person-quick-send = Private Nachricht senden
+person-quick-expand = Private Unterhaltung öffnen
+person-quick-close = Nachrichtenentwurf schließen
+person-quick-unavailable = Private Unterhaltungen sind nicht verfügbar. Dein Entwurf bleibt erhalten.
+
 # Shell — deutsche Übersetzung (de-DE).
 # Schlüssel und Variablen müssen mit en-US.ftl übereinstimmen.
 

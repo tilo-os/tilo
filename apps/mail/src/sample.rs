@@ -108,6 +108,8 @@ impl SampleMessage<'_> {
             starred: self.starred,
             folder: self.folder,
             labels: Vec::new(),
+            account: String::new(),
+            server: None,
         }
     }
 }

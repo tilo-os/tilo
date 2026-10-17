@@ -52,6 +52,9 @@ pub(crate) struct StoredRoom {
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
+    /// Two-person private text; never included in public room or task state.
+    #[serde(default, rename = "privateDirectConversations")]
+    pub private_direct_conversations: crate::PrivateDirectConversationStore,
     pub generation: u64,
     pub continuity: u64,
     pub floor: Option<DescriptorFloor>,

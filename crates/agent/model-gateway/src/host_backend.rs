@@ -124,6 +124,9 @@ impl CompletionClient {
     /// effort are accepted; these never alter the neutral protocol or authority.
     #[must_use]
     pub fn with_request_hints(mut self, hints: &serde_json::Value) -> Self {
+        let Some(request_hints) = self.request_hints.as_object_mut() else {
+            return self;
+        };
         for (name, allowed) in [
             ("service_tier", &["auto", "default", "flex", "priority"][..]),
             (
@@ -133,9 +136,8 @@ impl CompletionClient {
         ] {
             if let Some(value) = hints.get(name).and_then(serde_json::Value::as_str)
                 && allowed.contains(&value)
-                && let Some(chosen) = self.request_hints.as_object_mut()
             {
-                chosen.insert(name.to_owned(), value.into());
+                request_hints.insert(name.to_owned(), value.into());
             }
         }
         self

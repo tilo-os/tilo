@@ -28,6 +28,8 @@ mod native_replay_budget_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+mod private_chat;
+pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
@@ -1408,6 +1410,8 @@ pub struct ShellNetwork {
     /// Tokio runtime hosting the actor. `Option` so `drop` can `take`
     /// it and shut down without blocking the test thread.
     runtime: Option<tokio::runtime::Runtime>,
+    /// The actor's native endpoint, also used for authenticated private RPCs.
+    private_chat_endpoint: Option<iroh::Endpoint>,
     /// Cached hash of the local iroh endpoint id, stamped on every
     /// outbound `NeighbourMsg::PresenceMoved`. Computed once at spawn.
     local_peer_hash: u64,
@@ -1933,6 +1937,7 @@ impl ShellNetwork {
                 .with_label(identity.device_cert.device_label.clone()),
             )
         });
+        let private_chat_endpoint = Some(endpoint.clone());
         let (cmd_tx, _join) = Actor::spawn_deferring_relays(
             endpoint,
             lookup,
@@ -2061,6 +2066,7 @@ impl ShellNetwork {
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
+            private_chat_endpoint,
             local_peer_hash,
             keypair,
             host_identity,
@@ -8263,6 +8269,7 @@ pub(crate) fn shell_network_for_test(
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,
+        private_chat_endpoint: None,
         local_peer_hash,
         keypair,
         host_identity: None,

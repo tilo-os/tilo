@@ -19,6 +19,7 @@ pub(crate) use file_clipboard::test_support::TestTransferPause;
 mod native_effect_tests;
 mod nearby_transfer;
 mod owner_source;
+mod person_chat;
 #[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
@@ -1811,6 +1812,13 @@ fn native_resource_views(
     })
 }
 
+fn native_person_chat(
+    tree: &WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+) -> tilo_action_broker::services::person_chat::PersonChatService {
+    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+}
+
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
@@ -1888,6 +1896,9 @@ pub fn native_services(
         committed_documents,
         workspace_memberships,
         task_execution,
+        person_chat: membership
+            .as_ref()
+            .map(|tree| native_person_chat(tree, network.clone())),
         resource_views,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,

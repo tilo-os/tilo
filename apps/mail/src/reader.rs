@@ -5,7 +5,7 @@
 //! the theme; the controls inside it (attachment chips, the remote-content
 //! button) are the toolkit's faces.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -360,10 +360,21 @@ pub struct MessageReader {
     /// The open message's sender.
     html_sender: String,
     html_view_rect: Option<Rect>,
-    /// The text of the message shown, as last painted.
-    body: Option<BodyText>,
+    /// The text of each message shown open, as last painted: the newest
+    /// always, and the earlier ones the person opened.
+    bodies: HashMap<MessageId, BodyText>,
+    /// The message whose text has the pointer's selection and the keys.
+    active: Option<MessageId>,
+    /// Earlier messages of the conversation shown open. The newest is
+    /// always open; an earlier one opens when it is unread or clicked.
+    expanded: HashSet<MessageId>,
+    /// The header of each earlier message as last painted: a click opens
+    /// or closes that message.
+    headers: Vec<(Rect, MessageId)>,
     /// Whether the reader has the keyboard, which its text uses.
     focused: bool,
+    /// A button is held over the text: the pointer is selecting.
+    selecting: bool,
     dirty: bool,
 }
 
@@ -387,8 +398,12 @@ impl MessageReader {
             html_load_remote: false,
             html_sender: String::new(),
             html_view_rect: None,
-            body: None,
+            bodies: HashMap::new(),
+            active: None,
+            expanded: HashSet::new(),
+            headers: Vec::new(),
             focused: false,
+            selecting: false,
             dirty: true,
         }
     }
@@ -508,15 +523,16 @@ impl MessageReader {
         let style = crate::html_mail::DocumentStyle::from_theme(theme);
         let key = (message.id, html.is_some());
         let needs_rebuild = self
-            .body
-            .as_ref()
+            .bodies
+            .get(&message.id)
             .is_none_or(|body| body.key != key || body.style != style);
         if needs_rebuild {
             let mut body = BodyText::new(key, style, message, html, theme);
-            body.input.set_focus(self.focused);
-            self.body = Some(body);
+            body.input
+                .set_focus(self.focused && self.active == Some(message.id));
+            self.bodies.insert(message.id, body);
         }
-        let Some(body) = self.body.as_mut() else {
+        let Some(body) = self.bodies.get_mut(&message.id) else {
             return;
         };
         let inset = body.input.text_inset_x(theme);
@@ -554,7 +570,9 @@ impl MessageReader {
             self.attachments.clear();
             self.remote_button = None;
             self.html_view_rect = None;
-            self.body = None;
+            self.bodies.clear();
+            self.headers.clear();
+            self.active = None;
             self.paint_empty(&mut ctx, &state);
             return;
         };
@@ -562,6 +580,16 @@ impl MessageReader {
         if self.shown != Some(head_id) {
             self.shown = Some(head_id);
             self.region.set_offset(Vec2::ZERO);
+            // A conversation opens on its newest message, with the earlier
+            // ones not read yet open above it.
+            self.expanded = messages
+                .iter()
+                .filter(|message| !message.read && message.id != head_id)
+                .map(|message| message.id)
+                .collect();
+            self.active = Some(head_id);
+            self.bodies
+                .retain(|id, _| messages.iter().any(|message| message.id == *id));
         }
         let spacing = theme.tokens.spacing;
         let gutter = f64::from(spacing.s6);
@@ -595,11 +623,6 @@ impl MessageReader {
             subject
         };
         flow.paragraph(&subject, &title, false);
-        if messages.len() > 1 {
-            flow.y += f64::from(spacing.s1);
-            let caption = flow.style(TextRole::Caption);
-            flow.paragraph(&format!("{} messages", messages.len()), &caption, true);
-        }
         if state.inspection == Some(head.id) {
             flow.y += f64::from(spacing.s2);
             let caption = flow.style(TextRole::Caption);
@@ -629,9 +652,13 @@ impl MessageReader {
 
         let mut webview_rect = None;
         let count = messages.len();
+        self.headers.clear();
         for (index, message) in messages.iter().enumerate() {
             let is_head = index + 1 == count;
+            let open = is_head || self.expanded.contains(&message.id);
+            let top = flow.y;
             flow.sender(message);
+            let header_bottom = flow.y;
             flow.y += f64::from(spacing.s3);
             if is_head && head_html.is_some() && self.html_engine_live {
                 self.paint_remote_line(&mut flow);
@@ -641,19 +668,31 @@ impl MessageReader {
                     webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
                 }
                 flow.y = bottom;
-            } else if is_head {
+            } else if open {
                 // Without an isolated renderer the HTML is read into styled
-                // text; nothing in it is fetched.
-                self.paint_body(&mut flow, message, head_html.as_deref(), presence);
+                // text; nothing in it is fetched. An earlier message opened
+                // in the conversation reads the same way.
+                self.paint_body(&mut flow, message, message.html_body.as_deref(), presence);
+                if !is_head {
+                    self.headers.push((
+                        Rect::new(flow.x, top, flow.x + flow.width, header_bottom),
+                        message.id,
+                    ));
+                }
             } else {
-                // Earlier messages show their first line.
+                // A closed earlier message shows its first line; the whole of
+                // it opens the message.
                 let caption = flow.style(TextRole::Caption);
                 let at = Point::new(flow.x, flow.y);
                 let width = flow.width;
                 flow.line_at(&message.snippet(), &caption, theme.text_dim, at, width);
                 flow.y += flow.line(TextRole::Caption);
+                self.headers.push((
+                    Rect::new(flow.x, top, flow.x + flow.width, flow.y),
+                    message.id,
+                ));
             }
-            if is_head && message.has_attachments() {
+            if open && message.has_attachments() {
                 flow.y += f64::from(spacing.s4);
                 flow.attachments(message);
             }
@@ -729,6 +768,22 @@ impl MessageReader {
             self.shared.borrow_mut().dirty = true;
             return true;
         }
+        if let Some(id) = self
+            .headers
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, id)| *id)
+        {
+            if !self.expanded.remove(&id) {
+                self.expanded.insert(id);
+            }
+            if self.active == Some(id) {
+                self.active = self.shown;
+            }
+            self.dirty = true;
+            self.shared.borrow_mut().dirty = true;
+            return true;
+        }
         if let Some((_, message, index)) = self
             .attachments
             .iter()
@@ -771,14 +826,56 @@ impl MessageReader {
 
     /// Give the message text the pointer and the keys: selecting, copying and
     /// opening its links. The wheel stays the reader's, which scrolls.
+    ///
+    /// A press on another message's text moves the selection and the keys
+    /// there: one message's text is active at a time.
     fn forward_to_body(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::MouseWheel { .. }) {
             return;
         }
-        if let Some(body) = self.body.as_mut() {
-            body.input.handle_event(event, ctx);
-            self.dirty = true;
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+            && let Some(id) = self
+                .bodies
+                .iter()
+                .find(|(_, body)| body.input.get_rect().contains(self.pointer))
+                .map(|(id, _)| *id)
+            && self.active != Some(id)
+        {
+            if let Some(previous) = self.active.and_then(|active| self.bodies.get_mut(&active)) {
+                previous.input.set_focus(false);
+            }
+            self.active = Some(id);
+            if let Some(body) = self.bodies.get_mut(&id) {
+                body.input.set_focus(self.focused);
+            }
         }
+        if let Some(body) = self.active.and_then(|id| self.bodies.get_mut(&id)) {
+            body.input.handle_event(event, ctx);
+            // A pointer passing over the text changes nothing on screen
+            // unless it is dragging out a selection.
+            match event {
+                WindowEvent::MouseInput { state, .. } => {
+                    self.selecting = *state == ElementState::Pressed;
+                    self.dirty = true;
+                }
+                WindowEvent::CursorMoved { .. } if !self.selecting => {}
+                _ => self.dirty = true,
+            }
+        }
+    }
+
+    /// What the pointer at `point` lights up: an attachment chip, or the
+    /// remote-content button.
+    fn hover_at(&self, point: Point) -> (Option<usize>, bool) {
+        (
+            self.attachments
+                .iter()
+                .position(|(rect, _, _)| rect.contains(point)),
+            self.remote_button.is_some_and(|rect| rect.contains(point)),
+        )
     }
 
     fn forward_to_html(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -820,7 +917,9 @@ impl Widget for MessageReader {
             self.attachments.clear();
             self.remote_button = None;
             self.html_view_rect = None;
-            self.body = None;
+            self.bodies.clear();
+            self.headers.clear();
+            self.active = None;
             let shared = self.shared.clone();
             let state = shared.borrow();
             self.paint_empty(&mut PaintCtx::new(scene, t, tr, theme), &state);
@@ -852,8 +951,11 @@ impl Widget for MessageReader {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
+                let before = self.hover_at(self.pointer);
                 self.pointer = ctx.logical(position);
-                self.dirty = true;
+                if self.hover_at(self.pointer) != before {
+                    self.dirty = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -873,12 +975,12 @@ impl Widget for MessageReader {
     /// The reader takes the keyboard while a message is open, so its text
     /// can be selected and copied from the keys.
     fn is_focusable(&self) -> bool {
-        self.body.is_some()
+        !self.bodies.is_empty()
     }
 
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
-        if let Some(body) = self.body.as_mut() {
+        if let Some(body) = self.active.and_then(|id| self.bodies.get_mut(&id)) {
             body.input.set_focus(focused);
         }
         self.dirty = true;
@@ -922,9 +1024,9 @@ impl Widget for MessageReader {
                 .as_ref()
                 .is_some_and(ui::Widget::needs_animation_frame)
             || self
-                .body
-                .as_ref()
-                .is_some_and(|body| body.input.needs_animation_frame())
+                .bodies
+                .values()
+                .any(|body| body.input.needs_animation_frame())
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -949,7 +1051,7 @@ impl Widget for MessageReader {
         if let Some(view) = self.html_view.as_mut() {
             view.mark_drawn();
         }
-        if let Some(body) = self.body.as_mut() {
+        for body in self.bodies.values_mut() {
             body.input.mark_drawn();
         }
     }
@@ -1082,7 +1184,10 @@ mod tests {
             reader.html_loaded_key().is_none(),
             "without an isolated engine nothing is fetched"
         );
-        let body = reader.body.as_ref().expect("the message text is a field");
+        let body = reader
+            .active
+            .and_then(|id| reader.bodies.get(&id))
+            .expect("the message text is a field");
         assert!(body.input.is_read_only(), "selectable, never editable");
         assert!(
             !body.input.value().contains('<'),
@@ -1091,7 +1196,12 @@ mod tests {
         );
         assert!(reader.is_focusable(), "the keys can reach the text");
         reader.set_focus(true);
-        assert!(reader.body.as_ref().is_some_and(|b| b.input.is_focused()));
+        assert!(
+            reader
+                .active
+                .and_then(|id| reader.bodies.get(&id))
+                .is_some_and(|b| b.input.is_focused())
+        );
     }
 
     #[test]
@@ -1135,5 +1245,128 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         }
         assert_eq!(shared.borrow().mailbox.count(Folder::Inbox), 1);
         assert_eq!(shared.borrow().selected_thread_messages().len(), 1);
+    }
+
+    fn raw(id: &str, subject: &str, reply_to: Option<&str>, body: &str) -> Vec<u8> {
+        let reply = reply_to.map_or_else(String::new, |parent| {
+            format!("In-Reply-To: <{parent}>\r\nReferences: <{parent}>\r\n")
+        });
+        format!(
+            "From: Maya <maya@x.example>\r\nTo: sam@rivera.example\r\nSubject: {subject}\r\n\
+Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn the_reader_shows_the_conversation_the_list_shows_and_opens_earlier_messages() {
+        let shared = MailState::shared(MailState::new_live(
+            crate::account::AccountStore::new(),
+            crate::app::avatar_store_offline(),
+        ));
+        let parse = |bytes: Vec<u8>, at: i64| {
+            let mut message = crate::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
+            message.read = true;
+            message
+        };
+        // Two conversations that only share a subject, and a reply in the
+        // first one.
+        let first = parse(raw("a@x", "Status update", None, "First status."), 100);
+        let other = parse(raw("b@x", "Status update", None, "Unrelated status."), 200);
+        let reply = parse(
+            raw(
+                "c@x",
+                "Re: Status update",
+                Some("a@x"),
+                "Reply to the first.",
+            ),
+            300,
+        );
+        let (first_id, reply_id) = (first.id, reply.id);
+        {
+            let mut st = shared.borrow_mut();
+            st.mailbox.insert(first);
+            st.mailbox.insert(other);
+            st.mailbox.insert(reply);
+            st.selected = Some(reply_id);
+        }
+        assert_eq!(shared.borrow().list_rows().len(), 2, "two conversations");
+        let thread: Vec<MessageId> = shared
+            .borrow()
+            .selected_thread_messages()
+            .iter()
+            .map(|message| message.id)
+            .collect();
+        assert_eq!(
+            thread,
+            [first_id, reply_id],
+            "a shared subject is not a conversation"
+        );
+
+        let mut reader = MessageReader::new(shared);
+        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+        draw(&mut reader);
+        assert!(reader.bodies.contains_key(&reply_id), "the newest is open");
+        assert!(
+            !reader.bodies.contains_key(&first_id),
+            "a read earlier message waits closed"
+        );
+        let header = reader
+            .headers
+            .iter()
+            .find(|(_, id)| *id == first_id)
+            .map(|(rect, _)| *rect)
+            .expect("the earlier message's header can be clicked");
+        assert!(reader.press(header.center()));
+        draw(&mut reader);
+        assert!(
+            reader.bodies.contains_key(&first_id),
+            "a click opens the earlier message"
+        );
+        let header = reader
+            .headers
+            .iter()
+            .find(|(_, id)| *id == first_id)
+            .map(|(rect, _)| *rect)
+            .expect("an open earlier message keeps its header");
+        assert!(reader.press(header.center()));
+        assert!(
+            !reader.expanded.contains(&first_id),
+            "a second click closes it"
+        );
+    }
+
+    #[test]
+    fn unread_earlier_messages_open_with_the_conversation() {
+        let shared = MailState::shared(MailState::new_live(
+            crate::account::AccountStore::new(),
+            crate::app::avatar_store_offline(),
+        ));
+        let first = crate::transport::parse_eml(
+            &raw("a@x", "Plan", None, "Unread start."),
+            100,
+            Folder::Inbox,
+        )
+        .unwrap();
+        let reply = crate::transport::parse_eml(
+            &raw("c@x", "Re: Plan", Some("a@x"), "Latest."),
+            200,
+            Folder::Inbox,
+        )
+        .unwrap();
+        let (first_id, reply_id) = (first.id, reply.id);
+        {
+            let mut st = shared.borrow_mut();
+            st.mailbox.insert(first);
+            st.mailbox.insert(reply);
+            st.selected = Some(reply_id);
+        }
+        let mut reader = MessageReader::new(shared);
+        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+        draw(&mut reader);
+        assert!(
+            reader.bodies.contains_key(&first_id),
+            "unread mail above the newest is shown open"
+        );
     }
 }

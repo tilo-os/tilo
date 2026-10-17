@@ -22,6 +22,7 @@ pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
+pub mod person_cursor;
 mod shared_tree;
 pub mod surface;
 

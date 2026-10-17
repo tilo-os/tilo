@@ -15,6 +15,56 @@ struct CertifiedLocalActionHost {
 }
 
 impl CapnpBrokerState {
+    /// Retain a certified native-seat origin for an ephemeral private editor transfer.
+    /// The payload never enters the action host, catalogue or history.
+    /// # Errors
+    /// Refuses stale/restricted Person admission, absent or ambiguous native Chat
+    /// custody, invalid editor state or exhausted ephemeral capacity.
+    pub fn stage_private_draft(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+        draft: runtime_collab::private_draft::Draft,
+    ) -> Result<uuid::Uuid, String> {
+        let checked = self.checked_local_host(caller, presentation)?;
+        let admitted = checked.check(caller).map_err(|error| error.to_string())?;
+        let certificate = admitted
+            .certificate
+            .ok_or("private draft certificate unavailable")?;
+        if checked.effective.is_foreign_device()
+            || admitted.agent_id.is_some()
+            || admitted.verified.capped
+            || admitted.host_scope.is_some()
+            || draft.workspace != checked.admission.room
+            || certificate.capabilities.foreign
+        {
+            return Err("private drafts require the original certified person".into());
+        }
+        // Weak state avoids a broker -> draft -> checked host -> broker cycle.
+        let state = Arc::downgrade(self);
+        let caller = checked.caller.clone();
+        let admission = checked.admission.clone();
+        drop(checked);
+        let origin = Arc::new(move || {
+            let state = state.upgrade().ok_or("private draft host closed")?;
+            if !state.is_accepting() || !caller.execution_is_live() {
+                return Err("private draft original person session ended".into());
+            }
+            let admitted = state.current_action_caller(&admission)?;
+            drop(state);
+            if admitted.agent_id.is_some()
+                || admitted.verified.capped
+                || admitted.host_scope.is_some()
+            {
+                return Err("private draft person admission changed".into());
+            }
+            admitted
+                .certificate
+                .ok_or_else(|| "private draft certificate unavailable".into())
+        });
+        self.mint_private_draft(certificate, origin, draft)
+    }
+
     /// Invoke through the native seat's existing palette/control provider.
     /// This process-owned door is never used by network, MCP or app transports.
     pub fn action_invoke_local_person(

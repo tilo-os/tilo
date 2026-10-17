@@ -19,8 +19,13 @@ set -euo pipefail
 CAPNP_IMAGE="registry.fedoraproject.org/fedora:44" # capnproto 1.3.0
 CAPNPC_VERSION="0.26.0"                              # workspace `capnpc`
 
+no_build=false
+if [ "${1:-}" = "--no-build" ]; then
+    no_build=true
+    shift
+fi
 if [ "$#" -ne 1 ]; then
-    echo "usage: $0 CRATE_DIR" >&2
+    echo "usage: $0 [--no-build] CRATE_DIR" >&2
     exit 2
 fi
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,6 +49,10 @@ schemas=("${layout[@]:1}")
 engine="$(command -v podman || command -v docker)"
 plugin_root="${XDG_CACHE_HOME:-$HOME/.cache}/tilo-capnpc-$CAPNPC_VERSION"
 if [ ! -x "$plugin_root/bin/capnpc-rust" ]; then
+    if [ "$no_build" = true ]; then
+        echo "missing pinned capnpc-rust $CAPNPC_VERSION at $plugin_root/bin/capnpc-rust (--no-build)" >&2
+        exit 1
+    fi
     "${CARGO:-cargo}" install --locked --quiet "capnpc@$CAPNPC_VERSION" --root "$plugin_root"
 fi
 

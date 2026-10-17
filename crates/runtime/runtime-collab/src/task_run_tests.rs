@@ -106,6 +106,7 @@ fn the_request_is_the_persons_own_words_without_context_or_conversation() {
         paused: None,
         version: 1,
         task_id: "task:3".into(),
+        presentation_version: None,
         title: "Summarise".into(),
         instruction: Some(instruction.into()),
         subject: None,

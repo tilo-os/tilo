@@ -19,6 +19,7 @@ pub(crate) struct CertifiedActionSession {
     broker: AppActionBroker,
     caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
+    presentation: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -151,6 +152,21 @@ impl ActionSessionSource {
 }
 
 impl DesktopActionSession {
+    pub(crate) fn stage_private_draft(
+        &self,
+        draft: runtime_collab::private_draft::Draft,
+    ) -> Result<uuid::Uuid, String> {
+        match self {
+            Self::Certified(session) => session.broker.state().stage_private_draft(
+                &session.caller,
+                &session.presentation,
+                draft,
+            ),
+            #[cfg(test)]
+            _ => Err("private draft transfer requires certified native worker custody".into()),
+        }
+    }
+
     /// Invoke through the session's original certified host and caller. Reads
     /// that complete synchronously need no artificial broker-job mapping.
     pub(crate) fn invoke(
@@ -269,6 +285,7 @@ impl CertifiedActionSession {
             broker,
             caller,
             host,
+            presentation,
         })
     }
 

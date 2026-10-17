@@ -1271,13 +1271,6 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
 /// decodes: a stranger is not admitted, a revoked device is revoked, and a
 /// handshake the host does not know is to be run again.
 #[tokio::test]
-#[cfg_attr(
-    feature = "agents",
-    expect(
-        clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
-    )
-)]
 async fn refused_handshakes_carry_their_typed_reason() {
     let root = SigningKey::from_bytes(&[101; 32]);
     let (host_key, host) = device(&root, 102, DeviceCapabilities::host());
@@ -1296,21 +1289,35 @@ async fn refused_handshakes_carry_their_typed_reason() {
     let mut revocations = RevocationList::new();
     revocations.insert(entry).unwrap();
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host,
-            revocations,
-        },
-        iroh::RelayMode::Disabled,
+    exercise_handshake_refusal_reasons(
+        Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations,
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap(),
+        &member,
+        &revoked,
+        &stranger,
     )
-    .await
-    .unwrap();
+    .await;
+}
+
+async fn exercise_handshake_refusal_reasons(
+    relay: Relay,
+    member: &DeviceCert,
+    revoked: &DeviceCert,
+    stranger: &DeviceCert,
+) {
     let sessions = Sessions::new(relay.web_context().clone());
     let hello = |cert: &DeviceCert| crate::auth::Hello {
         cert: cert.clone(),
@@ -1325,16 +1332,13 @@ async fn refused_handshakes_carry_their_typed_reason() {
             other => panic!("not a typed refusal: {other:?}"),
         }
     };
-    assert!(
-        sessions.hello(&hello(&member)).is_ok(),
-        "the owner's device"
-    );
+    assert!(sessions.hello(&hello(member)).is_ok(), "the owner's device");
     assert_eq!(
-        refusal(sessions.hello(&hello(&stranger)).unwrap_err()),
+        refusal(sessions.hello(&hello(stranger)).unwrap_err()),
         protocol::SessionRefusal::NotAdmitted
     );
     assert_eq!(
-        refusal(sessions.hello(&hello(&revoked)).unwrap_err()),
+        refusal(sessions.hello(&hello(revoked)).unwrap_err()),
         protocol::SessionRefusal::DeviceRevoked
     );
     let unknown = sessions
@@ -1348,5 +1352,5 @@ async fn refused_handshakes_carry_their_typed_reason() {
         .unwrap_err();
     assert_eq!(refusal(unknown), protocol::SessionRefusal::Handshake);
     drop(sessions);
-    crate::daemon::Relay::shutdown(relay).await;
+    relay.shutdown().await;
 }

@@ -1,5 +1,5 @@
 //! The actions in the window's header row: the message list's (search,
-//! select, refresh, new message; or the selection's actions) and the open
+//! select, new message, write to a contact; or the selection's actions) and the open
 //! message's (reply, archive, star, …).
 //!
 //! Each is a row of the shell's header buttons, rebuilt from [`MailState`]
@@ -118,11 +118,10 @@ pub(crate) fn list_bar(state: &MailState) -> BarSpec {
             Command::OpenSearch,
         ),
         BarItem::icon(Icon::Square, "Select messages", Command::ToggleBulk),
-        BarItem::icon(Icon::Refresh, "Refresh", Command::Refresh),
         BarItem::icon(Icon::Pencil, "New message", Command::Compose),
         BarItem::icon(
             Icon::Users,
-            crate::i18n::t("mail-contact-recipients"),
+            crate::i18n::t("mail-contact-write"),
             Command::ContactRecipients,
         ),
     ]]
@@ -264,9 +263,8 @@ mod tests {
             [
                 "Search Inbox",
                 "Select messages",
-                "Refresh",
                 "New message",
-                "Contacts recipients"
+                "Write to a contact"
             ]
         );
         let reader = reader_bar(&state);

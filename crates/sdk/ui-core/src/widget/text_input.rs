@@ -1595,6 +1595,25 @@ impl TextInput {
             .then(|| (self.core.anchor(), self.core.caret()))
     }
 
+    /// Capture only private editor state for an authenticated ephemeral handoff.
+    /// The caller must never publish this value as an action argument.
+    pub fn private_draft_editor(&self) -> crate::private_draft::Editor {
+        crate::private_draft::Editor {
+            text: self.text.clone(),
+            anchor: self.core.anchor(),
+            caret: self.core.caret(),
+            preedit: self.core.preedit().to_owned(),
+            preedit_cursor: self.core.preedit_cursor(),
+        }
+    }
+
+    /// Restore display-only composition after moving a private retained editor.
+    /// This does not insert text or write a document/history entry.
+    pub fn restore_private_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        self.core.set_preedit(text, cursor);
+        self.model_layout_dirty = true;
+    }
+
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
     pub fn char_x_positions(&self) -> &[f64] {
         &self.char_x_positions
@@ -5389,6 +5408,10 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::presence::capability::PublishesPresence,

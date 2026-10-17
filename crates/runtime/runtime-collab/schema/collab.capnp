@@ -462,6 +462,11 @@ interface ChannelHandle {
   # Private website session custody for the certified Browser Read route.
   # Identity, person and source are derived by the broker, never caller claims.
   browserServiceSessionCommand @63 (command :Data) -> (reply :Data);
+  # Person-only private host door. The app, workspace and certificate come
+  # from the admitted native worker; onBehalfOf names retained original custody.
+  personChat @64 (command :Data, onBehalfOf :Data) -> (reply :Data);
+  # Native Chat's original person actor only; reauthorized on every next.
+  subscribePersonChat @65 (publicKey :Text, onBehalfOf :Data) -> (stream :PersonChatStream);
 
 }
 
@@ -1050,6 +1055,13 @@ struct ActionResource {
   resourceLabel @2 :Text;
   semanticIdentity @3 :ResourceSemanticIdentity;
   template @4 :Data;
+}
+
+# Private participant capability for one selected pair, never a broadcast.
+# next carries counts only; read freshly authorizes and returns a bounded snapshot.
+interface PersonChatStream {
+  next @0 () -> (generation :UInt64);
+  read @1 () -> (reply :Data);
 }
 
 # Each read returns exactly one nonempty field. Receipt/error freezes the lane.
