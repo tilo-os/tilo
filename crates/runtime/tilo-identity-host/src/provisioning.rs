@@ -521,6 +521,57 @@ pub fn enroll_from_local_identity(
     )
 }
 
+/// Complete this device's own side of an enrollment made without the root,
+/// as [`install_joined_device`] completes a target it sets up: the
+/// certificate filed for its person, a public record naming that person as
+/// the account's active identity under `identity_dir`, and a fleet that knows
+/// this device. A node's session is enrolled so when its node is installed,
+/// by a relay that writes it only the certificate and the person's public
+/// key. Answers whether `paths` holds such a device; idempotent, and never
+/// writes a root or replaces an active identity.
+///
+/// # Errors
+///
+/// Returns an error if the enrolled certificate is not this device's, does
+/// not verify, or a file cannot be written.
+pub fn complete_enrolled_device(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> Result<bool, io::Error> {
+    if !persist::joined_device_is_ready(paths, now_ns)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    {
+        return Ok(false);
+    }
+    let cert = persist::read_device_cert(&paths.device_cert)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    persist::install_device_cert(paths, &cert, now_ns)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    prepare_identity_directory(identity_dir)?;
+    let identity_id = hex::encode(cert.user_public_key);
+    let record_id = public_record_id(&identity_id);
+    let record_path = identity_dir.join(format!("{record_id}.json"));
+    if !record_path.exists() {
+        let record = runtime_identity::public_member_record(
+            "My Tilo identity",
+            [88, 101, 242],
+            cert.user_public_key,
+        )?;
+        tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
+    }
+    if runtime_identity::resolve_active_identity(identity_dir).is_none() {
+        tilo_files::native::atomic::write_with_mode(
+            &identity_dir.join("active"),
+            format!("{record_id}\n").as_bytes(),
+            0o600,
+        )?;
+    }
+    crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
+        .remember_certificate(&identity_id, cert)?;
+    Ok(true)
+}
+
 fn public_record_id(identity_id: &str) -> String {
     let prefix: String = identity_id.chars().take(55).collect();
     format!("identity-{prefix}")
@@ -1419,6 +1470,46 @@ mod tests {
         write_record([7; 32]);
         let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A node's session, given only its certificate and the person's key by
+    /// the relay its page installed, holds that person as a joined device.
+    #[cfg(unix)]
+    #[test]
+    fn an_enrolled_session_takes_up_its_person_as_a_joined_device() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let paths = IdentityPaths::under(dir.path().join("session"));
+        assert!(!complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
+
+        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Apps on node".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        persist::write_public_key(&paths.user_pubkey, &user).unwrap();
+
+        assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
+        assert!(complete_enrolled_device(&identity_dir, &paths, 2_000).unwrap());
+        verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+        let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            .load_reconciled()
+            .unwrap();
+        assert_eq!(registry.default_identity, Some(hex::encode(user)));
+        let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+            .load(&hex::encode(user))
+            .unwrap();
+        assert!(fleet.certificates.contains(&cert));
+        assert!(!paths.user_privkey.exists());
     }
 
     #[test]
