@@ -204,6 +204,12 @@ an older one may lack arm64.
 the image's copy, so it is live the next time the app launches; nothing
 restarts. App installs are not generations: `rollback` does not undo them.
 
+On a physical device the app builds on this host when it is a Linux machine
+of the device's architecture (`--builder host`, and the default when no remote
+builder is configured for it), else on the remote builder; the device itself
+never compiles an app. Either way the device's installer checks the package's
+architecture, publisher and runtime ABI.
+
 The app links the image's own `libruntime_dylib.so`, so the worktree's
 `Cargo.lock` must be the image's. When it is not (your branch is newer than
 the image), `swap app:<dir>` refuses before building and names
