@@ -1,7 +1,7 @@
 [
   {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
-    "oid": "7a7696681bad4f83fd92680fe7699ea263549022",
-    "reason": "Original visual regression reference; must remain unchanged until genuine overview mismatch is fixed. Replacement plan: repair production or harness cause, then reuse pinned original PNG artifact; never refresh baseline to silence failure."
+    "oid": "718a4895088d6b95e5c86c47d3ef4719218c4e28",
+    "reason": "Visual regression reference for the overview open/close settle. Re-pinned to the baseline 9b3eb9f584 recorded for the intentional 24 px top-bar redesign; refresh it only for an intended UI change, never to silence a mismatch."
   }
 ]
