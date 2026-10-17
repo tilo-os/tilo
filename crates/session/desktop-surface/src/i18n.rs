@@ -39,7 +39,7 @@ mod tests {
         );
         assert_eq!(
             t_args("topbar-sharing-count", &[("viewers", 2.into())]),
-            "2 VIEWING"
+            "2 watching"
         );
     }
 

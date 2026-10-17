@@ -1554,12 +1554,9 @@ fn collaborators_screen_exposure(
                             }
                         })
                 })
-                .unwrap_or_else(|| {
-                    t_args(
-                        "host-exposure-surface",
-                        &[("surface", exposure.surface.to_string().into())],
-                    )
-                });
+                // A window the tree does not list has no name a person knows;
+                // its surface number would mean nothing to them.
+                .unwrap_or_else(|| t("host-exposure-surface"));
             let args = [
                 ("name", ui::i18n::ArgValue::from(name)),
                 ("kind", ui::i18n::ArgValue::from(kind)),
@@ -9059,32 +9056,28 @@ impl ShellOverlayHost {
             .retain(|(title, ticket)| match ticket() {
                 Ok(None) => true,
                 Ok(Some(receipt)) => {
+                    // Say what started in the action's own words; the
+                    // broker's job number is not something people know.
+                    tracing::debug!(job = ?receipt.broker_invocation_id, "action admitted");
                     chrome.borrow_mut().push_notification_full(
                         tilo_desktop::notifications::Notification::new(
                             t_args("host-action-started", &[("title", title.as_str().into())]),
-                            t_args(
-                                "host-action-admitted",
-                                &[(
-                                    "job",
-                                    receipt
-                                        .broker_invocation_id
-                                        .unwrap_or_default()
-                                        .to_string()
-                                        .into(),
-                                )],
-                            ),
+                            String::new(),
                         )
                         .with_app_name(t("host-source-app-actions")),
                     );
                     false
                 }
                 Err(error) => {
+                    // The palette row is gone by now, so a notice is the only
+                    // place left to say it.
+                    tracing::info!(code = error.code(), detail = %error, "action was not admitted");
                     chrome.borrow_mut().push_warning_notification(
                         t_args(
                             "host-action-cannot-run",
                             &[("title", title.as_str().into())],
                         ),
-                        error.to_string(),
+                        error.user_message(),
                     );
                     false
                 }
@@ -9748,14 +9741,18 @@ impl ShellOverlayHost {
                                 )
                         })
                         .map(|notice| notice.body.clone());
-                    let detail = reported_detail.unwrap_or_else(|| {
-                        let detail = err.to_string();
-                        chrome.borrow_mut().push_warning_notification(
-                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                            detail.clone(),
-                        );
-                        detail
-                    });
+                    // The failure is told once, on the row that failed. The
+                    // error's own text is for agents and logs; people get
+                    // its catalogue sentence (or the notice the action
+                    // already posted, with its own buttons).
+                    tracing::info!(
+                        provider = %result.provider_id,
+                        action = %result.id,
+                        code = err.code(),
+                        detail = %err,
+                        "palette action did not run"
+                    );
+                    let detail = reported_detail.unwrap_or_else(|| err.user_message());
                     self.palette
                         .set_selected_status(t("host-action-failed-status"), detail);
                     self.palette_layout_dirty = true;
@@ -20701,8 +20698,11 @@ impl Widget for ShellOverlayHost {
                                 .iter()
                                 .enumerate()
                                 .map(|(index, item)| {
-                                    let (name, description, ..) =
+                                    let (name, mut description, ..) =
                                         self.qs_device_row_face(&view, selected, item);
+                                    if let Some(action) = item.select_action_key() {
+                                        description = format!("{description}. {}", t(action));
+                                    }
                                     let buttons = Self::qs_device_row_button_names(item)
                                         .into_iter()
                                         .map(|name| AccessNode::new(Role::Button).with_name(name))
@@ -26091,6 +26091,12 @@ impl ShellOverlayHost {
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
+    /// The named button of a row whose whole face is one action. Selecting
+    /// anywhere on the row does it; the button says what it is.
+    fn qs_device_row_select_action(row: Rect) -> Rect {
+        Rect::new(row.x1 - 84.0, row.y0 + 12.0, row.x1 - 8.0, row.y1 - 12.0)
+    }
+
     fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
         (
             [
@@ -26212,21 +26218,15 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The health clause a device row adds after its status: only what a
+    /// person acts on (its power). Reachability is already the status, and
+    /// latency or route counts are diagnostics.
     fn fabric_health_detail(
         health: &crate::shell::spatial_calibration::DeviceHealthView,
-    ) -> String {
-        use crate::shell::spatial_calibration::{DevicePower, DeviceReachability};
-        let reachability = match health.reachability {
-            DeviceReachability::Online => "online",
-            DeviceReachability::Stale => "stale",
-            DeviceReachability::Offline => "offline",
-        };
-        let latency = health.latency_ms.map_or_else(
-            || t("qs-devices-latency-unknown"),
-            |ms| t_args("qs-devices-latency", &[("ms", ms.into())]),
-        );
+    ) -> Option<String> {
+        use crate::shell::spatial_calibration::DevicePower;
         let power = match health.power {
-            DevicePower::Unknown => t("qs-devices-battery-unknown"),
+            DevicePower::Unknown => return None,
             DevicePower::External => t("qs-devices-external-power"),
             DevicePower::Charging(percent) => {
                 t_args("qs-devices-charging", &[("percent", percent.into())])
@@ -26235,19 +26235,7 @@ impl ShellOverlayHost {
                 t_args("qs-devices-battery", &[("percent", percent.into())])
             }
         };
-        t_args(
-            "qs-devices-health",
-            &[
-                ("reachability", reachability.into()),
-                ("latency", latency.into()),
-                ("power", power.into()),
-                (
-                    "saver",
-                    if health.energy_saver { "yes" } else { "no" }.into(),
-                ),
-                ("routes", health.active_routes.into()),
-            ],
-        )
+        Some(t_args("qs-devices-health", &[("power", power.into())]))
     }
 
     #[allow(
@@ -26969,9 +26957,10 @@ impl ShellOverlayHost {
                     .device_health
                     .iter()
                     .find(|health| health.peer == device.id)
+                    .and_then(Self::fabric_health_detail)
                 {
                     detail.push_str(" · ");
-                    detail.push_str(&Self::fabric_health_detail(health));
+                    detail.push_str(&health);
                 }
                 (
                     device.label.clone(),
@@ -27099,17 +27088,31 @@ impl ShellOverlayHost {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) =
                 self.qs_device_row_face(&view, selected, item);
-            let accessible = format!("{title}. {detail}");
+            let buttons = Self::qs_device_row_button_names(item);
+            // A row whose whole face is one action names it on a button.
+            let action = if buttons.is_empty() {
+                item.select_action_key().map(t)
+            } else {
+                None
+            };
+            let accessible = action.as_ref().map_or_else(
+                || format!("{title}. {detail}"),
+                |action| format!("{title}. {detail}. {action}"),
+            );
+            let row_hovered = enabled && self.last_cursor.is_some_and(|point| row.contains(point));
             let mut face = ButtonFace::new(row, "")
-                .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                .hovered(row_hovered)
                 .disabled(!enabled)
                 .accessible_name(&accessible);
             if selected_row {
                 face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
-            let buttons = Self::qs_device_row_button_names(item);
-            let trailing = if buttons.is_empty() { 0.0 } else { 86.0 };
+            let trailing = if buttons.is_empty() && action.is_none() {
+                0.0
+            } else {
+                86.0
+            };
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -27210,6 +27213,16 @@ impl ShellOverlayHost {
                             .accessible_name(name),
                     );
                 }
+            } else if let Some(action) = &action {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(Self::qs_device_row_select_action(row), action)
+                        .hovered(row_hovered)
+                        .disabled(!enabled),
+                );
             }
         }
         if rows.len() > visible_rows {

@@ -307,6 +307,63 @@ pub(super) enum DeviceFabricPaneRow {
     Device(FabricDeviceView),
 }
 
+impl DeviceFabricPaneRow {
+    /// The catalogue key naming what selecting this row does, for rows
+    /// whose whole face is one action (stop a stream, cancel a handoff,
+    /// try a failed one again). The row shows it as a named button instead
+    /// of telling people to "select to stop".
+    pub(super) fn select_action_key(&self) -> Option<&'static str> {
+        use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
+        use crate::shell::personal_tethering_runtime::TetheringPhase;
+        use crate::shell::remote_audio::RemoteAudioPhase;
+        use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
+        match self {
+            Self::SpeakerSession(_) => Some("qs-devices-action-stop"),
+            Self::SpeakerMembership(membership) => Some(membership.action_key()),
+            Self::RemoteAudioRoute(route) => Some(match route.phase {
+                RemoteAudioPhase::Interrupted => "qs-devices-action-dismiss",
+                _ => "qs-devices-action-stop",
+            }),
+            Self::RemoteCaptureSession(session)
+                if session.phase == RemoteCaptureSessionPhase::Streaming =>
+            {
+                Some("qs-devices-action-stop")
+            }
+            Self::BluetoothHandoff(status) => match status.phase {
+                BluetoothHandoffPhaseView::PreparingTarget
+                | BluetoothHandoffPhaseView::AwaitingApproval
+                | BluetoothHandoffPhaseView::ReleasingSource
+                | BluetoothHandoffPhaseView::PairingTarget
+                | BluetoothHandoffPhaseView::ConnectingTarget => Some("qs-devices-action-cancel"),
+                BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled
+                    if status.outbound =>
+                {
+                    Some("qs-devices-action-retry")
+                }
+                _ => None,
+            },
+            Self::LocalGamepad(gamepad) => gamepad.forwarding.as_ref().map(|forwarding| {
+                if forwarding.ready {
+                    "qs-devices-action-stop"
+                } else {
+                    "qs-devices-action-cancel"
+                }
+            }),
+            Self::MediaHandoff(status) => match status.phase {
+                MediaHandoffPhase::Pending => Some("qs-devices-action-cancel"),
+                MediaHandoffPhase::Failed(_) | MediaHandoffPhase::Cancelled => {
+                    Some("qs-devices-action-retry")
+                }
+                MediaHandoffPhase::Completed => None,
+            },
+            Self::Tethering(status) if status.phase == TetheringPhase::Active => {
+                Some("qs-devices-action-disconnect")
+            }
+            _ => None,
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "a declarative row list for every fabric pane section in display order"

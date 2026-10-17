@@ -113,7 +113,7 @@ fn transfer_tab(
         mode,
     )
     .map(|_| ())
-    .map_err(|err| ActionError::Refused(err.user_message()))
+    .map_err(|err| ActionError::Explained(err.user_message()))
 }
 
 /// Closes every tab and remembers the group as one close, so a single
