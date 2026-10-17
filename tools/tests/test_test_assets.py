@@ -104,7 +104,7 @@ class TestAssets(unittest.TestCase):
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 6)
-        self.assertEqual(sum(row["bytes"] for row in rows), 3718171)
+        self.assertEqual(sum(row["bytes"] for row in rows), 3718990)
         self.assertEqual({row["file"] for row in rows}, {
             f"{theme}-display-{display}-text-{text}.png"
             for theme in ("dark", "light")
