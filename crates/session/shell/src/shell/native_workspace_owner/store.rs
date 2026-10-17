@@ -183,6 +183,8 @@ pub(super) struct Runtime {
     companions: Mutex<[u64; 1]>,
     /// The tree document beside the state file.
     document: crate::shell::persist::DocLog,
+    /// The action policy this writer's tree has published.
+    action_authority: Arc<crate::shell::launcher::action_authority::Authority>,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -198,6 +200,7 @@ impl Default for Runtime {
             sequence: AtomicU64::new(0),
             companions: Mutex::new([0; 1]),
             document: crate::shell::persist::DocLog::default(),
+            action_authority: Arc::default(),
         }
     }
 }
@@ -271,6 +274,12 @@ pub(super) fn digest(storage: &NativeAuthorityStorage) -> io::Result<[u8; 32]> {
 impl NativeStateRuntime {
     pub(crate) fn authority_witness(&self) -> NativeStateWitness {
         NativeStateWitness(Arc::downgrade(&self.0))
+    }
+    /// The action policy this writer's tree has published.
+    pub(crate) fn action_authority(
+        &self,
+    ) -> Arc<crate::shell::launcher::action_authority::Authority> {
+        self.0.action_authority.clone()
     }
     pub(crate) fn owner(&self) -> Option<NativeWorkspaceOwner> {
         self.0
