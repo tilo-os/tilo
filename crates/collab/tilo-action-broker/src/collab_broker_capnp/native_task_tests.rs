@@ -23,6 +23,8 @@ mod closed_app;
 mod confirmation;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
+#[path = "native_store_witness_tests.rs"]
+mod store_witness;
 
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,

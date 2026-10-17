@@ -182,6 +182,30 @@ impl CapnpBrokerState {
         if let Some(argument) = argument.as_deref() {
             target.argument = Some(argument);
         }
+        let run = self
+            .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+            .map_err(capnp::Error::failed)?;
+        let offered = self
+            .surfaces
+            .lock()
+            .map_err(|_| capnp::Error::failed("task surface unavailable".into()))?
+            .get(&target.peer_id)
+            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .ok_or_else(|| capnp::Error::failed("task action unavailable".into()))?;
+        let witness = self
+            .native_store_witness(
+                (&run, reask.lease, confirmation.is_some()),
+                (&offered.0.app_id, &offered.1),
+                target.argument,
+                reask.caller,
+            )
+            .await
+            .map_err(capnp::Error::failed)?;
+        reask.caller.current(self).map_err(capnp::Error::failed)?;
+        if witness.is_some() {
+            self.check_native_store_offer(&offered)
+                .map_err(capnp::Error::failed)?;
+        }
         let provenance = (reask.caller.clone(), reask.invocation);
         let job = self
             .start_task_action(
@@ -190,7 +214,10 @@ impl CapnpBrokerState {
                 reask.run_id,
                 reask.lease,
                 target,
-                (Some(&provenance), confirmation.is_some()),
+                (
+                    Some(&provenance),
+                    (confirmation.is_some(), witness.as_deref()),
+                ),
             )
             .map_err(capnp::Error::failed)?;
         if let Some(confirmation) = confirmation {
@@ -434,7 +461,7 @@ impl CapnpBrokerState {
         caller: &durable_local_invocation::LocalCaller,
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
-        confirmed: bool,
+        (confirmed, witness): (bool, Option<&str>),
     ) -> Result<InvocationJob, String> {
         // Dispatch the exact contract checked by native task admission. A
         // concurrent publication must not replace it with a broader need.
@@ -449,11 +476,30 @@ impl CapnpBrokerState {
             .actor()?;
         // Admission checked the person's answer for this exact invocation;
         // the token carries it to the dispatch, bound to these arguments.
-        let token = confirmed
-            .then(|| {
-                self.mint_confirmation_grant(target.peer_id, &offered.1, target.argument, &actor)
-            })
-            .transpose()?;
+        let token = if super::requires_store_witness(&offered.0.app_id, &offered.1.action) {
+            self.confirmation_token(
+                target.peer_id,
+                &offered.0.app_id,
+                &offered.1,
+                target.argument,
+                &actor,
+                witness
+                    .map(|token| tilo_actions::remote::Confirmation::Witnessed(token.into()))
+                    .as_ref(),
+            )
+            .map_err(|error| error.to_string())?
+        } else {
+            confirmed
+                .then(|| {
+                    self.mint_confirmation_grant(
+                        target.peer_id,
+                        &offered.1,
+                        target.argument,
+                        &actor,
+                    )
+                })
+                .transpose()?
+        };
         let app = offered.0.app_id.clone();
         let _admission = self
             .admission_lock

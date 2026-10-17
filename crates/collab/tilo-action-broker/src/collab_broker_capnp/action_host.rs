@@ -1817,7 +1817,7 @@ impl CapnpBrokerState {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
                 if let Some(native) = native {
-                    return native.deliver(self, peer_id).map_err(refusal);
+                    return native.deliver(self, peer_id).await.map_err(refusal);
                 }
                 return self.start_for(caller, None, None, origin, &delivered, request);
             }
