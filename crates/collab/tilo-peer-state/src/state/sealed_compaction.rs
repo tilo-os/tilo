@@ -342,8 +342,12 @@ impl StatePeer {
         let author = Ed25519PublicKey::from_bytes(self.core.authority.device_public_key);
         let mut messages = Vec::new();
         for (route, document) in &self.core.documents {
-            let published: Vec<&SignedOp> = before
-                .and_then(|before| before.core.documents.get(route))
+            let prior = before.and_then(|before| before.core.documents.get(route));
+            // A record still shared with `before` holds nothing new.
+            if prior.is_some_and(|prior| super::backend::StoredDocument::ptr_eq(prior, document)) {
+                continue;
+            }
+            let published: Vec<&SignedOp> = prior
                 .map(|prior| {
                     prior
                         .sealed

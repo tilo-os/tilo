@@ -36,6 +36,7 @@ pub(crate) use desktop_writes::writes_desktop;
 mod member_records;
 pub use member_records::PreparedRecord;
 mod pages;
+mod peer_parts;
 mod private;
 #[cfg(test)]
 mod private_network_tests;
@@ -89,7 +90,7 @@ pub use tilo_relay_session::rooms::{
 use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
-const RECORD_VERSION: u32 = 1;
+const RECORD_VERSION: u32 = 2;
 /// Governance publications kept after the last full checkpoint before the
 /// room's publication is compacted into a fresh one.
 const MAX_PUBLICATION_TAIL: usize = 256;
@@ -103,8 +104,9 @@ struct Publication {
     checkpoint: bool,
 }
 
-/// Everything a governed room keeps across restarts. Written whole and
-/// atomically after each decision, before it is published or answered.
+/// Everything a governed room keeps across restarts. Written atomically
+/// after each decision, before it is published or answered; the large parts
+/// of `peer` are files of their own ([`peer_parts`]), written before it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RoomRecord {
     version: u32,
@@ -112,7 +114,7 @@ struct RoomRecord {
     workspace_id: u64,
     name: String,
     authority: DeviceCert,
-    peer: Vec<u8>,
+    peer: Vec<peer_parts::PeerPart>,
     generation: u64,
     /// The complete committed publication: the last full checkpoint and every
     /// change after it. A joining member's bootstrap carries all of it.
@@ -175,6 +177,8 @@ struct GovernedRoom {
     record: RoomRecord,
     peer: StatePeer,
     path: PathBuf,
+    /// The files of `record.peer`'s large parts.
+    parts: peer_parts::PeerParts,
     /// Its channels' stewards, when this relay is a node that may own
     /// workspaces ([`stewardship`]). Locked apart from the room: admitting
     /// a crowd's devices to the channels held the room for an MLS change
@@ -233,21 +237,23 @@ impl GovernedRoom {
             .iter()
             .map(|message| publication(message, true))
             .collect::<Result<Vec<_>, _>>()?;
+        let path = dir.join(format!("{room}.room"));
+        let mut parts = peer_parts::PeerParts::open(&path)?;
         let record = RoomRecord {
             version: RECORD_VERSION,
             workspace_id: crate::room_workspace_id(&room).map_err(|error| error.to_string())?,
             room: room.clone(),
             name: name.to_owned(),
             authority: authority.clone(),
-            peer: peer.durable()?,
+            peer: parts.stage(&peer)?,
             generation: 1,
             outgoing,
             published: 0,
             collaboration: collaboration::CollaborationState::default(),
         };
-        let path = dir.join(format!("{room}.room"));
-        let this = Self {
+        let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
+            parts,
             path,
             stewardship: stewardship(dir, &room, authority, key),
             record,
@@ -264,10 +270,12 @@ impl GovernedRoom {
 
     fn open(path: PathBuf, authority: &DeviceCert, key: &SigningKey) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-        let record: RoomRecord = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        if record.version != RECORD_VERSION {
-            return Err(format!("room record version {} is unknown", record.version));
+        let (version, _) =
+            postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
+        if version != RECORD_VERSION {
+            return Err(format!("room record version {version} is unknown"));
         }
+        let record: RoomRecord = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         if record.authority != *authority {
             return Err("room is governed by a different device".into());
         }
@@ -276,8 +284,9 @@ impl GovernedRoom {
         {
             return Err("room record is inconsistent".into());
         }
+        let mut parts = peer_parts::PeerParts::open(&path)?;
         let mut peer = StatePeer::restore(
-            &record.peer,
+            &parts.load(&record.peer)?,
             &record.room,
             record.authority.clone(),
             vec![record.authority.clone()],
@@ -288,6 +297,8 @@ impl GovernedRoom {
         if !peer.has_governance() {
             return Err("restored room has no governance".into());
         }
+        // Parts an interrupted write left behind.
+        parts.collect(&record.peer);
         let stewardship = path
             .parent()
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
@@ -295,6 +306,7 @@ impl GovernedRoom {
             admissions: admissions::Admissions::open(&path)?,
             record,
             peer,
+            parts,
             path,
             stewardship,
             publisher: Arc::default(),
@@ -305,7 +317,7 @@ impl GovernedRoom {
         })
     }
 
-    fn persist(&self) -> Result<(), String> {
+    fn persist(&mut self) -> Result<(), String> {
         // What the publisher could not admit is not published yet, whatever
         // `published` says until the next settle takes the failure back.
         let bytes = match self.publisher.unretained_from() {
@@ -317,7 +329,16 @@ impl GovernedRoom {
             _ => postcard::to_stdvec(&self.record),
         }
         .map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
+        self.parts.collect(&self.record.peer);
+        Ok(())
+    }
+
+    /// Name the current peer state's parts in the room file, unwritten.
+    #[cfg(test)]
+    fn store_peer(&mut self) -> Result<(), String> {
+        self.record.peer = self.parts.stage(&self.peer)?;
+        Ok(())
     }
 
     fn peer(&self) -> &StatePeer {
@@ -427,7 +448,9 @@ impl GovernedRoom {
             .generation
             .checked_add(1)
             .ok_or("room generation exhausted")?;
+        let copying = crate::timing::start();
         let mut record = self.record.clone();
+        crate::timing::window("room.commit.record", copying);
         let tail = record
             .outgoing
             .iter()
@@ -471,7 +494,7 @@ impl GovernedRoom {
             crate::timing::window("room.commit.messages", diffing);
         }
         let encoding = crate::timing::start();
-        record.peer = candidate.durable()?;
+        record.peer = self.parts.stage(&candidate)?;
         crate::timing::window("room.commit.durable", encoding);
         record.generation = generation;
         let deriving = crate::timing::start();

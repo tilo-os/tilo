@@ -598,6 +598,94 @@ fn a_created_room_restores_with_its_governance_and_publication() {
     assert!(restored.peer().has_governance());
 }
 
+/// A record's large state is a file of its own: a governance change that
+/// does not touch it writes the room file alone, a change of it replaces
+/// its file, and the room opens to what it committed.
+#[test]
+fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
+    use automerge::transaction::Transactable as _;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let mut room =
+        GovernedRoom::create(dir.path(), "Team", &cert, &key, SystemTime::now()).unwrap();
+    // Incompressible text, so the saved record stays large.
+    let mut text = vec![0u8; 48 * 1024];
+    blake3::Hasher::new()
+        .update(b"large record")
+        .finalize_xof()
+        .fill(&mut text);
+    let large = || {
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "text", hex::encode(&text))
+            .unwrap();
+        doc.save()
+    };
+    let state = room.collaboration().clone();
+    let mut candidate = room.peer().clone();
+    candidate
+        .publish_document("notes", "plan", large(), &key, SystemTime::now())
+        .unwrap();
+    room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .unwrap();
+    let stored = |room: &GovernedRoom| {
+        room.record
+            .peer
+            .iter()
+            .filter(|part| matches!(part, peer_parts::PeerPart::Stored { .. }))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let first = stored(&room);
+    assert_eq!(first.len(), 1, "the large record is stored apart");
+    assert_eq!(room.parts.files(), 1);
+    let modified = |room: &GovernedRoom| {
+        std::fs::read_dir(room.path.with_extension("parts"))
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().modified().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let written = modified(&room);
+
+    // A change that leaves the record alone does not write it again.
+    let candidate = room.peer().clone();
+    room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .unwrap();
+    assert_eq!(stored(&room), first);
+    assert_eq!(modified(&room), written);
+
+    // Changing it stores it anew and removes what no room file names.
+    let mut candidate = room.peer().clone();
+    let mut edited =
+        automerge::AutoCommit::load(&room.peer().document("notes", "plan").unwrap()).unwrap();
+    edited.put(automerge::ROOT, "edited", true).unwrap();
+    candidate
+        .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
+        .unwrap();
+    room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
+        .unwrap();
+    let second = stored(&room);
+    assert_eq!(second.len(), 1);
+    assert_ne!(second, first);
+    assert_eq!(room.parts.files(), 1, "the replaced part is removed");
+
+    let restored = GovernedRoom::open(room.path.clone(), &cert, &key).unwrap();
+    assert_eq!(
+        restored.peer().document("notes", "plan"),
+        room.peer().document("notes", "plan")
+    );
+    assert_eq!(restored.record.generation, room.record.generation);
+
+    // A stored part that does not match its hash refuses to open.
+    let peer_parts::PeerPart::Stored { digest, .. } = &second[0] else {
+        unreachable!()
+    };
+    let path = room.path.with_extension("parts").join(hex::encode(digest));
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(&path, bytes).unwrap();
+    assert!(GovernedRoom::open(room.path.clone(), &cert, &key).is_err());
+}
+
 #[test]
 fn a_room_is_only_restored_by_its_governor() {
     let dir = tempfile::tempdir().unwrap();

@@ -101,13 +101,15 @@ impl CachedDocument {
         })
     }
     pub(crate) fn saved(&self) -> Vec<u8> {
-        self.serialized
-            .get_or_init(|| {
-                #[cfg(test)]
-                SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
-                AutoCommit::clone(&self.doc).save()
-            })
-            .clone()
+        self.saved_bytes().to_vec()
+    }
+    /// [`Self::saved`] without copying the bytes.
+    pub(crate) fn saved_bytes(&self) -> &[u8] {
+        self.serialized.get_or_init(|| {
+            #[cfg(test)]
+            SERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
+            AutoCommit::clone(&self.doc).save()
+        })
     }
 }
 #[cfg(test)]

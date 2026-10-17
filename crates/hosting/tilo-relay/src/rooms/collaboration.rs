@@ -1162,7 +1162,7 @@ impl Rooms {
         let (result, waiting) = match self.room(room_id).await {
             Err(error) => (Err(error), take()),
             Ok(room) => {
-                let room = room.lock().await;
+                let mut room = room.lock().await;
                 // Taken under the room: whoever queued staged their change
                 // before.
                 let waiting = take();

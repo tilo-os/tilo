@@ -15,6 +15,7 @@ pub mod document;
 pub mod installation;
 mod postcard_sink;
 pub mod room;
+mod shared;
 mod state;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
