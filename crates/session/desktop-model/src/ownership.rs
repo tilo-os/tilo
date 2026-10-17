@@ -38,6 +38,7 @@ pub type Authors = BTreeMap<u64, String>;
 /// A shared desktop as a room holds it: the tree and who made what.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SharedDesktop {
+    #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
     pub tree: DesktopTree,
     /// The record each window shows, by tab, for the windows bound to one.
     #[serde(default)]
