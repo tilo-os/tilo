@@ -4302,18 +4302,22 @@ impl Widget for MailApp {
             sheet.dialog.apply_layout(taffy, node, inner);
         }
         // The composer writes in the message column while it stands beside
-        // the list; otherwise the window decides (a page when narrow).
+        // the list; a window too narrow for both gives it the whole window,
+        // as the page a message is read on.
         let geometry = self.nav.geometry();
         let column = geometry.content_column;
-        let pane =
-            (self.nav_node.is_some() && geometry.side_by_side && column.area() > 0.0).then(|| {
+        let pane = self.nav_node.is_some().then(|| {
+            if geometry.side_by_side && column.area() > 0.0 {
                 Rect::new(
                     column.x0,
                     column.y0 + geometry.header_height,
                     column.x1,
                     column.y1,
                 )
-            });
+            } else {
+                self.rect
+            }
+        });
         self.compose.set_pane(pane);
         self.compose.layout(self.rect);
         self.shortcuts.set_viewport(self.rect);
@@ -4562,6 +4566,9 @@ impl Widget for MailApp {
             } else {
                 Self::reader_accessibility_node(&st)
             });
+        } else if self.compose.open {
+            // A narrow window's composer is the page itself.
+            children.push(self.compose.accessibility_node());
         }
 
         let composition = if drawer_open {
