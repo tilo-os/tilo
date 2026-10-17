@@ -28,6 +28,9 @@ pub(super) struct NativeLaunch {
     record: Option<String>,
     retained: Option<PublishedAction>,
     bootstrap: bool,
+    /// The person confirmed this retained action as asked first; `argument`
+    /// is then what they confirmed.
+    confirmed: bool,
 }
 
 impl NativeLaunch {
@@ -52,7 +55,9 @@ impl NativeLaunch {
             action: "open".into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
-            confirmed: false,
+            // Opening the application is part of the action the person
+            // confirmed, not a second question.
+            confirmed: self.confirmed,
         })
     }
 
@@ -63,12 +68,14 @@ impl NativeLaunch {
             return Err("task stopped while waiting for its application".into());
         }
         if let Some(retained) = &self.retained {
-            if !matches!(
-                retained
-                    .contract
-                    .confirmation_for_argument(self.argument.as_deref()),
-                tilo_actions::ConfirmationPolicy::None
-            ) {
+            if !self.confirmed
+                && !matches!(
+                    retained
+                        .contract
+                        .confirmation_for_argument(self.argument.as_deref()),
+                    tilo_actions::ConfirmationPolicy::None
+                )
+            {
                 return Err("closed task action requires person confirmation".into());
             }
             state
@@ -85,7 +92,7 @@ impl NativeLaunch {
                         action: self.action.clone(),
                         need: retained.contract.need(),
                         consequential: false,
-                        confirmed: false,
+                        confirmed: self.confirmed,
                     },
                 )?;
         }
@@ -372,7 +379,10 @@ impl NativeLaunch {
                     action: &self.action,
                     argument: self.argument.as_deref(),
                 },
-                (Some(&(self.caller.clone(), self.invocation)), false),
+                (
+                    Some(&(self.caller.clone(), self.invocation)),
+                    self.confirmed,
+                ),
                 offered,
             )
             .map(|job| job.id)
@@ -529,6 +539,7 @@ impl CapnpBrokerState {
             record,
             retained,
             bootstrap,
+            confirmed: false,
         })
     }
 
@@ -537,7 +548,28 @@ impl CapnpBrokerState {
         reask: &super::native_task_execution::ChildReask<'_>,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
         let target = reask.target;
-        let native = self.native_launch_for(reask)?;
+        let mut native = self.native_launch_for(reask)?;
+        // A retained action that asks first pauses at its draft before the
+        // application is launched for it, as a running application's does.
+        let mut confirmation = None;
+        if let Some(retained) = native.retained.clone()
+            && let super::native_task_confirmation::NativeGate::Confirmed {
+                argument,
+                confirmation: id,
+            } = self
+                .native_confirmation_for(
+                    &native.run,
+                    reask.lease,
+                    (&native.app, &retained),
+                    (target.resource, target.action),
+                    target.argument,
+                )
+                .await?
+        {
+            native.argument = Some(argument);
+            native.confirmed = true;
+            confirmation = Some(id);
+        }
         let destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.
@@ -548,9 +580,12 @@ impl CapnpBrokerState {
                 provider: native.provider.clone(),
                 address: tilo_actions::ActionAddress::new(target.resource, target.action),
             },
-            argument: target.argument.map_or(InvokeArgument::None, |text| {
-                InvokeArgument::Text(text.into())
-            }),
+            argument: native
+                .argument
+                .as_deref()
+                .map_or(InvokeArgument::None, |text| {
+                    InvokeArgument::Text(text.into())
+                }),
             context: None,
             confirmation: None,
             revision: None,
@@ -560,6 +595,7 @@ impl CapnpBrokerState {
         };
         let launch_key = native.launch_key(self)?;
         let (completer, answer) = pending::<Result<u64, tilo_actions::remote::ActionHostError>>();
+        let run = native.run.clone();
         let state = Arc::clone(self);
         super::launchable::delivery_runtime()?.spawn(async move {
             let result = state
@@ -578,6 +614,13 @@ impl CapnpBrokerState {
             .await
             .ok_or("native activation delivery ended")?
             .map_err(|error| error.to_string())?;
+        if let Some(confirmation) = confirmation {
+            // The child started; a failure to clear the answer only leaves
+            // the card until the run ends.
+            if let Err(error) = self.settle_native_confirmation(&run, &confirmation).await {
+                tracing::warn!(%error, "confirmed task action started but its confirmation stayed");
+            }
+        }
         let update = self
             .invocation_status(id)
             .or_else(|| {

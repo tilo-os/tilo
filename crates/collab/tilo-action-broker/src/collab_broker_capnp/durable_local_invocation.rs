@@ -82,7 +82,14 @@ impl LocalCaller {
                     &requirement.need,
                     now,
                 );
-                if !answer.admits(actor.direct()) {
+                // An answer asking first admits what the person confirmed;
+                // it is then refused only when no longer allowed at all.
+                let admitted = if requirement.confirmed {
+                    answer != tilo_action_policy::Answer::Deny
+                } else {
+                    answer.admits(actor.direct())
+                };
+                if !admitted {
                     return Err("caller no longer authorized for invocation".to_string());
                 }
                 Ok(spent)
