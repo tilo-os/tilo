@@ -625,24 +625,18 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Show what a native transfer came to.
+    /// Show what a native transfer came to: what arrived is in the listing,
+    /// so only a failure is said.
     pub(crate) fn follow_clipboard_receipt(&mut self, receipt: &Receipt) {
         use crate::i18n::{arg, t_args};
-        let count = ui::num::i64_of_usize(receipt.completed);
-        self.status = Some(match &receipt.error {
-            None => t_args(
-                if receipt.restore {
-                    "files-restored"
-                } else {
-                    "files-pasted"
-                },
-                &[arg("count", count)],
-            ),
-            Some(error) => t_args(
-                "files-clipboard-partial",
-                &[arg("count", count), arg("error", error.clone())],
-            ),
-        });
+        if let Some(error) = &receipt.error {
+            let count = ui::num::i64_of_usize(receipt.completed);
+            self.notify_failure(
+                t_args("files-clipboard-partial", &[arg("count", count)]),
+                error,
+                None,
+            );
+        }
         self.refresh();
         self.structure_dirty = true;
     }
@@ -714,19 +708,10 @@ impl FileExplorerWidget {
     pub(super) fn complete_clipboard_publication(&mut self, result: Result<Completion, String>) {
         match result {
             Ok(Completion::Published(offer)) => {
+                // Copy and Cut say nothing: what is on the clipboard shows
+                // when it is pasted.
                 self.clipboard.clear();
                 self.clipboard_cut = offer.cut;
-                self.status = Some(crate::i18n::t_args(
-                    if offer.cut {
-                        "files-cut"
-                    } else {
-                        "files-copied"
-                    },
-                    &[crate::i18n::arg(
-                        "count",
-                        ui::num::i64_of_usize(offer.count),
-                    )],
-                ));
                 self.answer_effect(Ok(()));
             }
             Ok(Completion::Snapshot(offer)) => {
@@ -765,7 +750,7 @@ impl FileExplorerWidget {
                 self.refresh();
             }
             Err(error) => {
-                self.status = Some(error.clone());
+                self.notify_failure(error.clone(), "", None);
                 self.answer_effect(Err(ui::tilo_actions::ActionFailure {
                     code: "clipboard_failed".into(),
                     message: error,

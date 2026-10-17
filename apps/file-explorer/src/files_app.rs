@@ -51,15 +51,53 @@ mod native_open_with;
 mod selected_open;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+mod notice;
 mod read_text;
 mod selection_actions;
+use notice::{Notice, NoticeAction, NoticeClick};
 mod shown_selection;
 
+/// How long a drag rests on a folder before the folder opens.
+const SPRING_OPEN: Duration = Duration::from_millis(700);
+/// The accessibility targets of the notice's action and close buttons.
+const NOTICE_ACTION_TARGET: &str = "files-notice-action";
+const NOTICE_DISMISS_TARGET: &str = "files-notice-dismiss";
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
+/// The keys that run `command` in the listing, shown beside it in menus so
+/// the menu teaches the keyboard. Only commands with a key of their own.
+fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
+    use ui::platform::Shortcut;
+    Some(match command {
+        FileCommand::Activate(_) => Shortcut::key("Enter"),
+        FileCommand::Rename => Shortcut::key("F2"),
+        FileCommand::Delete => Shortcut::key("Delete"),
+        FileCommand::Copy => Shortcut::command("C"),
+        FileCommand::Cut => Shortcut::command("X"),
+        FileCommand::Paste => Shortcut::command("V"),
+        FileCommand::SelectAll => Shortcut::command("A"),
+        FileCommand::NewFolder => Shortcut::command("N").shift(),
+        FileCommand::ToggleHidden => Shortcut::command("H"),
+        FileCommand::Refresh => Shortcut::key("F5"),
+        FileCommand::Undo => Shortcut::command("Z"),
+        FileCommand::ShowKeyboardShortcuts => Shortcut::key("F1"),
+        _ => return None,
+    })
+}
+
+/// Where the part of a file name to select for renaming ends: before its
+/// last extension (`report` of `report.final.pdf`). `None` selects the whole
+/// name: a folder, a dotfile, or a name with no extension.
+fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
+    if is_dir {
+        return None;
+    }
+    name.rfind('.').filter(|&dot| dot > 0)
+}
+
 pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
     theme.tokens.spacing.s16
 }
@@ -144,10 +182,8 @@ enum OpFollowUp {
     Rename,
     /// Offer to undo the move of `count` entries to Trash.
     Trash { count: usize },
-    /// Say how many moved into `destination`.
+    /// Offer to undo the move into `destination`.
     Move { destination: String },
-    /// Say what came back from Trash.
-    RestoreTrash,
     /// Say how many of `count` were pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
@@ -267,15 +303,28 @@ pub(crate) fn template_resource_id(path: &str) -> String {
 /// The row a failed listing offers its retry on.
 const RETRY_ROW: &str = "files.retry";
 
-/// A failed listing's retry: refreshing the folder, as a row.
-fn retry_row() -> Resource {
-    Resource::new(RETRY_ROW, RETRY_ROW, t("files-try-again")).with_action(
-        crate::effects::row_action(
-            &crate::effects::FilesEffect::Refresh,
-            "invoke",
-            t("files-try-again"),
-        ),
-    )
+/// A failed listing's way on, as a row: Try again when that may get past
+/// the failure, else going to the enclosing folder.
+fn retry_row(may_pass: bool) -> Resource {
+    let (effect, label) = if may_pass {
+        (crate::effects::FilesEffect::Refresh, t("files-try-again"))
+    } else {
+        (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
+    };
+    Resource::new(RETRY_ROW, RETRY_ROW, label.clone())
+        .with_action(crate::effects::row_action(&effect, "invoke", label))
+}
+
+/// The retained button under a failed listing, bound to [`retry_row`].
+fn recovery_button(may_pass: bool) -> Button {
+    let row = retry_row(may_pass);
+    let button = Button::new(RETRY_ROW, &row.label);
+    match row.actions.first().and_then(|action| {
+        ui::tilo_actions::ActionBinding::static_json(&row, action, serde_json::Map::new()).ok()
+    }) {
+        Some(binding) => button.on_action(binding),
+        None => button.with_enabled(false),
+    }
 }
 
 /// The bookmarked places, as [`crate::resource::FileExplorer::children`]
@@ -547,9 +596,14 @@ pub struct FileExplorerWidget {
     /// Clipboard for cut/copy → paste. `true` = cut (move on paste).
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
-    /// The queued operation that moved the last selection to Trash from this
-    /// window, while its revert can still put everything back.
-    last_trash_undo: Option<String>,
+    /// The card over the file view for a change to take back or a failure
+    /// to act on ([`notice`]).
+    notice: Notice,
+    /// The window's undo, as the host publishes it: what the Undo in a
+    /// notice and in the menu asks for, the same one Ctrl+Z does.
+    undo: ui::UndoAccess,
+    /// The start of a name being typed into the listing.
+    typing: ui::type_ahead::TypeAhead,
     /// The device this window changes the filesystem of, which carries out
     /// the operations it queues; `None` outside a framework host.
     device: Option<String>,
@@ -727,6 +781,12 @@ pub struct FileExplorerWidget {
     /// from a row that was in this set, the drag carries the whole set (so a
     /// user can drag several selected items at once). Empty otherwise.
     drag_seed: Vec<PathBuf>,
+    /// A plain press inside a multi-selection: the row it collapses the
+    /// selection to on release, unless a drag of the whole set starts first.
+    collapse_on_release: Option<usize>,
+    /// The folder a drag has rested on, and since when: held long enough,
+    /// it opens, so a drop can reach a folder deeper down.
+    spring: Option<(PathBuf, Instant)>,
     /// Whether the row the live drag started on is a folder (from the drag-begin
     /// signal, not a filesystem probe). Only a single dragged folder can be
     /// pinned to the sidebar.
@@ -780,6 +840,9 @@ pub struct FileExplorerWidget {
     /// while this Files widget still owns the request; the shell gets a weak
     /// witness and cannot act after this widget has gone away.
     pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
+    /// The file [`Self::pending_document_open`] is opening, to name it if
+    /// the host refuses.
+    document_open_path: Option<PathBuf>,
     /// A file handed to the desktop's default handler, until it answers.
     pending_launch: Option<(PathBuf, ui::portal::LaunchChannel)>,
     next_document_open_token: u64,
@@ -876,6 +939,7 @@ impl FileExplorerWidget {
         op: crate::file_ops::FileOp,
         follow: OpFollowUp,
     ) -> Option<crate::file_ops::Outcome> {
+        self.retire_stale_undo_notice();
         if let crate::file_ops::FileOp::CloudImport { job_id, .. } = &op {
             crate::cloud_jobs::register(job_id);
             self.cloud.job_id = Some(job_id.clone());
@@ -922,8 +986,8 @@ impl FileExplorerWidget {
             _ => None,
         };
         let outcome = crate::file_ops::execute(&op, reverting);
-        self.local_outcomes.insert(id.clone(), outcome.clone());
-        self.settle_op(&id, follow, &outcome);
+        self.local_outcomes.insert(id, outcome.clone());
+        self.settle_op(follow, &outcome);
         Some(outcome)
     }
 
@@ -954,7 +1018,7 @@ impl FileExplorerWidget {
                 if matches!(op, crate::file_ops::FileOp::CloudImport { .. }) {
                     self.cloud_finished(outcome);
                 }
-                self.settle_op(id.as_str(), follow, outcome);
+                self.settle_op(follow, outcome);
             } else {
                 for change in outcome.result() {
                     match change {
@@ -979,7 +1043,7 @@ impl FileExplorerWidget {
         }
     }
 
-    fn settle_op(&mut self, id: &str, follow: OpFollowUp, outcome: &crate::file_ops::Outcome) {
+    fn settle_op(&mut self, follow: OpFollowUp, outcome: &crate::file_ops::Outcome) {
         use crate::file_ops::Change;
         self.refresh();
         self.structure_dirty = true;
@@ -998,10 +1062,9 @@ impl FileExplorerWidget {
                         self.retain_shown_selection();
                         self.begin_rename();
                     }
-                    self.status = Some(t("files-created-folder"));
                 }
                 Some(error) => {
-                    self.status = Some(t_args("files-new-folder-failed", &[arg("error", error)]));
+                    self.notify_failure(t("files-new-folder-failed-title"), &error, None)
                 }
             },
             OpFollowUp::Rename => match error {
@@ -1014,28 +1077,24 @@ impl FileExplorerWidget {
                     if self.renaming.is_some() {
                         self.end_rename_editor();
                     }
-                    self.status = Some(t("files-renamed"));
                 }
                 // The editor stays open so the name can be fixed.
-                Some(error) => {
-                    self.status = Some(t_args("files-rename-failed", &[arg("error", error)]));
-                }
+                Some(error) => self.notify_failure(t("files-rename-failed-title"), &error, None),
             },
             OpFollowUp::Trash { count } => match error {
                 None => {
+                    // Undo puts back only what Files could tell apart in
+                    // Trash; anything else is offered no Undo it can't keep.
                     let undoable = outcome
                         .result()
                         .iter()
                         .all(|change| matches!(change, Change::Trashed { entry: Some(_), .. }));
-                    self.last_trash_undo = undoable.then(|| id.to_owned());
-                    self.status = Some(t_args(
-                        "files-moved-to-trash",
-                        &[arg("count", i64_of_usize(count))],
-                    ));
+                    self.notify_done(
+                        t_args("files-moved-to-trash", &[arg("count", i64_of_usize(count))]),
+                        undoable,
+                    );
                 }
-                Some(error) => {
-                    self.status = Some(t_args("files-delete-failed", &[arg("error", error)]));
-                }
+                Some(error) => self.notify_failure(t("files-trash-failed"), &error, None),
             },
             OpFollowUp::Move { destination } => {
                 let moved = outcome
@@ -1043,38 +1102,117 @@ impl FileExplorerWidget {
                     .iter()
                     .filter(|change| matches!(change, Change::Moved { .. }))
                     .count();
-                self.status = Some(match error {
-                    None => t_args(
-                        "files-moved-to-folder",
-                        &[
-                            arg("count", i64_of_usize(moved)),
-                            arg("destination", destination),
-                        ],
+                match error {
+                    None => self.notify_done(
+                        t_args(
+                            "files-moved-to-folder",
+                            &[
+                                arg("count", i64_of_usize(moved)),
+                                arg("destination", destination),
+                            ],
+                        ),
+                        true,
                     ),
-                    Some(_) => t_args(
-                        "files-moved-with-failures",
-                        &[
-                            arg("moved", i64_of_usize(moved)),
-                            arg("destination", destination),
-                            arg("failed", i64_of_usize(1)),
-                        ],
+                    Some(error) => self.notify_failure(
+                        t_args("files-move-failed", &[arg("destination", destination)]),
+                        &error,
+                        None,
                     ),
-                });
+                }
             }
             OpFollowUp::Paste { count, cut } => self.settle_paste(count, cut, outcome),
-            OpFollowUp::RestoreTrash => {
-                self.status = Some(match error {
-                    None => t_args(
-                        "files-undo-trash-restored",
-                        &[arg("count", i64_of_usize(outcome.result().len()))],
-                    ),
-                    Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
-                });
-            }
         }
     }
 
-    /// Say how many of `count` were pasted; after Cut, take the moved ones
+    /// Give the notice the pointer events that are its: hover, and a press
+    /// and release on the card. Whether the event was the notice's.
+    fn route_notice_event(&mut self, event: &winit::event::WindowEvent) -> bool {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                self.structure_dirty |= self.notice.pointer_moved(self.last_cursor);
+                self.notice.contains(self.last_cursor)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => self.notice.press(self.last_cursor),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => match self.notice.release(self.last_cursor) {
+                Some(click) => {
+                    if let NoticeClick::Action(action) = click {
+                        self.act_on_notice(action);
+                    }
+                    self.structure_dirty = true;
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Say that a change is done, with Undo when it can be taken back. Only
+    /// a change worth taking back is announced: one the listing alone would
+    /// not show, like files leaving the folder.
+    fn notify_done(&mut self, title: String, undoable: bool) {
+        self.status = None;
+        // Undo is the window's: offered only when the window has it to give
+        // (a window no framework hosts keeps no history).
+        let undo = undoable && self.undo.can_undo();
+        self.notice.show(
+            title,
+            "",
+            ui::widget::toast::ToastKind::Success,
+            undo.then_some(NoticeAction::Undo),
+        );
+        self.structure_dirty = true;
+    }
+
+    /// Say that something failed: `title` says what, `reason` why, and
+    /// `action` is the way on, when there is one.
+    fn notify_failure(&mut self, title: String, reason: &str, action: Option<NoticeAction>) {
+        self.status = None;
+        self.notice.show(
+            title,
+            crate::fileops::readable_error(reason),
+            ui::widget::toast::ToastKind::Error,
+            action,
+        );
+        self.structure_dirty = true;
+    }
+
+    /// A new change makes an Undo notice stale: its Undo would take back
+    /// the newer change instead of the one it names.
+    fn retire_stale_undo_notice(&mut self) {
+        if self.notice.offers_undo() {
+            self.notice.dismiss();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Act on a notice's button.
+    fn act_on_notice(&mut self, action: NoticeAction) {
+        match action {
+            NoticeAction::Undo => {
+                self.undo.request(ui::UndoRequest::Undo);
+            }
+            NoticeAction::OpenWith(path) => {
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.retain_shown_selection();
+                    self.open_app_chooser();
+                }
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Say why any of `count` weren't pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     fn settle_paste(&mut self, count: usize, cut: bool, outcome: &crate::file_ops::Outcome) {
         use crate::file_ops::Change;
@@ -1091,17 +1229,17 @@ impl FileExplorerWidget {
             self.clipboard
                 .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
         }
-        self.status = Some(if error.is_none() {
-            t_args("files-pasted", &[arg("count", i64_of_usize(count))])
-        } else {
-            t_args(
-                "files-pasted-with-failures",
+        // What was pasted shows up in the listing; only a failure is news.
+        if let Some(error) = error {
+            let title = t_args(
+                "files-paste-failed",
                 &[
-                    arg("count", i64_of_usize(done.len())),
-                    arg("failed", i64_of_usize(count - done.len())),
+                    arg("count", i64_of_usize(count - done.len())),
+                    arg("total", i64_of_usize(count)),
                 ],
-            )
-        });
+            );
+            self.notify_failure(title, error, None);
+        }
     }
 
     /// Filesystem changes bound to the entry row `row`: rename, move to a
@@ -1254,7 +1392,8 @@ impl FileExplorerWidget {
     /// Submit a bookmark verb. The sidebar already shows it; the stored
     /// places are presented back once it applies (or again unchanged if it
     /// is refused).
-    fn submit(&self, invoke: ui::tilo_resource::Invoke<crate::resource::FileExplorer>) {
+    fn submit(&mut self, invoke: ui::tilo_resource::Invoke<crate::resource::FileExplorer>) {
+        self.retire_stale_undo_notice();
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.submit(invoke);
         }
@@ -1558,16 +1697,7 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
-        let retry = retry_row();
-        let binding = retry.actions.first().and_then(|action| {
-            ui::tilo_actions::ActionBinding::static_json(&retry, action, serde_json::Map::new())
-                .ok()
-        });
-        let state_retry = Button::new("files.retry", &t("files-try-again"));
-        let state_retry = match binding {
-            Some(binding) => state_retry.on_action(binding),
-            None => state_retry.with_enabled(false),
-        };
+        let state_retry = recovery_button(true);
         Self {
             services,
             startup_accounts,
@@ -1587,7 +1717,9 @@ impl FileExplorerWidget {
             forward: Vec::new(),
             clipboard: Vec::new(),
             clipboard_cut: false,
-            last_trash_undo: None,
+            notice: Notice::default(),
+            undo: ui::UndoAccess::default(),
+            typing: ui::type_ahead::TypeAhead::default(),
             device: None,
             ops_drain: None,
             awaiting_ops: Vec::new(),
@@ -1661,6 +1793,8 @@ impl FileExplorerWidget {
             drag_paths: Vec::new(),
             armed_drag: None,
             drag_seed: Vec::new(),
+            collapse_on_release: None,
+            spring: None,
             drag_origin_is_dir: false,
             drag_hover: None,
             nearby_send: crate::nearby_send::NearbySendState::default(),
@@ -1693,6 +1827,7 @@ impl FileExplorerWidget {
             drives: drives::Drives::default(),
             host_intent: None,
             pending_document_open: None,
+            document_open_path: None,
             pending_launch: None,
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
@@ -1768,7 +1903,7 @@ impl FileExplorerWidget {
     fn refresh_external_search_catalogs(&mut self) {
         let page = self.advance_collaborative_search_page();
         if page.truncated {
-            self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+            tracing::debug!("collaborative search catalogue truncated; continues on refresh");
         }
         if let Some(root) = self.accounts_root.as_deref() {
             self.accounts_cache = crate::remote_accounts::load_in(root, self.home_path.as_deref());
@@ -2006,13 +2141,6 @@ impl FileExplorerWidget {
             FilesEffect::OpenTerminal => {
                 self.open_terminal()
                     .map_err(|e| format!("could not open terminal: {e}"))?;
-                None
-            }
-            FilesEffect::UndoTrash => {
-                if self.last_trash_undo.is_none() {
-                    return Err("nothing was moved to Trash from this window".into());
-                }
-                self.apply_undo_last_trash();
                 None
             }
             FilesEffect::EmptyTrash => {
@@ -2816,15 +2944,6 @@ impl FileExplorerWidget {
         )
     }
 
-    fn bounded_state_prefix(value: &str, max_chars: usize) -> String {
-        let count = value.chars().count();
-        if count <= max_chars {
-            return value.to_string();
-        }
-        let keep = max_chars.saturating_sub(1);
-        format!("{}…", value.chars().take(keep).collect::<String>())
-    }
-
     /// Concise, readable copy for the center state. The visual treatment has a
     /// deliberately finite line length, while the full path remains discoverable
     /// in the location bar and the root accessibility description.
@@ -2843,24 +2962,44 @@ impl FileExplorerWidget {
                 false,
             ));
         }
-        self.error.as_ref().map(|error| {
-            // `read_current_dir` already wraps the OS failure in the localized
-            // “Could not open this folder:” sentence. The state title carries
-            // that context, so retain only the cause in the narrow visual line.
-            let cause = error
-                .rsplit_once(": ")
-                .map_or(error.as_str(), |(_, cause)| cause);
-            let location = Self::bounded_state_text(&location, 22);
-            let error = Self::bounded_state_prefix(cause, 26);
-            (
-                t("files-load-error-title"),
-                t_args(
-                    "files-load-error-detail",
-                    &[arg("path", location), arg("error", error)],
-                ),
-                true,
-            )
-        })
+        let (failure, cause) = self.folder_failure()?;
+        let name = self.current_path.file_name().map_or_else(
+            || location.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let detail = match failure {
+            crate::fileops::FolderFailure::Permission => t("files-folder-error-permission"),
+            crate::fileops::FolderFailure::Missing => t("files-folder-error-missing"),
+            crate::fileops::FolderFailure::Other => crate::fileops::readable_error(cause),
+        };
+        Some((
+            t_args("files-load-error-title", &[arg("name", name)]),
+            detail,
+            true,
+        ))
+    }
+
+    /// Why the folder shown couldn't be listed, and the system's words for
+    /// it, when it couldn't.
+    fn folder_failure(&self) -> Option<(crate::fileops::FolderFailure, &str)> {
+        let error = self.error.as_deref()?;
+        // The stored error is the localized "couldn't open" sentence around
+        // the system's message; the cause is what follows its colon.
+        let cause = error.rsplit_once(": ").map_or(error, |(_, cause)| cause);
+        Some((crate::fileops::FolderFailure::of(cause), cause))
+    }
+
+    /// What a failed listing's button says.
+    fn folder_recovery_label(&self) -> String {
+        retry_row(self.folder_recovery_command() == FileCommand::Refresh).label
+    }
+
+    /// The command a failed listing's button runs.
+    fn folder_recovery_command(&self) -> FileCommand {
+        match self.folder_failure() {
+            Some((failure, _)) if !failure.may_pass() => FileCommand::Up,
+            _ => FileCommand::Refresh,
+        }
     }
 
     /// Draw the shared center-state primitive above the otherwise empty pane.
@@ -2899,7 +3038,7 @@ impl FileExplorerWidget {
                     icon: Some(ui::icons::Icon::FolderOpen),
                     title: &title,
                     message: Some(&detail),
-                    action_label: Some(&t("files-try-again")),
+                    action_label: Some(&self.folder_recovery_label()),
                     error: true,
                     ..EmptyStateContent::new(&title)
                 },
@@ -2960,31 +3099,66 @@ impl FileExplorerWidget {
     /// semantic primary-modifier bindings (Ctrl on most desktops, Command on
     /// macOS), rather than hard-coding a physical keyboard layout.
     fn show_keyboard_shortcuts_panel(&mut self) {
+        use ui::platform::{HostShortcut, PlatformConventions, Shortcut};
+        let conventions = PlatformConventions::default();
+        let keys = |shortcuts: &[Shortcut]| {
+            shortcuts
+                .iter()
+                .map(|shortcut| shortcut.label(conventions))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        };
+        // In the order a person works: get somewhere, change things, see
+        // them differently.
+        let rows: [(&str, Vec<Shortcut>); 13] = [
+            ("files-shortcuts-open", vec![Shortcut::key("Enter")]),
+            (
+                "files-shortcuts-back-forward",
+                vec![Shortcut::key("←").alt(), Shortcut::key("→").alt()],
+            ),
+            ("files-shortcuts-up", vec![Shortcut::key("↑").alt()]),
+            ("files-shortcuts-location", vec![Shortcut::command("L")]),
+            ("files-shortcuts-rename", vec![Shortcut::key("F2")]),
+            (
+                "files-shortcuts-new-folder",
+                vec![Shortcut::command("N").shift()],
+            ),
+            ("files-shortcuts-trash", vec![Shortcut::key("Delete")]),
+            (
+                "files-shortcuts-copy-cut-paste",
+                vec![
+                    Shortcut::command("C"),
+                    Shortcut::command("X"),
+                    Shortcut::command("V"),
+                ],
+            ),
+            (
+                "files-shortcuts-undo-redo",
+                vec![
+                    HostShortcut::Undo.shortcut(conventions),
+                    HostShortcut::Redo.shortcut(conventions),
+                ],
+            ),
+            ("files-shortcuts-select-all", vec![Shortcut::command("A")]),
+            ("files-shortcuts-hidden", vec![Shortcut::command("H")]),
+            (
+                "files-shortcuts-size",
+                vec![Shortcut::command("+"), Shortcut::command("−")],
+            ),
+            ("files-shortcuts-refresh", vec![Shortcut::key("F5")]),
+        ];
         self.show_collab_panel(CollabPanel {
             title: t("files-shortcuts-title"),
-            summary: t("files-shortcuts-summary"),
-            lines: [
-                "files-shortcuts-primary",
-                "files-shortcuts-navigate",
-                "files-shortcuts-range",
-                "files-shortcuts-grid",
-                "files-shortcuts-open",
-                "files-shortcuts-rename",
-                "files-shortcuts-trash",
-                "files-shortcuts-location",
-                "files-shortcuts-refresh",
-                "files-shortcuts-new-folder",
-                "files-shortcuts-edit",
-                "files-shortcuts-hidden",
-                "files-shortcuts-size",
-                "files-shortcuts-size-reset",
-                "files-shortcuts-context",
-                "files-shortcuts-close",
-                "files-shortcuts-dismiss",
-            ]
-            .into_iter()
-            .map(t)
-            .collect(),
+            summary: String::new(),
+            lines: rows
+                .iter()
+                .map(|(action, shortcuts)| {
+                    t_args(
+                        "files-shortcuts-row",
+                        &[arg("action", t(action)), arg("keys", keys(shortcuts))],
+                    )
+                })
+                .collect(),
             action: None,
         });
     }
@@ -3097,8 +3271,8 @@ impl FileExplorerWidget {
 
     /// Paint the transient floating status bubble at the window's
     /// bottom-right, the reclaimed home of the old footer strip. It surfaces
-    /// on a real change (dir load, selection, an operation result) or while the
-    /// pointer rests on its corner, then fades.
+    /// when there is news (a status) or while the pointer rests on its
+    /// corner, then fades.
     fn draw_status_bubble(
         &mut self,
         scene: &mut vello::Scene,
@@ -3107,8 +3281,15 @@ impl FileExplorerWidget {
         theme: &ui::Theme,
     ) {
         let now = ui::time::now();
-        let label = self.footer_label();
-        self.status_bubble.show(&label, now);
+        // Only news pops the bubble. The item and selection counts follow
+        // along and show when the pointer rests on the corner; selecting a
+        // file never flashes a bubble.
+        match &self.status {
+            Some(status) => {
+                self.status_bubble.show(status, now);
+            }
+            None => self.status_bubble.set_text(&self.footer_label()),
+        }
         // Archive browsing is deliberately read-only. Unlike transient file
         // operation feedback, that fact remains visible for the whole visit.
         if self.shots_status || crate::archive::location(&self.current_path).is_some() {
@@ -3201,9 +3382,11 @@ impl FileExplorerWidget {
     pub fn debug_show_error_state(&mut self) {
         self.entries.clear();
         self.is_loading = false;
+        let denied = std::io::Error::from_raw_os_error(13).to_string();
+        self.state_retry = recovery_button(false);
         self.error = Some(t_args(
             "files-directory-read-failed",
-            &[arg("error", "Permission denied")],
+            &[arg("error", denied)],
         ));
         self.status = None;
     }
@@ -3254,6 +3437,7 @@ impl FileExplorerWidget {
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
         self.leave_cloud_browse();
+        self.typing.reset();
         self.is_loading = true;
         self.selection.clear();
         self.retain_shown_selection();
@@ -3340,6 +3524,8 @@ impl FileExplorerWidget {
                 // directory's contents.
                 self.entries.clear();
                 self.shown_folder = None;
+                let may_pass = crate::fileops::FolderFailure::of(&e).may_pass();
+                self.state_retry = recovery_button(may_pass);
                 self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
             }
         }
@@ -4617,7 +4803,10 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::Delete => self.apply_delete(),
-            FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
+            FileCommand::Undo => {
+                self.undo.request(ui::UndoRequest::Undo);
+                true
+            }
             FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
             FileCommand::Cloud(effect) => {
@@ -4774,17 +4963,32 @@ impl FileExplorerWidget {
             // the whole set (drag a multi-selection). A press outside the
             // multi-selection seeds nothing.
             let sel = self.selection.selected();
-            self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
-                self.selected_paths()
-            } else {
-                Vec::new()
-            };
+            if sel.len() > 1 && sel.contains(&index) {
+                // Keep the set while the press may still become its drag;
+                // the release collapses it (`release_click`).
+                self.drag_seed = self.selected_paths();
+                self.collapse_on_release = Some(index);
+                return true;
+            }
+            self.drag_seed = Vec::new();
             if let Some(path) = self.select(Some(index)) {
                 // Double-click → open / enter.
                 self.open_path(path);
             }
         }
         true
+    }
+
+    /// The release of a plain press inside a multi-selection that didn't
+    /// become a drag: now it was a click, and selects just that row.
+    fn release_click(&mut self) {
+        if let Some(index) = self.collapse_on_release.take() {
+            self.drag_seed.clear();
+            if let Some(path) = self.select(Some(index)) {
+                self.open_path(path);
+            }
+            self.structure_dirty = true;
+        }
     }
 
     /// `FileCommand::ContextSelect` — selects the right-press target so the
@@ -4826,6 +5030,14 @@ impl FileExplorerWidget {
             self.status = Some(t("files-native-trash-delete-unavailable"));
             return true;
         }
+        if self.is_recent_view() {
+            // Recent lists uses of files from many folders: Delete forgets
+            // the use, as the row's menu does, and never trashes the file.
+            for path in &paths {
+                self.apply_forget_recent(path);
+            }
+            return true;
+        }
         if !paths.is_empty() {
             if self.is_trash_view() {
                 // Already in the Trash — a second delete is irreversible.
@@ -4859,29 +5071,12 @@ impl FileExplorerWidget {
         true
     }
 
-    /// Restore the last precisely observed local Trash operation. Recheck that
-    /// every captured entry still exists before asking the platform to restore:
-    /// another process may have emptied Trash or changed an entry since Files
-    /// offered the affordance.
-    fn apply_undo_last_trash(&mut self) -> bool {
-        let Some(op) = self.last_trash_undo.take() else {
-            self.status = Some(t("files-undo-trash-unavailable"));
-            return true;
-        };
-        self.queue(
-            crate::file_ops::FileOp::Revert { op },
-            OpFollowUp::RestoreTrash,
-        );
-        true
-    }
-
     /// Carry out a previously confirmed permanent deletion from Trash.
     fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
         if paths.iter().any(|path| self.is_native_trash_entry(path)) {
             self.status = Some(t("files-native-trash-delete-unavailable"));
             return true;
         }
-        self.last_trash_undo = None;
         match fileops::purge_entries(paths) {
             Ok(n) => {
                 self.refresh();
@@ -4921,7 +5116,6 @@ impl FileExplorerWidget {
     }
 
     fn apply_restore_from_trash(&mut self) -> bool {
-        self.last_trash_undo = None;
         let paths = self.selected_paths();
         if !paths.is_empty() {
             match fileops::restore_entries(&paths) {
@@ -4967,7 +5161,6 @@ impl FileExplorerWidget {
             self.status = Some(t("files-native-trash-delete-unavailable"));
             return true;
         }
-        self.last_trash_undo = None;
         match fileops::empty_trash() {
             Ok(n) => {
                 self.refresh();
@@ -5021,6 +5214,8 @@ impl FileExplorerWidget {
     /// ghost, and hand the gesture to the host or the toolkit's own
     /// client-side drag.
     fn apply_begin_drag(&mut self, path: PathBuf, is_dir: bool) -> bool {
+        // The press carries the whole selection; it was never a click.
+        self.collapse_on_release = None;
         if self.pin_drag.is_some() {
             // Already carrying — the view and the app both arm the
             // same press, and whichever fires second is redundant.
@@ -5174,10 +5369,6 @@ impl FileExplorerWidget {
         }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = false;
-        self.status = Some(t_args(
-            "files-copied",
-            &[arg("count", i64_of_usize(self.clipboard.len()))],
-        ));
         true
     }
 
@@ -5189,10 +5380,6 @@ impl FileExplorerWidget {
         }
         self.clipboard = self.selected_paths();
         self.clipboard_cut = true;
-        self.status = Some(t_args(
-            "files-cut",
-            &[arg("count", i64_of_usize(self.clipboard.len()))],
-        ));
         true
     }
 
@@ -5392,12 +5579,15 @@ impl FileExplorerWidget {
         self.favs.clone()
     }
 
-    /// Seed the local-only Trash Undo affordance for an offscreen review. The
-    /// sentinel is deliberately not a real path, so headless rendering never
-    /// mutates a user's Trash.
+    /// Stage the Undo notice a move to Trash shows, for an offscreen review.
+    /// Nothing is moved: headless rendering never touches a person's Trash.
     #[doc(hidden)]
-    pub fn debug_arm_trash_undo(&mut self) {
-        self.last_trash_undo = Some("shot-only-trash-operation".into());
+    pub fn debug_show_trash_notice(&mut self) {
+        self.undo.publish(&ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        self.notify_done(t_args("files-moved-to-trash", &[arg("count", 2)]), true);
     }
 
     /// Open the context menu *and* its "New File" flyout (headless shots demo).
@@ -5632,10 +5822,7 @@ impl FileExplorerWidget {
             Some("loading") => self.debug_show_loading_state(),
             Some("error") => self.debug_show_error_state(),
             Some("menu" | "archive-menu") => self.open_view_menu(),
-            Some("undo-trash") => {
-                self.debug_arm_trash_undo();
-                self.open_view_menu();
-            }
+            Some("undo-trash") => self.debug_show_trash_notice(),
             Some("context-menu") => {
                 // A right-click in the content pane, away from the toolbar's
                 // menu, with its first row armed as the keyboard would.
@@ -5732,13 +5919,6 @@ impl FileExplorerWidget {
                     t("files-selection-empty"),
                 ));
             }
-        }
-        if self.last_trash_undo.is_none() {
-            statuses.push(ui::framework::EffectStatus::unavailable(
-                FilesEffect::UNDO_TRASH,
-                "nothing_to_undo",
-                "Nothing was moved to Trash from this window",
-            ));
         }
         if !self.is_trash_view() {
             statuses.push(ui::framework::EffectStatus::unavailable(
@@ -5840,7 +6020,48 @@ impl FileExplorerWidget {
         {
             return Some(parent.to_path_buf());
         }
-        None
+        self.place_target_at(pt).map(|(path, _)| path)
+    }
+
+    /// Open the folder a drag has rested on long enough; whether it did.
+    /// The drag goes on in the opened folder.
+    fn spring_open_if_due(&mut self, now: Instant) -> bool {
+        let due = self.pin_drag.is_some()
+            && self
+                .spring
+                .as_ref()
+                .is_some_and(|(_, since)| now.saturating_duration_since(*since) >= SPRING_OPEN);
+        if !due {
+            return false;
+        }
+        let Some((folder, _)) = self.spring.take() else {
+            return false;
+        };
+        self.drag_hover = None;
+        self.navigate(folder);
+        self.structure_dirty = true;
+        true
+    }
+
+    /// The sidebar place a drop at `pt` lands in, with its row: the middle
+    /// of a place's row, where a drop moves into it. The band between rows
+    /// stays the gap a folder is pinned into.
+    fn place_target_at(&self, pt: Point) -> Option<(PathBuf, vello::kurbo::Rect)> {
+        if !self.in_places_list(pt) {
+            return None;
+        }
+        let list = self.nav.sidebar_ref::<ui::widget::NavList>()?;
+        list.visible_item_ids().into_iter().find_map(|id| {
+            let row = list.row_rect(&id)?;
+            let band = row.height() / 4.0;
+            let inner = vello::kurbo::Rect::new(row.x0, row.y0 + band, row.x1, row.y1 - band);
+            let path = places_sidebar::path_of_id(&id)?;
+            (inner.contains(pt)
+                && path.is_dir()
+                && !self.drag_paths.contains(&path)
+                && !crate::fileops::is_trash_dir(&path))
+            .then_some((path, row))
+        })
     }
 
     /// Resolve and apply a drag's drop: move the carried row(s) into a folder
@@ -5858,6 +6079,7 @@ impl FileExplorerWidget {
         let paths = std::mem::take(&mut self.drag_paths);
         let origin = self.pin_drag.take();
         self.drag_hover = None;
+        self.spring = None;
         if let Some(dir) = target {
             self.move_paths_into(&paths, &dir);
         } else if over_sidebar {
@@ -5882,6 +6104,7 @@ impl FileExplorerWidget {
         self.drag_paths.clear();
         self.pin_drag = None;
         self.drag_hover = None;
+        self.spring = None;
         self.drag_origin_is_dir = false;
     }
 
@@ -5962,9 +6185,10 @@ impl FileExplorerWidget {
         let token = self
             .next_document_open_token
             .checked_add(1)
-            .ok_or_else(|| "Document opening is unavailable".to_string())?;
+            .ok_or_else(|| t("files-open-unavailable"))?;
         self.next_document_open_token = token;
         let reply = Rc::new(RefCell::new(ui::widget::DocumentOpenReply::pending(token)));
+        let path_shown = path.clone();
         self.host_intent = Some(ui::widget::AppHostIntent::OpenDocument {
             path,
             capability,
@@ -5972,6 +6196,7 @@ impl FileExplorerWidget {
             reply: Rc::downgrade(&reply),
         });
         self.pending_document_open = Some((token, reply));
+        self.document_open_path = Some(path_shown);
         self.set_external_status(t("files-opening-document"));
         Ok(())
     }
@@ -5988,6 +6213,7 @@ impl FileExplorerWidget {
             return;
         };
         self.pending_document_open = None;
+        let path = self.document_open_path.take();
         match result {
             ui::widget::DocumentOpenOutcome::Opened => {
                 if self.status.as_deref() == Some(t("files-opening-document").as_str()) {
@@ -5995,7 +6221,10 @@ impl FileExplorerWidget {
                     self.structure_dirty = true;
                 }
             }
-            ui::widget::DocumentOpenOutcome::Refused(reason) => self.set_external_status(reason),
+            ui::widget::DocumentOpenOutcome::Refused(reason) => match path {
+                Some(path) => self.notify_open_failed(&path, &reason),
+                None => self.set_external_status(reason),
+            },
             ui::widget::DocumentOpenOutcome::Cancelled => {
                 self.set_external_status(t("files-document-opening-cancelled"));
             }
@@ -6060,16 +6289,14 @@ impl FileExplorerWidget {
         };
         let result = match hosted_route {
             None => ask_host_to_open(&path),
-            Some(DocumentOpenRoute::Unavailable) => {
-                Some(Err("Document opening is unavailable".into()))
-            }
+            Some(DocumentOpenRoute::Unavailable) => Some(Err(t("files-open-unavailable"))),
             Some(DocumentOpenRoute::Deferred(capability)) => {
                 Some(self.request_deferred_document_open(path.clone(), capability))
             }
         };
         match result {
             Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
-            Some(Err(reason)) => self.status = Some(reason),
+            Some(Err(reason)) => self.notify_open_failed(&path, &reason),
             None => {
                 let launch = runner.open_default(&path);
                 self.pending_launch = Some((path, launch));
@@ -6088,7 +6315,7 @@ impl FileExplorerWidget {
             Ok(outcome) => outcome,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::LaunchOutcome::Failed("the desktop did not answer".into())
+                ui::portal::LaunchOutcome::Failed(t("files-open-no-answer"))
             }
         };
         let path = path.clone();
@@ -6097,8 +6324,24 @@ impl FileExplorerWidget {
             ui::portal::LaunchOutcome::Opened => {
                 self.note_recent(&path, crate::recent::RecentUse::Opened);
             }
-            ui::portal::LaunchOutcome::Failed(reason) => self.set_external_status(reason),
+            ui::portal::LaunchOutcome::Failed(reason) => self.notify_open_failed(&path, &reason),
         }
+    }
+
+    /// Say that `path` didn't open and why, offering another app when one
+    /// claims the file: a double-click never just does nothing.
+    fn notify_open_failed(&mut self, path: &Path, reason: &str) {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let other_app = self.displayed_entries().iter().any(|e| e.path == path)
+            && !self.open_with_candidates(path).apps.is_empty();
+        self.notify_failure(
+            t_args("files-open-failed", &[arg("name", name)]),
+            reason,
+            other_app.then(|| NoticeAction::OpenWith(path.to_path_buf())),
+        );
     }
 
     // --- inline rename -------------------------------------------------
@@ -6109,6 +6352,13 @@ impl FileExplorerWidget {
     /// something rather than swallowing it.
     pub fn status_line(&self) -> Option<&str> {
         self.status.as_deref()
+    }
+
+    /// The notice over the file view (a change to take back, a failure to
+    /// act on) as one line, title then reason; readable so a host or a test
+    /// can confirm what the person was told.
+    pub fn notice_line(&self) -> Option<String> {
+        self.notice.line()
     }
 
     /// Whether an inline rename is currently in progress.
@@ -6389,6 +6639,11 @@ impl FileExplorerWidget {
                 (Some(hover.as_path()) == self.current_path.parent())
                     .then(|| self.toolbar.up_button_rect())
                     .flatten()
+            })
+            .or_else(|| {
+                self.place_target_at(self.last_cursor)
+                    .filter(|(path, _)| path == hover)
+                    .map(|(_, row)| row)
             });
         let Some(rect) = rect else { return };
         let (ix, iy) = (
@@ -7243,7 +7498,10 @@ impl FileExplorerWidget {
             } else {
                 // No-op action — the app maps the clicked index to a command
                 // itself (the sink is !Send, so it can't live in the action).
-                let item = MenuItem::action(label, || {});
+                let mut item = MenuItem::action(label, || {});
+                if let Some(keys) = cmd.as_ref().and_then(command_shortcut) {
+                    item = item.with_shortcut(keys);
+                }
                 menu.push(match self.command_checked(cmd.as_ref()) {
                     Some(checked) => item.with_checked(checked),
                     None => item,
@@ -7429,9 +7687,13 @@ impl FileExplorerWidget {
                 menu.push(MenuItem::separator());
                 cmds.push(None);
             } else {
+                let mut item = MenuItem::action(label, || {});
+                if let Some(keys) = cmd.as_ref().and_then(command_shortcut) {
+                    item = item.with_shortcut(keys);
+                }
                 menu.push(match checked {
-                    Some(checked) => MenuItem::action(label, || {}).with_checked(checked),
-                    None => MenuItem::action(label, || {}),
+                    Some(checked) => item.with_checked(checked),
+                    None => item,
                 });
                 cmds.push(cmd);
             }
@@ -7523,12 +7785,8 @@ impl FileExplorerWidget {
                 None,
             ));
         }
-        if self.last_trash_undo.is_some() {
-            spec.push((
-                t("files-undo-move-trash"),
-                Some(FileCommand::UndoLastTrash),
-                None,
-            ));
+        if self.undo.can_undo() {
+            spec.push((t("files-menu-undo"), Some(FileCommand::Undo), None));
         }
         spec.push((String::new(), None, None));
         spec.push((
@@ -8050,8 +8308,22 @@ impl FileExplorerWidget {
         }
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let alt = modifiers.state().alt_key();
         let len = self.displayed_entries().len();
         match &ke.logical_key {
+            // Back, forward and up, as in every file manager and browser.
+            Key::Named(NamedKey::ArrowLeft) if alt => {
+                self.history_back();
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) if alt => {
+                self.history_forward();
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) if alt => {
+                self.go_up();
+                true
+            }
             // Location is a first-class, keyboard-accessible control. Keep
             // this at the application layer so it works when focus is in the
             // file view, places list, or breadcrumb; a path editor itself
@@ -8145,10 +8417,6 @@ impl FileExplorerWidget {
                 self.apply_command(FileCommand::Paste);
                 true
             }
-            Key::Character(s) if (s == "z" || s == "Z") && ctrl => {
-                self.apply_command(FileCommand::UndoLastTrash);
-                true
-            }
             Key::Character(s) if (s == "n" || s == "N") && ctrl && shift => {
                 self.apply_command(FileCommand::NewFolder);
                 true
@@ -8169,6 +8437,29 @@ impl FileExplorerWidget {
             }
             Key::Character(s) if ctrl && (s == "-" || s == "_") => {
                 self.set_zoom(self.zoom_level - 1);
+                true
+            }
+            // Typing the start of a name moves to it.
+            Key::Character(s)
+                if !ctrl
+                    && !alt
+                    && len > 0
+                    && !s.trim().is_empty()
+                    && !s.chars().any(char::is_control) =>
+            {
+                self.typing.type_text(s, ui::time::now());
+                let names: Vec<String> = self
+                    .displayed_entries()
+                    .iter()
+                    .map(|e| e.name.clone())
+                    .collect();
+                if let Some(i) = self
+                    .typing
+                    .target(names.iter().map(String::as_str), self.selection.primary())
+                {
+                    self.selection.select_only(i);
+                    self.retain_shown_selection();
+                }
                 true
             }
             _ => false,
@@ -8198,6 +8489,9 @@ impl FileExplorerWidget {
                 } else {
                     self.folder_target_at(self.last_cursor)
                 };
+                if self.spring.as_ref().map(|(path, _)| path) != self.drag_hover.as_ref() {
+                    self.spring = self.drag_hover.clone().map(|path| (path, ui::time::now()));
+                }
                 *ctx.handled = true;
                 self.structure_dirty = true;
                 true
@@ -8882,8 +9176,8 @@ impl FileExplorerWidget {
         let mut nearby_root = Resource::new("files.nearby", "files.nearby", "Nearby");
         self.append_nearby_receiver_resources(&mut nearby_root);
         extras.extend(nearby_root.children);
-        if self.error.is_some() {
-            extras.push(retry_row());
+        if let Some((failure, _)) = self.folder_failure() {
+            extras.push(retry_row(failure.may_pass()));
         }
         extras
     }
@@ -9120,8 +9414,20 @@ impl ui::presence::capability::PublishesPresence for FileExplorerWidget {
     }
 }
 
+/// The window's undo, which the notice's and the menu's Undo ask for.
+impl ui::undo::UndoControl for FileExplorerWidget {
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
+        self.undo.publish(&status());
+    }
+
+    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
+        self.undo.take_request()
+    }
+}
+
 impl Widget for FileExplorerWidget {
     ui::provides!(
+        dyn ui::undo::UndoControl,
         dyn ui::widget::Collaborative,
         dyn ui::widget::controls::ActionControls,
         dyn ui::presence::capability::PublishesPresence
@@ -9135,8 +9441,13 @@ impl Widget for FileExplorerWidget {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
+        let notice_expired = self.notice.expire(ui::time::now());
+        let sprang = self.spring_open_if_due(ui::time::now());
+        self.structure_dirty |= notice_expired;
         self.poll_share_result()
             | received
+            | notice_expired
+            | sprang
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives(ui::time::now())
@@ -9160,7 +9471,7 @@ impl Widget for FileExplorerWidget {
         if self.collaborative_record_pager.borrow().has_more() {
             let page = self.advance_collaborative_search_page();
             if page.truncated {
-                self.status = Some("Collaborative search needs a refresh to continue.".to_string());
+                tracing::debug!("collaborative search catalogue truncated; continues on refresh");
             }
         }
         // A rename proposal is process-local. Seeding it must not mutate the
@@ -9171,12 +9482,20 @@ impl Widget for FileExplorerWidget {
             self.rename_seed_pending = false;
         }
 
-        // Keep the persistent in-place rename editor alive through rebuilds;
-        // select the whole seed on its first frame (Finder-style).
+        // Keep the persistent in-place rename editor alive through rebuilds.
+        // On its first frame select the name but not a file's extension, so
+        // typing replaces the name and keeps the type (a folder's whole name).
         self.rename_input.sync(state, path);
         self.state_retry.sync(state, path);
         if self.rename_select_pending {
-            self.rename_input.select_all();
+            let is_dir = self
+                .renaming
+                .and_then(|i| self.displayed_entries().get(i).map(|e| e.is_dir))
+                .unwrap_or(true);
+            match rename_stem_end(&self.rename_buffer, is_dir) {
+                Some(stem) => self.rename_input.set_selection(0, stem),
+                None => self.rename_input.select_all(),
+            }
             self.rename_select_pending = false;
         }
 
@@ -9218,6 +9537,8 @@ impl Widget for FileExplorerWidget {
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
             .chain(self.drives.next_wake())
+            .chain(self.notice.deadline())
+            .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))
             .chain(self.nav.next_wake_deadline())
             .min()
     }
@@ -9304,8 +9625,16 @@ impl Widget for FileExplorerWidget {
         // Floating status bubble (item count / status + selection), above the
         // content but below any open menus / drag ghost. A narrow drawer is a
         // modal flap and its scrim must occlude every content affordance.
+        // A notice takes the bubble's place while it is up: one message at
+        // a time at the bottom of the file view.
         if !self.status_bubble_is_occluded_by_places_drawer() {
-            self.draw_status_bubble(scene, transform, text_renderer, theme);
+            if self.notice.is_shown() {
+                let area = self.content_body_rect();
+                self.notice
+                    .paint(scene, transform, text_renderer, theme, area);
+            } else {
+                self.draw_status_bubble(scene, transform, text_renderer, theme);
+            }
         }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
@@ -9368,6 +9697,10 @@ impl Widget for FileExplorerWidget {
                 self.structure_dirty = true;
             }
         }
+        if self.notice.is_shown() && !self.places_drawer_open() && self.route_notice_event(event) {
+            *ctx.handled = true;
+            return;
+        }
         // The shared EmptyState visual and the retained Button share one
         // recovery route. The button's `on_effect` publishes a typed local
         // control action; draining it below enters the ordinary Refresh path.
@@ -9390,7 +9723,7 @@ impl Widget for FileExplorerWidget {
                             )
                         )
             ) {
-                self.structure_dirty |= self.apply_command(FileCommand::Refresh);
+                self.structure_dirty |= self.apply_command(self.folder_recovery_command());
                 *ctx.handled = true;
                 return;
             }
@@ -9456,6 +9789,7 @@ impl Widget for FileExplorerWidget {
         {
             // A release without travel was a click, not a drag.
             self.armed_drag = None;
+            self.release_click();
         }
 
         // A live drag, the open context menu, a right-click, a zoom wheel,
@@ -9633,11 +9967,32 @@ impl Widget for FileExplorerWidget {
             if can_retry {
                 state = state.with_children(vec![
                     AccessNode::new(Role::Button)
-                        .with_name(t("files-try-again"))
+                        .with_name(self.folder_recovery_label())
                         .with_action_target("files-retry-folder"),
                 ]);
             }
             root = root.with_children(vec![state]);
+        }
+        if let Some(mut notice) = self.notice.access_node() {
+            let mut buttons = Vec::new();
+            if let Some(action) = self.notice.action() {
+                let label = match action {
+                    NoticeAction::Undo => t("files-notice-undo"),
+                    NoticeAction::OpenWith(_) => t("files-notice-open-with"),
+                };
+                buttons.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_action_target(NOTICE_ACTION_TARGET),
+                );
+            }
+            buttons.push(
+                AccessNode::new(Role::Button)
+                    .with_name(t("files-notice-dismiss"))
+                    .with_action_target(NOTICE_DISMISS_TARGET),
+            );
+            notice = notice.with_children(buttons);
+            root.children.push(notice);
         }
         Some(root)
     }
@@ -9650,8 +10005,25 @@ impl Widget for FileExplorerWidget {
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        if matches!(action, Action::Activate)
+            && (target == NOTICE_ACTION_TARGET || target == NOTICE_DISMISS_TARGET)
+        {
+            let click = if target == NOTICE_DISMISS_TARGET {
+                NoticeClick::Dismissed
+            } else {
+                match self.notice.action().cloned() {
+                    Some(action) => NoticeClick::Action(action),
+                    None => return false,
+                }
+            };
+            if let NoticeClick::Action(action) = self.notice.activate(click) {
+                self.act_on_notice(action);
+            }
+            self.structure_dirty = true;
+            return true;
+        }
         if target == "files-retry-folder" && matches!(action, Action::Activate) {
-            let changed = self.apply_command(FileCommand::Refresh);
+            let changed = self.apply_command(self.folder_recovery_command());
             self.structure_dirty |= changed;
             return changed;
         }
@@ -9730,7 +10102,11 @@ impl FileExplorerWidget {
                             .flatten()
                     })
             })
-            .or_else(|| (self.error.is_some() && id == RETRY_ROW).then(retry_row))
+            .or_else(|| {
+                self.folder_failure()
+                    .filter(|_| id == RETRY_ROW)
+                    .map(|(failure, _)| retry_row(failure.may_pass()))
+            })
     }
 }
 

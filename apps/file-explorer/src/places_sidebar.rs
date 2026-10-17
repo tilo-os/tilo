@@ -69,7 +69,7 @@ const ACCOUNT_PREFIX: &str = "account:";
 const DRIVE_PREFIX: &str = "drive:";
 
 /// The folder a row id names, if it is one of ours.
-fn path_of_id(id: &str) -> Option<PathBuf> {
+pub(crate) fn path_of_id(id: &str) -> Option<PathBuf> {
     id.strip_prefix("fav:")
         .or_else(|| id.strip_prefix("loc:"))
         .map(PathBuf::from)
