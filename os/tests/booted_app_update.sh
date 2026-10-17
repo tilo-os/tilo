@@ -57,7 +57,12 @@ PREVIOUS="9998.0.0"
 UNSERVED="10000.0.0"
 INTERFACES="/usr/share/tilo/system-interfaces.toml"
 SCRATCH="/tmp/tilo-app-update-check"
-ATSPI="/usr/libexec/tilo/installed-atspi-apps.sh"
+# The external AT-SPI client and its session wrapper are test tooling the
+# image does not ship: they are copied from this checkout into the scratch
+# directory (over RUNNER's stdin) before the first use.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ATSPI_DIR="$SCRATCH/atspi"
+ATSPI="env TILO_ATSPI_CLIENT=$ATSPI_DIR/atspi_external_client.py $ATSPI_DIR/installed-atspi-apps.sh"
 
 on() {
   if [ -n "$RUNNER" ]; then $RUNNER "$@"; else bash -c "$*"; fi
@@ -165,6 +170,12 @@ expect_launch_of() {
 on 'echo reachable' | grep -q reachable || { echo "FAIL  cannot run commands on the subject (RUNNER='$RUNNER')" >&2; exit 1; }
 on "command -v tilo-test-registry" >/dev/null || die "tilo-test-registry is not installed (a dev image ships it)"
 
+on "rm -rf $SCRATCH && mkdir -p $SCRATCH/config $SCRATCH/cache" || die "cannot create $SCRATCH"
+on "mkdir -m 0700 $ATSPI_DIR && cat > $ATSPI_DIR/atspi_external_client.py" \
+  < "$REPO/tools/atspi_external_client.py" || die "cannot copy the AT-SPI client into the guest"
+on "cat > $ATSPI_DIR/installed-atspi-apps.sh && chmod 0700 $ATSPI_DIR/*" \
+  < "$REPO/os/tests/installed_atspi_apps.sh" || die "cannot copy the AT-SPI wrapper into the guest"
+
 # --- 0. Terminal and Files are tapps ------------------------------------------
 for app in "Terminal so.tilo.terminal" "Files so.tilo.file-explorer"; do
   set -- $app
@@ -184,7 +195,6 @@ image_package="$(running_package)"
 [ -n "$image_package" ] || die "tilo-install inspect $APP names no package id"
 
 # --- a test registry offering two newer versions -------------------------------
-on "rm -rf $SCRATCH && mkdir -p $SCRATCH/config $SCRATCH/cache" || die "cannot create $SCRATCH"
 on "nohup tilo-test-registry --app $APP --version $NEWER --version $PREVIOUS --incompatible $UNSERVED \
       > $SCRATCH/registry.json 2> $SCRATCH/registry.log < /dev/null & echo \$! > $SCRATCH/registry.pid" \
   || die "cannot start tilo-test-registry"

@@ -667,6 +667,11 @@ pub trait LauncherServices: Send + Sync {
 /// remote-action vocabulary. The broker mints `invocation`; the service
 /// validates the caller's authority and applies the action.
 pub struct WorkspaceGovernanceRequest<'a> {
+    /// Direct local origin, excluding a Shortcut or an on-behalf-of run.
+    /// Installed by the broker, never decoded from action arguments.
+    pub local_device: bool,
+    /// The original run's live custody, when the caller belongs to a run.
+    pub execution_lease: Option<tilo_actions::remote::ExecutionLease>,
     pub room: &'a str,
     pub actor: &'a crate::collab_broker_capnp::BrokerActor,
     pub resource: &'a str,
@@ -677,6 +682,10 @@ pub struct WorkspaceGovernanceRequest<'a> {
     pub confirmation: &'a serde_json::Value,
     pub invocation: tilo_actions::InvocationId,
 }
+
+/// The terminal answer of an asynchronous workspace owner action.
+pub type WorkspaceGovernanceOutcome =
+    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
 /// Workspace governance (permission profiles) owned by a host that holds the
 /// workspace's capability authority. Its actions are offered through the
@@ -689,13 +698,36 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
     /// Every governance action of `workspace`, before the caller's
     /// permission check.
     fn descriptors(&self, workspace: &Workspace) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Whether this owner action requires canonical descriptor admission and
+    /// broker-checked confirmation. Existing governance services retain their
+    /// own admission semantics unless they explicitly opt in.
+    fn requires_descriptor_admission(&self, _action: &str) -> bool {
+        false
+    }
     /// Validate and apply one governance action, recording its effect.
     ///
     /// # Errors
     ///
     /// Returns a refusal when the caller may not act, confirmation is
     /// missing, or the action cannot be applied.
-    fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String>;
+    fn invoke(&self, _request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
+        Err("this owner action requires asynchronous execution".into())
+    }
+
+    /// Start a potentially asynchronous owner action without blocking the door.
+    /// The default preserves synchronous governance implementations.
+    ///
+    /// # Errors
+    /// Refuses before admission when the invocation cannot start.
+    fn start(
+        &self,
+        request: &WorkspaceGovernanceRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<WorkspaceGovernanceOutcome>, String> {
+        self.invoke(request)?;
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
 }
 /// One checked change to a workspace's saved shortcuts. The broker mints
 /// `invocation` and has checked the change against what `actor` is offered.

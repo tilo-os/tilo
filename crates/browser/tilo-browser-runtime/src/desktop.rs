@@ -868,6 +868,7 @@ pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 /// The stored form of a room's desktop.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredDesktop {
+    #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
     tree: DesktopTree,
     /// `(tab, record id)` for every tab whose component bound a record.
     records: Vec<(TabId, String)>,
@@ -1258,7 +1259,9 @@ pub(crate) fn mount(
 /// # Errors
 /// The JSON is not a desktop tree, or it has no workspace.
 pub(crate) fn parse_tree(json: &str) -> Result<DesktopTree, String> {
-    let tree: DesktopTree = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let tree = serde_json::from_str(json)
+        .and_then(DesktopTree::from_json)
+        .map_err(|error| error.to_string())?;
     if tree.workspaces.is_empty() {
         return Err("a desktop needs a workspace".into());
     }

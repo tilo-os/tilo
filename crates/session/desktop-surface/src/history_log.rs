@@ -29,7 +29,7 @@ fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
         return serde_json::from_value(value.clone()).ok();
     }
     Some(SharedDesktop {
-        tree: serde_json::from_value(value.clone()).ok()?,
+        tree: tilo_desktop_model::DesktopTree::from_json(value.clone()).ok()?,
         ..SharedDesktop::default()
     })
 }

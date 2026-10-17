@@ -185,35 +185,63 @@ focus; one summoned by pointer or fingers opens on the display under them.
 
 ## Motion
 
-One rule: **everything is drawn moving from where it is to where the layout
-now puts it.** Layout decides the destination; the frame interpolates to it.
+Two rules. **Everything is drawn moving from where it is to where the layout
+now puts it**, and **motion follows the input**: how far that drawing is
+allowed to travel depends on what asked for the change.
+
+- **Direct manipulation** (a drag, swipe or pinch) animates continuously.
+  While fingers are down the surface is welded to them; release hands their
+  velocity to the settle spring.
+- **A pointer click** may animate, at `fast` or `base`, or on the rect
+  spring below. It shows where the thing the person aimed at went.
+- **A keyboard shortcut** applies its result on the next frame. A shortcut is
+  a frequent expert action with a known result, so animating it adds latency
+  to every repetition. Only spatial context may move, at `fast` at most: a
+  viewport sliding an off-screen target into view, a direction cue. Repeated
+  presses never queue; a press mid-slide retargets from where the slide is
+  drawn.
+- **Agents and scripts** (the action door) follow the keyboard rule: nobody
+  watches a hand move, and the caller acts on the result at once.
+
+Each transition is tagged with its source (`ui::tokens::MotionSource`:
+`Keyboard`, `Pointer`, `Gesture`, `Action`) where the host runs the
+operation: a chord and the action door run the same handler and name their
+source there (`ShellOverlayHost::run_navigation_shortcut`). The desktop
+holds that source until the layout that shows the change has run
+(`DesktopSurface::begin_transition`), and `tokens.motion` picks the duration
+per source: `Motion::result` for what changes what is shown (zero after a
+shortcut) and `Motion::context` for what only says where something went
+(capped at `fast` after a shortcut).
 
 - **Rects spring.** Each group's drawn rect (x, y, width, height) follows its
   laid-out rect on a critically damped spring (`tokens.motion.springs.heavy`:
   ζ = 1, settled in about 0.26 s, no overshoot past a window edge). A new
   target mid-flight keeps position and velocity, so every transition is
   interruptible and repeated presses become one motion instead of a queue.
-- **Fingers are direct.** While fingers are down the surface is welded to them;
-  release hands their velocity to the settle spring.
-- **Opacity tweens** on `tokens.motion.durations` (HIG §9.7): `fast` for tab
-  crossfades and drop hints, `base` for panels.
+- **Opacity tweens** on `tokens.motion.durations` (HIG §9.7): `fast` for drop
+  hints and sibling fades, `base` for panels.
 
-| Transition | What moves |
-|---|---|
-| Open a window | its group's width grows from 0 at its slot while neighbours slide aside; the content fades in and scales 0.96 → 1 |
-| Close a window | the reverse, drawn from the last frame the client presented, so a dying client never flashes empty |
-| Open / close a tab | the tab chip expands / collapses; the content crossfades |
-| Move a group (reorder, strip, display) | the group springs to its new rect; neighbours spring to close and open the gap |
-| Resize | the width springs; a client is configured once, at the final size, and its old buffer is scaled until it commits |
-| Maximize / restore | the group's rect springs between its tiled rect and the work area; siblings on that display fade (`fast`) rather than being squashed |
-| Full screen | as maximize, and the chrome slides off that display's edges |
-| Switch tab | crossfade (`fast`); nothing moves |
-| Focus another strip | the focus edge and the ribbon segment move (`base`); strips share the height, so no content moves |
-| Switch workspace | the whole desk slides vertically, in wheel order, on every display at once; gesture-driven while fingers are down |
-| Overview in / out | each window zooms between its live rect and its card |
+| Transition | Pointer or gesture | Shortcut or action |
+|---|---|---|
+| Open a window | its group's width grows from 0 at its slot while neighbours slide aside; the content fades in and scales 0.96 → 1 | the same: the window arrives when its app is ready, frames after the chord |
+| Close a window | the reverse, drawn from the last frame the client presented, so a dying client never flashes empty | the same, for the same reason |
+| Move a group (reorder, strip, display) | the group springs to its new rect; neighbours spring to close and open the gap | in its new slot on the next frame; the viewport slides (`fast`) only if the group left the screen |
+| Resize | the width springs; a client is configured once, at the final size, and its old buffer is scaled until it commits | the new width on the next frame |
+| Maximize / restore | the group's rect springs between its tiled rect and the work area; siblings on that display fade (`fast`) rather than being squashed | the end state on the next frame, no fade |
+| Full screen | as maximize, and the chrome slides off that display's edges | as maximize |
+| Switch tab | the tab chips open and close (180 ms); the content is swapped, never crossfaded | the content and chips on the next frame |
+| Focus another window (Super+←/→) | the strip glides on the rect spring to frame it | the focus shows on the next frame; the viewport slides (`fast`) only when the target was off screen |
+| Focus another strip | no content moves; strips share the height | the same |
+| Switch workspace | a whole-view change (`slow`), gesture-triggered at the end of the swipe | the same change with only a `fast` direction cue |
+| Overview in / out | each window zooms between its live rect and its card | lands at once |
 
-**Reduced motion** (`theme.reduce_motion`) collapses every duration to 0 and
-jumps springs to their targets. Finger-following remains: a surface under the
+The workspace switch swaps the desk's content in place today; the vertical
+desk slide that should carry its direction cue, and the wheel turning with a
+keyboard switch, are not drawn yet (#5248).
+
+**Reduced motion** (`theme.reduce_motion`) stays the global override: it
+collapses every duration to 0 and jumps springs to their targets, whatever
+the source. Finger-following remains: a surface under the
 hand is direct manipulation, not animation.
 
 **Cost.** A transition changes transforms, not layout. An animated frame does
@@ -222,7 +250,9 @@ scene with other transforms and opacities. Budget: at most 1 ms of scene
 building per frame above the static frame, so a 144 Hz panel (6.9 ms per
 frame) keeps its cadence on an integrated GPU. Each transition is measured
 headless with `TILO_FRAME_TRACE`, and its first animated frame must equal the
-last static one: no jump at the start, none at the end.
+last static one: no jump at the start, none at the end. The keyboard rule is
+held by `the_first_frame_after_a_chord_shows_the_final_layout` in
+`crates/session/shell/tests/strip_navigation.rs`.
 
 ## Delivery
 

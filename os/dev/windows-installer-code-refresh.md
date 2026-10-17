@@ -101,7 +101,8 @@ Python 3 must be on PATH, or set `TILO_PYTHON` to its executable. Helpers must u
 Privileged integration proof is an explicit fail-fast command (ordinary unit tests have no skip gates):
 
 ```sh
-sudo unshare -m --propagation private python3 os/tests/probe_installer_code_refresh_mounts.py
+t cargo build -p tilo-install-helpers --example code-refresh-mount-probe
+sudo unshare -m --propagation private target/debug/examples/code-refresh-mount-probe
 ```
 
 ## Read-only original CI boot-input diagnostics

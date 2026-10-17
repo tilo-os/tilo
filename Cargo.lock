@@ -14479,6 +14479,7 @@ dependencies = [
  "tilo-locale",
  "tilo-media",
  "tilo-net",
+ "tilo-ntfs-mount",
  "tilo-oauth",
  "tilo-paths",
  "tilo-relay-protocol",
@@ -14813,6 +14814,7 @@ dependencies = [
  "tilo-net",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-ntfs-mount",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",
@@ -17491,6 +17493,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17868,6 +17871,9 @@ dependencies = [
  "sha2 0.11.0",
  "staging-handoff-model",
  "tempfile",
+ "tilo-advisory-lock",
+ "tilo-board-successor",
+ "tilo-esp-write",
  "tilo-firstboot-files",
  "tilo-pycompat",
  "tilo-seal",
@@ -18279,6 +18285,18 @@ dependencies = [
  "tempfile",
  "tilo-ntfs-protocol",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ntfs-mount"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-sandbox-core",
  "workspace-hack",
 ]
 
@@ -19019,6 +19037,7 @@ dependencies = [
 name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64",
  "blake3",
  "channel-crypto",
@@ -19634,7 +19653,7 @@ dependencies = [
  "log",
  "peniko",
  "png",
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "smallvec",
  "static_assertions",
  "thiserror 2.0.21",
@@ -19650,7 +19669,7 @@ dependencies = [
  "bytemuck",
  "guillotiere",
  "peniko",
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "smallvec",
 ]
 
@@ -23488,7 +23507,6 @@ dependencies = [
  "simd-adler32",
  "simdutf8",
  "siphasher",
- "skrifa 0.42.1",
  "skrifa 0.44.0",
  "slab",
  "slotmap",

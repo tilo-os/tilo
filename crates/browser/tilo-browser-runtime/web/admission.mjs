@@ -9,7 +9,9 @@
  *    the redemption door the web host names (`entry.json` `tickets`);
  *    with `pair`, this browser becomes a new device of that person once
  *    one of their devices approves its pairing code (the host relays);
- * 3. a member connects with this browser's existing account for that host;
+ * 3. a member connects with this browser's existing account for that host
+ *    (where other tabs hold every device key it has there, this tab goes on
+ *    to 4 and 5 as a new device of the person);
  * 4. a host whose listed workspace has an admission door (`workspaces.mjs`)
  *    admits this browser's person at once; a link that names a room there
  *    is followed only if that is the room the person was admitted to;
@@ -87,19 +89,24 @@ export async function admit({scope, secrets = {}, tickets, deps, onProgress = ()
     onProgress({phase: 'pairing'});
     return ready(await deps.pairDevice({origin, room, userPublicKey: secrets.pair, workspace: listed}));
   }
-  const accounts = await deps.readAccounts(origin);
-  if (!accounts.length) {
+  /** Steps 4 to 6: the host's door, else the root this page holds. */
+  const withoutAccount = async busy => {
     if (listed?.admission) return viaHost({workspace: listed, room, deps, onProgress});
     let peer = null;
     try {
       peer = await deps.reconnect?.({origin, room, onProgress});
     } catch (error) {
+      // Other tabs hold every device key this browser can get in with: not
+      // the host's answer.
+      if (error?.name === 'CustodyError' && error.code === 'custody-busy') throw error;
       // As below: the host's reason could tell a missing room from a private one.
       console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
     }
-    if (!peer) throw new AdmissionError('no-access', NO_ACCESS);
+    if (!peer) throw busy ?? new AdmissionError('no-access', NO_ACCESS);
     return ready(peer);
-  }
+  };
+  const accounts = await deps.readAccounts(origin);
+  if (!accounts.length) return withoutAccount();
   const account = accounts.length === 1 ? accounts[0] : await deps.chooseAccount(accounts);
   onProgress({phase: 'connecting'});
   try {
@@ -107,10 +114,13 @@ export async function admit({scope, secrets = {}, tickets, deps, onProgress = ()
     // once the peer is certified: that, too, is no access.
     return await ready(await deps.connectMember({origin, room, account}));
   } catch (error) {
-    // Another tab of this browser holds the account's device key: not the
-    // host's answer, and not no access. (An account with no device key here
-    // is no access, as a host's refusal is.)
-    if (error?.name === 'CustodyError' && error.code === 'custody-busy') throw error;
+    // Other tabs of this browser hold every device key the account has here:
+    // not the host's answer, and not no access. A tab is a device of its
+    // own, so this one gets in as a new device of the person, the way a
+    // browser without the account would. Only where it cannot does it say
+    // so. (An account with no device key here is no access, as a host's
+    // refusal is.)
+    if (error?.name === 'CustodyError' && error.code === 'custody-busy') return withoutAccount(error);
     // The host's reason could tell "no such room" from "not a member".
     console.warn('admission: connecting failed', error?.code ?? error?.name ?? 'error');
     throw new AdmissionError('no-access', NO_ACCESS);

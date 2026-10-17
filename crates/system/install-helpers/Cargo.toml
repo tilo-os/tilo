@@ -42,6 +42,12 @@ path = "src/bin/vm_install_proof.rs"
 name = "staging-handoff-fixture"
 path = "examples/staging-handoff-fixture.rs"
 
+# The code refresh daemon's real bind-mount transaction, run by hand as root
+# under `unshare -m`.
+[[example]]
+name = "code-refresh-mount-probe"
+path = "examples/code-refresh-mount-probe.rs"
+
 # Compile the actual native transport for end-to-end helper tests, without
 # linking the graphical Imager application or substituting a mock validator.
 [[bin]]
@@ -61,6 +67,8 @@ path = "../firstboot-files/src/main.rs"
 
 [dependencies]
 account-custody = { path = "../account-custody" }
+# The code refresh daemon's hold on the backend's lock.
+tilo-advisory-lock = { path = "../advisory-lock" }
 tilo-seal = { path = "../tilo-seal" }
 zeroize.workspace = true
 tilo-firstboot-files = { path = "../firstboot-files" }
@@ -80,6 +88,10 @@ sha2.workspace = true
 # The export cache's receipt: a private temporary file renamed into place.
 tempfile.workspace = true
 tilo-pycompat = { path = "../tilo-pycompat" }
+# The development target UKI: the in-place UKI editor, and the hardware
+# profile's pinned DTB as hardware_profile.py resolves it.
+tilo-esp-write = { path = "../esp-write" }
+tilo-board-successor = { path = "../board-successor" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

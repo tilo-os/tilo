@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {openDeviceCustody, CustodyError} from './device-custody.mjs';
+import {openDeviceCustody, CustodyError, MAX_SLOTS} from './device-custody.mjs';
 import {fakeLocks} from './testing/fake-storage.mjs';
 
 function memoryStorage() {
@@ -35,19 +35,60 @@ test('a WebCrypto device key is non-extractable, signs, and survives reopening',
   again.close();
 });
 
-test('a second tab cannot take custody while the first holds it', async () => {
+test('a second tab takes a key of its own while the first holds one', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
   const first = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-1')});
-  await assert.rejects(
-    openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')}),
-    error => error instanceof CustodyError && error.code === 'custody-busy',
-  );
-  // Closing resolves once the key is free: the next holder takes it at once.
-  await first.close();
   const second = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')});
-  assert.deepEqual(second.publicKey, first.publicKey);
-  second.close();
+  assert.deepEqual([first.slot, first.created, second.slot, second.created], [0, true, 1, true]);
+  assert.notDeepEqual(second.publicKey, first.publicKey, 'each tab is a device of its own');
+  assert.ok(storage.rows.has('device-key:p') && storage.rows.has('device-key:p#1'));
+  // Closing resolves once the key is free: the next tab takes it at once.
+  await first.close();
+  const third = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-3')});
+  assert.deepEqual([third.slot, third.created], [0, false]);
+  assert.deepEqual(third.publicKey, first.publicKey);
+  second.close(); third.close();
+});
+
+test('a tab takes the first free slot, reuses released ones, and adds one only when all are held', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const open = tab => openDeviceCustody({profile: 'p', storage, locks: locks.manager(tab)});
+  const tabs = [await open('a'), await open('b'), await open('c')];
+  assert.deepEqual(tabs.map(tab => tab.slot), [0, 1, 2]);
+  // The middle tab closes (or reloads): the next tab takes its slot back,
+  // with the same key, and no new one is made.
+  await tabs[1].close();
+  const reloaded = await open('b');
+  assert.deepEqual([reloaded.slot, reloaded.created], [1, false]);
+  assert.deepEqual(reloaded.publicKey, tabs[1].publicKey);
+  assert.equal(storage.rows.size, 3);
+  // Every slot held: a fourth key.
+  const fourth = await open('d');
+  assert.deepEqual([fourth.slot, fourth.created], [3, true]);
+  // All closed: the next tab takes the first slot again.
+  for (const tab of [tabs[0], reloaded, tabs[2], fourth]) await tab.close();
+  const again = await open('e');
+  assert.deepEqual([again.slot, again.created], [0, false]);
+  assert.equal(storage.rows.size, 4, 'keys are reused, never piled up');
+  again.close();
+});
+
+test('only a full pool is busy, and an existing key is required only where one is', async () => {
+  const storage = memoryStorage();
+  const locks = fakeLocks();
+  const held = [];
+  for (let tab = 0; tab < MAX_SLOTS; tab++) held.push(await openDeviceCustody({profile: 'p', storage, locks: locks.manager(`tab-${tab}`)}));
+  await assert.rejects(openDeviceCustody({profile: 'p', storage, locks: locks.manager('one-too-many')}),
+    error => error instanceof CustodyError && error.code === 'custody-busy');
+  await held[5].close();
+  // A link recipient takes an existing key only: the free one.
+  const linked = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('link'), requireExisting: true});
+  assert.deepEqual([linked.slot, linked.created], [5, false]);
+  await assert.rejects(openDeviceCustody({profile: 'p', storage, locks: locks.manager('link-2'), requireExisting: true}),
+    error => error instanceof CustodyError && error.code === 'custody-busy');
+  for (const custody of [...held, linked]) custody.close();
 });
 
 test('without WebCrypto Ed25519 the seed is stored only sealed', async () => {

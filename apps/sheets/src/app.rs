@@ -603,14 +603,18 @@ impl SheetsApp {
         }
     }
 
-    /// How a comment's `author` is named to the person reading it: "You"
-    /// for their own.
+    /// How a comment's `author` is named to the person reading it: by
+    /// name, their own included.
     fn author_name(&self, author: &str) -> String {
         let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me());
         if author.is_empty() {
             "Someone".to_owned()
-        } else if me == Some(author) {
-            "You".to_owned()
+        } else if me == Some(author)
+            && let Some(name) = ui::local_identity::bound()
+                .map(|identity| identity.display_name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+        {
+            name
         } else {
             author.to_owned()
         }

@@ -15,6 +15,8 @@ use windows_vm::{
 const ROOT: &str = "/var/lib/tilo/windows";
 const UUID_FILE: &str = "/var/lib/tilo/windows/domain.uuid";
 const SYSTEM_DISK: &str = "/var/lib/tilo/windows/system.qcow2";
+/// Group-readable by the normal Tilo owner, for `owner-status`.
+const APPLIANCE_STATE: &str = "/var/lib/tilo/windows/session/state.json";
 const NVRAM: &str = "/var/lib/tilo/windows/nvram.fd";
 // Keep controller egress state apart from per-session portal-file lease
 // projections below `$XDG_RUNTIME_DIR/tilo/windows-vm`.
@@ -69,6 +71,19 @@ fn run() -> Result<(), String> {
             "{}",
             serde_json::to_string(&capabilities)
                 .map_err(|error| format!("cannot encode graphics capabilities: {error}"))?
+        );
+        return Ok(());
+    }
+
+    // The owner's read-only summary runs unprivileged, from the owner helper,
+    // and must answer before the appliance is provisioned.
+    if action == "owner-status" {
+        if !rest.is_empty() {
+            return Err(usage());
+        }
+        println!(
+            "{}",
+            windows_vm::owner_status_json(Path::new(APPLIANCE_STATE), Path::new(STATUS_SUMMARY), 0,)
         );
         return Ok(());
     }
@@ -300,7 +315,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: tilo-windows-vm-control {status|graphics-capabilities|graphics-attach|graphics-detach|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-revoke|egress-reap [--until-idle]}".to_string()
+    "usage: tilo-windows-vm-control {status|owner-status|graphics-capabilities|graphics-attach|graphics-detach|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-revoke|egress-reap [--until-idle]}".to_string()
 }
 
 fn write_graphics_assignment(assignment: &GraphicsAssignment) -> Result<(), String> {

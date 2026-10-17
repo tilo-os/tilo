@@ -4,6 +4,7 @@
 """
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -315,6 +316,18 @@ class Gates(unittest.TestCase):
                                 "initrd_s": 2.871, "userspace_s": 6.412})
         failed = resources.parse_boot_gate(BOOT_FAIL)
         self.assertEqual((failed["exit"], failed["to_greeter_s"], failed["initrd_s"]), (1, 24.02, 9.0))
+
+    def test_the_boot_gate_runs_from_a_copy_the_guest_is_handed(self):
+        # The image ships no test tooling: R06 sends the checkout's gate in its command.
+        self.assertTrue(resources.BOOT_GATE.is_file())
+        with tempfile.TemporaryDirectory() as tmp:
+            gate = Path(tmp) / "gate.sh"
+            gate.write_text('echo "budget=$TILO_BOOT_USERSPACE_BUDGET_SEC"; echo "$(cat "$0" | wc -l) lines"; exit 3\n')
+            out = subprocess.run(["sh", "-c", resources.guest_script(gate, "TILO_BOOT_USERSPACE_BUDGET_SEC=20")
+                                  + " 2>&1; echo GATE-EXIT=$?; echo left=$d"],
+                                 capture_output=True, text=True, check=True).stdout
+        self.assertIn("budget=20\n1 lines\nGATE-EXIT=3\n", out)
+        self.assertFalse(Path(out.rsplit("left=", 1)[1].strip()).exists())
 
     def test_a_boot_gate_that_named_no_time_has_none(self):
         gate = resources.parse_boot_gate("greetd.service is not active\nGATE-EXIT=1\n")

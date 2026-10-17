@@ -33,6 +33,11 @@ pub enum Mode {
         owner_uid: u32,
     },
     Connect,
+    /// Invoke the canonical owner action door while holding the profile
+    /// exclusively. Refuses if a daemon already serves it; no extra IPC door.
+    OwnerAction {
+        request: String,
+    },
     RunApp {
         app_id: String,
         /// A room this profile joined; the profile's own room when `None`.
@@ -124,6 +129,14 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                 mode = Some(Mode::AdmissionDaemon { owner_uid });
             }
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
+            Some("--owner-action") if mode.is_none() => {
+                let request = arguments
+                    .next()
+                    .and_then(|arg| arg.into_string().ok())
+                    .filter(|request| !request.is_empty() && request.len() <= 32 * 1024)
+                    .ok_or_else(|| invalid("--owner-action requires bounded invocation JSON"))?;
+                mode = Some(Mode::OwnerAction { request });
+            }
             Some("--join") if mode.is_none() => {
                 let invitation = arguments
                     .next()
@@ -152,7 +165,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
+    let mode = mode.ok_or_else(|| invalid("choose --daemon, --connect [--standalone], --owner-action INVOCATION_JSON, --join INVITATION, --run-app APP_ID [--room ROOM] -- EXECUTABLE, or --profile PATH --apps MANIFEST"))?;
     if matches!(mode, Mode::AdmissionDaemon { .. }) && !explicit_profile {
         return Err(invalid(
             "native admission requires an explicit isolated profile",

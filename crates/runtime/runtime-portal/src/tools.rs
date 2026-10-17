@@ -8,7 +8,7 @@
 //! [`ToolIntent::terminal_argv`], from fixed programs.
 
 #[cfg(unix)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
 #[cfg(unix)]
@@ -20,6 +20,11 @@ pub const TOOL_PROTOCOL_VERSION: u32 = 1;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
+/// A reply may carry the drive list, so it gets more room than a request.
+pub const MAX_REPLY_BYTES: usize = 16 * 1024;
+/// The most drives one reply lists.
+pub const MAX_LISTED_DRIVES: usize = 32;
+const MAX_DRIVE_ID_BYTES: usize = 64;
 const MAX_DIRECTORY_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
 const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
@@ -123,6 +128,27 @@ pub enum ToolIntent {
         container: String,
         engine: ContainerEngine,
     },
+    /// List the NTFS drives this computer can open ([`ToolReply::drives`]).
+    Drives,
+    /// Open an NTFS drive from [`ToolIntent::Drives`] in Files. The shell
+    /// asks the person first unless they chose to remember the drive; the
+    /// app learns nothing more than that the request was taken.
+    OpenDrive { drive: String },
+}
+
+/// An NTFS drive as an app lists it: what to call it and whether it is open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveEntry {
+    /// The id [`ToolIntent::OpenDrive`] takes.
+    pub id: String,
+    /// The volume label; empty when the drive has none.
+    pub label: String,
+    pub size_bytes: u64,
+    /// Built into this computer, as opposed to external or removable.
+    pub internal: bool,
+    /// Where it is open, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_at: Option<String>,
 }
 
 impl ToolIntent {
@@ -176,7 +202,19 @@ impl ToolIntent {
                 }
                 Ok(())
             }
-            Self::Firewall { .. }
+            Self::OpenDrive { drive } => {
+                if drive.is_empty()
+                    || drive.len() > MAX_DRIVE_ID_BYTES
+                    || !drive
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'_' | b'-'))
+                {
+                    return Err("invalid drive".into());
+                }
+                Ok(())
+            }
+            Self::Drives
+            | Self::Firewall { .. }
             | Self::Disks { .. }
             | Self::Backups { .. }
             | Self::WorkspaceSettings { .. }
@@ -227,7 +265,10 @@ impl ToolIntent {
             Self::Disks { .. } => Some("so.tilo.disks"),
             Self::Backups { .. } => Some("so.tilo.backups"),
             Self::Terminal { .. } | Self::ContainerShell { .. } => Some(TERMINAL_PACKAGE_ID),
-            Self::WorkspaceSettings { .. } | Self::IdentityBackup => None,
+            Self::WorkspaceSettings { .. }
+            | Self::IdentityBackup
+            | Self::Drives
+            | Self::OpenDrive { .. } => None,
         }
     }
 }
@@ -239,10 +280,13 @@ pub struct ToolRequest {
     pub intent: ToolIntent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolReply {
     pub accepted: bool,
     pub message: String,
+    /// The answer to [`ToolIntent::Drives`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drives: Vec<DriveEntry>,
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
@@ -254,16 +298,25 @@ pub struct ToolReply {
 /// shell rejects or fails to answer the request.
 pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     intent.validate()?;
-    send_tool_request(intent)
+    send_tool_request(intent).map(drop)
+}
+
+/// The NTFS drives the shell can open, for an app's list of places.
+///
+/// # Errors
+///
+/// As [`open_tool`].
+pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
+    send_tool_request(ToolIntent::Drives).map(|reply| reply.drives)
 }
 
 #[cfg(not(unix))]
-fn send_tool_request(_intent: ToolIntent) -> Result<(), String> {
+fn send_tool_request(_intent: ToolIntent) -> Result<ToolReply, String> {
     Err("The shell tool service is unavailable".to_string())
 }
 
 #[cfg(unix)]
-fn send_tool_request(intent: ToolIntent) -> Result<(), String> {
+fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
     let workspace_id = std::env::var("TILO_WORKSPACE_ID")
         .map_err(|_| "This app is not attached to a Tilo workspace".to_string())?;
     let raw_fd: i32 = std::env::var(TOOL_SERVICE_FD_ENV)
@@ -296,15 +349,16 @@ fn send_tool_request(intent: ToolIntent) -> Result<(), String> {
 
     let mut reply = String::new();
     BufReader::new(stream)
+        .take((MAX_REPLY_BYTES as u64).saturating_add(1))
         .read_line(&mut reply)
         .map_err(|e| format!("reading tool reply: {e}"))?;
-    if reply.len() > MAX_WIRE_BYTES {
+    if reply.len() > MAX_REPLY_BYTES {
         return Err("tool reply is too large".into());
     }
     let reply: ToolReply =
         serde_json::from_str(&reply).map_err(|e| format!("decoding tool reply: {e}"))?;
     if reply.accepted {
-        Ok(())
+        Ok(reply)
     } else {
         Err(reply.message)
     }
@@ -390,6 +444,38 @@ mod tests {
             assert_eq!(json["tool"], "identity_backup");
             assert!(json.get("program").is_none());
         }
+    }
+
+    #[test]
+    fn drive_intents_are_shell_routes_with_a_bounded_id() {
+        let open = ToolIntent::OpenDrive {
+            drive: "nvme0n1p3:1".into(),
+        };
+        assert!(open.validate().is_ok());
+        assert_eq!(
+            open.package_id(),
+            None,
+            "the shell asks, no package opens it"
+        );
+        assert_eq!(
+            serde_json::to_value(&open).unwrap(),
+            serde_json::json!({ "tool": "open_drive", "drive": "nvme0n1p3:1" })
+        );
+        for bad in ["", "../sda", "sda 1", &"a".repeat(MAX_DRIVE_ID_BYTES + 1)] {
+            assert!(
+                ToolIntent::OpenDrive { drive: bad.into() }
+                    .validate()
+                    .is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(ToolIntent::Drives.validate().is_ok());
+        let reply: ToolReply =
+            serde_json::from_str(r#"{"accepted":true,"message":"opened"}"#).unwrap();
+        assert!(
+            reply.drives.is_empty(),
+            "replies without a list still parse"
+        );
     }
 
     #[test]

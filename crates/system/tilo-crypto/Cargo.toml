@@ -15,11 +15,14 @@ name = "tilo-crypto"
 path = "src/main.rs"
 
 [features]
-default = ["tls-fixture", "release-bundle"]
+default = ["tls-fixture", "release-bundle", "pcr-prediction"]
 tls-fixture = []
 # Release-root bundle verification (`verify-release-bundle`). Off in the
 # kernel recipe, which builds only the module and EFI signers.
 release-bundle = ["dep:p384", "dep:serde_json"]
+# Signed PCR11 prediction sidecars (`verify-pcr-prediction`), checked by the
+# installer's verified-boot preflight.
+pcr-prediction = ["dep:serde_json"]
 # Apple's SRP-6a sign-in client (`srp_apple`), for the iCloud sign-in in
 # account-custody. Consumers take it with `default-features = false`.
 srp = ["dep:crypto-bigint", "dep:pbkdf2"]

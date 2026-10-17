@@ -113,6 +113,44 @@ fn runtime(layer: &Path, work: &Path, case: &str) -> String {
     bundle.version
 }
 
+/// An engine the cohort's apps pin, shipped beside the toolkit: signed by
+/// the cohort's browser-runtime publisher, at the directory its version names.
+fn engine(layer: &Path, work: &Path, case: &str) {
+    let identity = work.join("engine-identity.json");
+    fs::write(
+        &identity,
+        serde_json::json!({"secret_key_hex": "43".repeat(32)}).to_string(),
+    )
+    .unwrap();
+    let key = runtime_bundle::Identity::load(&identity)
+        .unwrap()
+        .public_key_hex();
+    let version = "2026.10.9-chromium";
+    let directory = if case == "engine_directory" {
+        "2026.10.8-chromium"
+    } else {
+        version
+    };
+    runtime_bundle::build_bundle_with(
+        &layer.join("usr/lib/tilo-runtime").join(directory),
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(&work.join("host")),
+            arch: Some(std::env::consts::ARCH),
+            identity: Some(&identity),
+            extra_libs: &[],
+            extra_bins: &[],
+        },
+    )
+    .unwrap();
+    let trusted = if case == "engine_publisher" {
+        "11".repeat(32)
+    } else {
+        key
+    };
+    pin(layer, "browser-runtime-publisher.hex", &trusted);
+}
+
 fn pin(layer: &Path, name: &str, key: &str) {
     let path = layer.join("usr/share/tilo").join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -302,6 +340,9 @@ pub(crate) fn fixture(root: &Path, case: &str) {
             std::os::unix::fs::symlink(work.join("outside"), archive).unwrap();
             fs::write(work.join("outside"), b"outside").unwrap();
         }
+        "engine" | "engine_publisher" | "engine_directory" => {
+            engine(&layer, &work, case);
+        }
         "record_escape" => {
             let path = layer.join("usr/share/tilo-apps/packages/fixture/manifest.toml");
             fs::remove_file(&path).unwrap();
@@ -335,7 +376,7 @@ fn verify_subject(root: &Path, case: &str) {
     );
     if matches!(
         case,
-        "valid" | "dual_isa" | "service" | "empty_isa" | "retired"
+        "valid" | "dual_isa" | "service" | "empty_isa" | "retired" | "engine"
     ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
@@ -463,6 +504,9 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "archive_missing",
         "archive_corrupt",
         "archive_escape",
+        "engine",
+        "engine_publisher",
+        "engine_directory",
     ] {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), case);

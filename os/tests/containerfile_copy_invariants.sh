@@ -245,7 +245,12 @@ containerfile="$repo/os/Containerfile"
 # The flight recorder and tilo-session-report are compiled now (the
 # session-record component): their two rows come from desktop-binaries
 # instead of COPYs of the Python scripts.
-expected_contract=9b83d0a5f687e1c65ccbe746c782945db8deb46cda662f9dde1841c1813783a0
+# In-guest test tooling (the AT-SPI client and smokes, the boot, input,
+# projection and admin-action checks) no longer ships: os/dev/vm.sh test
+# hands it to a booted guest, and the Files contract is bind-mounted.
+# tilo-uki-cmdline is tilo-esp-write's link from the esp-write component, not a
+# COPY of the Python UKI editor.
+expected_contract=17b812aa79eecf5d0018ad00ba6f95f3072f8a23dd12589378735b73de9a276e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

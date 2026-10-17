@@ -64,6 +64,13 @@ impl MediaHost {
         })
     }
 
+    pub(crate) fn handle(&self) -> io::Result<tokio::runtime::Handle> {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.handle().clone())
+            .ok_or_else(|| io::Error::other("document media runtime is unavailable"))
+    }
+
     /// The content store, which the profile's workspace files share.
     pub fn store(&self) -> Arc<tilo_fs::ContentStore> {
         Arc::clone(&self.store)

@@ -1175,13 +1175,16 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.hold_transition();
         let node = self.root.build_layout(tree, theme, map);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.hold_transition();
         self.root.apply_layout(tree, node, origin);
-        self.apply_navigation();
+        let reveal_pending = self.apply_navigation();
+        self.end_transition(reveal_pending);
     }
     fn draw(
         &mut self,

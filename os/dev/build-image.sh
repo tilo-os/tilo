@@ -691,7 +691,7 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
   # even when the command edits only /boot. COPY leaves that metadata unchanged.
   #
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
-  # layout is untouched; uki-cmdline.py refuses anything else.
+  # layout is untouched; tilo-uki-cmdline refuses anything else.
   reseal_uki "$want" || die "could not rewrite the sealed composefs digest"
   if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
     printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"

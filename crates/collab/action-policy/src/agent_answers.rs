@@ -3,9 +3,11 @@
 //! of resource in it, or one action.
 //!
 //! These are ordinary grants on the room, named so that setting an answer
-//! again replaces it instead of adding a second one. Without one, the agent's
-//! admission decides ([`crate::roles::AgentPreset`]); the defaults a person
-//! sees before choosing are [`default_answer`].
+//! again replaces it instead of adding a second one. Without one, a run a
+//! person started takes the agent delegation's answer
+//! ([`crate::roles::agent_delegation`]), which is [`default_answer`], the
+//! default a person sees before choosing; what the agent does on its own is
+//! decided by its admission ([`crate::roles::AgentPreset`]).
 //!
 //! An action whose contract asks for confirmation (it sends, publishes or
 //! deletes for good) keeps asking an agent's person even where an

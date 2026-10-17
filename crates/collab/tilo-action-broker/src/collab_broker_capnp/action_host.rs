@@ -33,6 +33,10 @@ use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
+#[cfg(test)]
+#[path = "governance_witness_tests.rs"]
+mod governance_witness_tests;
+
 mod own_device;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -2039,7 +2043,7 @@ impl CapnpBrokerState {
     }
 
     fn invoke_eager(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
@@ -2325,7 +2329,7 @@ impl CapnpBrokerState {
     }
 
     fn start_for(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
@@ -2418,7 +2422,7 @@ impl CapnpBrokerState {
     }
 
     fn start_workspace_action(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         actor: &BrokerActor,
         room: &str,
@@ -2506,18 +2510,72 @@ impl CapnpBrokerState {
         if let Some(governance) = self.services.workspace_governance.as_ref()
             && governance.handles(&address.action)
         {
+            let admitted = self.admit_workspace_governance(
+                governance.as_ref(),
+                (&workspace, &policy, now),
+                request,
+                argument,
+            )?;
             return self
                 .invoke_workspace_governance_action(
                     room,
-                    actor,
-                    &address.resource,
-                    &address.action,
-                    argument,
-                    &confirmation_evidence(request.confirmation.as_ref()),
+                    (actor, caller),
+                    request,
+                    (argument, admitted),
                 )
                 .map_err(refusal);
         }
         Err(ActionHostError::UnknownAction)
+    }
+
+    /// Admit opt-in governance actions against their current descriptor and policy.
+    fn admit_workspace_governance(
+        &self,
+        governance: &dyn crate::services::WorkspaceGovernanceServices,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        request: &InvokeRequest,
+        argument: Option<&str>,
+    ) -> Result<bool, ActionHostError> {
+        let address = &request.target.address;
+        if !governance.requires_descriptor_admission(&address.action) {
+            return Ok(false);
+        }
+        let descriptor = governance
+            .descriptors(workspace)
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+            .ok_or(ActionHostError::UnknownAction)?;
+        // A witness answers confirmation, never owner custody. The host
+        // still checks the current owner, enrollment and execution lease.
+        if !policy.direct() {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let confirmed = match request.confirmation.as_ref() {
+            Some(Confirmation::Confirmed) => true,
+            Some(Confirmation::Witnessed(token)) => self.take_witness(
+                token,
+                policy.id(),
+                (&address.resource, &address.action),
+                argument,
+            ),
+            _ => false,
+        };
+        if !confirmed {
+            return Err(ActionHostError::ConfirmationRequired);
+        }
+        self.admit_answer(
+            (workspace, policy, now),
+            governance.app_id(),
+            &descriptor,
+            (argument, Some(&Confirmation::Confirmed)),
+        )?;
+        if !confirmation_satisfied(
+            &descriptor.contract.confirmation_for_argument(argument),
+            Some(&Confirmation::Confirmed),
+        ) {
+            return Err(ActionHostError::ConfirmationRequired);
+        }
+        Ok(true)
     }
 
     /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
@@ -2875,6 +2933,16 @@ impl CapnpBrokerState {
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.follow_host_step_at(actor, started, id);
+        id
+    }
+
+    fn follow_host_step_at(
+        self: &Arc<Self>,
+        actor: &BrokerActor,
+        started: Pending<crate::services::DevicePairingOutcome>,
+        id: u64,
+    ) {
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let owner = InvocationOwner::Local {
             actor: actor.id().to_owned(),
@@ -2908,7 +2976,6 @@ impl CapnpBrokerState {
             };
             state.record_completion(id, owner, update);
         });
-        id
     }
 
     /// Run saved shortcut `shortcut_id` in `room` for `caller`, who is at
@@ -3136,13 +3203,11 @@ impl CapnpBrokerState {
     /// governance service validates, applies and records it under its own
     /// capability authority, and the broker reports one terminal update.
     fn invoke_workspace_governance_action(
-        &self,
+        self: &Arc<Self>,
         room: &str,
-        actor: &BrokerActor,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        confirmation: &serde_json::Value,
+        (actor, caller): (&BrokerActor, &Caller),
+        request: &InvokeRequest,
+        (argument, admitted): (Option<&str>, bool),
     ) -> Result<u64, String> {
         let governance = self
             .services
@@ -3152,26 +3217,29 @@ impl CapnpBrokerState {
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        governance.invoke(&crate::services::WorkspaceGovernanceRequest {
+        let invocation = request.invocation;
+        let confirmation = if admitted {
+            // Only evidence checked against this descriptor, actor and exact
+            // arguments crosses into the host's legacy confirmation format.
+            serde_json::json!({"confirm": true})
+        } else {
+            confirmation_evidence(request.confirmation.as_ref())
+        };
+        let started = governance.start(&crate::services::WorkspaceGovernanceRequest {
+            local_device: caller.device_public_key().is_none()
+                && caller.shortcut().is_none()
+                && caller.acting_for_person().is_none()
+                && request.on_behalf_of.is_none(),
+            execution_lease: caller.execution_lease(),
             room,
             actor,
-            resource,
-            action,
+            resource: &request.target.address.resource,
+            action: &request.target.address.action,
             argument,
-            confirmation,
+            confirmation: &confirmation,
             invocation,
         })?;
-        self.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: actor.id.clone(),
-            },
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-        );
+        self.follow_host_step_at(actor, started, id);
         Ok(id)
     }
 

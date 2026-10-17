@@ -2,7 +2,7 @@
 use super::NativeTaskActionRequirement;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles::AgentPreset};
 use tilo_automerge::ApplyIncoming;
 use tilo_peer_state::{
     SeedState, StatePeer, seed_room,
@@ -84,6 +84,16 @@ fn a_run_is_told_an_action_asks_first() {
 }
 
 fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
+    admitted_fixture(room, collab_types::Role::Editor, None)
+}
+
+/// A room where the starter holds `role` and the agent is admitted with
+/// `preset`, or, without one, holds a room-wide grant of every kind.
+fn admitted_fixture(
+    room: &str,
+    role: collab_types::Role,
+    preset: Option<AgentPreset>,
+) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
     let governor = certificate(1, 2);
     let starter = certificate(3, 4);
     let key = SigningKey::from_bytes(&[2; 32]);
@@ -101,7 +111,7 @@ fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::
     doc.put(
         &members,
         hex::encode(starter.user_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&collab_types::Role::Editor).unwrap()),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -119,19 +129,21 @@ fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::
         now,
     )
     .unwrap();
-    peer.governance_mut()
-        .put_governed_grants(
-            &[Grant::new(
+    let admission = preset.map_or_else(
+        || {
+            vec![Grant::new(
                 "agent",
                 Subject::agent("scribe"),
                 TreePath::room(room),
                 KindSet::ALL,
                 Answer::Allow,
                 Subject::person("governor"),
-            )],
-            &key,
-            now,
-        )
+            )]
+        },
+        |preset| preset.grants(room, "scribe", &Subject::person("governor")),
+    );
+    peer.governance_mut()
+        .put_governed_grants(&admission, &key, now)
         .unwrap();
 
     (peer, starter, key, now)
@@ -180,6 +192,7 @@ fn approve_task(
             agent_id: "scribe".into(),
             epoch: 1,
             revision: 0,
+            starter: None,
         }),
         app: "so.tilo.notes".into(),
         resource_kind: "document".into(),
@@ -450,4 +463,115 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     let mut purge = requirement;
     purge.consequential = true;
     purge.check(&peer, room, "scribe", now).unwrap();
+}
+
+/// A task a person starts runs on their behalf: an agent admitted with the
+/// default presets, which grant it no changes of its own, takes the changes
+/// its starter may take, held to the answers the room keeps for it.
+#[test]
+fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    for preset in [AgentPreset::Observer, AgentPreset::Contributor] {
+        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let (mut peer, starter, key, now) =
+            admitted_fixture(room, collab_types::Role::Editor, Some(preset));
+        let authority = WorkspaceTaskAuthority::Person { caller: starter };
+        let requirement = approve_task(&mut peer, &authority, now);
+        requirement
+            .check(&peer, room, "scribe", now)
+            .unwrap_or_else(|error| panic!("{preset:?}: {error}"));
+
+        // Outside effects still ask first by default.
+        let mut outside = requirement.clone();
+        outside.need.kind = tilo_action_policy::ActionKind::Outside;
+        let asks = outside.check(&peer, room, "scribe", now).unwrap_err();
+        assert!(
+            NativeTaskActionRequirement::awaits_confirmation(&asks),
+            "{asks}"
+        );
+
+        // The person's Deny for the agent still refuses.
+        peer.governance_mut()
+            .put_governed_grants(
+                &[agent_answers::grant(
+                    room,
+                    "scribe",
+                    (
+                        &AnswerScope::app("so.tilo.notes"),
+                        tilo_action_policy::ActionKind::Undoable,
+                    ),
+                    Answer::Deny,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
+        let denied = requirement.check(&peer, room, "scribe", now).unwrap_err();
+        assert!(denied.contains("not allowed"), "{denied}");
+
+        // On its own, outside any task, the agent keeps its preset's limits.
+        let policy =
+            tilo_desktop_model::projection::room_policy_of(peer.admitted_room().unwrap(), room);
+        let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))
+            .decide(
+                &action_node(room, &requirement),
+                tilo_action_policy::ActionKind::Undoable,
+                &tilo_action_policy::Context::at_time(now),
+            );
+        assert_eq!(own.answer, Answer::Deny, "{preset:?}");
+    }
+}
+
+/// The starter's own rights bound the run, whatever the agent was admitted
+/// with: a person who may not change a note starts no run that changes it,
+/// and one who may not change the room starts no run at all.
+#[test]
+fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
+    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let (mut peer, starter, key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Editor,
+        Some(AgentPreset::Operator),
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-reads-notes",
+                Subject::person(hex::encode(starter.user_public_key)),
+                TreePath::room(room).app("so.tilo.notes"),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let authority = WorkspaceTaskAuthority::Person { caller: starter };
+    let requirement = approve_task(&mut peer, &authority, now);
+    let refused = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    assert!(refused.contains("starter"), "{refused}");
+
+    let (mut peer, commenter, _key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Commenter,
+        Some(AgentPreset::Operator),
+    );
+    let refused = peer
+        .workspace_mut()
+        .apply_workspace_task_command(
+            uuid::Uuid::from_u128(1),
+            [1; 32],
+            &WorkspaceTaskAuthority::Person { caller: commenter },
+            &WorkspaceTaskCommand::QueueInstruction {
+                title: "Translate".into(),
+                instruction: "Translate this in place".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            },
+            now,
+        )
+        .unwrap_err();
+    assert!(refused.contains("write authority"), "{refused}");
 }

@@ -8030,7 +8030,7 @@ mod tests {
             app.author = "test-author".into();
             app.attach_people(ui::framework::People::named(
                 Some("test-author"),
-                &[("peer-id", "Bob Builder")],
+                &[("test-author", "Tess Author"), ("peer-id", "Bob Builder")],
             ));
             app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
             let thread = PdfMarkup::of(&st.doc)
@@ -8039,7 +8039,11 @@ mod tests {
                 .find(|comment| comment.page == 2)
                 .expect("the new note's thread");
             assert_eq!(thread.author, "test-author", "the record keeps the id");
-            assert_eq!(app.author_name(&thread.author), "You");
+            assert_eq!(
+                app.author_name(&thread.author),
+                "Tess Author",
+                "your own note is signed with your name, not \"You\""
+            );
             assert_eq!(app.author_name("peer-id"), "Bob Builder");
             assert_eq!(
                 app.author_name("Carol"),
@@ -8048,7 +8052,7 @@ mod tests {
             );
             let described = format!("{:?}", Widget::accessibility(&app));
             assert!(
-                described.contains("You on page 2"),
+                described.contains("Tess Author on page 2"),
                 "assistive technology hears the name, not the id"
             );
         }

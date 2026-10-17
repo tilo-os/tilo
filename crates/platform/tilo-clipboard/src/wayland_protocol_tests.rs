@@ -76,6 +76,7 @@ struct Server {
     received: Vec<(String, String)>,
     serial: u32,
     hold_flush: bool,
+    hold_flush_after_selection: bool,
     publications: Vec<u32>,
     /// The source of the newest client selection.
     selection: Option<wl_data_source::WlDataSource>,
@@ -321,6 +322,9 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
                 }
             }
             state.publications.push(serial);
+            if state.hold_flush_after_selection {
+                state.hold_flush = true;
+            }
         }
     }
 }
@@ -486,6 +490,7 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
     assert!(!clipboard.set_text(crate::ClipboardTarget::Clipboard, "late copy"));
     assert!(!clipboard.set_shared_text(crate::ClipboardTarget::Primary, "late secret"));
     assert!(!clipboard.set_secret_text("late secret"));
+    assert_closed_copies(clipboard.as_ref());
     assert!(!clipboard.set_image(1, 1, &[0; 4]));
     assert!(clipboard.image().is_none());
     assert!(clipboard.rich_text().is_none());
@@ -506,6 +511,21 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
         "all display owners released",
     );
     crate::native::clear_wayland_for_test();
+}
+
+fn assert_closed_copies(clipboard: &dyn crate::ClipboardBackend) {
+    for content in [
+        crate::CopyContent::Text("late copy"),
+        crate::CopyContent::SharedText("late shared copy"),
+        crate::CopyContent::SecretText("late secret"),
+        crate::CopyContent::Image {
+            width: 1,
+            height: 1,
+            rgba: &[0; 4],
+        },
+    ] {
+        assert_eq!(clipboard.copy(content).outcome(), Some(false));
+    }
 }
 
 #[test]
@@ -1063,6 +1083,65 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
         harness.query(|state| state.publications.is_empty()),
         "refused copy must not publish on later focus"
     );
+}
+
+#[test]
+fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
+    for published in [false, true] {
+        let mut harness = Harness::new();
+        harness.enter(0, 0);
+        harness.fence();
+        harness.query(move |state| {
+            // Hold either the focus-check reply or the publication's
+            // confirmation, without disconnecting the shared display.
+            state.hold_flush = !published;
+            state.hold_flush_after_selection = published;
+        });
+        let (reply, result) = mpsc::channel();
+        let deadline = tilo_clock::now()
+            .checked_add(tilo_test_env::hang_bound() * 2)
+            .expect("publication deadline beyond this test");
+        assert!(harness.backend().send_publication(publish(
+            PublicationPayload::Text(b"pending at shutdown".to_vec()),
+            reply,
+            deadline,
+        )));
+        let (processed, observed) = mpsc::channel();
+        harness
+            .backend()
+            .publication
+            .sender
+            .send(ClipboardCommand::CommandProcessed(processed))
+            .expect("worker command observation");
+        observed
+            .recv_timeout(harness.remaining())
+            .expect("publication dispatched before shutdown");
+        if published {
+            harness.wait(
+                || harness.query(|state| !state.publications.is_empty()),
+                "selection with its confirmation withheld",
+            );
+        }
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+        // The host queue and connection stay live in the harness. Callback
+        // userdata therefore cannot be relied on to drop and report failure.
+        drop(harness.clipboard.take());
+        assert_eq!(
+            result
+                .recv_timeout(harness.remaining())
+                .expect("shutdown must explicitly settle a dispatched copy"),
+            published,
+        );
+        assert!(matches!(
+            result.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        harness.query(move |state| {
+            assert_eq!(state.publications.len(), usize::from(published));
+            state.hold_flush = false;
+        });
+    }
 }
 
 #[test]

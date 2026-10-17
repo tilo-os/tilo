@@ -467,6 +467,8 @@ export async function mountDesktop(target,options={}) {
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
+      // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
+      people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),

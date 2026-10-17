@@ -152,7 +152,7 @@ for attempt in $(seq 1 120); do
   [ "$attempt" -lt 120 ] || die "the compositor did not start for the joined device"
   sleep 1
 done
-"$vm" ssh /usr/libexec/tilo/native-atspi-smoke.sh established \
+"$vm" test native-atspi-smoke.sh established \
   || die "the joined device did not sign in to its desktop"
 "$vm" shot joined-desktop >/dev/null 2>&1 \
   && cp -f "$TILO_RUN/joined-desktop.png" "$out/" 2>/dev/null || true
@@ -178,7 +178,7 @@ identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | L
   && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
 "$vm" ssh "$identity_manifest" > "$out/identity-before-notes.txt" \
   || die "could not record the identity directory"
-"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh open Notes' > "$out/notes-open.txt" 2>&1 || {
+"$vm" test installed-atspi-apps.sh 'open Notes' > "$out/notes-open.txt" 2>&1 || {
   cat "$out/notes-open.txt" >&2
   # A desktop that died under the launch leaves no app to find on the bus;
   # say that, with the status the session wrapper recorded, rather than
@@ -204,19 +204,19 @@ notes_pid="$(awk 'NF == 2 && $1 ~ /^:/ && $2 ~ /^[0-9]+$/ { pid = $2 } END { pri
 # A note written on the joined device is durable, and Notes says so: the
 # keyboard types it, and the save state reads "Saved", never "Not saved".
 joined_sentence='Written on the joined device.'
-"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/joined-notes' \
+"$vm" test installed-atspi-apps.sh 'type-into Notes "New note" --field "Block text" --state /tmp/joined-notes' \
   > "$out/notes-type.txt" 2>&1 || {
   cat "$out/notes-type.txt" >&2
   die "Notes on the joined device opened no note to type into"
 }
 "$vm" type "$joined_sentence"
-"$vm" ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$joined_sentence' --state /tmp/joined-notes --status Saved" \
+"$vm" test installed-atspi-apps.sh "typed '$joined_sentence' --state /tmp/joined-notes --status Saved" \
   > "$out/notes-saved.txt" 2>&1 || {
   cat "$out/notes-saved.txt" >&2
   die "a note written on the joined device is not saved"
 }
 # Still the desktop once startup settles: nothing replaced it afterwards.
-"$vm" ssh /usr/libexec/tilo/native-atspi-smoke.sh established \
+"$vm" test native-atspi-smoke.sh established \
   || die "the joined device's desktop did not stay up"
 printf 'PASS\n' > "$out/verdict.txt"
 note "a nearby-paired member device signs in to its desktop"

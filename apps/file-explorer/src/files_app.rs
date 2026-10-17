@@ -45,6 +45,7 @@ use vello::peniko::ImageData as PenikoImage;
 
 mod clipboard_client;
 mod cloud_browse;
+mod drives;
 mod mounted_cloud;
 mod native_open_with;
 mod selected_open;
@@ -772,6 +773,8 @@ pub struct FileExplorerWidget {
     #[cfg(test)]
     cloud_fixture_consent: bool,
     mounted_cloud: mounted_cloud::MountedCloud,
+    /// NTFS drives the shell can open, for the places list.
+    drives: drives::Drives,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// A one-shot shell-owned document admission. The reply is strong only
     /// while this Files widget still owns the request; the shell gets a weak
@@ -1687,6 +1690,7 @@ impl FileExplorerWidget {
             #[cfg(test)]
             cloud_fixture_consent: false,
             mounted_cloud: mounted_cloud::MountedCloud::default(),
+            drives: drives::Drives::default(),
             host_intent: None,
             pending_document_open: None,
             pending_launch: None,
@@ -2309,6 +2313,10 @@ impl FileExplorerWidget {
                 self.show_remote_account_panel(&account, false);
                 None
             }
+            FilesEffect::OpenDrive { drive } => {
+                self.open_drive(&drive)?;
+                None
+            }
             FilesEffect::Reauthenticate { account } => {
                 let account = self.account_named(&account)?;
                 self.show_remote_account_panel(&account, true);
@@ -2634,6 +2642,7 @@ impl FileExplorerWidget {
                     })
                     .collect(),
             )
+            .with_drives(self.drives.shown.iter().map(drives::drive_place).collect())
     }
 
     /// Put the **places** pane (the window's sidebar) in the shell. The list
@@ -4713,6 +4722,12 @@ impl FileExplorerWidget {
             FileCommand::ShowRemoteAccount(id) | FileCommand::RecheckRemoteAccount(id) => {
                 self.show_remote_account(&id)
             }
+            FileCommand::OpenDrive(id) => {
+                if let Err(error) = self.open_drive(&id) {
+                    self.status = Some(t_args("files-drive-open-failed", &[arg("error", error)]));
+                }
+                true
+            }
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
             FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
@@ -5613,6 +5628,7 @@ impl FileExplorerWidget {
                 };
                 self.show_remote_account_panel(&account, true);
             }
+            Some("drives") => self.debug_show_sample_drives(),
             Some("loading") => self.debug_show_loading_state(),
             Some("error") => self.debug_show_error_state(),
             Some("menu" | "archive-menu") => self.open_view_menu(),
@@ -8859,6 +8875,7 @@ impl FileExplorerWidget {
         extras.extend(published_template_resources());
         extras.extend(self.live_entry_resources());
         extras.extend(self.live_remote_account_resources());
+        extras.extend(self.live_drive_resources());
         if ui::bound_dispatch::host_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
@@ -9118,7 +9135,11 @@ impl Widget for FileExplorerWidget {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
-        self.poll_share_result() | received | self.poll_cloud() | self.poll_mounted_cloud()
+        self.poll_share_result()
+            | received
+            | self.poll_cloud()
+            | self.poll_mounted_cloud()
+            | self.poll_drives(ui::time::now())
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -9196,6 +9217,7 @@ impl Widget for FileExplorerWidget {
             .chain(changed_directory)
             .chain(document_open_reply)
             .chain(self.local_clipboard.next_wake())
+            .chain(self.drives.next_wake())
             .chain(self.nav.next_wake_deadline())
             .min()
     }

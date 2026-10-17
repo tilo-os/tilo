@@ -20,6 +20,8 @@ from pathlib import Path
 # listing that changed under the cursor is read again from its start.
 LISTING_PAGE = 2000
 LISTING_ATTEMPTS = 3
+# Base64 characters per write_home_file command: a multiple of 4, so each piece decodes alone.
+WRITE_CHUNK = 64 * 1024
 
 
 class VmError(RuntimeError):
@@ -237,8 +239,14 @@ class TiloVm:
         """Write a file under the slot user's home, as that user's apps do."""
         blob = base64.b64encode(data).decode()
         q = shlex.quote(rel)
-        self.exec(f'cd "$HOME" && mkdir -p "$(dirname {q})" && '
-                  f'echo {blob} | base64 -d > {q}.acc-tmp && mv -f {q}.acc-tmp {q}')
+        # The script travels as one argument, which the kernel caps at 128 KiB: a larger
+        # file (the AT-SPI client) goes over in pieces.
+        chunks = [blob[i:i + WRITE_CHUNK] for i in range(0, len(blob), WRITE_CHUNK)] or [""]
+        for n, chunk in enumerate(chunks):
+            first, last = n == 0, n == len(chunks) - 1
+            self.exec(f'cd "$HOME" && ' + (f'mkdir -p "$(dirname {q})" && ' if first else '')
+                      + f'echo {chunk} | base64 -d {">" if first else ">>"} {q}.acc-tmp'
+                      + (f' && mv -f {q}.acc-tmp {q}' if last else ''))
 
     def vm_cmd(self, *args: str, timeout: float = 900, check: bool = True) -> str:
         return self.run("vm", *args, timeout=timeout, check=check, slot=False)

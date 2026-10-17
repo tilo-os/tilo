@@ -214,7 +214,10 @@ function unreachable(error) {
 export function failureMessage(error, {workspace = null, loaded = true} = {}) {
   if (error?.name === 'AdmissionError') return error.message;
   if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
-    return `${workspace || 'The workspace'} is already open in another tab of this browser. Use that tab, or close it and try again.`;
+    // Each tab is a device of its own; this is only said where this tab
+    // could not become one (every device key in use, and no way here to
+    // certify another).
+    return `Every device this browser keeps for ${workspace || 'the workspace'} is open in another tab. Close one of those tabs, then try again.`;
   }
   if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
   if (refusedByHost(error)) {

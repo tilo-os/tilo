@@ -2,7 +2,14 @@
 # Run the manifest-driven external AT-SPI acceptance scenarios in the logged-in
 # installed image. This intentionally imports only session coordinates from the
 # same user's systemd manager; SSH itself has no graphical environment.
+#
+# Test tooling, not part of the image: `os/dev/vm.sh test installed-atspi-apps.sh`
+# copies this script and the client it runs (tools/atspi_external_client.py,
+# named by TILO_ATSPI_CLIENT) from the checkout into a private directory in the
+# guest.
 set -euo pipefail
+
+client="${TILO_ATSPI_CLIENT:?TILO_ATSPI_CLIENT must name the external AT-SPI client (os/dev/vm.sh test sets it)}"
 
 for executable in busctl gdbus python3 systemctl; do
   command -v "$executable" >/dev/null || {
@@ -38,4 +45,4 @@ fi
   exit 1
 }
 
-exec python3 /usr/libexec/tilo/atspi-external-client.py "$@"
+exec python3 "$client" "$@"

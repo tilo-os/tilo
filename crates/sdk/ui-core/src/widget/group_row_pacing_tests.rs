@@ -46,7 +46,11 @@ impl crate::widget::Decorator for FedRow {
                     let _ = self.row.end_strip_pan(at);
                 }
                 Report::Reveal(group, at) => {
-                    let _ = self.row.scroll_group_into_view_animated(group, at);
+                    let _ = self.row.scroll_group_into_view_animated(
+                        group,
+                        at,
+                        crate::tokens::MotionSource::Pointer,
+                    );
                 }
             }
         }

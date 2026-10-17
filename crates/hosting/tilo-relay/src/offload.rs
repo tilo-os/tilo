@@ -446,7 +446,7 @@ impl Offloader {
                 .await
                 .map_err(|error| match error {
                     BindError::NotLocal => {
-                        format!("input {index} is not the room's content on this device")
+                        format!("input {index} is not the room's content on this device; fetch it through its record, or ask the local owner to import selected legacy hashes with workspace.legacy-media#import-legacy-media where offered")
                     }
                     error => format!("input {index}: {error}"),
                 })?;

@@ -3,12 +3,9 @@ import hashlib,shutil
 from pathlib import Path
 # Text helpers only: the compiled installer helpers (tilo-install-handoff-copy,
 # tilo-install-dev-ssh, tilo-vm-bootc-copy-cache, tilo-installer-offline-target,
-# tilo-staging-handoff, tilo-vm-install-proof) come with the base image, from
-# os/components.toml.
+# tilo-staging-handoff, tilo-vm-install-proof) and the UKI editor
+# tilo-uki-cmdline come with the base image, from os/components.toml.
 OVERRIDES=('usr/libexec/tilo-install','usr/libexec/tilo-verified-boot-install-preflight',
-           'usr/libexec/tilo-installer-dev-target-uki.py',
-           'usr/libexec/tilo-installer-code-protocol.py',
-           'usr/libexec/tilo-installer-code-refresh.py',
            'usr/lib/systemd/system/tilo-installer-code-refresh.service')
 def stage(source,helpers,context):
  source=Path(source)/'os';helpers=Path(helpers)/'os';context=Path(context)
@@ -31,8 +28,6 @@ def stage(source,helpers,context):
    copy(path,context/'rootfs'/rel,'source:'+rel)
  for rel in OVERRIDES:copy(helpers/rel,context/'rootfs'/rel,'helpers:'+rel)
  for src,dst in [('etc/greetd/config.toml','usr/share/tilo/greetd-config.toml'),('etc/greetd/config.installer.toml','etc/greetd/config.toml')]:copy(source/src,context/'rootfs'/dst,'source:'+src)
- copy(helpers/'dev/uki-cmdline.py',context/'rootfs/usr/libexec/tilo-uki-cmdline','helpers:dev/uki-cmdline.py')
- (context/'rootfs/usr/libexec/tilo-uki-cmdline').chmod(0o755)
  copy(helpers/'Containerfile.installer',context/'Containerfile','helpers:Containerfile.installer')
  return provenance
 

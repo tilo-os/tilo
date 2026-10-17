@@ -353,7 +353,7 @@ impl Demo {
 pub fn demo(me: &str) -> Chat {
     let mut chat = Chat::default();
     for (id, name, initials, color, status) in [
-        (me, "You", "QD", 0u32, Presence::Online),
+        (me, crate::identity::DEMO_NAME, "QD", 0u32, Presence::Online),
         ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
         ("u_milo", "Milo Park", "MP", 2, Presence::Idle),
         ("u_sora", "Sora Vega", "SV", 3, Presence::Online),

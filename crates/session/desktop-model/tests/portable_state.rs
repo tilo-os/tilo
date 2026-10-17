@@ -154,3 +154,27 @@ fn native_flattening_keeps_numeric_local_selection_keys_loadable() {
     assert_eq!(loaded.desktop.active_strip[&WorkspaceId(10)], StripId(11));
     assert_eq!(loaded.desktop.active_group[&StripId(11)], 12);
 }
+
+#[test]
+fn a_host_record_reads_its_tree_through_from_json() {
+    // The browser keeps its desktop as bytes with the tree beside its own
+    // fields, and reads it with the tree's one shared deserializer.
+    #[derive(serde::Deserialize)]
+    struct Stored {
+        #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
+        tree: DesktopTree,
+        records: Vec<(u64, String)>,
+    }
+    let bytes = serde_json::to_vec(&json!({
+        "tree": serde_json::to_value(persisted_tree()).unwrap(),
+        "records": [[13, "notes-record"]],
+    }))
+    .unwrap();
+    let stored: Stored = serde_json::from_slice(&bytes).unwrap();
+    let group = &stored.tree.workspaces[0].strips[0].window_groups[0];
+    assert_eq!(group.active_tab, 9_007_199_254_741_001);
+    assert_eq!(stored.records, vec![(13, "notes-record".to_owned())]);
+
+    let not_a_tree = br#"{"tree": {"workspaces": 3}, "records": []}"#;
+    assert!(serde_json::from_slice::<Stored>(not_a_tree).is_err());
+}

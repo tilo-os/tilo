@@ -12,6 +12,7 @@ RUN_ROOT="${TILO_RECOVERY_RUN_ROOT:-/run/tilo-recovery}"
 LSBLK="${TILO_RECOVERY_LSBLK:-lsblk}"
 MOUNT="${TILO_RECOVERY_MOUNT:-mount}"
 UMOUNT="${TILO_RECOVERY_UMOUNT:-umount}"
+MODPROBE="${TILO_RECOVERY_MODPROBE:-modprobe}"
 CRYPTSETUP="${TILO_RECOVERY_CRYPTSETUP:-cryptsetup}"
 SFDISK="${TILO_RECOVERY_SFDISK:-sfdisk}"
 DRY_RUN="${TILO_RECOVERY_DRY_RUN:-0}"
@@ -164,6 +165,9 @@ cmd_mount_destination() {
   [ -z "$("$LSBLK" -nro MOUNTPOINT "$dev" | tr -d '[:space:]')" ] || die "$dev is already mounted"
   fstype="$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)"
   case "$fstype" in btrfs|ext4|xfs|vfat|exfat|ntfs|ntfs3) ;; *) die "unsupported destination filesystem '$fstype'";; esac
+  # The image blacklists ntfs3's filesystem aliases, so a mount no longer
+  # loads it by itself; the person chose this destination, so load it by name.
+  case "$fstype" in ntfs|ntfs3) "$MODPROBE" ntfs3 || die "could not load the NTFS driver";; esac
   mountpoint="$RUN_ROOT/destination"
   install -d -m 0700 "$mountpoint"
   "$MOUNT" -o rw,nosuid,nodev,noexec "$dev" "$mountpoint" || die "could not mount $dev for recovered files"

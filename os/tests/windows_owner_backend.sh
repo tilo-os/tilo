@@ -9,6 +9,7 @@ VIEWER="$OS_ROOT/usr/libexec/tilo-windows-recovery-console"
 POLICY="$OS_ROOT/usr/share/polkit-1/actions/org.tilo.windows.policy"
 RULE="$OS_ROOT/etc/polkit-1/rules.d/49-tilo-windows.rules"
 CONTAINERFILE="$OS_ROOT/Containerfile"
+OWNER_STATUS="$OS_ROOT/../crates/windows/windows-vm/src/owner_status.rs"
 
 fails=0
 fail() { printf 'FAIL  %s\n' "$*" >&2; fails=$((fails + 1)); }
@@ -17,7 +18,7 @@ has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 
-for file in "$HELPER" "$VIEWER" "$POLICY" "$RULE"; do need "$file"; done
+for file in "$HELPER" "$VIEWER" "$POLICY" "$RULE" "$OWNER_STATUS"; do need "$file"; done
 bash -n "$HELPER" && ok 'owner helper has valid shell syntax' || fail 'owner helper shell syntax'
 bash -n "$VIEWER" && ok 'recovery viewer has valid shell syntax' || fail 'recovery viewer shell syntax'
 
@@ -30,14 +31,15 @@ has "$HELPER" 'udfinfo "$image"' 'UDF media is parsed before provisioning'
 has "$HELPER" 'mv -- "$temporary" "$staged"' 'validated import is atomically staged'
 has "$HELPER" 'prepare --iso "$staged"' 'owner backend reuses singleton provisioner'
 lacks "$HELPER" 'prepare --iso "$2"' 'owner backend accepts no caller ISO path'
-has "$HELPER" '"phase"' 'status command emits a typed phase'
-has "$HELPER" '"catalog_generation"' 'status command exposes catalogue generation'
-has "$HELPER" '"power_state"' 'status command exposes authoritative domain power state'
-has "$HELPER" '"temporary_egress"' 'status command exposes temporary egress purpose and expiry'
-has "$HELPER" '/run/tilo/windows-egress/status.json' 'owner reads root-published sanitized runtime status'
-has "$HELPER" 'os.O_NOFOLLOW' 'owner status summary is opened without following links'
-lacks "$HELPER" 'subprocess.run(' 'owner status never probes libvirt through unprivileged controller'
-has "$HELPER" 'except FileNotFoundError:' 'missing runtime summary leaves management status usable with unknown power'
+has "$HELPER" 'exec "$VM_CONTROL" owner-status' 'status is the controller'"'"'s unprivileged owner summary'
+has "$OWNER_STATUS" 'phase: String' 'status command emits a typed phase'
+has "$OWNER_STATUS" 'catalog_generation: u64' 'status command exposes catalogue generation'
+has "$OWNER_STATUS" 'power_state: String' 'status command exposes authoritative domain power state'
+has "$OWNER_STATUS" 'temporary_egress: Option<TemporaryEgress>' 'status command exposes temporary egress purpose and expiry'
+has "$OWNER_STATUS" 'libc::O_NOFOLLOW' 'owner status summary is opened without following links'
+lacks "$OWNER_STATUS" 'Command::new' 'owner status never probes libvirt through the controller'
+has "$OWNER_STATUS" 'Failure::Missing' 'missing runtime summary leaves management status usable with unknown power'
+lacks "$HELPER" 'python3' 'owner helper runs no Python'
 has "$HELPER" 'egress-revoke' 'owner backend offers narrow early egress revocation'
 has "$HELPER" 'exec "$VM_CONTROL" egress-revoke' 'owner revocation keeps opaque lease IDs out of UI'
 has "$HELPER" 'recovery-start' 'owner backend has a narrow recovery-start action'

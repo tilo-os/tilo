@@ -659,6 +659,8 @@ pub struct ShellOverlayHost {
     /// One-shot driver so a workspace switch requests a run of frames
     /// instead of painting once and idling (W16). Settles with the curve.
     workspace_switch: ui::Transition,
+    /// What started the running workspace switch.
+    workspace_switch_source: ui::tokens::MotionSource,
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
     /// the curve let the close flush both scanouts on every remaining paint.
     workspace_switch_until: Option<Instant>,
@@ -1305,7 +1307,6 @@ fn millis_to_f32_lossy(ms: u128) -> f32 {
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
-const WORKSPACE_SWITCH_MS: u64 = 400;
 /// W16 wants ≥ 8 painted frames per open/close. Host demand still
 /// clears when the crossfade settles; the compositor consumes this
 /// many paints on its own.
@@ -2462,6 +2463,7 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
+            workspace_switch_source: ui::tokens::MotionSource::default(),
             workspace_switch_until: None,
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             qs_was_open: false,
@@ -3759,8 +3761,13 @@ impl ShellOverlayHost {
     /// second slide implementation. Reduced motion still runs the frames:
     /// snapping the curve made the close flush both scanouts.
     /// Call on the chord, not only from `update`: demand is sampled first.
-    pub(crate) fn start_workspace_switch_frames(&mut self) {
-        let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
+    ///
+    /// A switch is whole-view motion (`slow`); one a shortcut or action
+    /// started keeps only a `fast` direction cue.
+    pub(crate) fn start_workspace_switch_frames(&mut self, source: ui::tokens::MotionSource) {
+        let motion = ui::tokens::Motion::default();
+        let duration = motion.context(source, motion.durations.slow());
+        self.workspace_switch_source = source;
         let now = Instant::now();
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch
@@ -4655,7 +4662,14 @@ impl ShellOverlayHost {
         };
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
-            self.start_workspace_switch_frames();
+            // A chord already started this switch's frames, before demand
+            // was sampled; keep its source rather than lengthening them.
+            let source = if self.workspace_switch_holding() {
+                self.workspace_switch_source
+            } else {
+                ui::tokens::MotionSource::Pointer
+            };
+            self.start_workspace_switch_frames(source);
         }
         swapped
     }
@@ -13072,6 +13086,11 @@ impl ShellOverlayHost {
                         {
                             self.portal_dialogs.toggle_selected_usb_device();
                         }
+                        Key::Named(NamedKey::Space)
+                            if self.portal_dialogs.remember_label().is_some() =>
+                        {
+                            self.portal_dialogs.toggle_remember();
+                        }
                         _ => {
                             if !self.portal_dialogs.edit_launcher_name(logical_key) {
                                 self.portal_dialogs.key(physical_key, modifiers);
@@ -13918,7 +13937,7 @@ impl ShellOverlayHost {
             return true;
         }
         if let Some(action) = configured_action
-            && self.handle_desktop_chord(action, repeat)
+            && self.handle_desktop_chord(action, repeat, ui::tokens::MotionSource::Keyboard)
         {
             *handled = true;
             return true;
@@ -13981,7 +14000,7 @@ impl ShellOverlayHost {
                 // Both directions. Page Down's following frames were already
                 // cheap; Page Up fell through to a full upload of the desktop
                 // just restored.
-                self.start_workspace_switch_frames();
+                self.start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
             }
             *handled = true;
             return true;
@@ -14024,6 +14043,7 @@ impl ShellOverlayHost {
                 _ => None,
             };
             if let Some(action) = action {
+                self.begin_motion(ui::tokens::MotionSource::Keyboard);
                 match action {
                     ShortcutAction::FocusPreviousWindow => {
                         let _ = self.step_focus_along_strip(-1);
@@ -14086,7 +14106,7 @@ impl ShellOverlayHost {
             .into_iter()
             .find(|action| shortcut_pressed(*action))
         {
-            self.run_navigation_shortcut(action, repeat);
+            self.run_navigation_shortcut(action, repeat, ui::tokens::MotionSource::Keyboard);
             *handled = true;
             return true;
         }
@@ -14124,8 +14144,12 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
         repeat: bool,
+        source: ui::tokens::MotionSource,
     ) -> bool {
         use settings_store::hardware::ShortcutAction;
+        if Self::is_navigation_shortcut(action) {
+            self.begin_motion(source);
+        }
         match action {
             ShortcutAction::PreviousTab => {
                 let _ = self.cycle_focused_tab(-1);
@@ -14227,7 +14251,7 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone()
                     && chrome.borrow_mut().switch_workspace(direction)
                 {
-                    self.start_workspace_switch_frames();
+                    self.start_workspace_switch_frames(source);
                 }
             }
             _ => return false,
@@ -14341,7 +14365,46 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
     ) -> bool {
-        self.run_navigation_shortcut(action, false) || self.handle_desktop_chord(action, false)
+        let source = ui::tokens::MotionSource::Action;
+        self.run_navigation_shortcut(action, false, source)
+            || self.handle_desktop_chord(action, false, source)
+    }
+
+    /// Whether [`Self::run_navigation_shortcut`] handles `action`.
+    fn is_navigation_shortcut(action: settings_store::hardware::ShortcutAction) -> bool {
+        use settings_store::hardware::ShortcutAction as A;
+        matches!(
+            action,
+            A::PreviousTab
+                | A::NextTab
+                | A::ToggleMaximize
+                | A::DetachTab
+                | A::AttachTabLeft
+                | A::AttachTabRight
+                | A::ReopenClosedTab
+                | A::ResizeNarrower
+                | A::ResizeWider
+                | A::MoveGroupLeft
+                | A::MoveGroupRight
+                | A::MoveGroupToPreviousStrip
+                | A::MoveGroupToNextStrip
+                | A::MoveGroupToPreviousDisplay
+                | A::MoveGroupToNextDisplay
+                | A::FocusPreviousWindow
+                | A::FocusNextWindow
+                | A::PreviousStrip
+                | A::NextStrip
+                | A::PreviousWorkspace
+                | A::NextWorkspace
+        )
+    }
+
+    /// Tell the desktop what starts the change about to be made, before
+    /// making it, so the springs and fades it starts follow that input.
+    fn begin_motion(&mut self, source: ui::tokens::MotionSource) {
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.begin_transition(source);
+        }
     }
 
     /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
@@ -14352,11 +14415,13 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
         repeat: bool,
+        source: ui::tokens::MotionSource,
     ) -> bool {
         use crate::shell::quick_settings::QsLevel;
         use settings_store::hardware::ShortcutAction as A;
         if let Some(index) = action.focus_group_index() {
             if !repeat {
+                self.begin_motion(source);
                 let _ = self.focus_nth_group_in_strip(index);
             }
             return true;
@@ -22271,21 +22336,31 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         if flags.collaborators {
-            let (mut rows, unavailable, screen_exposure) = self.chrome.as_ref().map_or_else(
-                || (Vec::new(), None, None),
-                |chrome| {
-                    let state = chrome.borrow();
-                    let local_user = state.active_local_user();
-                    (
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        ),
-                        state.collab_unavailable.clone(),
-                        collaborators_screen_exposure(&state),
-                    )
-                },
-            );
+            // The name this person goes by, numbered like anyone else's when
+            // someone here shares it; never "You", never their key.
+            let own_name = ui::local_identity::load()
+                .map(|identity| identity.display_name)
+                .filter(|name| !name.trim().is_empty());
+            let (mut rows, own_shown, unavailable, screen_exposure) =
+                self.chrome.as_ref().map_or_else(
+                    || (Vec::new(), None, None, None),
+                    |chrome| {
+                        let state = chrome.borrow();
+                        let local_user = state.active_local_user();
+                        let (rows, own_shown) =
+                            tilo_desktop::collaborators::collaborator_roster_rows_named(
+                                &state.tree().desktop,
+                                &local_user,
+                                own_name.as_deref(),
+                            );
+                        (
+                            rows,
+                            own_shown,
+                            state.collab_unavailable.clone(),
+                            collaborators_screen_exposure(&state),
+                        )
+                    },
+                );
             let now = std::time::SystemTime::now();
             let interactions = presence.visible_interactions(std::time::Instant::now());
             for row in &mut rows {
@@ -22315,7 +22390,9 @@ impl ShellOverlayHost {
                 .map(|chrome| chrome.borrow().local_user_id.clone())
                 .filter(|id| !id.trim().is_empty())
                 .unwrap_or_else(crate::shell::state::local_user_id);
-            let own_label = ui::history_source::participant_display_label(&own_id);
+            let own_label = own_shown
+                .or(own_name)
+                .unwrap_or_else(|| ui::history_source::participant_display_label(&own_id));
             let own_activity = interactions
                 .iter()
                 .find(|interaction| {
@@ -23870,14 +23947,12 @@ impl ShellOverlayHost {
             for field in self.portal_dialogs.place_fields(&layout) {
                 field.draw(scene, transform, text_renderer, theme, &presence);
             }
-            if let (Some(rect), Some((remember, focused))) =
-                (layout.remember, self.portal_dialogs.remember_display())
-            {
-                let label = format!(
-                    "[{}] {}",
-                    if remember { "✓" } else { " " },
-                    crate::shell::i18n::t("portal-remember-device")
-                );
+            if let (Some(rect), Some((remember, focused)), Some(remember_label)) = (
+                layout.remember,
+                self.portal_dialogs.remember_display(),
+                self.portal_dialogs.remember_label(),
+            ) {
+                let label = format!("[{}] {}", if remember { "✓" } else { " " }, remember_label);
                 draw_filter_chip(
                     scene,
                     transform,

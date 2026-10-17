@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Refresh allowlisted installer helpers inside an explicitly attached dev VM."""
+"""Refresh allowlisted installer helpers inside an explicitly attached dev VM.
+
+Only the /etc seed on old immutable CI media runs this copy; new media run the
+compiled daemon, `tilo-vm-install-proof code-refresh`.
+"""
 import fcntl
 import importlib.util
 import json

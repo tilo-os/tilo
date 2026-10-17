@@ -29,12 +29,13 @@ impl RoomPolicy {
     fn accepted_status(
         &self,
         room: RoomId,
+        exporting: &Mutex<Vec<Exporting>>,
     ) -> Result<(), crate::shell::native_workspace_owner::store::AuthorityRejection> {
         self.runtime
             .authority_status_awaiting(&self.authority, room, |accepted| {
                 // Read after the writer's record: an owner publication takes
                 // its export before it changes that record.
-                let exporting: Vec<_> = lock(&EXPORTING)
+                let exporting: Vec<_> = lock(exporting)
                     .iter()
                     .filter(|export| export.1.same_writer(&self.runtime))
                     .map(|export| export.2.clone())
@@ -65,6 +66,8 @@ struct Published {
     next_refresh: Option<Instant>,
     #[cfg(target_os = "linux")]
     sandboxes: BTreeMap<u32, sandbox_revocation::Sandbox>,
+    /// The exports of this writer's tree that are on their way here.
+    exporting: Arc<Mutex<Vec<Exporting>>>,
 }
 #[derive(Clone)]
 struct SaveFailure {
@@ -72,40 +75,74 @@ struct SaveFailure {
     kind: std::io::ErrorKind,
     message: String,
 }
-static PUBLISHED: LazyLock<Mutex<Published>> = LazyLock::new(|| Mutex::new(Published::default()));
+
+/// The policy one state writer's tree has published, and what is judged
+/// against it: app projections and running sandboxes. Clones of a tree share
+/// their writer and so this; a shell has one writer, so it has one of these.
+pub(crate) struct Authority {
+    /// Tells this authority's jobs on the state writer from another's.
+    id: u64,
+    published: Mutex<Published>,
+    /// The same list as `published.exporting`, reachable without taking
+    /// `published`. Taken after `published` when both are held, never
+    /// before it.
+    exporting: Arc<Mutex<Vec<Exporting>>>,
+    /// Signalled whenever [`Export::publish`] replaces the published policy.
+    changed: std::sync::Condvar,
+}
+
+impl Default for Authority {
+    fn default() -> Self {
+        static NEXT_AUTHORITY: AtomicU64 = AtomicU64::new(0);
+        let published = Published::default();
+        Self {
+            id: NEXT_AUTHORITY.fetch_add(1, Ordering::Relaxed),
+            exporting: published.exporting.clone(),
+            published: Mutex::new(published),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+}
+
+impl Authority {
+    /// The state writer's key for this authority's `job`. A queued job is
+    /// replaced by a later one with the same key, so a publication may only
+    /// supersede an older one of the same writer's tree.
+    fn job_key(&self, job: &str) -> PathBuf {
+        authority_root().join(job).join(self.id.to_string())
+    }
+}
+
 /// Every [`Export`] taken and neither published nor dropped yet: its id, the
-/// writer it was taken from and the record that writer held for it. Taken
-/// after `PUBLISHED` when both are held, never before it.
+/// writer it was taken from and the record that writer held for it.
 type Exporting = (
     u64,
     crate::shell::native_workspace_owner::NativeStateWitness,
     Arc<crate::shell::native_workspace_owner::NativeAuthorityStorage>,
 );
-static EXPORTING: Mutex<Vec<Exporting>> = Mutex::new(Vec::new());
 static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
-/// Signalled whenever [`Export::publish`] replaces the published policy.
-static PUBLISHED_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// Capture policy for publication only after the normal state writer accepts
 /// this exact tree. Superseded/refused state writes never call `publish`.
-pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64, Pending);
+pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64, Pending, Arc<Authority>);
 
-/// An export's place in [`EXPORTING`], from when it is taken until it is
-/// published or dropped.
-struct Pending(u64);
+/// An export's place among its writer's exports on their way, from when it
+/// is taken until it is published or dropped.
+struct Pending(u64, Arc<Mutex<Vec<Exporting>>>);
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        lock(&EXPORTING).retain(|export| export.0 != self.0);
+        lock(&self.1).retain(|export| export.0 != self.0);
     }
 }
 
 impl Export {
     pub(crate) fn of(tree: &crate::shell::state::WorkspaceTree) -> Self {
+        let state = tree.native_runtime.action_authority();
         let runtime = tree.native_runtime.authority_witness();
         let authority = Arc::new(tree.native_authority.clone());
         let id = NEXT_EXPORT.fetch_add(1, Ordering::Relaxed);
-        lock(&EXPORTING).push((id, runtime.clone(), authority.clone()));
+        lock(&state.exporting).push((id, runtime.clone(), authority.clone()));
         Self(
             tree.desktop
                 .workspaces
@@ -123,12 +160,13 @@ impl Export {
                 })
                 .collect(),
             tree.policy_revision,
-            Pending(id),
+            Pending(id, state.exporting.clone()),
+            state,
         )
     }
 
     pub(crate) fn publish(self) {
-        let mut published = lock(&PUBLISHED);
+        let mut published = lock(&self.3.published);
         published.revisions = self.0.keys().map(|room| (*room, self.1)).collect();
         published
             .failures
@@ -149,28 +187,28 @@ impl Export {
         // Only now is this export's record what observers hold.
         drop(self.2);
         drop(published);
-        PUBLISHED_CHANGED.notify_all();
+        self.3.changed.notify_all();
     }
 
     /// What the save of this export reports if its write fails.
     pub(crate) fn failure_handle(&self) -> FailureHandle {
-        FailureHandle(self.0.keys().copied().collect(), self.1)
+        FailureHandle(self.0.keys().copied().collect(), self.1, self.3.clone())
     }
 
     pub(crate) fn submit(self) {
         crate::shell::durable_writer::global()
-            .submit(authority_root().join("publication"), move || self.publish());
+            .submit(self.3.job_key("publication"), move || self.publish());
     }
 }
 
 /// Reports the failure of the save that would have published a revision.
-pub(crate) struct FailureHandle(Vec<RoomId>, u64);
+pub(crate) struct FailureHandle(Vec<RoomId>, u64, Arc<Authority>);
 
 impl FailureHandle {
     /// A launch waiting on this revision, or an earlier one, stops waiting
     /// and reports the save's own error. A later successful save clears it.
     pub(crate) fn fail(self, error: &std::io::Error) {
-        let mut published = lock(&PUBLISHED);
+        let mut published = lock(&self.2.published);
         for room in self.0 {
             if published
                 .failures
@@ -188,7 +226,7 @@ impl FailureHandle {
             }
         }
         drop(published);
-        PUBLISHED_CHANGED.notify_all();
+        self.2.changed.notify_all();
     }
 }
 
@@ -235,7 +273,8 @@ pub(crate) fn with_ordinary_room_current<T>(
         .iter()
         .find(|workspace| workspace.room == room)
         .ok_or("The admitted Settings room is unavailable.")?;
-    let published = lock(&PUBLISHED);
+    let state = tree.native_runtime.action_authority();
+    let published = lock(&state.published);
     let policy = published
         .rooms
         .get(&room)
@@ -271,7 +310,11 @@ fn projection(published: &Published, binding: &Binding) -> AppActionAuthorityPro
     let current = published
         .rooms
         .get(&binding.0)
-        .filter(|policy| policy.accepted_status(binding.0).is_ok())
+        .filter(|policy| {
+            policy
+                .accepted_status(binding.0, &published.exporting)
+                .is_ok()
+        })
         .map(|policy| policy.policy.clone());
     // A room whose accepted policy is not current names nobody: the app's
     // host decides every action against it, so it allows nothing.
@@ -323,7 +366,7 @@ fn write_binding(
             .get(binding)
             .is_none_or(|state| !state.projection.same_policy(&projection))
     {
-        // In the runtime tmpfs and unsynced: `PUBLISHED` is held here, and
+        // In the runtime tmpfs and unsynced: `published` is held here, and
         // the compositor's loop takes it every iteration, so a sync under I/O
         // pressure would freeze the desktop. The sandbox reads the file
         // through the page cache, and a crash discards it with the session.
@@ -349,9 +392,18 @@ pub(super) fn attach(
     room: RoomId,
     command: &mut LaunchCommand,
 ) -> std::io::Result<Lease> {
+    attach_to(followed_authority(), app, room, command)
+}
+
+fn attach_to(
+    authority: Arc<Authority>,
+    app: &InstalledApp,
+    room: RoomId,
+    command: &mut LaunchCommand,
+) -> std::io::Result<Lease> {
     let person = crate::shell::state::local_user_id_for_room(&room);
     let binding = (room, app.package_id.clone(), person);
-    let mut published = lock(&PUBLISHED);
+    let mut published = lock(&authority.published);
     let path = write_binding(&mut published, &binding, true)?;
     if let Some(state) = published.bindings.get_mut(&binding) {
         state.borrowers = state.borrowers.saturating_add(1);
@@ -361,6 +413,7 @@ pub(super) fn attach(
     command.args.push("--action-authority".into());
     command.args.push(path.display().to_string());
     Ok(Lease {
+        authority,
         binding,
         capabilities: Vec::new(),
         pid: None,
@@ -404,10 +457,24 @@ pub(crate) trait PolicySource: Send + Sync {
     fn revision(&self) -> u64;
 }
 
-static POLICY_SOURCE: Mutex<Option<std::sync::Arc<dyn PolicySource>>> = Mutex::new(None);
+/// The tree launches capture their grants from, and the authority its
+/// writer publishes their policy to.
+struct Followed {
+    source: Arc<dyn PolicySource>,
+    authority: Arc<Authority>,
+}
 
-pub(crate) fn set_policy_source(source: std::sync::Arc<dyn PolicySource>) {
-    *lock(&POLICY_SOURCE) = Some(source);
+static FOLLOWED: Mutex<Option<Followed>> = Mutex::new(None);
+
+/// The authority launches are judged against: the followed tree's, or,
+/// before any tree is followed, one that has published nothing, so every
+/// projection names nobody.
+fn followed_authority() -> Arc<Authority> {
+    static NOTHING_FOLLOWED: LazyLock<Arc<Authority>> = LazyLock::new(Arc::default);
+    lock(&FOLLOWED).as_ref().map_or_else(
+        || NOTHING_FOLLOWED.clone(),
+        |followed| followed.authority.clone(),
+    )
 }
 
 struct TreePolicySource(crate::shell::state::WeakWorkspaceTreeHandle);
@@ -419,18 +486,22 @@ impl PolicySource for TreePolicySource {
 
 /// Publish policy for sandboxes launched from `tree`.
 pub(crate) fn follow_tree(tree: &crate::shell::state::WorkspaceTreeHandle) {
-    set_policy_source(std::sync::Arc::new(TreePolicySource(tree.downgrade())));
+    let authority = tree.read().native_runtime.action_authority();
+    *lock(&FOLLOWED) = Some(Followed {
+        source: Arc::new(TreePolicySource(tree.downgrade())),
+        authority,
+    });
 }
 
 /// The state of `room`'s policy that a launch must see published before its
 /// captured grants are judged: the tree's revision when they were captured.
 fn captured_revision() -> Option<u64> {
-    let source = lock(&POLICY_SOURCE).clone()?;
+    let source = lock(&FOLLOWED).as_ref()?.source.clone();
     Some(source.revision())
 }
 
 /// Block until `room`'s published policy is at `revision` or later. Publication
-/// signals [`PUBLISHED_CHANGED`], so this neither polls nor guesses a delay: a
+/// signals [`Authority::changed`], so this neither polls nor guesses a delay: a
 /// slow writer delays the launch and a fast one does not. Only a writer that
 /// completes no write for a whole [`PUBLICATION_STALL`] window is a fault.
 ///
@@ -438,9 +509,9 @@ fn captured_revision() -> Option<u64> {
 /// The error of a failed save of that revision or a later one, at once;
 /// `TimedOut` when the state writer has made no progress.
 #[cfg(target_os = "linux")]
-fn await_published(room: RoomId, revision: u64) -> std::io::Result<()> {
+fn await_published(authority: &Authority, room: RoomId, revision: u64) -> std::io::Result<()> {
     let writer = crate::shell::durable_writer::global();
-    let mut published = lock(&PUBLISHED);
+    let mut published = lock(&authority.published);
     let mut seen = writer.progress();
     while published.revisions.get(&room).copied().unwrap_or(0) < revision {
         if let Some(failure) = published.failures.get(&room)
@@ -451,7 +522,8 @@ fn await_published(room: RoomId, revision: u64) -> std::io::Result<()> {
                 format!("saving filesystem authority failed: {}", failure.message),
             ));
         }
-        let (guard, waited) = PUBLISHED_CHANGED
+        let (guard, waited) = authority
+            .changed
             .wait_timeout(published, PUBLICATION_STALL)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         published = guard;
@@ -479,6 +551,7 @@ const PUBLICATION_STALL: Duration = Duration::from_secs(30);
 /// Keeps the lease tied to the existing launch supervisor, including a held
 /// launch, rather than an unrelated timer or a package-name process scan.
 pub(crate) struct Lease {
+    authority: Arc<Authority>,
     binding: Binding,
     capabilities: Vec<CapOverride>,
     pid: Option<u32>,
@@ -547,9 +620,9 @@ impl Lease {
         if let Some(revision) = self.revision
             && !self.capabilities.is_empty()
         {
-            await_published(self.binding.0, revision)?;
+            await_published(&self.authority, self.binding.0, revision)?;
         }
-        let mut published = lock(&PUBLISHED);
+        let mut published = lock(&self.authority.published);
         if let Err(reason) = sandbox.authorization_status(&published) {
             // The reason is a static category: no path, peer or grant.
             tracing::error!(room = %self.binding.0, package_id = %self.binding.1, authority_rejection = reason,
@@ -569,7 +642,7 @@ impl std::fmt::Debug for Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        let mut published = lock(&PUBLISHED);
+        let mut published = lock(&self.authority.published);
         #[cfg(target_os = "linux")]
         if let Some(pid) = self.pid {
             published.sandboxes.remove(&pid);
@@ -588,34 +661,45 @@ impl Drop for Lease {
 }
 
 pub(crate) fn next_deadline() -> Option<Instant> {
-    lock(&PUBLISHED).next_refresh
+    followed_authority().next_deadline()
 }
 
 /// Renew only while the existing launch supervisor owns a live/held lease.
 /// File work runs on the normal durable writer; no frame or GPU is requested.
 pub(crate) fn tick(now: Instant) {
-    let mut published = lock(&PUBLISHED);
-    if published.next_refresh.is_none_or(|deadline| now < deadline) {
-        return;
-    }
-    published.next_refresh = now.checked_add(Duration::from_secs(1));
-    drop(published);
-    crate::shell::durable_writer::global().submit(authority_root().join("heartbeat"), renew);
+    followed_authority().tick(now);
 }
 
-/// Judge the running sandboxes again and renew every live projection.
-fn renew() {
-    let mut published = lock(&PUBLISHED);
-    #[cfg(target_os = "linux")]
-    sandbox_revocation::reconcile(&mut published);
-    let bindings: Vec<_> = published.bindings.keys().cloned().collect();
-    for binding in bindings {
-        if let Err(error) = write_binding(&mut published, &binding, true) {
-            let _ = std::fs::remove_file(binding_path(&binding));
-            tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority renewal failed closed");
-        }
+impl Authority {
+    fn next_deadline(&self) -> Option<Instant> {
+        lock(&self.published).next_refresh
     }
-    drop(published);
+
+    fn tick(self: Arc<Self>, now: Instant) {
+        let mut published = lock(&self.published);
+        if published.next_refresh.is_none_or(|deadline| now < deadline) {
+            return;
+        }
+        published.next_refresh = now.checked_add(Duration::from_secs(1));
+        drop(published);
+        crate::shell::durable_writer::global()
+            .submit(self.job_key("heartbeat"), move || self.renew());
+    }
+
+    /// Judge the running sandboxes again and renew every live projection.
+    fn renew(&self) {
+        let mut published = lock(&self.published);
+        #[cfg(target_os = "linux")]
+        sandbox_revocation::reconcile(&mut published);
+        let bindings: Vec<_> = published.bindings.keys().cloned().collect();
+        for binding in bindings {
+            if let Err(error) = write_binding(&mut published, &binding, true) {
+                let _ = std::fs::remove_file(binding_path(&binding));
+                tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority renewal failed closed");
+            }
+        }
+        drop(published);
+    }
 }
 
 #[cfg(test)]
@@ -623,16 +707,8 @@ mod tests {
     use super::*;
     use tilo_action_policy::Subject;
 
-    /// The published policy is one process-wide value that each tree's
-    /// publication replaces whole, so tests that publish take turns.
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        static TURN: Mutex<()> = Mutex::new(());
-        lock(&TURN)
-    }
-
     #[test]
     fn ordinary_display_backend_borrows_real_owner_policy_and_rejects_revocation() {
-        let _turn = serial();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
@@ -701,7 +777,6 @@ mod tests {
 
     #[test]
     fn action_authority_export_releases_file_custody_and_revokes_dropped_runtime() {
-        let _turn = serial();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
@@ -748,7 +823,6 @@ mod tests {
 
     #[test]
     fn action_authority_export_retains_only_selected_app_person_and_accepted_room_policy() {
-        let _turn = serial();
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let workspace = &mut tree.desktop.workspaces[0];
         let room = workspace.room;
@@ -815,7 +889,6 @@ mod tests {
     }
     #[test]
     fn action_authority_atomic_publication_revokes_live_projection_and_renews_lease() {
-        let _turn = serial();
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let workspace = &mut tree.desktop.workspaces[0];
         let room = RoomId::new();
@@ -826,7 +899,7 @@ mod tests {
             rooms: Export::of(&tree).0,
             ..Published::default()
         };
-        // Written under `PUBLISHED`, which the compositor's loop takes every
+        // Written under `published`, which the compositor's loop takes every
         // iteration: it must never wait for the disk.
         #[cfg(target_os = "linux")]
         let path = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
@@ -856,7 +929,6 @@ mod tests {
     }
     #[test]
     fn action_authority_lease_follows_live_supervisor_borrowers_and_idle_renewal() {
-        let _turn = serial();
         let app = InstalledApp {
             package_id: "so.tilo.authority-probe".into(),
             display_name: "Authority probe".into(),
@@ -882,7 +954,8 @@ mod tests {
             portal_workspace_id: None,
             managed_agent_id: None,
         };
-        let first = attach(&app, room, &mut command).unwrap();
+        let authority = Arc::new(Authority::default());
+        let first = attach_to(authority.clone(), &app, room, &mut command).unwrap();
         let binding = first.binding.clone();
         let path = binding_path(&binding);
         assert_eq!(
@@ -895,10 +968,12 @@ mod tests {
             before.policy.owner, None,
             "unknown room must have no management authority"
         );
-        let second = attach(&app, room, &mut command).unwrap();
-        assert_eq!(lock(&PUBLISHED).bindings[&binding].borrowers, 2);
-        assert!(next_deadline().is_some());
-        tick(Instant::now() + Duration::from_secs(2));
+        let second = attach_to(authority.clone(), &app, room, &mut command).unwrap();
+        assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 2);
+        assert!(authority.next_deadline().is_some());
+        authority
+            .clone()
+            .tick(Instant::now() + Duration::from_secs(2));
         assert!(crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(3)));
         let renewed: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -908,15 +983,13 @@ mod tests {
             3_000
         );
         drop(first);
-        assert_eq!(lock(&PUBLISHED).bindings[&binding].borrowers, 1);
+        assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 1);
         assert!(path.exists());
         drop(second);
-        let published = lock(&PUBLISHED);
-        assert!(!published.bindings.contains_key(&binding));
+        let published = lock(&authority.published);
+        assert!(published.bindings.is_empty());
         assert!(!path.exists());
-        if published.bindings.is_empty() {
-            assert!(published.next_refresh.is_none());
-        }
+        assert!(published.next_refresh.is_none());
         drop(published);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -945,6 +1018,7 @@ mod tests {
     /// `revision`, then clean up everything it published.
     #[cfg(target_os = "linux")]
     fn register(
+        authority: Arc<Authority>,
         room: RoomId,
         app: &str,
         grant: &CapOverride,
@@ -952,6 +1026,7 @@ mod tests {
     ) -> std::io::Result<()> {
         let mut child = live_child();
         let mut lease = Lease {
+            authority,
             binding: (room, app.into(), "person".into()),
             capabilities: vec![grant.clone()],
             pid: None,
@@ -976,7 +1051,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_grant_whose_save_is_not_queued_yet_proceeds_once_published() {
-        let _turn = serial();
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         tree.policy_revision = crate::shell::state::next_policy_revision();
@@ -985,6 +1059,7 @@ mod tests {
         tree.desktop.workspaces[0].sandbox.push(granted.clone());
         tree.policy_revision = crate::shell::state::next_policy_revision();
         let revision = tree.policy_revision;
+        let authority = tree.native_runtime.action_authority();
         let export = Export::of(&tree);
         let saver = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
@@ -995,9 +1070,8 @@ mod tests {
                 },
             );
         });
-        let registered = register(room, "so.tilo.unsaved", &granted, revision);
+        let registered = register(authority, room, "so.tilo.unsaved", &granted, revision);
         saver.join().unwrap();
-        lock(&PUBLISHED).rooms.remove(&room);
         registered.expect("the launch waits for the policy revision it captured");
     }
 
@@ -1007,7 +1081,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_grant_removed_in_a_later_revision_is_refused_as_withdrawn() {
-        let _turn = serial();
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         let granted = grant("so.tilo.withdrawn", "/disposable/withdrawn");
@@ -1017,6 +1090,7 @@ mod tests {
         // Before anything is published, the grant is withdrawn again.
         tree.desktop.workspaces[0].sandbox.clear();
         tree.policy_revision = crate::shell::state::next_policy_revision();
+        let authority = tree.native_runtime.action_authority();
         let export = Export::of(&tree);
         let saver = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
@@ -1027,9 +1101,8 @@ mod tests {
                 },
             );
         });
-        let registered = register(room, "so.tilo.withdrawn", &granted, captured);
+        let registered = register(authority, room, "so.tilo.withdrawn", &granted, captured);
         saver.join().unwrap();
-        lock(&PUBLISHED).rooms.remove(&room);
         let error = registered.expect_err("a withdrawn grant refuses the launch");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
@@ -1040,7 +1113,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_released_grant_write_publishes_its_revision_unprompted() {
-        let _turn = serial();
         let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
         let room = tree.read().desktop.workspaces[0].room;
         let granted = grant("so.tilo.unprompted", "/disposable/unprompted");
@@ -1048,8 +1120,8 @@ mod tests {
             .sandbox
             .push(granted.clone());
         let revision = tree.policy_revision();
-        let registered = register(room, "so.tilo.unprompted", &granted, revision);
-        lock(&PUBLISHED).rooms.remove(&room);
+        let authority = tree.read().native_runtime.action_authority();
+        let registered = register(authority, room, "so.tilo.unprompted", &granted, revision);
         registered.expect("the write's own save publishes the revision");
     }
 
@@ -1061,25 +1133,22 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_launch_inside_a_tree_write_captures_the_revision_that_write_publishes() {
-        let _turn = serial();
-        let previous = lock(&POLICY_SOURCE).take();
         let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
         let room = tree.read().desktop.workspaces[0].room;
-        follow_tree(&tree);
+        let authority = tree.read().native_runtime.action_authority();
+        // What `follow_tree` installs, kept to this test's tree.
+        let source = TreePolicySource(tree.downgrade());
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let guard = tree.write();
-            let captured = captured_revision();
+            let captured = source.revision();
             drop(guard);
             let _ = done.send(captured);
         });
         let captured = finished
             .recv_timeout(Duration::from_secs(10))
-            .expect("a launch inside a tree write must not wait on that write")
-            .expect("the tree is the policy source");
-        let published = await_published(room, captured);
-        lock(&PUBLISHED).rooms.remove(&room);
-        *lock(&POLICY_SOURCE) = previous;
+            .expect("a launch inside a tree write must not wait on that write");
+        let published = await_published(&authority, room, captured);
         published.expect("releasing the write publishes the revision the launch captured");
     }
 
@@ -1089,7 +1158,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_failed_save_ends_the_wait_with_its_own_error() {
-        let _turn = serial();
         let directory = tempfile::tempdir().unwrap();
         let blocker = directory.path().join("not-a-directory");
         std::fs::write(&blocker, b"file").unwrap();
@@ -1102,14 +1170,10 @@ mod tests {
             .sandbox
             .push(granted.clone());
         let revision = tree.policy_revision();
+        let authority = tree.read().native_runtime.action_authority();
         let started = std::time::Instant::now();
-        let registered = register(room, "so.tilo.failed-save", &granted, revision);
+        let registered = register(authority, room, "so.tilo.failed-save", &granted, revision);
         let waited = started.elapsed();
-        {
-            let mut published = lock(&PUBLISHED);
-            published.rooms.remove(&room);
-            published.failures.remove(&room);
-        }
         let error = registered.expect_err("a save that failed cannot publish");
         assert!(
             error
@@ -1135,10 +1199,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_owner_commit_awaiting_its_export_interrupts_no_sandbox() {
-        let _turn = serial();
         let (_directory, owner, room, now, key) =
             crate::shell::native_workspace_owner::test_enrolled_owner();
         let tree = crate::shell::native_workspace_owner::tree_of(&owner);
+        let authority = tree.read().native_runtime.action_authority();
         let kept = grant("so.tilo.kept", "/disposable/kept");
         let withdrawn = grant("so.tilo.withdrawn", "/disposable/withdrawn");
         let mut write = tree.write();
@@ -1150,7 +1214,7 @@ mod tests {
         crate::shell::persist::wait_for_saves();
         let mut children = [live_child(), live_child()];
         {
-            let mut published = lock(&PUBLISHED);
+            let mut published = lock(&authority.published);
             for (child, grant) in children.iter().zip([&kept, &withdrawn]) {
                 let sandbox = sandbox_revocation::Sandbox::capture(
                     child.id(),
@@ -1163,7 +1227,9 @@ mod tests {
             }
         }
         let running = |child: &std::process::Child| {
-            lock(&PUBLISHED).sandboxes.contains_key(&child.id())
+            lock(&authority.published)
+                .sandboxes
+                .contains_key(&child.id())
                 && super::super::proc_stat(child.id()).is_some()
         };
         let before = Export::of(&tree.read());
@@ -1178,7 +1244,7 @@ mod tests {
         let (request, _) =
             crate::shell::native_workspace_owner::test_document_edit(&owner, room, &key, now, 1);
         owner.commit_document(request, now).unwrap();
-        renew();
+        authority.renew();
         assert!(
             children.iter().all(running),
             "the accepted record's export is on its way; nothing was withdrawn"
@@ -1208,8 +1274,5 @@ mod tests {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let mut published = lock(&PUBLISHED);
-        published.sandboxes.clear();
-        published.rooms.clear();
     }
 }
