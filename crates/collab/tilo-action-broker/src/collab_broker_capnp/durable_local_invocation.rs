@@ -63,7 +63,13 @@ impl LocalCaller {
         room: &str,
         requirement: &crate::services::NativeTaskActionRequirement,
     ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
-        let actor = self.current(state)?.broker_actor();
+        self.current(state)?;
+        // The host action serves the run's task: it is its starter's.
+        let actor = requirement
+            .binding
+            .as_ref()
+            .ok_or("native task action binding absent")?
+            .actor()?;
         let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
         let spent = state
             .membership
@@ -101,9 +107,9 @@ impl LocalCaller {
     pub(super) fn authorize_retained_task(
         &self,
         state: &CapnpBrokerState,
-        record: &DurableInvocation,
+        (record, actor): (&DurableInvocation, &super::BrokerActor),
     ) -> Result<crate::services::NativeTaskActionRequirement, String> {
-        let current = self.current(state)?;
+        self.current(state)?;
         let contract: tilo_actions::ActionContract = serde_json::from_value(
             record
                 .intent
@@ -136,8 +142,8 @@ impl LocalCaller {
         let need = contract.need();
         // A task's child was admitted for an agent, which an answer asking
         // first admits only on its person's confirmation: observing what was
-        // admitted needs the action not to be refused since.
-        let actor = current.broker_actor();
+        // admitted needs the action not to be refused since, for the run's
+        // starter.
         state
             .membership
             .as_ref()
@@ -164,6 +170,7 @@ impl LocalCaller {
                         agent_id: agent.clone(),
                         epoch: *epoch,
                         revision: 0,
+                        starter: None,
                     })
                 }
                 _ => None,
@@ -331,8 +338,9 @@ impl<'a> DurableContext<'a> {
             offered.1.action.as_str(),
         );
         let need = offered.1.contract.need();
-        let actor = current.broker_actor();
-        if matches!(self, Self::Task { .. }) {
+        if let Self::Task { binding, .. } = self {
+            // The child serves the run's task: it is admitted for its starter.
+            let actor = binding.actor()?;
             // A task's child was admitted in its run's serialized turn, which
             // pauses an action asking first until its person answers; the
             // dispatch then takes a token bound to exactly what they
@@ -360,7 +368,7 @@ impl<'a> DurableContext<'a> {
                 &offered.0.route.cluster_id,
                 target,
                 &need,
-                &actor,
+                &current.broker_actor(),
                 now,
             )?;
         }

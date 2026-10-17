@@ -564,8 +564,10 @@ pub fn agent_delegation(room: &str, agent: &str, person: &str) -> crate::Bound {
     )
 }
 
-/// What an agent admitted to a room may do there: the room-level grants it
-/// receives. Never a human workspace role.
+/// What an agent admitted to a room may do there on its own: the room-level
+/// grants it receives. Never a human workspace role. A task a person starts
+/// is theirs: the agent runs it as their delegate ([`agent_delegation`]),
+/// so the preset never narrows what that person asked of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPreset {

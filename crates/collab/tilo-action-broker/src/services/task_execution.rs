@@ -13,6 +13,31 @@ pub struct NativeTaskBinding {
     pub agent_id: String,
     pub epoch: u64,
     pub revision: u64,
+    /// The person whose approval started the run, as the owner recorded it
+    /// from their device's certificate: the run's actions are admitted as
+    /// the agent acting for them. `None` where only a record of an earlier
+    /// admission is at hand; the owner's check reads the live approval.
+    pub starter: Option<String>,
+}
+
+impl NativeTaskBinding {
+    /// Who the run's actions are admitted as in the broker: the agent acting
+    /// for its starter, carrying the delegation a person's device gives its
+    /// agents. It may do what the starter may, held to the answers the room
+    /// keeps for the agent, never to the preset it was admitted with, which
+    /// bounds only what it does on its own. Effects stay attributed to the
+    /// agent.
+    ///
+    /// # Errors
+    /// The binding does not name its starter.
+    pub fn actor(&self) -> Result<crate::collab_broker_capnp::BrokerActor, String> {
+        let starter = self.starter.clone().ok_or("native task starter absent")?;
+        Ok(
+            crate::collab_broker_capnp::BrokerActor::agent(format!("agent:{}", self.agent_id))
+                .for_person(starter)
+                .session_delegated(),
+        )
+    }
 }
 
 /// A current published contract requirement, never a grant from task arguments.
@@ -52,7 +77,7 @@ impl NativeTaskActionRequirement {
         agent: &str,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, Subject, agent_answers};
+        use tilo_action_policy::{Answer, Authority, Context, agent_answers, roles};
         let doc = peer
             .admitted_room()
             .ok_or("native action policy unavailable")?;
@@ -66,14 +91,6 @@ impl NativeTaskActionRequirement {
             &self.action,
         );
         let cx = Context::at_time(now);
-        let verdict = Authority::person(policy.party_of(Subject::agent(agent))).decide(
-            &node,
-            self.need.kind,
-            &cx,
-        );
-        let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
-            agent_answers::held_to_contract(decision, self.consequential)
-        });
         let binding = self
             .binding
             .as_ref()
@@ -100,6 +117,17 @@ impl NativeTaskActionRequirement {
             return Err("native task run replaced or stopped".into());
         }
         let approval = run.approval.as_ref().ok_or("native task starter absent")?;
+        // The run acts for its starter, so the agent is bounded as the
+        // starter's delegate, as every member admits its writes: the agent
+        // delegation and the answers the room holds for the agent. The
+        // preset it was admitted with bounds what it does on its own, not
+        // what a person asked of it.
+        let delegation = roles::agent_delegation(room, agent, &approval.person);
+        let verdict =
+            Authority::person(delegation.party(&policy.grants)).decide(&node, self.need.kind, &cx);
+        let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
+            agent_answers::held_to_contract(decision, self.consequential)
+        });
         let member = peer.permissions(approval.device, now)?;
         let foreign = tilo_action_policy::roles::foreign_device_bound();
         let starter = member
