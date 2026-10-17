@@ -3049,6 +3049,18 @@ impl ChromeState {
         }
     }
 
+    /// The banner stack laid out `on_screen` at `now`, and whether the
+    /// person holds it: only banners on screen and unheld age
+    /// ([`NotificationLog::present`]). Viewer-local; no repaint.
+    pub fn present_notifications(
+        &mut self,
+        now: std::time::Instant,
+        on_screen: &[u64],
+        held: bool,
+    ) {
+        self.notification_log.present(now, on_screen, held);
+    }
+
     /// Called each frame by the overlay host. Expired toasts from a D-Bus
     /// `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
@@ -3396,6 +3408,22 @@ impl ChromeState {
                 let time = ui::clock::hour_minute((end / 60).into(), (end % 60).into());
                 t_args("quiet-status-focus-until", &[("time", time.into())])
             })
+    }
+
+    /// [`Self::quiet_status`] at the local time now.
+    pub fn quiet_status_now(&self) -> Option<String> {
+        use chrono::{Datelike, Timelike};
+        let local = chrono::Local::now();
+        self.quiet_status(
+            u16::try_from(
+                local
+                    .hour()
+                    .saturating_mul(60)
+                    .saturating_add(local.minute()),
+            )
+            .unwrap_or(0),
+            u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0),
+        )
     }
 
     // ---------- D-Bus notification wiring ----------

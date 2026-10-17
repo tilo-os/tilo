@@ -24,7 +24,7 @@ pub use history::{
     HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
     history_rows, relative_time, source_label,
 };
-pub use log::{CLEAR_UNDO_WINDOW, NotificationLog};
+pub use log::{CLEAR_UNDO_WINDOW, NotificationLog, RELEASE_GRACE};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use model::ScheduledNotificationTarget;
 pub use model::{
@@ -48,10 +48,21 @@ pub trait NotificationHost {
     }
 
     /// Why fresh banners are being held (Do Not Disturb, presenting, a focus
-    /// schedule), for the stack's status pill. `None` when they show.
+    /// schedule), for the notification centre's header. `None` when they
+    /// show.
     fn quiet_status(&self) -> Option<String> {
         None
     }
+
+    /// The banner stack laid out `on_screen` (newest first) at `now`, and
+    /// the person `held` them (the pointer on the stack, keyboard focus in
+    /// a banner). Forward to [`NotificationLog::present`]: a banner ages
+    /// only while it is on screen and unheld. Viewer-local, no repaint.
+    fn present(&self, now: ui::time::Instant, on_screen: &[u64], held: bool);
+
+    /// The person asked for the notification centre (the card standing in
+    /// for banners that did not fit).
+    fn open_center(&self);
 
     /// Host-owned choices for this notification. The shared banner draws
     /// at most two using the shared toast control; default activation remains

@@ -526,23 +526,24 @@ impl NotificationHost for ChromeNotifications<'_> {
         Ref::map(self.chrome.borrow(), ChromeState::notification_log)
     }
 
+    fn present(&self, now: std::time::Instant, on_screen: &[u64], held: bool) {
+        self.chrome
+            .borrow_mut()
+            .present_notifications(now, on_screen, held);
+    }
+
+    fn open_center(&self) {
+        self.chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
+    }
+
     fn session_locked(&self) -> bool {
         self.chrome.borrow().session_locked()
     }
 
     fn quiet_status(&self) -> Option<String> {
-        use chrono::{Datelike, Timelike};
-        let local = chrono::Local::now();
-        self.chrome.borrow().quiet_status(
-            u16::try_from(
-                local
-                    .hour()
-                    .saturating_mul(60)
-                    .saturating_add(local.minute()),
-            )
-            .unwrap_or(0),
-            u8::try_from(local.weekday().num_days_from_monday()).unwrap_or(0),
-        )
+        self.chrome.borrow().quiet_status_now()
     }
 
     fn dismiss(&self, id: u64) {
@@ -644,6 +645,18 @@ mod tests {
         chrome
     }
 
+    /// Every live banner came on screen, unheld, at `at`, as the banner
+    /// stack reports it: only then does a banner's time run.
+    fn shown(chrome: &Chrome, at: Instant) {
+        let ids: Vec<u64> = chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|n| n.id)
+            .collect();
+        chrome.borrow_mut().present_notifications(at, &ids, false);
+    }
+
     #[test]
     fn toast_queue_pushes_caps_dismisses_and_expires() {
         fn push_appends_to_chrome_queue() {
@@ -694,6 +707,12 @@ mod tests {
             );
             assert_eq!(chrome.borrow().notifications().len(), 1);
             let future = Instant::now() + Duration::from_millis(200);
+            assert_eq!(
+                chrome.borrow_mut().update_notification_lifecycle(future),
+                0,
+                "a banner never on screen keeps its time"
+            );
+            shown(&chrome, Instant::now());
             let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
             assert_eq!(dropped, 1);
             assert!(chrome.borrow().notifications().is_empty());
@@ -734,8 +753,9 @@ mod tests {
     fn toast_stack_layout_motion_and_accessibility() {
         /// Review fixtures: the ux-bench cannot raise a notification on macOS,
         /// so the stack is photographed from its paint path — a live column
-        /// with an error toast, the Do-Not-Disturb pill over held items, and the
-        /// locked-session card — at 1× and 200 % text, dark and light.
+        /// with an error toast, Do Not Disturb holding items (which puts no
+        /// card on screen), and the locked-session card — at 1× and 200 %
+        /// text, dark and light.
         #[expect(
             clippy::many_single_char_names,
             reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
@@ -801,8 +821,15 @@ mod tests {
                         "notification fixture missing: {}",
                         path.display()
                     );
+                    if state == "dnd" {
+                        assert!(
+                            stack.rect().is_zero_area(),
+                            "{name}: Do Not Disturb puts no card over the work"
+                        );
+                        continue;
+                    }
                     // The rendered pixels, not just the file: the first surface
-                    // in the column (pill, locked card or toast card) is the
+                    // in the column (locked card or toast card) is the
                     // card ground at its plain bottom-right interior — the
                     // toolkit toast and the two shell cards share one material.
                     let first = stack.rect();
@@ -1149,6 +1176,7 @@ mod tests {
             chrome.borrow_mut().pump_dbus_notifications();
             let ui_id = chrome.borrow().notifications()[0].id;
             // The banner times out locally; the origin still holds it.
+            shown(&chrome, Instant::now());
             let later = Instant::now() + Duration::from_secs(120);
             chrome.borrow_mut().update_notification_lifecycle(later);
             assert!(bridge.drain_continuity_command_egress().is_empty());
@@ -1372,6 +1400,7 @@ mod tests {
             chrome.borrow_mut().push_notification_full(
                 from_incoming(incoming(21, 1, 5000)).with_dismiss_after(Duration::from_millis(10)),
             );
+            shown(&chrome, Instant::now());
             let future = Instant::now() + Duration::from_millis(200);
             chrome.borrow_mut().update_notification_lifecycle(future);
             assert_eq!(
@@ -1660,6 +1689,7 @@ mod tests {
                 Notification::new("Quick", "fades").with_dismiss_after(Duration::from_millis(10)),
             );
             assert_eq!(chrome.borrow().notification_history().len(), 0);
+            shown(&chrome, Instant::now());
             let future = Instant::now() + Duration::from_millis(200);
             let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
             assert_eq!(dropped, 1);

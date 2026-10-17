@@ -591,7 +591,7 @@ notification-lock-count = { $count ->
     [one] 1 Benachrichtigung
    *[other] { $count } Benachrichtigungen
 }
-notification-dnd-held = { $status } · { $count } zurückgehalten
+notification-more = { $count } weitere
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig

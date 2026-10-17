@@ -3671,6 +3671,79 @@ fn notification_banner_completed_click_and_interrupted_gestures() {
     }
 }
 
+/// The Notifications chord (Super+A) moves keyboard focus into the newest
+/// banner: it is held there, Escape dismisses it and gives focus back, and
+/// a key the banner does not act on goes on to the window. With no banner,
+/// the chord opens the centre as before.
+#[test]
+fn notifications_chord_focuses_the_newest_banner_and_escape_dismisses_it() {
+    let mut h = build_harness_sized(960.0, 540.0);
+    let theme = Theme::dark().with_reduce_motion(true);
+    let older = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new("Lena shared a file", "You can edit it."),
+    );
+    let newest = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new("Ada mentioned you", "Can you look?"),
+    );
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    let chord = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(h.host.banner_has_keyboard());
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+    assert!(
+        h.chrome.borrow().notification_log().held(),
+        "a focused banner does not age"
+    );
+    assert!(h.host.banner_owns_key(&Key::Named(NamedKey::Escape)));
+    assert!(!h.host.banner_owns_key(&Key::Character("x".into())));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.host.banner_has_keyboard());
+    let live: Vec<u64> = h
+        .chrome
+        .borrow()
+        .notifications()
+        .iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(live, vec![older], "Escape dismissed the newest banner");
+    assert!(
+        h.chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .any(|n| n.id == newest)
+    );
+
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(h.host.banner_has_keyboard());
+    h.log.borrow_mut().clear();
+    let _ = pump(&mut h, &key_pressed(Key::Character("x".into())));
+    assert!(!h.host.banner_has_keyboard(), "typing on gives focus back");
+    assert_eq!(h.chrome.borrow().notifications().len(), 1);
+
+    h.chrome.borrow_mut().dismiss_notification(older);
+    settle_with_theme(&mut h, 960.0, 540.0, &theme);
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        chord
+    ));
+    assert!(!h.host.banner_has_keyboard());
+    assert!(
+        h.chrome.borrow().overlays.quick_settings,
+        "with no banner the chord opens the centre"
+    );
+}
+
 fn capture_banner_pointer_state(
     h: &mut AbsorbHarness,
     theme: &Theme,
