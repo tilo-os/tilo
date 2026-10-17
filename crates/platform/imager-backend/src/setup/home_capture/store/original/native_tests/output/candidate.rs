@@ -102,12 +102,17 @@ pub(super) fn qualify() {
         }
     }
     let helper = protected(HELPER, ARTIFACT_BOUND, true);
-    let selected_producer = if super::paired::user_applications() {
-        "/usr/libexec/tilo-verify-applications-consumer-capability"
+    // Applications are produced by the helper's own verifier mode.
+    let (selected_producer, producer_mode, producer_bound) = if super::paired::user_applications() {
+        (
+            HELPER,
+            Some("--verify-applications-consumer-capability"),
+            ARTIFACT_BOUND,
+        )
     } else {
-        PRODUCER
+        (PRODUCER, None, 1024 * 1024)
     };
-    let producer = protected(selected_producer, 1024 * 1024, true);
+    let producer = protected(selected_producer, producer_bound, true);
     let launcher = protected("/usr/bin/tilo-launcher", ARTIFACT_BOUND, true);
     let pins_file = protected(PINS, 16 * 1024, false);
     let pins: CaptureServicePins = serde_json::from_slice(&read(&pins_file, 16 * 1024)).unwrap();
@@ -129,6 +134,7 @@ pub(super) fn qualify() {
     // Fixed dispatcher runs its real factory once: no source, proof or grant arguments.
     assert!(
         Command::new(selected_producer)
+            .args(producer_mode)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C")
@@ -212,8 +218,9 @@ pub(super) fn qualify() {
                     "--no-new-privs",
                     "--",
                     selected_producer,
-                    "--check"
                 ])
+                .args(producer_mode)
+                .arg("--check")
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin")
                 .env("LANG", "C")

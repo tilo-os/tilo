@@ -4,17 +4,23 @@ Inspection authenticates actual installed candidate subjects. It is not a
 consumer capability and cannot be saved as one before real route observations
 and all existing outer retirement checks complete.
 """
-import importlib.util
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import sys
 import time
 import tomllib
 
-from semantic import bounded_command
+# The compiled account consumer producer runs this bridge directly with -I,
+# which omits the script directory: import only this fixed fixture directory.
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+from semantic import bounded_command  # noqa: E402
 
 KEYS = {'schema', 'root', 'shell_path', 'sdk_runtime_version', 'sdk_runtime_root_hash',
         'browser_package_hash', 'browser_publisher', 'cef_runtime_version',
@@ -71,17 +77,73 @@ def decode(raw):
     return value
 
 
-def module(path):
-    # This fixed installed source, not a request path, participates in the
-    # canonical image/receiver dependency ledger and protected image namespace.
-    for edge in (path, *path.parents):
-        info = edge.lstat()
-        require(info.st_uid == 0 and not info.st_mode & 0o022
-                and not stat.S_ISLNK(info.st_mode), 'service verifier is not image controlled')
-    spec = importlib.util.spec_from_file_location('installed_service_verifier', path)
-    result = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(result)
-    return result
+RECEIVING_ENTRY = '/usr/libexec/tilo-installer-receive-fixture/receive.py'
+# The measured receiving closure; the installed producer
+# (crates/platform/imager-backend, RECEIVING_DEPENDENCIES) binds the same list.
+RECEIVING_DEPENDENCIES = tuple(
+    '/usr/libexec/tilo-installer-receive-fixture/' + name + '.py'
+    for name in ('receive', 'semantic', 'firstuse', 'delivery', 'namespace',
+                 'packages', 'apps', 'cloud', 'service_sessions', 'service_contract', 'service_processes')) + tuple(
+    '/usr/libexec/tilo-installer-source-fixture/' + name + '.py'
+    for name in ('source', 'owned_gpt', 'bounded_native', 'flatpak_material', 'source_sessions'))
+
+
+def selected(root):
+    """The signed receiving Browser and CEF runtime in the canonical image store."""
+    registry = root / 'usr/share/tilo-apps/registry.toml'
+    if not registry.exists():
+        return None
+    entries = tomllib.loads(registry.read_text()).get('entry', [])
+    browser = [entry for entry in entries if entry.get('id') == 'so.tilo.browser']
+    require(len(browser) <= 1, 'ambiguous receiving Browser package')
+    if not browser:
+        return None
+    row = browser[0]
+    require(all(type(row.get(name)) is str and re.fullmatch('[0-9a-f]{64}', row[name])
+                for name in ('package_id_hex', 'publisher_key_hex')),
+            'Browser package has no signed identity')
+    payload = '/usr/share/tilo-apps/pkgs/' + row['package_id_hex']
+    metadata = payload + '.pkg/manifest.toml'
+    require(row.get('payload_root') == payload and row.get('manifest_path') == metadata,
+            'Browser package does not use the canonical image store')
+    manifest = tomllib.loads((root / metadata.removeprefix('/')).read_text())
+    package = manifest.get('package', {})
+    require(package.get('id') == 'so.tilo.browser', 'receiving manifest is not Browser')
+    engines = [value.removeprefix('tilo-runtime/') for value in package.get('optional-runtimes', [])
+               if isinstance(value, str) and value.startswith('tilo-runtime/') and value.endswith('-chromium')]
+    require(len(engines) == 1, 'Browser must name one exact receiving CEF runtime')
+    version = engines[0]
+    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,255}', version), 'unsafe receiving CEF version')
+    bundle = root / 'usr/lib/tilo-runtime' / version
+    if not bundle.exists():
+        return None
+    require(manifest.get('entrypoint', {}).get('bin') == 'bin/browser',
+            'receiving Browser executable differs from canonical entrypoint')
+    return row, package, root / payload.removeprefix('/') / 'bin/browser', version, bundle
+
+
+def route_artifacts(root, shell_path, digest, regular):
+    """Independently remeasure the receiving Shell and Python closure."""
+    require(shell_path in ('/usr/bin/shell', '/usr/bin/tilo-shell'),
+            'receiving Shell is not a canonical packaged receiver')
+    shell = root / shell_path.removeprefix('/')
+    require(regular(shell, 256 * 1024 * 1024).st_mode & 0o111, 'receiving Shell is not executable')
+    dependencies = {relative: digest(root / relative.removeprefix('/'), 1024 * 1024)
+                    for relative in RECEIVING_DEPENDENCIES}
+    python = (root / 'usr/bin/python3').resolve(strict=True)
+    require(python.parent == root / 'usr/bin'
+            and re.fullmatch(r'python3(?:\.[0-9]+)?', python.name) is not None,
+            'receiving Python escapes the canonical image interpreter identity')
+    require(regular(python, 256 * 1024 * 1024).st_mode & 0o111, 'receiving Python is not executable')
+    facts = {'receiving_shell_sha256': digest(shell, 256 * 1024 * 1024),
+             'receiving_entry_sha256': dependencies[RECEIVING_ENTRY],
+             'receiving_dependencies': dependencies,
+             'receiving_python_path': '/' + str(python.relative_to(root)),
+             'receiving_python_sha256': digest(python, 256 * 1024 * 1024)}
+    encoded = json.dumps(facts, sort_keys=True, separators=(',', ':')).encode()
+    facts['receiving_route_qualification_sha256'] = hashlib.sha256(
+        b'tilo-installed-service-receiver-python-v1\0' + encoded).hexdigest()
+    return facts
 
 
 def owned_bridge(command, env, raw):
@@ -125,7 +187,6 @@ def admit_request(raw, candidate, hash_file, log, deadline):
             and Path(candidate).resolve(strict=True) == Path(candidate),
             'service admission is not the exact owned candidate')
     request = decode(raw)
-    verifier = module(Path('/usr/libexec/tilo-service-consumer-capability.py'))
     def regular(path, maximum):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
@@ -136,14 +197,15 @@ def admit_request(raw, candidate, hash_file, log, deadline):
             return info
         finally:
             os.close(fd)
-    facts = verifier.route_artifacts(Path('/'), request['shell_path'],
-                                      (lambda path, maximum: (regular(path, maximum), hash_file(path))[1],
-                                       None, regular))
+    def digest(path, maximum):
+        regular(path, maximum)
+        return hash_file(path)
+    facts = route_artifacts(Path('/'), request['shell_path'], digest, regular)
     require(all(request[name] == item for name, item in facts.items()),
             'actual installed Shell/Python/receiver differs from bound request')
-    selected = verifier.selected(Path('/'))
-    require(selected is not None, 'actual signed receiving Browser/CEF is absent')
-    row, package, browser, version, cef = selected
+    receiving = selected(Path('/'))
+    require(receiving is not None, 'actual signed receiving Browser/CEF is absent')
+    row, package, browser, version, cef = receiving
     require(row['package_id_hex'] == request['browser_package_hash']
             and row['publisher_key_hex'] == request['browser_publisher']
             and version == request['cef_runtime_version']
@@ -180,8 +242,7 @@ def admit_request(raw, candidate, hash_file, log, deadline):
                 'cef_sha256': hash_file(cef / 'lib/chromium/tilo-chromium-host'),
                 'browser_bytes': regular(browser, 256 * 1024 * 1024).st_size,
                 'cef_bytes': regular(cef / 'lib/chromium/tilo-chromium-host', 256 * 1024 * 1024).st_size}
-    require(verifier.route_artifacts(Path('/'), request['shell_path'],
-              (lambda path, maximum: (regular(path, maximum), hash_file(path))[1], None, regular)) == facts,
+    require(route_artifacts(Path('/'), request['shell_path'], digest, regular) == facts,
             'receiver artifacts changed during candidate inspection')
     return {'request': request, 'subjects': subjects}
 
@@ -297,3 +358,11 @@ def complete(admission, result):
     return dict(schema=2, service_session_protocol=2,
                 receiving_route_qualification_sha256=admission['request']['receiving_route_qualification_sha256'],
                 **service['conditions'])
+
+
+if __name__ == '__main__':
+    # The compiled account consumer producer's route qualifier: stdin carries
+    # the bound request, the remaining arguments name the canonical coordinator.
+    require(sys.argv[1:2] == ['--owned-bridge'], 'service bridge accepts only --owned-bridge')
+    request_bytes = sys.stdin.buffer.read(16 * 1024 + 1)
+    sys.stdout.buffer.write(owned_bridge(sys.argv[2:], dict(os.environ), request_bytes))
