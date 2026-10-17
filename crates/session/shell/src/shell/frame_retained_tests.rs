@@ -1640,6 +1640,33 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         rest.width
     );
 
+    assert_a_whole_pixel_pan_moves_only_the_strips(&mut frame, rest, &offsets);
+
+    // The scene shows the strip where it is on screen, as a scene drawn
+    // without layers does. The frame a pan rests on keeps the chrome the pan
+    // began with and the strip indicators show from the next one, so compare
+    // that next frame: it draws them as the dense scene does.
+    let shown = frame.paint_with_damage();
+    frame.set_retained_layer_width(None);
+    // Encode both paths before rasterizing either: app status bubbles use
+    // monotonic linger deadlines, and CPU rendering may cross a deadline.
+    // Exercise the same late acknowledgment boundary that reproduced the
+    // historical 1,034-pixel failure; startup is already durable on both paths.
+    acknowledge_notes_saves(&mut frame);
+    let dense_scene = frame.paint();
+    assert_layer_cpu_pixels_match(&shown.scene, &dense_scene, SIZE);
+
+    assert_layers_yield_to_the_dense_path_when_not_exact(&mut frame, SIZE);
+}
+
+/// A whole-pixel pan moves the strips' canvas offsets by the pan and leaves
+/// every layer as it was at `rest`: the presenter moves what it composites.
+#[cfg(target_os = "linux")]
+fn assert_a_whole_pixel_pan_moves_only_the_strips(
+    frame: &mut PopulatedShellFixture,
+    rest: &FrameCache,
+    offsets: &[u32],
+) {
     frame.host_mut().set_strip_scroll_for_test(120.0);
     frame.relayout();
     let panned = frame.paint_with_damage();
@@ -1674,22 +1701,6 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
         frame.paint_with_damage().damage_regions.is_none(),
         "unchanged canvas offsets do not grant screen-space damage authority"
     );
-
-    // The scene shows the strip where it is on screen, as a scene drawn
-    // without layers does. The frame a pan rests on keeps the chrome the pan
-    // began with and the strip indicators show from the next one, so compare
-    // that next frame: it draws them as the dense scene does.
-    let shown = frame.paint_with_damage();
-    frame.set_retained_layer_width(None);
-    // Encode both paths before rasterizing either: app status bubbles use
-    // monotonic linger deadlines, and CPU rendering may cross a deadline.
-    // Exercise the same late acknowledgment boundary that reproduced the
-    // historical 1,034-pixel failure; startup is already durable on both paths.
-    acknowledge_notes_saves(&mut frame);
-    let dense_scene = frame.paint();
-    assert_layer_cpu_pixels_match(&shown.scene, &dense_scene, SIZE);
-
-    assert_layers_yield_to_the_dense_path_when_not_exact(&mut frame, SIZE);
 }
 
 /// A presenter that composites layers still gets the dense path when it has no
