@@ -296,16 +296,16 @@ async fn local_document_noop_has_admission_but_never_execution_evidence() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn local_read_only_view_has_admission_but_never_execution_evidence() {
+async fn local_document_read_only_view_has_admission_but_never_execution_evidence() {
     local_report_admission(tilo_actions::OperationKind::View, vec![]).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn local_view_cannot_report_document_mutations() {
+async fn local_document_view_cannot_report_document_mutations() {
     local_report_admission(tilo_actions::OperationKind::View, vec![[1; 32]]).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn local_effect_cannot_use_read_only_report_admission() {
+async fn local_document_effect_cannot_use_read_only_report_admission() {
     local_report_admission(tilo_actions::OperationKind::Effect, vec![]).await;
 }
