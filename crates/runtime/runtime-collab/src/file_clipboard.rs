@@ -6,16 +6,23 @@ pub const MAX_WIRE_BYTES: usize = 128 * 1024;
 
 /// A precondition from the actual retained object shown by this window.
 /// This is not an identity claim or a grant: the host compares it with both
-/// its authorized lookup and a descriptor duplicated from the attested peer.
+/// its authorized lookup and the descriptor the attested peer handed over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectIdentity {
     pub device: u64,
     pub inode: u64,
 }
 
+/// The highest [`SelectedDescriptor::descriptor`] a command may carry.
+pub const MAX_DESCRIPTOR: u32 = i32::MAX.unsigned_abs();
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedDescriptor {
     pub path: Vec<u8>,
+    /// The app passes the descriptor open in its process; on the wire this is
+    /// the number of the duplicate handed over on the connection's descriptor
+    /// lane (`runtime_portal::descriptor_lane`), never a descriptor the host
+    /// reaches into the app for.
     pub descriptor: u32,
     pub expected: ObjectIdentity,
 }
@@ -25,7 +32,7 @@ impl SelectedDescriptor {
         !self.path.is_empty()
             && self.path.len() <= 4096
             && !self.path.contains(&0)
-            && i32::try_from(self.descriptor).is_ok()
+            && self.descriptor <= MAX_DESCRIPTOR
     }
 }
 
@@ -75,6 +82,34 @@ pub enum Command {
 }
 
 impl Command {
+    /// Every selected descriptor this command carries.
+    pub fn selected(&self) -> impl Iterator<Item = &SelectedDescriptor> {
+        let (sources, single) = match self {
+            Self::Capture {
+                sources,
+                destination,
+            } => (sources.as_slice(), destination.as_ref()),
+            Self::RestoreTrash { source, .. } => (<&[SelectedDescriptor]>::default(), Some(source)),
+            _ => (<&[SelectedDescriptor]>::default(), None),
+        };
+        sources.iter().chain(single)
+    }
+
+    /// [`Self::selected`], to rename them.
+    pub fn selected_mut(&mut self) -> impl Iterator<Item = &mut SelectedDescriptor> {
+        let (sources, single) = match self {
+            Self::Capture {
+                sources,
+                destination,
+            } => (sources.as_mut_slice(), destination.as_mut()),
+            Self::RestoreTrash { source, .. } => {
+                (<&mut [SelectedDescriptor]>::default(), Some(source))
+            }
+            _ => (<&mut [SelectedDescriptor]>::default(), None),
+        };
+        sources.iter_mut().chain(single)
+    }
+
     pub fn valid(&self) -> bool {
         match self {
             Self::Snapshot => true,
