@@ -73,6 +73,9 @@ class Session:
         for var in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                     "XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP"):
             env.pop(var, None)
+        # Nor the real system bus: the shell registers Bluetooth and network
+        # agents there, which would take them from the person's own session.
+        env["DBUS_SYSTEM_BUS_ADDRESS"] = "unix:path=" + os.path.join(root, "no-system-bus")
         env["PATH"] = f"{SHELL.parent}:{env.get('PATH', '')}"
         self.env = env
         self.log_path = os.path.join(root, "shell.log")
@@ -80,9 +83,14 @@ class Session:
         # What onboarding leaves behind: native apps refuse to start without it.
         subprocess.run([str(SHELL), "--firstboot", "--provision-identity"], env=env,
                        stdout=self.log, stderr=subprocess.STDOUT, check=True)
-        # A private bus: a host app must never reach the real desktop's.
+        # A private bus: a host app must never reach the real desktop's. The
+        # shell is not dumpable, so its environment cannot be read back from
+        # /proc: the bus address is written down before it starts.
+        self.bus_file = os.path.join(root, "session-bus-address")
         self.proc = subprocess.Popen(
-            ["dbus-run-session", "--", str(SHELL), "--backend", "headless"],
+            ["dbus-run-session", "--", "sh", "-c",
+             'printf %s "$DBUS_SESSION_BUS_ADDRESS" > "$1"; shift; exec "$@"',
+             "sh", self.bus_file, str(SHELL), "--backend", "headless"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
             preexec_fn=die_with_parent(), start_new_session=True,
         )
@@ -131,7 +139,10 @@ class Session:
         """What a Tilo login does, confined to this session's own bus."""
         sockets = sorted(p for p in os.listdir(self.runtime)
                          if p.startswith("wayland-") and not p.endswith(".lock"))
-        bus = session_bus_address(self.proc.pid)
+        try:
+            bus = pathlib.Path(self.bus_file).read_text().strip()
+        except OSError:
+            bus = ""
         if not sockets:
             raise RuntimeError(f"no Wayland display socket in {self.runtime}")
         if not bus:
@@ -239,14 +250,6 @@ def thread_states(pid: int) -> list[str]:
             continue
         out.append(f"{name}:{wchan}")
     return out
-
-
-def session_bus_address(root: int) -> str | None:
-    for pid in [root, *descendants_named(root, {"shell"})]:
-        addr = read_environ(pid).get("DBUS_SESSION_BUS_ADDRESS")
-        if addr:
-            return addr
-    return None
 
 
 def proc_state(pid: int) -> str | None:
