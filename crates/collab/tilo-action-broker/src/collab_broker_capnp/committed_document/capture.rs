@@ -13,11 +13,11 @@ pub trait DocumentBytes: Send + Sync {
 }
 #[derive(Default)]
 pub(crate) struct Budget(AtomicUsize);
-pub(super) struct Reservation {
+pub(in crate::collab_broker_capnp) struct Reservation {
     budget: Arc<Budget>,
 }
 impl Budget {
-    pub(super) fn reserve(self: &Arc<Self>) -> Result<Reservation, String> {
+    pub(in crate::collab_broker_capnp) fn reserve(self: &Arc<Self>) -> Result<Reservation, String> {
         self.0
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(MAX_DOCUMENT_BYTES)

@@ -178,7 +178,7 @@ fn validate_committed_report(
             [] => Ok(None),
             [(Value::Scalar(value), _)] if value.is_null() => Ok(None),
             [(Value::Scalar(value), _)] => value
-                .to_str()
+                .as_str()
                 .map(|s| Some(s.to_owned()))
                 .ok_or_else(|| "external moderation invalid committed report text".into()),
             [(Value::Object(ObjType::Text), object)] => {
@@ -213,6 +213,8 @@ fn validate_committed_report(
         } => {
             case.as_deref() == Some(case_id.as_str())
                 && reason == &note
+                // Appeals may omit the protocol's supplemental digest, but the
+                // case and full reason must still match the committed evidence.
                 && evidence_digest_hex
                     .as_ref()
                     .is_none_or(|value| value == &digest)
@@ -370,6 +372,64 @@ pub(super) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_moderation_appeal_optional_digest_cannot_bypass_committed_evidence() {
+        use automerge::{AutoCommit, ObjType, transaction::Transactable as _};
+        use registry_types::{
+            ExternalModerationOperation, ModerationDestination, ModerationMutation,
+        };
+
+        let app = "so.tilo.notes";
+        let note = "The reported behavior has been corrected.";
+        let status = "Submitted";
+        let case_id = "case-1";
+        let mut document = AutoCommit::new();
+        let reports = document
+            .put_object(automerge::ROOT, "reports", ObjType::Map)
+            .unwrap();
+        let report = document.put_object(&reports, app, ObjType::Map).unwrap();
+        document.put(&report, "note", note).unwrap();
+        document.put(&report, "status", status).unwrap();
+        document.put(&report, "case", case_id).unwrap();
+        let document = automerge::Automerge::load(&document.save()).unwrap();
+        let mut operation = ExternalModerationOperation {
+            destination: ModerationDestination {
+                base_url: "https://registry.example".into(),
+                owner_pubkey_hex: "ab".repeat(32),
+            },
+            request_id: "cd".repeat(16),
+            issued_at_unix: 10,
+            expires_at_unix: 20,
+            mutation: ModerationMutation::PublisherAppeal {
+                case_id: case_id.into(),
+                reason: note.into(),
+                evidence_digest_hex: None,
+            },
+        };
+        assert!(validate_committed_report(&document, app, &operation).is_ok());
+        for (case, reason, digest) in [
+            ("another-case", note, None),
+            (case_id, "An unrelated appeal reason", None),
+            (case_id, note, Some("00".repeat(32))),
+        ] {
+            operation.mutation = ModerationMutation::PublisherAppeal {
+                case_id: case.into(),
+                reason: reason.into(),
+                evidence_digest_hex: digest,
+            };
+            assert!(validate_committed_report(&document, app, &operation).is_err());
+        }
+        operation.mutation = ModerationMutation::PublisherAppeal {
+            case_id: case_id.into(),
+            reason: note.into(),
+            evidence_digest_hex: Some(
+                registry_types::report_evidence_digest(app, status, note, Some(case_id)).unwrap(),
+            ),
+        };
+        assert!(validate_committed_report(&document, app, &operation).is_ok());
+        assert!(validate_committed_report(&document, "so.tilo.mail", &operation).is_err());
+    }
+
     #[test]
     fn external_moderation_destination_requires_https_without_credentials_or_redirect_hints() {
         for base in [
