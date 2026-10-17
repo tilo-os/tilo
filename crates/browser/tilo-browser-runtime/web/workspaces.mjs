@@ -379,28 +379,48 @@ export async function joinViaHost({
       keepMembership(memberships, workspace, null);
     }
   }
-  let admitted;
-  try {
-    admitted = await ask({
-      workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
+  const throughDoor = async () => {
+    let admitted;
+    try {
+      admitted = await ask({
+        workspace, path: 'join', fetch, body: {userPublicKey: identity.userPublicKey, displayName: fitDisplayName(displayName)},
+      });
+    } catch (error) {
+      // The host no longer has the person, and its door turns away the
+      // address they joined from because someone was removed: they were taken
+      // out of the room, not pruned after an absence. Only an invitation
+      // brings them back.
+      if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
+      throw error;
+    }
+    const {invitation, admissionToken, origin} = admitted;
+    let room = null;
+    const peer = await join({
+      ...connectOptions, origin, invitation, admissionToken, identity, displayName,
+      onProgress: event => { if (event.phase === 'admitted') room = event.room; onProgress?.(event); },
     });
+    keepMembership(memberships, workspace, {origin, room: room ?? peer.room, userPublicKey: identity.userPublicKey});
+    return peer;
+  };
+  try {
+    return await throughDoor();
   } catch (error) {
-    // The host no longer has the person, and its door turns away the
-    // address they joined from because someone was removed: they were taken
-    // out of the room, not pruned after an absence. Only an invitation
-    // brings them back.
-    if (refused && error?.code === 'cooling-down') throw new AdmissionError('removed', removedFrom(workspace.name));
-    throw error;
+    if (error?.code !== 'refused') throw error;
+    // The door handed out this invitation a moment ago, so the person has
+    // none of their own to renew: ask it once more for a fresh one.
+    console.warn('host admission: the host refused the door\'s invitation, asking again', error.reason);
+    try {
+      return await throughDoor();
+    } catch (again) {
+      if (again?.code !== 'refused') throw again;
+      throw Object.assign(new AdmissionError('refused', doorRefused(workspace.name)), {reason: again.reason});
+    }
   }
-  const {invitation, admissionToken, origin} = admitted;
-  let room = null;
-  const peer = await join({
-    ...connectOptions, origin, invitation, admissionToken, identity, displayName,
-    onProgress: event => { if (event.phase === 'admitted') room = event.room; onProgress?.(event); },
-  });
-  keepMembership(memberships, workspace, {origin, room: room ?? peer.room, userPublicKey: identity.userPublicKey});
-  return peer;
 }
+
+/** What a person is told when a host's open door still could not let them
+ * in: nothing of theirs to fix, so only when to try again. */
+export const doorRefused = name => `${name || 'This workspace'} couldn’t let you in just now. Reload the page in a moment to try again.`;
 
 /**
  * Become a new device of `userPublicKey` (hex), the person whose root

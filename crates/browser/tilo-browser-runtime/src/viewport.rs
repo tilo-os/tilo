@@ -25,9 +25,13 @@ impl SurfaceCaps {
     };
     /// `WebKit`'s GPU process holds every surface and binding of a frame
     /// resident on top of a large fixed cost, under Safari's 600 MB limit.
+    /// The scratch and atlas budgets carry most of that saving
+    /// (`conservative_gpu`); the canvas keeps a MacBook's full-screen window
+    /// sharp at its Retina scale (a 14-inch panel is 3024 x 1964), and only
+    /// larger external displays draw below it.
     pub const CONSERVATIVE: Self = Self {
-        max_side: 1920,
-        max_pixels: 1920 * 1200,
+        max_side: 3456,
+        max_pixels: 3024 * 1964,
         max_dpr: MAX_DPR,
     };
 }
@@ -237,10 +241,22 @@ mod tests {
         assert_eq!(INITIAL.bounded(), INITIAL);
 
         let conservative = retina_6k.bounded_by(SurfaceCaps::CONSERVATIVE);
-        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 1920 * 1200);
-        assert!(conservative.width <= 1920);
+        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 3024 * 1964);
+        assert!(conservative.width <= 3456);
         let (lw, _) = conservative.logical_size();
         assert!(lw.abs_diff(3008) <= 2, "{lw}");
+
+        // A MacBook's full-screen window keeps its Retina scale in Safari.
+        let macbook = Viewport {
+            width: 2880,
+            height: 1800,
+            dpr: 2.0,
+        }
+        .bounded_by(SurfaceCaps::CONSERVATIVE);
+        assert_eq!(
+            (macbook.width, macbook.height, macbook.dpr),
+            (2880, 1800, 2.0)
+        );
     }
 
     #[test]
