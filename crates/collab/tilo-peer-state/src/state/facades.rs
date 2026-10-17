@@ -63,6 +63,20 @@ pub struct PeerGovernanceMut<'peer> {
     pub(crate) peer: &'peer mut StatePeer,
 }
 
+/// What a peer publishes of its own, read side: the sealed history it holds
+/// as its channel's key holder and the encrypted records due for compaction.
+#[derive(Clone, Copy)]
+pub struct PeerPublication<'peer> {
+    pub(crate) peer: &'peer StatePeer,
+}
+
+/// What a peer publishes of its own, write side: signing and admitting its
+/// writes, its bootstrap and durable publications, and its sealed writes and
+/// compactions.
+pub struct PeerPublicationMut<'peer> {
+    pub(crate) peer: &'peer mut StatePeer,
+}
+
 impl StatePeer {
     /// Read this peer's room membership and governance.
     #[must_use]
@@ -110,5 +124,17 @@ impl StatePeer {
     #[must_use]
     pub fn outbox_mut(&mut self) -> PeerOutboxMut<'_> {
         PeerOutboxMut { peer: self }
+    }
+
+    /// Read the sealed history this peer holds as its channel's key holder.
+    #[must_use]
+    pub fn publication(&self) -> PeerPublication<'_> {
+        PeerPublication { peer: self }
+    }
+
+    /// Sign, admit and publish this peer's own writes.
+    #[must_use]
+    pub fn publication_mut(&mut self) -> PeerPublicationMut<'_> {
+        PeerPublicationMut { peer: self }
     }
 }

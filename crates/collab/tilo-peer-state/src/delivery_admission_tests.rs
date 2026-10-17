@@ -15,6 +15,7 @@ fn incremental(
     doc.put(ROOT, name, name).unwrap();
     doc.commit_edit("fixture", "fixture");
     author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
 }
@@ -296,9 +297,11 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
     let mut candidate = base.clone();
     let bytes = candidate.document("test.app", "tab:1").unwrap();
     candidate
+        .publication_mut()
         .publish_document("test.app", "tab:1", bytes.clone(), &key, now)
         .unwrap();
     candidate
+        .publication_mut()
         .publish_document("test.app", "tab:2", bytes, &key, now)
         .unwrap();
     let delta = candidate.admissions_since(&base).unwrap();

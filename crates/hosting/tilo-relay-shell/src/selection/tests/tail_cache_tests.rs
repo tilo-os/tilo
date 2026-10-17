@@ -40,7 +40,10 @@ impl TailFixture {
             })
             .collect();
         let mut owner = seeded_owner(SYNTHETIC_ROOM, &cert, &key, documents, now);
-        let checkpoint = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+        let checkpoint = owner
+            .publication_mut()
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap();
         let next_seq = after_r0(&checkpoint);
         let branch =
             automerge::AutoCommit::load(&owner.document("selector.app", "r0").unwrap()).unwrap();
@@ -96,6 +99,7 @@ impl TailFixture {
             .unwrap();
         let messages = self
             .owner
+            .publication_mut()
             .durable_bootstrap_messages(&self.key, self.now, 2)
             .unwrap();
         // The checkpoint re-signs `r0`; later keystrokes follow its sequence.

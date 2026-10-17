@@ -498,7 +498,7 @@ impl GovernedRoom {
         record: &str,
         channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        if !self.peer().is_sealed_record(app, record) {
+        if !self.peer().publication().is_sealed_record(app, record) {
             return self
                 .peer()
                 .media()

@@ -421,18 +421,21 @@ async fn route_prefix_beyond_cap_scenario() {
     let authority =
         tilo_relay_protocol::retention::RetentionAuthority::new(room, cert.clone()).unwrap();
     let baseline = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 1)
         .unwrap()
         .iter()
         .map(|message| frame(&authority, message))
         .collect::<Vec<_>>();
     let next = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 2)
         .unwrap()
         .iter()
         .map(|message| frame(&authority, message))
         .collect::<Vec<_>>();
     let third = publisher
+        .publication_mut()
         .durable_bootstrap_messages(&key, now, 3)
         .unwrap()
         .iter()

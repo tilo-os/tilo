@@ -90,6 +90,7 @@ fn edit(
     doc.put(ROOT, field, value).unwrap();
     doc.commit_edit("fixture", field);
     owner
+        .publication_mut()
         .publish_incremental(app, record, doc.save_after(&heads), key, now)
         .unwrap()
 }
@@ -138,6 +139,7 @@ fn bootstrap(
     now: SystemTime,
 ) -> Vec<Publication> {
     owner
+        .publication_mut()
         .durable_bootstrap_messages(key, now, generation)
         .unwrap()
         .into_iter()

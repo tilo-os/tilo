@@ -22,6 +22,7 @@ fn incremental(
     doc.put(ROOT, name, name).unwrap();
     doc.commit_edit("fixture", "fixture");
     author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
 }
