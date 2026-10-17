@@ -1263,6 +1263,24 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(message);
         }
         CollabRequest::UpdateInvocation { update, .. } => serialized_bytes(update, &mut meter),
+        CollabRequest::ReportLocalDocumentAction { report, .. } => {
+            meter.string_capacity(&report.revision);
+            meter.string_capacity(&report.resource);
+            meter.string_capacity(&report.action);
+            if let Some(argument) = &report.argument {
+                meter.string_capacity(argument);
+            }
+            meter.string_capacity(&report.encoded.type_id);
+            meter.bytes(&report.encoded.payload);
+            serialized_bytes(&report.context, &mut meter);
+            meter.add_product(report.original_heads.capacity(), 32);
+            meter.add_product(report.mutation_hashes.capacity(), 32);
+            if let Some(group) = &report.group {
+                meter.string_capacity(&group.id);
+                meter.string_capacity(&group.label);
+                meter.string_capacity(&group.kind);
+            }
+        }
         CollabRequest::RecordLocalEffect { address, update } => {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
@@ -1771,6 +1789,23 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
         CollabEvent::ManagedInvocationObservation { result } => {
             meter.add(result.meter_bytes());
             "ManagedInvocationObservation"
+        }
+        CollabEvent::LocalDocumentActionReported { result, .. } => {
+            match result {
+                Ok(observation) => {
+                    if let Some(result) = &observation.result {
+                        meter.string_capacity(&result.update_json);
+                        if let Some(json) = &result.admission_json {
+                            meter.string_capacity(json);
+                        }
+                        if let Some(json) = &result.terminal_json {
+                            meter.string_capacity(json);
+                        }
+                    }
+                }
+                Err(error) => meter.string_capacity(error),
+            }
+            "LocalDocumentActionReported"
         }
         CollabEvent::PublishedInvocationResult { result, .. } => {
             match result {
@@ -6785,6 +6820,59 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             )
         })
     }
+
+    fn resolve_local_document_action(
+        self: std::rc::Rc<Self>,
+        params: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionParams,
+        mut results: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        let request = params.get().and_then(|request| {
+            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
+                value
+                    .and_then(|value| {
+                        value
+                            .to_str()
+                            .map_err(|error| capnp::Error::failed(error.to_string()))
+                    })
+                    .map(str::to_owned)
+            };
+            Ok((
+                text(request.get_revision())?,
+                text(request.get_resource())?,
+                text(request.get_action())?,
+            ))
+        });
+        let (revision, resource, action) = match request {
+            Ok(request) => request,
+            Err(error) => return capnp::capability::Promise::err(error),
+        };
+        let requests = self.requests.clone();
+        let owner = self.owner.clone();
+        capnp::capability::Promise::from_future(async move {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::ResolveLocalDocumentAction {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                },
+            )
+            .is_err()
+            {
+                directory_unavailable()
+            } else {
+                // As for a query: the asker's deadline, not one of ours.
+                response.await.unwrap_or_else(|_| directory_unavailable())
+            };
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
+        })
+    }
 }
 
 type TaskActionResult = Result<(u64, tilo_actions::InvocationUpdate), String>;
@@ -7258,6 +7346,19 @@ async fn dispatch_sdk_request(
                 let _ =
                     inbound_tx.send_durable(CollabEvent::ManagedInvocationObservation { result });
             }
+        }
+        CollabRequest::ReportLocalDocumentAction { request_id, report } => {
+            // Only the already authenticated route owns this call. In particular,
+            // do not query the directory to rebase a stale captured revision.
+            let result = tokio::time::timeout(
+                Duration::from_secs(4),
+                route.channel.admit_local_document_action(&report),
+            )
+            .await
+            .map_err(|_| "local document report timed out; admission may be unknown".to_owned())
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            let _ = inbound_tx
+                .send_durable(CollabEvent::LocalDocumentActionReported { request_id, result });
         }
         CollabRequest::QueryActionDirectory { request_id, query } => {
             let result = directory_client::query(route, &query).await;

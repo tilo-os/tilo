@@ -655,6 +655,7 @@ impl App {
     }
 
     fn publish_action_surface_after_refresh(&mut self) {
+        let _background = crate::local_document_action::suspend();
         #[cfg(test)]
         {
             self.actions.action_surface_publication_attempts = self
@@ -1750,6 +1751,16 @@ impl App {
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
+                ActionDirectoryRequest::ResolveLocalDocumentAction {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        self.resolve_local_document_action_directory(&revision, &resource, &action),
+                    );
+                }
                 ActionDirectoryRequest::Query { query, reply } => {
                     // A cancelled caller never receives this page. Do not consume
                     // its one-use continuation before admitting a live response.
@@ -2494,6 +2505,18 @@ impl App {
     /// # Errors
     /// Refuses unavailable, denied, stale or ambiguous actions and invalid arguments.
     pub fn invoke_local_resource_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let capture = self.begin_local_input_capture();
+        let result = self.invoke_local_resource_action_captured(address, arguments);
+        drop(capture);
+        self.drain_local_input_capture();
+        result
+    }
+
+    fn invoke_local_resource_action_captured(
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,

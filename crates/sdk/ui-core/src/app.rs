@@ -89,6 +89,7 @@ pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
 mod input_publication;
+mod local_input_capture;
 #[cfg(feature = "native")]
 mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
@@ -538,6 +539,7 @@ pub struct App {
     focus_history: HistoryRuntime,
 
     collaboration: CollaborationRuntime,
+    local_input_capture: local_input_capture::LocalInputCapture,
     native_room_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,

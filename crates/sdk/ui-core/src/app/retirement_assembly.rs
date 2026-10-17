@@ -350,6 +350,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         input,
         focus_history,
         collaboration,
+        local_input_capture: super::local_input_capture::LocalInputCapture::default(),
         native_room_route,
         presence_ctx,
         permission_ctx,

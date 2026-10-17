@@ -2491,6 +2491,20 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    let capture_heads = if broker_admitted {
+        Vec::new()
+    } else {
+        doc.get_heads()
+    };
+    let observation = if broker_admitted {
+        None
+    } else {
+        crate::local_document_action::reserve(&encoded, Some(&context), doc, &capture_heads)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+    };
+    let capture_before = observation.as_ref().map(|_| capture_heads);
+    let capture_encoded = observation.as_ref().map(|_| encoded.clone());
+    let capture_context = observation.as_ref().map(|_| context.clone());
     let step = action.change_kind().is_step() && context.change.is_step();
     let writer = document_writer(actor, doc);
     let dispatched =
@@ -2516,6 +2530,14 @@ fn execute_document(
             )
             .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
         };
+    if let (Some(observation), Some(capture_before), Some(encoded)) =
+        (observation, capture_before, capture_encoded)
+        && matches!(&dispatched, tilo_actions::Dispatched::AppliedLocal(_))
+    {
+        observation
+            .finish(doc, &capture_before, encoded, capture_context)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+    }
     if let Some(before) = before {
         let after = doc.get_heads();
         report_typed_action(doc, before, after, step);
@@ -2960,6 +2982,29 @@ pub(crate) fn invoke_resource_action(
                     if let Some(scope) = scope {
                         scope.capture_locus_basis(target, invocation, actor, doc);
                     }
+                    let _capture = if !broker_admitted && source_invocation.is_none() {
+                        let supplied = arguments.clone().or_else(|| match argument {
+                            None => Some(serde_json::Map::new()),
+                            Some(value) if spec.params().len() == 1 => Some(
+                                serde_json::Map::from_iter([(
+                                    spec.params()[0].name.to_string(),
+                                    serde_json::Value::String(value.to_owned()),
+                                )]),
+                            ),
+                            Some(_) => None,
+                        });
+                        supplied.map(|arguments| {
+                            crate::local_document_action::with_invocation(
+                                crate::local_document_action::PublishedInvocation {
+                                    resource: target.address.address.resource.to_string(),
+                                    action: target.address.address.action.clone(),
+                                    arguments,
+                                },
+                            )
+                        })
+                    } else {
+                        None
+                    };
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,

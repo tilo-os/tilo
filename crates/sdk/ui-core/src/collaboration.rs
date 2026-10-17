@@ -413,6 +413,13 @@ pub enum CollabRequest {
         id: u64,
         update: tilo_actions::InvocationUpdate,
     },
+    /// Private speculative document report on the existing authenticated route.
+    /// Capture must retain the revision of its actual published directory; this
+    /// request never resolves a newer revision or grants document authorization.
+    ReportLocalDocumentAction {
+        request_id: u64,
+        report: runtime_collab::LocalDocumentActionReport,
+    },
     /// Terminal receipt for an Effect initiated by this app's local UI.
     RecordLocalEffect {
         address: tilo_actions::ActionAddress,
@@ -540,6 +547,13 @@ impl CollabRequest {
 /// threads as inert strings and budgets only; no widget reference or Cap'n
 /// Proto handle ever leaves the UI/collaboration boundary.
 pub enum ActionDirectoryRequest {
+    /// Only explains an already-applied local mutation; never used to execute.
+    ResolveLocalDocumentAction {
+        revision: String,
+        resource: String,
+        action: String,
+        reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolution>,
+    },
     Query {
         query: runtime_collab::ActionDirectoryQuery,
         reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryPage>,
@@ -809,6 +823,11 @@ pub enum CollabEvent {
     #[cfg(unix)]
     ManagedInvocationObservation {
         result: crate::host_worker::managed_sender::ManagedAttemptResult,
+    },
+    /// Private admission/status or refusal, never a document publication permit.
+    LocalDocumentActionReported {
+        request_id: u64,
+        result: Result<runtime_collab::PublishedInvocationObservation, String>,
     },
     PublishedInvocationResult {
         request_id: u64,
@@ -1612,6 +1631,75 @@ impl CollaborationManager {
         Ok(())
     }
 
+    /// Submit an exact capture without querying or rebasing its directory revision.
+    /// The caller drains only its route's local-input queue and retains errors for
+    /// presentation; queue acceptance alone is not admission or signed publication.
+    /// Replies arrive as [`CollabEvent::LocalDocumentActionReported`].
+    pub fn report_local_document_action(
+        &mut self,
+        request_id: u64,
+        capture: crate::local_document_action::CapturedAction,
+    ) -> Result<(), String> {
+        let report = Self::local_document_action_report(capture)?;
+        self.try_send(CollabRequest::ReportLocalDocumentAction { request_id, report })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Report a capture on an explicitly retained shared or local document route.
+    /// The route must own the captured input and published directory revision.
+    /// Queueing and admission supply neither execution proof nor publication authority.
+    /// Replies arrive as [`CollabEvent::LocalDocumentActionReported`].
+    pub fn report_local_document_action_to_route(
+        &mut self,
+        route: RouteSpec,
+        request_id: u64,
+        capture: crate::local_document_action::CapturedAction,
+    ) -> Result<(), String> {
+        let report = Self::local_document_action_report(capture)?;
+        self.try_send_to_route(
+            route,
+            CollabRequest::ReportLocalDocumentAction { request_id, report },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn local_document_action_report(
+        capture: crate::local_document_action::CapturedAction,
+    ) -> Result<runtime_collab::LocalDocumentActionReport, String> {
+        let published = capture
+            .published
+            .ok_or("local document action has no published invocation")?;
+        let argument = if published.arguments.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(published.arguments)
+            ))
+        };
+        let report = runtime_collab::LocalDocumentActionReport {
+            version: 1,
+            invocation: capture.invocation,
+            revision: capture.revision,
+            resource: published.resource,
+            action: published.action,
+            argument,
+            encoded: capture.encoded,
+            group: capture
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone()),
+            context: capture.context,
+            original_heads: capture.original_heads,
+            mutation_hashes: capture.mutation_hashes,
+        };
+        // Reads/no-ops retain their empty mutation sets. Never infer a published
+        // action from the encoded Rust action type, or rebase a captured revision.
+        report.encode()?;
+        Ok(report)
+    }
+
     /// Ask the transport for a completion receipt covering every document
     /// mutation submitted before this call. The receipt reports that the
     /// transport finished publishing them, not that peers applied them.
@@ -2208,6 +2296,136 @@ mod task4_route_tests {
         assert!(state.current(true).is_none());
         state.accept(Ok(b)).unwrap();
         assert!(state.current(true).is_some());
+    }
+}
+
+#[cfg(test)]
+mod local_document_report_tests {
+    use super::*;
+    use crate::local_document_action::{CapturedAction, PublishedInvocation};
+    use std::sync::{Arc, Mutex};
+
+    type Reports = Arc<Mutex<Vec<(Option<RouteSpec>, u64, Vec<u8>)>>>;
+    struct CaptureTransport(Reports);
+    impl CollabTransport for CaptureTransport {
+        fn status(&self) -> TransportStatus {
+            TransportStatus::Ready
+        }
+        fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
+            let (route, request) = match command {
+                TransportCommand::Primary(request) => (None, request),
+                TransportCommand::ToRoute(route, request) => (Some(route), request),
+                _ => return Err(TransportError::Unsupported),
+            };
+            let CollabRequest::ReportLocalDocumentAction { request_id, report } = request else {
+                return Err(TransportError::Unsupported);
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push((route, request_id, report.encode().unwrap()));
+            Ok(())
+        }
+        fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            None
+        }
+        fn take_action_directory_requests(&mut self, _: &mut Vec<ActionDirectoryRequest>) {}
+    }
+
+    fn capture() -> CapturedAction {
+        CapturedAction {
+            invocation: uuid::Uuid::from_bytes([1; 16]),
+            revision: "captured-not-current".into(),
+            published: Some(PublishedInvocation {
+                resource: "document/child".into(),
+                action: "read".into(),
+                arguments: serde_json::from_value(serde_json::json!({"text": "private argument"}))
+                    .unwrap(),
+            }),
+            encoded: tilo_actions::EncodedAction {
+                type_id: "private.typed-action".into(),
+                payload: br#"{"bytes":[0,255,17]}"#.to_vec(),
+            },
+            context: Some(tilo_actions::ActionContext {
+                purpose: Some("private context".into()),
+                group: Some(tilo_actions::ActionGroup {
+                    id: "private-group".into(),
+                    label: "Private work".into(),
+                    kind: "task".into(),
+                }),
+                source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                    [2; 16],
+                ))),
+                ..Default::default()
+            }),
+            original_heads: vec![],
+            mutation_hashes: vec![],
+        }
+    }
+
+    #[test]
+    fn exact_capture_reports_on_primary_shared_and_local_routes_without_mutations() {
+        let reports = Reports::default();
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
+        let captured = capture();
+        manager
+            .report_local_document_action(10, captured.clone())
+            .unwrap();
+        let shared = RouteSpec::record("app", uuid::Uuid::from_bytes([3; 16]), "shared");
+        let local = RouteSpec::record("app", uuid::Uuid::from_bytes([4; 16]), "local");
+        for (request_id, route) in [(11, shared.clone()), (12, local.clone())] {
+            manager
+                .report_local_document_action_to_route(route, request_id, captured.clone())
+                .unwrap();
+        }
+        let reports = reports.lock().unwrap();
+        assert_eq!(reports.len(), 3);
+        for ((route, request_id, bytes), (expected_route, expected_id)) in
+            reports
+                .iter()
+                .zip([(None, 10), (Some(shared), 11), (Some(local), 12)])
+        {
+            assert_eq!(route, &expected_route);
+            assert_eq!(*request_id, expected_id);
+            assert_eq!(bytes, &reports[0].2);
+            let report: runtime_collab::LocalDocumentActionReport =
+                serde_json::from_slice(bytes).unwrap();
+            assert_eq!(report.invocation, captured.invocation);
+            assert_eq!(report.revision, captured.revision);
+            assert_eq!(report.encoded, captured.encoded);
+            assert_eq!(report.context, captured.context);
+            assert_eq!(report.group, captured.context.as_ref().unwrap().group);
+            assert_eq!(report.resource, "document/child");
+            assert!(report.original_heads.is_empty());
+            assert!(report.mutation_hashes.is_empty());
+            let expected_argument = format!(
+                "{}{{\"text\":\"private argument\"}}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX
+            );
+            assert_eq!(report.argument.as_deref(), Some(expected_argument.as_str()));
+            let debug = format!("{report:?}");
+            for private in ["private", "encoded", "context", "argument"] {
+                assert!(!debug.contains(private));
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_transport_and_missing_published_invocation_refuse() {
+        assert!(
+            CollaborationManager::disabled()
+                .report_local_document_action(1, capture())
+                .is_err()
+        );
+        let mut missing = capture();
+        missing.published = None;
+        let reports = Reports::default();
+        let mut manager =
+            CollaborationManager::with_transport(Box::new(CaptureTransport(reports.clone())));
+        assert!(manager.report_local_document_action(2, missing).is_err());
+        assert!(reports.lock().unwrap().is_empty());
     }
 }
 

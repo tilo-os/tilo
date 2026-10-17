@@ -241,6 +241,66 @@ fn publish_declared_directory(app: &mut App) {
     app.capture_action_directory_snapshot(&resources, &descriptors);
 }
 #[test]
+fn retained_local_directory_survives_mutation_but_never_resolves_ordinary_stale_input() {
+    let (mut app, calls) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let pin = app.pin_local_document_action_directory(&revision).unwrap();
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "removed", true)
+        .unwrap();
+    assert!(matches!(
+        app.resolve_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    publish_declared_directory(&mut app);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { revision: Some(exact), .. }
+            if exact == revision
+    ));
+    for wrong in ["", "not-retained"] {
+        assert!(matches!(
+            app.resolve_local_document_action_directory(wrong, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "other"),
+        runtime_collab::ActionDirectoryResolution::NotFound
+    ));
+    let calls_before = calls.get();
+    drop(pin);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert_eq!(
+        calls.get(),
+        calls_before,
+        "local resolution never rebuilds live resources"
+    );
+}
+
+#[test]
+fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() {
+    let (mut app, _) = declared_directory(1);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let mut pins = (0..64)
+        .map(|_| app.pin_local_document_action_directory(&revision).unwrap())
+        .collect::<Vec<_>>();
+    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    pins.pop();
+    assert!(app.pin_local_document_action_directory(&revision).is_some());
+}
+
+#[test]
 fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
     // Case `directory_snapshot_resources_only_root_parent_and_exact_without_redeclaration`.
     {

@@ -55,6 +55,48 @@ fabricated terminal receipt. Recovery uncertainty is not retroactively certified
 as success. Guarded-read private result reconstruction is not certified by this
 terminal mechanism.
 
+## Speculative SDK-local framework actions
+
+The framework captures local typed executions at `ActionHost` and retained
+resource dispatch, including immediate, queued and grouped edits. A route-local,
+bounded queue preserves the original published invocation, canonical encoded
+input, original heads, exact resulting change hashes and context. Invocation
+identity is separate from undo coalescing. Reads and no-ops retain empty change
+sets. Background model work, presence and broker-delivered continuations do not
+become fresh local-user actions.
+
+Before execution, the application pins its published directory snapshot and
+component aliases. `resolveLocalDocumentAction` resolves that retained snapshot
+only for the local-report admission path; ordinary invocation resolution still
+rejects stale revisions. Snapshot leases and queue capacity survive asynchronous
+report submission, including uncertain responses. Oversized reports and queue
+saturation refuse visibly rather than blocking on the broker. There is no
+synchronous signing, key loading, RPC or journal barrier in input dispatch.
+
+`admitLocalDocumentAction` authenticates the existing SDK channel, revalidates
+its original worker and route, resolves the exact published action/revision,
+and uses the central policy and evidence journal without delivering the action
+again. Its private commitment includes the complete typed report and bound
+arguments. Encoded input, context and mutation hashes are explicitly
+**application-reported**; they are not `verify_change` execution proofs. The
+receipt says the host admitted the report after speculative application, not
+that it observed consent, replayed the action or certified successful execution.
+Confirmation-required actions fail closed rather than synthesizing consent.
+
+The application retains a bounded private association between captures and the
+authenticated admission response; eviction counts are exposed. These values are
+not placed in public progress or presence streams. Receipt consumers must still
+verify the host certificate and commitment using the evidence verifier.
+
+This admission does **not** authorize certified document publication.
+`send_document_mutation` continues to refuse `DocumentAuthorization` until the
+actual final owner validates the parsed causal range, original contributors and
+surface. No local receipt is converted into that authority. Thus local reports
+have admission and app-reported mutation binding, but the existing SDK shovel
+still cannot publish scoped mutations as certified execution evidence. Generic
+legacy dispatch without a retained published invocation refuses observation
+rather than guessing an action identity.
+
 ## Coverage and remaining entrypoints
 
 Covered by central admission when they reach the published application dispatcher:

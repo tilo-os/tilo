@@ -825,7 +825,11 @@ impl App {
         )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
+        let _background = crate::local_document_action::suspend();
         match event {
+            CollabEvent::LocalDocumentActionReported { request_id, result } => {
+                self.observe_local_input_capture(request_id, result);
+            }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
@@ -1235,10 +1239,14 @@ impl App {
         reason = "test adapter mirrors complete collaboration event routing for lifecycle coverage"
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
+        let _background = crate::local_document_action::suspend();
         let _entry = self.enter_wake_scope();
         let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
         self.forward_session_notification(&event);
         match event {
+            CollabEvent::LocalDocumentActionReported { request_id, result } => {
+                self.observe_local_input_capture(request_id, result);
+            }
             CollabEvent::CommittedDocument { route, read } => {
                 self.queue_committed_document(route, read)
             }

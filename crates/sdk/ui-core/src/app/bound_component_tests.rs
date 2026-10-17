@@ -977,6 +977,7 @@ include!("invocation_locus_tests.rs");
 include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");
+include!("local_input_capture_tests.rs");
 include!("bound_record_sync_tests.rs");
 include!("standalone_history_record_restore_tests.rs");
 include!("shared_forest_tests.rs");
