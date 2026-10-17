@@ -18,9 +18,15 @@
 //                  prompt, stubbed as one nobody answers)
 //   reload         the same tab reloaded: the desktop presents again as the
 //                  same person in the same room, with no new join
-//   second-tab     a second tab of that profile while the first holds its
-//                  device key: no new join, the membership kept, and the tab
-//                  either opens or says the workspace is open in another tab
+//   second-tab     a second tab of that profile while the first is open: a
+//                  tab is a device of its own, so it opens as a new device of
+//                  the same person (one join at the door, which admits each
+//                  device once), the membership kept as it was
+//   tabs-sync      a message posted in Chat in one of the two tabs shows in
+//                  the other
+//   tabs-one-person
+//                  another person in the room sees the two tabs as one
+//                  person, and neither tab lists the other as someone else
 //   new-tab        every tab closed, then the room's link in a new tab of the
 //                  same profile: presents as the same person, no new join
 //   damaged-link   a link whose invitation secrets are out of order is refused
@@ -482,6 +488,53 @@ const shownCard = tab => tab.evaluate(`(() => {
   return card ? {text: card.querySelector('p')?.textContent ?? '', buttons: [...card.querySelectorAll('button')].map(b => b.textContent)} : null;
 })()`).catch(() => null);
 
+/** `condition()` once truthy, polled every `every` ms; `null` after `timeout`. */
+async function until(condition, timeout, every = 500) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const value = await condition().catch(() => null);
+    if (value) return value;
+    if (Date.now() > end) return null;
+    await sleep(every);
+  }
+}
+
+/** In the page: the room's Chat window (opened if the desktop shows none)
+ * and the first channel it can post in, `{window, resource}`. */
+const CHAT_CHANNEL = `(async () => {
+  const chat = () => tiloMount.navigation.getSnapshot().entries.find(entry => entry.app === 'so.tilo.chat');
+  if (!chat()) {
+    const shown = tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind: 'open', app: 'so.tilo.chat', generation: shown.generation});
+  }
+  const window = chat()?.route.tab;
+  if (!window) return null;
+  const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
+  return post ? {window, resource: post.address.resource} : null;
+})()`;
+
+/** Post `text` in Chat from `tab`: `{resource}` of the channel, or `{error}`. */
+async function postInChat(tab, text) {
+  const channel = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
+  if (!channel) return {error: 'no Chat channel to post in'};
+  return tab.evaluate(`(async () => {
+    const result = await tiloMount.invokeAction(${JSON.stringify(channel.resource)}, 'post', {value: ${JSON.stringify(text)}},
+      {window: ${JSON.stringify(channel.window)}});
+    return result?.state === 'completed' ? {resource: ${JSON.stringify(channel.resource)}} : {error: result?.state ?? 'not posted'};
+  })()`).catch(error => ({error: error.message}));
+}
+
+/** Whether `tab`'s Chat shows `text` in the channel `resource`. */
+async function chatShows(tab, resource, text) {
+  const channel = await tab.evaluate(CHAT_CHANNEL);
+  if (!channel) return false;
+  return tab.evaluate(`(async () => {
+    const result = await tiloMount.invokeAction(${JSON.stringify(resource)}, 'read-messages', {pageSize: 32},
+      {window: ${JSON.stringify(channel.window)}});
+    return Boolean(result?.output?.value?.content?.messages?.some(message => message.text === ${JSON.stringify(text)}));
+  })()`);
+}
+
 /** Whether the page shows an entry card (an offer waiting for the person). */
 const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
 
@@ -579,17 +632,52 @@ async function main() {
     {entry: reloaded.entry, arrival: reloaded.arrival, joins: newJoins.length, membership: reloaded.membership, status: reloaded.status, loading: reloaded.loading});
     if (reloaded.entry !== 'open') await shoot('reload', first);
 
-    // second-tab: the first still holds the profile's device key.
+    // second-tab: the first still holds the profile's first device key, so
+    // the second takes a key of its own (device-custody.mjs): a new device of
+    // the same person, which the room admits through the door once.
     const second = await page(browser, person);
     const beside = await open(second, `${web}/`, settleOptions);
     keepLog('second-tab', second);
     newJoins = joinsTo(second.requests, api);
-    // One tab holds a profile's device key (device-custody.mjs): the second
-    // either opens or says where the workspace already is.
-    check('second-tab', (beside.entry === 'open' || /another tab/.test(beside.status)) && newJoins.length === 0
+    check('second-tab', beside.entry === 'open' && beside.arrival === 'done' && newJoins.length === 1 && newJoins[0].status === 200
       && beside.membership?.userPublicKey === me && beside.membership?.room === firstRoom,
-      {entry: beside.entry, joins: newJoins.length, membership: beside.membership, status: beside.status});
+      {entry: beside.entry, arrival: beside.arrival, joins: newJoins.map(j => j.status), membership: beside.membership, status: beside.status});
     if (beside.entry !== 'open') await shoot('second-tab', second);
+
+    // tabs-sync: what one tab posts, the other shows.
+    const text = `From the first tab ${Date.now()}`;
+    const posted = beside.entry === 'open' ? await postInChat(first, text) : {error: 'second tab not open'};
+    const shown = posted.resource ? await until(() => chatShows(second, posted.resource, text), 60_000) : null;
+    check('tabs-sync', Boolean(posted.resource) && Boolean(shown), {posted, shown: Boolean(shown)});
+    if (!shown) await shoot('tabs-sync', second);
+
+    // tabs-one-person: someone else in the room sees one person, and each
+    // tab sees only them.
+    const other = await browser.context();
+    const watcher = await page(browser, other);
+    const watching = await open(watcher, `${web}/`, settleOptions);
+    keepLog('tabs-one-person', watcher);
+    const people = async tab => (await tab.evaluate('globalThis.tiloMount?.people?.() ?? null').catch(() => null))
+      ?.filter(row => !row.agent) ?? null;
+    const seen = async () => ({watcher: await people(watcher), first: await people(first), second: await people(second)});
+    // Pages pair their devices with their person through the host's
+    // `/here`, posted within 20 seconds of opening: until both tabs posted,
+    // the watcher may still count two. Held for a few samples, so a moment
+    // before the second tab is live does not pass.
+    let together = null;
+    if (watching.entry === 'open') {
+      let held = 0;
+      together = await until(async () => {
+        const now = await seen();
+        const ok = now.watcher?.length === 1 && now.first?.length === 1 && now.second?.length === 1
+          && now.first[0].id === now.second[0].id && now.first[0].id !== now.watcher[0].id;
+        held = ok ? held + 1 : 0;
+        return held >= 3 ? now : null;
+      }, 90_000, 2000);
+    }
+    check('tabs-one-person', Boolean(together), together ?? {entry: watching.entry, status: watching.status, seen: await seen()});
+    if (!together) await shoot('tabs-one-person', watcher);
+    await watcher.close();
 
     // new-tab: the room's link, in a new tab once no other holds the key.
     await first.close();

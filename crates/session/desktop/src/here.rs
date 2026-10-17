@@ -7,6 +7,11 @@
 //! titles of the actions they took (`tilo_relay_protocol::web::HERE_PATH`).
 //! Neither is written to the room's desktop document: the bar, the People
 //! popover and the windows read them as ambient presence.
+//!
+//! A person may be here from several devices at once (each browser tab is a
+//! device of its own). They are one person here: the host's lines pair each
+//! device with its person, devices of one person show once, and this page's
+//! person's other devices are this page's person, never someone else.
 use std::collections::HashMap;
 
 use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
@@ -47,6 +52,11 @@ pub struct LiveMember {
     /// they are on, as their presence names it.
     #[serde(default)]
     pub place: Option<String>,
+    /// The person (user root, hex) this page is certified as: given for the
+    /// page's own entry only, which knows its certificate. Other members'
+    /// persons come from the host's lines, which the host authenticated.
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 /// One person's line from the host.
@@ -187,17 +197,17 @@ impl HereState {
     /// The strips the room's other people are on, one per person whose
     /// presence names one. Agents work in records, not strips.
     pub fn strip_places(&self) -> Vec<tilo_desktop_model::StripId> {
-        let own = self.own_id();
         let mut seen: Vec<&str> = Vec::new();
         let mut places = Vec::new();
         for member in self.members.iter().flatten() {
-            if Some(member.publisher.as_str()) == own
-                || member.kind == "agent"
-                || seen.contains(&member.publisher.as_str())
-            {
+            if member.kind == "agent" || self.is_own_person(&member.publisher) {
                 continue;
             }
-            seen.push(&member.publisher);
+            let person = self.person_of(&member.publisher);
+            if seen.contains(&person) {
+                continue;
+            }
+            seen.push(person);
             if let Some(strip) = member.place.as_deref().and_then(|p| p.parse().ok()) {
                 places.push(tilo_desktop_model::StripId(strip));
             }
@@ -207,6 +217,40 @@ impl HereState {
 
     fn own_id(&self) -> Option<&str> {
         self.own.as_ref().map(|own| own.publisher.as_str())
+    }
+
+    /// This page's person (user root, hex), when the page named it.
+    fn own_user(&self) -> Option<&str> {
+        self.own
+            .as_ref()
+            .and_then(|own| own.user.as_deref())
+            .filter(|user| !user.is_empty())
+    }
+
+    /// The person the device `publisher` is a device of, as the host's lines
+    /// say; `None` before its page posted to the host.
+    fn user_of(&self, publisher: &str) -> Option<&str> {
+        if Some(publisher) == self.own_id() {
+            return self.own_user();
+        }
+        self.lines
+            .iter()
+            .find(|line| line.device == publisher && !line.user.is_empty())
+            .map(|line| line.user.as_str())
+    }
+
+    /// Who `publisher` counts as: its person where known, else the device
+    /// itself, so devices of one person count once.
+    fn person_of<'a>(&'a self, publisher: &'a str) -> &'a str {
+        self.user_of(publisher).unwrap_or(publisher)
+    }
+
+    /// Whether `publisher` is this page or another device of its person.
+    fn is_own_person(&self, publisher: &str) -> bool {
+        Some(publisher) == self.own_id()
+            || self
+                .own_user()
+                .is_some_and(|own| self.user_of(publisher) == Some(own))
     }
 
     /// This page's own name, as its presence publishes it.
@@ -273,16 +317,21 @@ impl HereState {
         app_name: &dyn Fn(&str) -> Option<String>,
         now_ms: u64,
     ) -> Vec<Person> {
-        let own = self.own_id();
         let host = |device: &str| self.lines.iter().find(|line| line.device == device);
         let mut people: Vec<Person> = Vec::new();
+        // Who each listed person counts as (`person_of`), beside `people`.
+        let mut persons: Vec<&str> = Vec::new();
         for member in self.members.iter().flatten() {
-            if Some(member.publisher.as_str()) == own
-                || people.iter().any(|p| p.id == member.publisher)
-            {
+            let agent = member.kind == "agent";
+            let person = if agent {
+                member.publisher.as_str()
+            } else {
+                self.person_of(&member.publisher)
+            };
+            if (!agent && self.is_own_person(&member.publisher)) || persons.contains(&person) {
                 continue;
             }
-            let agent = member.kind == "agent";
+            persons.push(person);
             let line_of = host(&member.publisher);
             // An agent names the record it works in; a person's page says
             // which window they are in.
@@ -326,12 +375,14 @@ impl HereState {
         let fresh = |l: &HostLine| {
             self.members.is_none()
                 && now_ms.saturating_sub(self.lines_at_ms) < HOST_ONLY_FRESH_MS
-                && Some(l.device.as_str()) != own
+                && !self.is_own_person(&l.device)
         };
         for l in self.lines.iter().filter(|l| fresh(l)) {
-            if people.iter().any(|p| p.id == l.device) {
+            let person = self.person_of(&l.device);
+            if persons.contains(&person) {
                 continue;
             }
+            persons.push(person);
             let tab = shown_window(tree, l);
             people.push(Person {
                 id: l.device.clone(),
@@ -489,6 +540,7 @@ mod tests {
             focus: None,
             activity: Some("Reading the notes".into()),
             place: None,
+            user: None,
         }
     }
 
@@ -631,6 +683,87 @@ mod tests {
             here.people(&tree, &[], &|_| None, 2_000).is_empty(),
             "the live layer says who is present"
         );
+    }
+
+    /// Two tabs of one person are two devices of theirs: listed once to
+    /// everyone else, and to either tab never as someone else.
+    #[test]
+    fn a_persons_devices_are_one_person() {
+        let line = |device: &str, user: &str| HostLine {
+            device: device.into(),
+            user: user.into(),
+            label: device.into(),
+            ..HostLine::default()
+        };
+        let on = |publisher: &str, place: &str| LiveMember {
+            place: Some(place.into()),
+            ..member(publisher, "person", "Ada")
+        };
+        let lines = vec![
+            line("ada-tab-1", "ada-root"),
+            line("ada-tab-2", "ada-root"),
+            line("ben-tab", "ben-root"),
+        ];
+        let members = vec![
+            on("ada-tab-1", "10"),
+            on("ada-tab-2", "11"),
+            on("ben-tab", "12"),
+            member("bot", "agent", "Scribe"),
+        ];
+        let tree = DesktopTree::default();
+
+        // Ben sees Ada once, in the order she arrived, and her strip once.
+        let mut ben = HereState::default();
+        ben.set_members(
+            Some(LiveMember {
+                user: Some("ben-root".into()),
+                ..on("ben-tab", "12")
+            }),
+            Some(members.clone()),
+        );
+        ben.set_lines(lines.clone(), 0);
+        let ids: Vec<_> = ben
+            .people(&tree, &[], &|_| None, 0)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["ada-tab-1", "bot"]);
+        assert_eq!(ben.strip_places(), [tilo_desktop_model::StripId(10)]);
+
+        // Ada's second tab: her first tab is her, not someone else.
+        let mut ada = HereState::default();
+        ada.set_members(
+            Some(LiveMember {
+                user: Some("ada-root".into()),
+                ..on("ada-tab-2", "11")
+            }),
+            Some(members),
+        );
+        ada.set_lines(lines.clone(), 0);
+        let ids: Vec<_> = ada
+            .people(&tree, &[], &|_| None, 0)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["ben-tab", "bot"]);
+        assert_eq!(ada.strip_places(), [tilo_desktop_model::StripId(12)]);
+
+        // Without the live layer the host's lines merge the same way.
+        let mut host_only = HereState::default();
+        host_only.set_members(
+            Some(LiveMember {
+                user: Some("ben-root".into()),
+                ..on("ben-tab", "12")
+            }),
+            None,
+        );
+        host_only.set_lines(lines, 0);
+        let ids: Vec<_> = host_only
+            .people(&tree, &[], &|_| None, 1)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["ada-tab-1"]);
     }
 
     #[test]
