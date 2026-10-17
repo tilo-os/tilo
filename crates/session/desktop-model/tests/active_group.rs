@@ -163,3 +163,29 @@ fn window_group_json_round_trips() {
         assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
     }
 }
+
+#[test]
+fn a_closing_active_group_hands_focus_back_to_the_group_it_came_from() {
+    // [A, B, C]: the person was in A, then opened and focused B. When B
+    // starts closing, focus goes back to A, not to C on its right.
+    let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    tree.set_active_group(strip_id, a);
+    tree.set_active_group(strip_id, b);
+    assert_eq!(tree.nudge_active_group_off_closing(strip_id, &[b]), Some(a));
+
+    // Without history (nothing was focused before B), the neighbour rule.
+    let (mut tree, strip_id, _) = tree_with_n_groups(3);
+    tree.set_active_group(strip_id, b);
+    assert_eq!(tree.nudge_active_group_off_closing(strip_id, &[b]), Some(c));
+
+    // A remembered group that is itself closing is skipped.
+    let (mut tree, strip_id, _) = tree_with_n_groups(3);
+    tree.set_active_group(strip_id, c);
+    tree.set_active_group(strip_id, a);
+    tree.set_active_group(strip_id, b);
+    assert_eq!(
+        tree.resolve_active_group(strip_id, |id| id == b || id == a),
+        Some(c)
+    );
+}

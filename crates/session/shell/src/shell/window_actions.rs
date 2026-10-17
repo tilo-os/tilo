@@ -398,7 +398,8 @@ pub(crate) fn close_tab_unrecorded(
     }
     let removed = {
         let mut tree = st.tree_mut();
-        tab_binding::remove_tab(&mut tree, tab_id)
+        // The person closed it: focus goes back to where they came from.
+        tab_binding::close_tab_back_to_previous(&mut tree, tab_id)
     };
     if !removed {
         return Err(TabActionError::UnknownTab);
@@ -771,6 +772,76 @@ mod tests {
 
     fn chrome_with_default_tree() -> crate::shell::chrome_state::Chrome {
         ChromeState::new(WorkspaceTree::bootstrap_demo())
+    }
+
+    /// The active strip's group ids, in order, and the group holding `tab`.
+    fn strip_order_and_group_of(st: &ChromeState, tab: TabId) -> (Vec<GroupId>, Option<GroupId>) {
+        let tree = st.tree();
+        let ws = tree.desktop.active_workspace().expect("active workspace");
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+            .or_else(|| ws.strips.first())
+            .expect("a strip");
+        let order = strip.window_groups.iter().map(|g| g.id).collect();
+        let group = strip
+            .window_groups
+            .iter()
+            .find(|g| g.tabs.iter().any(|t| t.id == tab))
+            .map(|g| g.id);
+        drop(tree);
+        (order, group)
+    }
+
+    #[test]
+    fn a_searched_window_opens_beside_you_and_closing_it_brings_you_back() {
+        let chrome = chrome_with_default_tree();
+        let mut st = chrome.borrow_mut();
+        let a = focused_group(&st).expect("the demo desk has a focused group");
+        // A neighbour C right of A, then back to A.
+        let c_tab = open_hosted(
+            &mut st,
+            AppKind::Other("C".into()),
+            "C",
+            Destination::Search,
+        );
+        let (_, c) = strip_order_and_group_of(&st, c_tab);
+        let c = c.expect("C opened as its own window");
+        let strip = {
+            let tree = st.tree();
+            let ws = tree.desktop.active_workspace().expect("active workspace");
+            tree.desktop
+                .active_strip
+                .get(&ws.id)
+                .copied()
+                .unwrap_or(ws.strips[0].id)
+        };
+        st.tree_mut().desktop.set_active_group(strip, a);
+
+        // From A, search opens B as its own window right of A (not a tab of A,
+        // which holds several, and not after C at the far end).
+        let b_tab = open_hosted(
+            &mut st,
+            AppKind::Other("B".into()),
+            "B",
+            Destination::Search,
+        );
+        let (order, b) = strip_order_and_group_of(&st, b_tab);
+        let b = b.expect("B opened as its own window");
+        assert_ne!(
+            b, a,
+            "a searched app never becomes a tab of the focused group"
+        );
+        let at = order.iter().position(|g| *g == a).unwrap();
+        assert_eq!(order.get(at + 1..at + 3), Some(&[b, c][..]), "{order:?}");
+        assert_eq!(focused_group(&st), Some(b));
+
+        // Closing B goes back to A, the window it was opened from, not to C,
+        // which now sits at B's index.
+        close_tab(&mut st, b_tab).expect("B closes");
+        assert_eq!(focused_group(&st), Some(a));
     }
 
     #[test]
