@@ -1902,17 +1902,17 @@ fn axis_gather_finishes_without_animation_in_reduced_motion() {
 }
 
 #[test]
-fn ctrl_shift_t_restores_the_closed_window_and_its_existing_record() {
+fn super_shift_t_restores_the_closed_window_and_its_existing_record() {
     assert_closed_window_restore(false, false);
 }
 
 #[test]
-fn ctrl_shift_t_restores_the_last_window_with_its_existing_record() {
+fn super_shift_t_restores_the_last_window_with_its_existing_record() {
     assert_closed_window_restore(true, false);
 }
 
 #[test]
-fn ctrl_shift_t_keeps_closed_windows_in_their_original_workspace() {
+fn super_shift_t_keeps_closed_windows_in_their_original_workspace() {
     assert_closed_window_restore(true, true);
 }
 
@@ -1983,7 +1983,7 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         h.lay_out();
         h.key(
             Key::Character("t".into()),
-            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ModifiersState::SUPER | ModifiersState::SHIFT,
         );
         assert_eq!(h.chrome.borrow().tree().desktop.active, elsewhere);
         assert!(
@@ -1998,7 +1998,7 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
     }
     h.key(
         Key::Character("t".into()),
-        ModifiersState::CONTROL | ModifiersState::SHIFT,
+        ModifiersState::SUPER | ModifiersState::SHIFT,
     );
     let chrome = h.chrome.borrow();
     let tree = chrome.tree();

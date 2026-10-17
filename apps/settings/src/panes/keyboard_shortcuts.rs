@@ -23,7 +23,7 @@ use winit::event::WindowEvent;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, card, note, rows, setting_row};
@@ -129,6 +129,22 @@ fn active_keycaps(document: &ui::storage::SettingsDocument) -> ui::Keycaps {
 /// German layout). The stored chord stays canonical.
 fn chord_label(chord: &KeyChord) -> String {
     ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+}
+
+/// Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T are the focused app's first:
+/// they change desktop tabs only where the app leaves them unhandled, while
+/// the Super spellings listed below always do.
+fn app_tab_chords_note() -> String {
+    let chord =
+        |text: &str| KeyChord::parse(text).map_or_else(|_| text.to_owned(), |c| chord_label(&c));
+    t_args(
+        "settings-shortcuts-app-tab-chords",
+        &[
+            ("next", chord("Ctrl+Tab").into()),
+            ("previous", chord("Ctrl+Shift+Tab").into()),
+            ("reopen", chord("Ctrl+Shift+T").into()),
+        ],
+    )
 }
 
 fn chords_text(chords: &[KeyChord]) -> String {
@@ -245,6 +261,7 @@ impl ShortcutPane {
                             .id("shortcuts.vim_mode")
                             .toggle(&self.vim_mode, DesktopControls::paths().vim_mode),
                     );
+                    body.push(note(&app_tab_chords_note()));
                 }
                 body.extend(
                     entries

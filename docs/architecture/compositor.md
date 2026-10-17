@@ -759,7 +759,7 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Super+Left / Right        | Previous / next window in the strip            |
 | Ctrl+Super+1..9           | Focus the Nth window group of the strip        |
 | Alt+Tab                   | Most recently used window of the workspace     |
-| Ctrl+Tab                  | Next tab in the focused window group           |
+| Super+Ctrl+Tab            | Next tab in the focused window group (Ctrl+Tab too, where the app leaves it unhandled) |
 | Super+T                   | New tab in the focused window group            |
 | Super+W                   | Close the focused tab                          |
 | Super+Esc                 | Stop all remote input and end every share      |

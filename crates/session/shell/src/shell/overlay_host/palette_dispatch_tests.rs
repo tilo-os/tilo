@@ -1130,7 +1130,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
             "Close tab:Alt+F4  /  Super+W",
-            "Reopen closed tab:Ctrl+Shift+T",
+            "Reopen closed tab:Super+Shift+T",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -1322,7 +1322,7 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
     let english = guide_description(&host);
 
     assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
-    assert!(german_rows.contains(&("Reopen closed tab".into(), "Strg+Umschalt+T".into())));
+    assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
     assert!(german.contains("Screenshot: Druck"), "{german}");
     assert!(german.contains("Strg+Umschalt+G"), "{german}");
     // The layout, not the stored chord, changed: switching back restores it.

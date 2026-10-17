@@ -1314,9 +1314,20 @@ fn accelerator_for_code(code: &str, modifiers: Modifiers) -> Option<String> {
 }
 
 /// Session conventions outside the shell's own chord tables that an app
-/// must still not be granted: the X server kill chord, in-app search and
-/// the menu key some toolkits bind to Alt+Space.
-const SESSION_RESERVED: &[&str] = &["CTRL+ALT+BACKSPACE", "CTRL+KEYK", "ALT+SPACE"];
+/// must still not be granted: the X server kill chord, in-app search, the
+/// menu key some toolkits bind to Alt+Space, and the tab chords every app
+/// answers for its own tabs or hands to the desktop's (`ui::shell_tabs`). A
+/// grant would take those from whatever app holds focus.
+const SESSION_RESERVED: &[&str] = &[
+    "CTRL+ALT+BACKSPACE",
+    "CTRL+KEYK",
+    "ALT+SPACE",
+    "CTRL+TAB",
+    "CTRL+SHIFT+TAB",
+    "CTRL+KEYT",
+    "CTRL+SHIFT+KEYT",
+    "CTRL+KEYW",
+];
 
 /// Tilo-owned accelerators always win.  Exposed to the trusted dialog so it
 /// can explain a rejected capture before any registry mutation occurs.
@@ -1622,7 +1633,7 @@ mod tests {
         };
         assert!(
             service.is_reserved("CTRL+SHIFT+KEYT"),
-            "reopen is owned by the shell"
+            "reopen is every app's tab chord, never grantable"
         );
         assert!(
             !service.is_reserved("CTRL+SHIFT+KEYM"),

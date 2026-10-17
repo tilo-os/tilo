@@ -260,6 +260,25 @@ pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<Stri
     })
 }
 
+/// The guide's note on the app tab chords: Ctrl+Tab, Ctrl+Shift+Tab and
+/// Ctrl+Shift+T reach the focused app first and change tabs only where it
+/// leaves them unhandled, while the Super spellings always do. Written in the
+/// active layout's keycaps, so a German keyboard reads `Strg`.
+pub(super) fn shortcut_app_tab_note() -> String {
+    let chord = |text: &str| {
+        KeyChord::parse(text)
+            .map_or_else(|_| text.to_string(), |chord| shortcut_guide_chord(&chord))
+    };
+    t_args(
+        "guide-app-tab-chords",
+        &[
+            ("next", chord("Ctrl+Tab").into()),
+            ("previous", chord("Ctrl+Shift+Tab").into()),
+            ("reopen", chord("Ctrl+Shift+T").into()),
+        ],
+    )
+}
+
 /// How many reference groups sit side by side in a guide body of this
 /// width. Fewer columns on a narrow body keep every chord inside its cell
 /// instead of clipping it.
@@ -319,11 +338,11 @@ pub(super) fn shortcut_navigation_step(theme: &ui::theme::Theme) -> f64 {
         + f64::from(theme.tokens.spacing.rhythm.tight)
 }
 
-/// Lines of pointer notes: the fixed pointer line, your action chords and the
-/// vim-mode hint when present.
+/// Lines of notes under the reference: the fixed pointer line, the app tab
+/// chords line, your action chords and the vim-mode hint when present.
 pub(super) fn shortcut_note_lines(has_summary: bool, vim_mode: bool) -> usize {
-    // The pointer note and the strip-number note are always there.
-    2_usize
+    // The pointer, strip-number and app tab chord notes are always there.
+    3_usize
         .saturating_add(usize::from(has_summary))
         .saturating_add(usize::from(vim_mode))
 }

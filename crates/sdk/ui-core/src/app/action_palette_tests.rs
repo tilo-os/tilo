@@ -461,7 +461,11 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
     let chord = |text: &str| {
         let mut event = synth_enter();
         if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-            event.logical_key = Key::Character(text.into());
+            event.logical_key = if text == "Tab" {
+                Key::Named(NamedKey::Tab)
+            } else {
+                Key::Character(text.into())
+            };
         }
         event
     };
@@ -482,6 +486,8 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
         ("t", command),
         ("T", command | ModifiersState::SHIFT),
         ("w", command),
+        ("Tab", command),
+        ("Tab", command | ModifiersState::SHIFT),
     ] {
         app.input.modifiers = winit::event::Modifiers::from(modifiers);
         let mut handled = false;
@@ -489,8 +495,22 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
         assert!(handled, "{text} is the desktop's tab chord");
     }
     // A widget that consumed the press keeps it: no request.
-    let mut handled = true;
-    app.handle_unconsumed_tab_chord(&chord("w"), &mut handled);
+    for text in ["w", "Tab"] {
+        let mut handled = true;
+        app.handle_unconsumed_tab_chord(&chord(text), &mut handled);
+    }
+    // Ctrl+Tab is not focus traversal: it reaches the tab chord above.
+    app.input.modifiers = winit::event::Modifiers::from(command);
+    assert!(!app.handle_tab_navigation(&chord("Tab"), None));
+    // The desktop's own spelling never comes from an app.
+    app.input.modifiers =
+        winit::event::Modifiers::from(ModifiersState::SUPER | ModifiersState::CONTROL);
+    let mut handled = false;
+    app.handle_unconsumed_tab_chord(&chord("Tab"), &mut handled);
+    assert!(
+        !handled,
+        "Super+Ctrl+Tab is the desktop's, not an app request"
+    );
     // Plain letters type.
     app.input.modifiers = winit::event::Modifiers::from(ModifiersState::empty());
     let mut handled = false;
@@ -506,7 +526,16 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
             },
             TabRequest::ReopenClosed,
             TabRequest::CloseThis,
+            TabRequest::CycleTab { forward: true },
+            TabRequest::CycleTab { forward: false },
         ]
+    );
+    assert_eq!(
+        tab_request_message(TabRequest::CycleTab { forward: false }, Some(7)),
+        crate::floating_surface::FloatingSurfaceClientMessage::CycleTab {
+            forward: false,
+            instance: Some(7),
+        }
     );
 
     // On the wire the shell learns which launch asked.

@@ -2310,6 +2310,26 @@ fn pump_floating_surface_service(
                         crate::shell::app_tabs::AppTabRequest::ReopenClosed,
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::CycleTab {
+                    forward,
+                    instance,
+                } => {
+                    // The app had the Ctrl+Tab first and left it alone. The
+                    // connection vouches for the app id, so an app can only
+                    // step through the group its own focused tab is in.
+                    let focused = crate::shell::app_tabs::is_focused_app_tab(
+                        &frame_builder.chrome().tree(),
+                        &app_id,
+                        instance,
+                    );
+                    if focused {
+                        changed |= frame_builder.host_mut().cycle_focused_tab(if forward {
+                            1
+                        } else {
+                            -1
+                        });
+                    }
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
                     background,
                     instance,

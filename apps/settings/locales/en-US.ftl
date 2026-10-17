@@ -264,6 +264,7 @@ shortcut-category-accessibility = Accessibility
 settings-shortcut-unassigned = Unassigned
 settings-shortcut-or = or
 settings-shortcuts-vim = Vim navigation (H J K L)
+settings-shortcuts-app-tab-chords = { $next }, { $previous } and { $reopen } reach the app first and switch or reopen tabs only when the app doesn’t use them. The shortcuts for Next tab, Previous tab and Reopen closed tab always do.
 settings-shortcuts-actions = Actions
 settings-shortcuts-actions-caption = A saved shortcut’s keyboard trigger binds its chord here; change or remove it in the shortcut.
 

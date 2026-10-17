@@ -90,11 +90,11 @@ use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
     configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_chord_from_event, shortcut_chord_keycaps,
-    shortcut_guide_chord, shortcut_guide_content_height, shortcut_navigation_columns,
-    shortcut_navigation_height, shortcut_navigation_step, shortcut_note_lines,
-    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
-    shortcut_reference_step,
+    shortcut_action_summary, shortcut_app_tab_note, shortcut_chord_from_event,
+    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
+    shortcut_navigation_columns, shortcut_navigation_height, shortcut_navigation_step,
+    shortcut_note_lines, shortcut_reference_columns, shortcut_reference_group_height,
+    shortcut_reference_rows, shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -24650,6 +24650,7 @@ impl ShellOverlayHost {
                 };
                 note(&t("guide-pointer"), scene);
                 note(&shortcuts::shortcut_strip_jump_note(shortcuts), scene);
+                note(&shortcut_app_tab_note(), scene);
                 if let Some(summary) = &summary {
                     note(summary, scene);
                 }

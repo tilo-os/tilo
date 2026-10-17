@@ -250,6 +250,7 @@ guide-unassigned = Nicht belegt
 guide-unassigned-inline = nicht belegt
 guide-pointer = Zeiger: Fenster anklicken fokussiert es, Tabs oder Gruppen ziehen ordnet sie an, einen Rand ziehen ändert die Größe
 guide-strip-jump = Direkt zu einer Leiste mit { $first } … { $last }; Leiste 1 ist die oberste
+guide-app-tab-chords = { $next }, { $previous } und { $reopen } gehen zuerst an die App; die Tab-Kürzel des Desktops hier wirken immer
 guide-your-shortcuts = Deine Tastenkürzel: { $shortcuts }
 guide-vim-mode = Vim-Tasten: h j k l
 guide-a11y-name = Tastenkürzel

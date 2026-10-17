@@ -94,7 +94,7 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Move focused window group to the strip above/below | Super+Shift+Up/Down | — |
 | Move focused window group to the previous/next display | Super+Ctrl+Shift+Left/Right | Drag the group onto the display |
 | Make focused window group narrower/wider | Super+- / Super+= | — |
-| Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
+| Previous/next tab in current group | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab | Tab strip |
 | Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
 Super tapped alone means Super pressed and released with no other key,
@@ -147,6 +147,31 @@ terminals and editors keep H/J/K/L.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.
+
+## Tab chords the app gets first
+
+Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T switch and reopen tabs in
+browsers, editors and terminals, so the desktop never takes them from the
+focused app:
+
+- A Wayland or X11 app always receives them; the desktop cannot know what it
+  did with them and does nothing.
+- A Tilo app receives them first. Only when no widget used the press does it
+  hand it to the desktop (`ui::shell_tabs`): Ctrl+Tab and Ctrl+Shift+Tab show
+  the next and previous tab of its window group, Ctrl+Shift+T reopens the
+  workspace's last closed tab. Ctrl+T and Ctrl+W work the same way.
+- A tile the shell draws itself (nothing else holds the keyboard) answers
+  them directly.
+
+Super+Ctrl+Tab, Super+Ctrl+Shift+Tab and Super+Shift+T are the desktop's
+spellings of the same actions. Like every Super chord they never reach an
+app, so they work whatever is focused, and Settings can rebind them. A
+settings file that still holds an old Ctrl default takes the Super one.
+
+The other Ctrl or Alt chords the desktop answers ahead of apps are
+conventions apps on any Linux desktop leave to the system: Alt+Tab,
+Alt+Shift+Tab, Alt+`, Alt+F4, Ctrl+Alt+T, Ctrl+Alt+Delete and
+Alt+Shift+Num Lock.
 
 ## Fixed shell chords
 

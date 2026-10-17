@@ -251,8 +251,9 @@ impl BrowserWindow {
         )
     }
 
-    /// Ctrl+T, Ctrl+W and Ctrl+Shift+T are the desktop's tab chords. The
-    /// page never sees them, so a site cannot keep a person in its tab.
+    /// Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab are the
+    /// desktop's tab chords. The page never sees them, so a site cannot keep
+    /// a person in its tab.
     fn is_desktop_tab_chord(
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
