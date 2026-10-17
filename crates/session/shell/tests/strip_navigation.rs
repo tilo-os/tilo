@@ -440,26 +440,23 @@ fn invoke(
         .map(drop)
 }
 
-/// Super+Up/Down moves focus between strips and Super+Shift+Up/Down carries
-/// the focused group the same way, whole, into the durable tree; Super+Up no
-/// longer maximizes.
+/// Ctrl+Super+Up/Down moves focus between strips and
+/// Shift+Ctrl+Super+Up/Down carries the focused group the same way, whole,
+/// into the durable tree. The old Super+Shift+Up/Down chords do nothing.
 #[test]
-fn shift_arrows_carry_the_focused_group_between_strips() {
+fn ctrl_super_shift_arrows_carry_the_focused_group_between_strips() {
     let (mut h, upper, lower, resident, groups) = two_strip_harness();
     let layout = plane;
-    let upper_maximized = |h: &mut Harness| {
-        h.host
-            .group_row_mut_for_tests(upper)
-            .expect("the upper strip is live")
-            .groups
-            .iter()
-            .any(|group| group.maximized)
-    };
+    let carry = ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT;
 
+    let before = layout(&h);
     h.key(
         Key::Named(NamedKey::ArrowDown),
         ModifiersState::SUPER | ModifiersState::SHIFT,
     );
+    assert_eq!(layout(&h), before, "Super+Shift+Down no longer carries");
+
+    h.key(Key::Named(NamedKey::ArrowDown), carry);
     let (strips, active, focused) = layout(&h);
     assert_eq!(strips[0], (upper, groups[1..].to_vec()));
     assert_eq!(
@@ -470,31 +467,118 @@ fn shift_arrows_carry_the_focused_group_between_strips() {
     assert_eq!(active, lower, "focus follows the carried group");
     assert_eq!(focused, Some(groups[0]));
 
-    h.key(
-        Key::Named(NamedKey::ArrowDown),
-        ModifiersState::SUPER | ModifiersState::SHIFT,
-    );
+    h.key(Key::Named(NamedKey::ArrowDown), carry);
     assert_eq!(
         layout(&h).0,
         strips,
         "carrying past the last strip clamps rather than creating one"
     );
 
-    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
-    let (after_up, active, focused) = layout(&h);
-    assert_eq!(after_up, strips, "Super+Up moves focus, not windows");
-    assert_eq!(active, upper);
-    assert_eq!(
-        focused,
-        Some(groups[1]),
-        "the strip a group left keeps focus on its neighbour"
-    );
-    assert!(!upper_maximized(&mut h), "Super+Up no longer maximizes");
+    h.key(Key::Named(NamedKey::ArrowUp), carry);
+    let (strips, active, focused) = layout(&h);
+    assert_eq!(strips[0], (upper, vec![groups[1], groups[0], groups[2], groups[3], groups[4]]));
+    assert_eq!(strips[1], (lower, vec![resident]));
+    assert_eq!((active, focused), (upper, Some(groups[0])));
+}
+
+/// Ctrl+Super+Up/Down switch strips, clamping at the ends, and never
+/// maximize; Super+M still toggles maximize.
+#[test]
+fn ctrl_super_arrows_switch_strips() {
+    let (mut h, upper, lower, _resident, groups) = two_strip_harness();
+    let switch = ModifiersState::SUPER | ModifiersState::CONTROL;
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    assert_eq!(plane(&h).1, upper);
+
+    h.key(Key::Named(NamedKey::ArrowUp), switch);
+    assert_eq!(plane(&h).1, upper, "the top strip clamps");
+    assert!(!upper_maximized(&mut h), "Ctrl+Super+Up never maximizes");
+
+    h.key(Key::Named(NamedKey::ArrowDown), switch);
+    let (strips, active, _) = plane(&h);
+    assert_eq!(active, lower, "Ctrl+Super+Down goes to the strip below");
+    h.key(Key::Named(NamedKey::ArrowDown), switch);
+    assert_eq!(plane(&h).1, lower, "the bottom strip clamps");
+    h.key(Key::Named(NamedKey::ArrowUp), switch);
+    let (after, active, focused) = plane(&h);
+    assert_eq!(after, strips, "switching strips moves focus, not windows");
+    assert_eq!((active, focused), (upper, Some(groups[0])));
+
     h.key(Key::Character("m".into()), ModifiersState::SUPER);
     assert!(
         upper_maximized(&mut h),
         "Super+M maximizes the focused group"
     );
+}
+
+/// Super+Up maximizes the focused group on any strip and Super+Down restores
+/// it; neither changes strip, and each is idempotent.
+#[test]
+fn super_up_maximizes_and_super_down_restores_on_any_strip() {
+    let (mut h, upper, lower, resident, _groups) = two_strip_harness();
+    let maximized = |h: &mut Harness, strip: StripId| {
+        h.host
+            .group_row_mut_for_tests(strip)
+            .expect("the strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    for strip in [upper, lower] {
+        if strip == lower {
+            h.key(
+                Key::Named(NamedKey::ArrowDown),
+                ModifiersState::SUPER | ModifiersState::CONTROL,
+            );
+            assert_eq!(plane(&h).2, Some(resident));
+        }
+        assert_eq!(plane(&h).1, strip);
+        assert!(!maximized(&mut h, strip));
+
+        h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+        assert!(!maximized(&mut h, strip), "Super+Down on a normal window does nothing");
+        assert_eq!(plane(&h).1, strip, "Super+Down never changes strip");
+
+        h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+        assert!(maximized(&mut h, strip), "Super+Up maximizes");
+        assert_eq!(plane(&h).1, strip, "Super+Up never changes strip");
+        h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+        assert!(maximized(&mut h, strip), "a second Super+Up keeps it maximized");
+
+        h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+        assert!(!maximized(&mut h, strip), "Super+Down restores");
+        assert_eq!(plane(&h).1, strip);
+    }
+}
+
+/// Super+1…9 go straight to the Nth strip from the top (the shared Lounge
+/// strip is 1); a number past the last strip does nothing. Ctrl+Super+1…9
+/// focus the Nth window of the focused strip.
+#[test]
+fn super_number_goes_to_a_strip_and_ctrl_super_number_to_a_window() {
+    let (mut h, upper, lower, resident, groups) = two_strip_harness();
+    h.key(Key::Character("2".into()), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "Super+2 is the second strip");
+    assert_eq!(plane(&h).2, Some(resident));
+    h.key(Key::Character("9".into()), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "there is no ninth strip");
+    h.key(Key::Character("1".into()), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, upper, "Super+1 is the top strip");
+
+    h.key(
+        Key::Character("3".into()),
+        ModifiersState::SUPER | ModifiersState::CONTROL,
+    );
+    let (_, active, focused) = plane(&h);
+    assert_eq!(active, upper, "Ctrl+Super+number stays on the strip");
+    assert_eq!(focused, Some(groups[2]), "Ctrl+Super+3 is the third window");
 }
 
 /// The relative window actions run the operation their chord runs, on the
@@ -537,6 +621,37 @@ fn window_actions_run_the_operations_their_chords_run() {
             "index {index} names no Super+N chord"
         );
     }
+
+    invoke(&h, "strip.focus-nth", &serde_json::json!({ "index": 2 })).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert_eq!(plane(&h).1, lower, "strip.focus-nth is Super+2");
+    for index in [0, 10] {
+        assert!(
+            invoke(&h, "strip.focus-nth", &serde_json::json!({ "index": index })).is_err(),
+            "index {index} names no strip chord"
+        );
+    }
+    invoke(&h, "strip.focus-nth", &serde_json::json!({ "index": 1 })).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert_eq!(plane(&h).1, upper);
+
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    invoke(&h, "group.maximize", &none).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert!(upper_maximized(&mut h));
+    invoke(&h, "group.restore", &none).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert!(!upper_maximized(&mut h), "group.restore is Super+Down");
+    invoke(&h, "group.restore", &none).unwrap();
+    h.host.run_requested_shortcut_actions();
+    assert!(!upper_maximized(&mut h), "restoring a normal group changes nothing");
 
     invoke(&h, "group.move-right", &none).unwrap();
     h.host.run_requested_shortcut_actions();
@@ -1369,25 +1484,25 @@ fn every_close_route_commits_the_exact_surface_durably() {
     }
 }
 
-/// Super+N focuses the Nth window group of the current strip, on the tab it
+/// Ctrl+Super+N focuses the Nth window group of the current strip, on the tab it
 /// last showed; a number past the end of the strip changes nothing.
 #[test]
-fn super_number_jumps_to_that_window_in_the_strip() {
+fn ctrl_super_number_jumps_to_that_window_in_the_strip() {
     let mut h = Harness::new();
-    h.key(Key::Character("3".into()), ModifiersState::SUPER);
+    h.key(Key::Character("3".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
     h.tick();
     assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
 
-    h.key(Key::Character("1".into()), ModifiersState::SUPER);
+    h.key(Key::Character("1".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    h.key(Key::Character("9".into()), ModifiersState::SUPER);
+    h.key(Key::Character("9".into()), ModifiersState::SUPER | ModifiersState::CONTROL);
     h.tick();
     assert_eq!(
         h.active_window(),
         (h.groups[0], h.tabs[0][0]),
-        "the strip has {GROUPS} windows; Super+9 must not move focus"
+        "the strip has {GROUPS} windows; Ctrl+Super+9 must not move focus"
     );
 }
 
@@ -1881,31 +1996,6 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         before,
         "restore reuses the existing record rather than creating a default"
     );
-}
-
-/// With no strip above, Super+Up maximizes the focused group and Super+Down
-/// restores it; otherwise both stay strip navigation.
-#[test]
-fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
-    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
-    let maximized = |h: &mut Harness| {
-        h.host
-            .group_row_mut_for_tests(upper)
-            .expect("the upper strip is live")
-            .groups
-            .iter()
-            .any(|group| group.maximized)
-    };
-    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
-    assert!(!maximized(&mut h));
-    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
-    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
-    assert_eq!(plane(&h).1, upper);
-    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
-    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
-    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
-    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
-    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
 }
 
 /// Motion follows the input. A chord or an action is a known result asked

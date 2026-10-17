@@ -1815,6 +1815,11 @@ pub enum ShortcutAction {
     PreviousWorkspace,
     NextWorkspace,
     ToggleMaximize,
+    /// Maximize the focused window group; nothing when it already is.
+    MaximizeWindow,
+    /// Restore the focused window group from maximized; nothing when it
+    /// is not maximized.
+    RestoreWindow,
     DetachTab,
     AttachTabLeft,
     AttachTabRight,
@@ -1834,7 +1839,8 @@ pub enum ShortcutAction {
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
     ReopenClosedTab,
-    /// Focus the Nth window group of the current strip (Super+1 … Super+9).
+    /// Focus the Nth window group of the current strip (Ctrl+Super+1 …
+    /// Ctrl+Super+9).
     FocusGroup1,
     FocusGroup2,
     FocusGroup3,
@@ -1844,6 +1850,17 @@ pub enum ShortcutAction {
     FocusGroup7,
     FocusGroup8,
     FocusGroup9,
+    /// Go to the Nth strip of the workspace, counting from the top
+    /// (Super+1 … Super+9).
+    FocusStrip1,
+    FocusStrip2,
+    FocusStrip3,
+    FocusStrip4,
+    FocusStrip5,
+    FocusStrip6,
+    FocusStrip7,
+    FocusStrip8,
+    FocusStrip9,
     OpenFiles,
     OpenTerminal,
     ClipboardHistory,
@@ -1880,6 +1897,22 @@ impl ShortcutAction {
             Self::FocusGroup7 => 6,
             Self::FocusGroup8 => 7,
             Self::FocusGroup9 => 8,
+            _ => return None,
+        })
+    }
+
+    /// The strip a `FocusStripN` action goes to, counting from 0 at the top.
+    pub fn focus_strip_index(self) -> Option<usize> {
+        Some(match self {
+            Self::FocusStrip1 => 0,
+            Self::FocusStrip2 => 1,
+            Self::FocusStrip3 => 2,
+            Self::FocusStrip4 => 3,
+            Self::FocusStrip5 => 4,
+            Self::FocusStrip6 => 5,
+            Self::FocusStrip7 => 6,
+            Self::FocusStrip8 => 7,
+            Self::FocusStrip9 => 8,
             _ => return None,
         })
     }
@@ -2363,6 +2396,12 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn super_ctrl_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string(), "Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
         fn super_ctrl_shift_chord(key: &str) -> KeyChord {
             KeyChord {
                 modifiers: BTreeSet::from([
@@ -2416,10 +2455,14 @@ impl Default for ShortcutConfig {
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::TabMenu, super_chord("f10")),
-            // Arrows move focus across the plane; Shift carries the focused
-            // group the same way (docs/architecture/window-management.md).
-            (ShortcutAction::PreviousStrip, super_chord("up")),
-            (ShortcutAction::NextStrip, super_chord("down")),
+            // Super+Up/Down are the Windows and GNOME maximize and restore.
+            // Strips are one level out, on Ctrl+Super; Shift carries the
+            // focused group the same way
+            // (docs/architecture/window-management.md).
+            (ShortcutAction::MaximizeWindow, super_chord("up")),
+            (ShortcutAction::RestoreWindow, super_chord("down")),
+            (ShortcutAction::PreviousStrip, super_ctrl_chord("up")),
+            (ShortcutAction::NextStrip, super_ctrl_chord("down")),
             (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
             (ShortcutAction::NextWorkspace, super_chord("pagedown")),
             (ShortcutAction::ToggleMaximize, super_chord("m")),
@@ -2430,11 +2473,11 @@ impl Default for ShortcutConfig {
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (
                 ShortcutAction::MoveGroupToPreviousStrip,
-                super_shift_chord("up"),
+                super_ctrl_shift_chord("up"),
             ),
             (
                 ShortcutAction::MoveGroupToNextStrip,
-                super_shift_chord("down"),
+                super_ctrl_shift_chord("down"),
             ),
             // Super+Shift+arrows already reorder within a display; Ctrl
             // widens the same gesture to the neighbouring display.
@@ -2451,15 +2494,26 @@ impl Default for ShortcutConfig {
             // Restore the most recently closed frame in this workspace.
             // Plain Super+T keeps adding a tab.
             (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
-            (ShortcutAction::FocusGroup1, super_chord("1")),
-            (ShortcutAction::FocusGroup2, super_chord("2")),
-            (ShortcutAction::FocusGroup3, super_chord("3")),
-            (ShortcutAction::FocusGroup4, super_chord("4")),
-            (ShortcutAction::FocusGroup5, super_chord("5")),
-            (ShortcutAction::FocusGroup6, super_chord("6")),
-            (ShortcutAction::FocusGroup7, super_chord("7")),
-            (ShortcutAction::FocusGroup8, super_chord("8")),
-            (ShortcutAction::FocusGroup9, super_chord("9")),
+            // Super+number goes to a strip (the shared Lounge strip, at the
+            // top, is 1); Ctrl+Super+number to a window of the strip.
+            (ShortcutAction::FocusStrip1, super_chord("1")),
+            (ShortcutAction::FocusStrip2, super_chord("2")),
+            (ShortcutAction::FocusStrip3, super_chord("3")),
+            (ShortcutAction::FocusStrip4, super_chord("4")),
+            (ShortcutAction::FocusStrip5, super_chord("5")),
+            (ShortcutAction::FocusStrip6, super_chord("6")),
+            (ShortcutAction::FocusStrip7, super_chord("7")),
+            (ShortcutAction::FocusStrip8, super_chord("8")),
+            (ShortcutAction::FocusStrip9, super_chord("9")),
+            (ShortcutAction::FocusGroup1, super_ctrl_chord("1")),
+            (ShortcutAction::FocusGroup2, super_ctrl_chord("2")),
+            (ShortcutAction::FocusGroup3, super_ctrl_chord("3")),
+            (ShortcutAction::FocusGroup4, super_ctrl_chord("4")),
+            (ShortcutAction::FocusGroup5, super_ctrl_chord("5")),
+            (ShortcutAction::FocusGroup6, super_ctrl_chord("6")),
+            (ShortcutAction::FocusGroup7, super_ctrl_chord("7")),
+            (ShortcutAction::FocusGroup8, super_ctrl_chord("8")),
+            (ShortcutAction::FocusGroup9, super_ctrl_chord("9")),
             (ShortcutAction::OpenFiles, super_chord("e")),
             (ShortcutAction::OpenTerminal, ctrl_alt_chord("t")),
             (ShortcutAction::ClipboardHistory, super_chord("v")),
@@ -2507,6 +2561,21 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
     (ShortcutAction::Search, &["Super"], "k"),
     (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
+    // Strips moved one level out to Ctrl+Super when Super+Up/Down went
+    // back to maximize and restore, and Super+number to strips.
+    (ShortcutAction::PreviousStrip, &["Super"], "up"),
+    (ShortcutAction::NextStrip, &["Super"], "down"),
+    (ShortcutAction::MoveGroupToPreviousStrip, &["Shift", "Super"], "up"),
+    (ShortcutAction::MoveGroupToNextStrip, &["Shift", "Super"], "down"),
+    (ShortcutAction::FocusGroup1, &["Super"], "1"),
+    (ShortcutAction::FocusGroup2, &["Super"], "2"),
+    (ShortcutAction::FocusGroup3, &["Super"], "3"),
+    (ShortcutAction::FocusGroup4, &["Super"], "4"),
+    (ShortcutAction::FocusGroup5, &["Super"], "5"),
+    (ShortcutAction::FocusGroup6, &["Super"], "6"),
+    (ShortcutAction::FocusGroup7, &["Super"], "7"),
+    (ShortcutAction::FocusGroup8, &["Super"], "8"),
+    (ShortcutAction::FocusGroup9, &["Super"], "9"),
 ];
 
 impl ShortcutConfig {
@@ -3029,22 +3098,26 @@ mod tests {
     fn standard_desktop_chords_have_their_conventional_defaults() {
         let cfg = ShortcutConfig::default();
         let shown = |action| cfg.bindings[&action].display();
-        for (n, action) in [
-            ShortcutAction::FocusGroup1,
-            ShortcutAction::FocusGroup2,
-            ShortcutAction::FocusGroup3,
-            ShortcutAction::FocusGroup4,
-            ShortcutAction::FocusGroup5,
-            ShortcutAction::FocusGroup6,
-            ShortcutAction::FocusGroup7,
-            ShortcutAction::FocusGroup8,
-            ShortcutAction::FocusGroup9,
+        for (n, (strip, group)) in [
+            (ShortcutAction::FocusStrip1, ShortcutAction::FocusGroup1),
+            (ShortcutAction::FocusStrip2, ShortcutAction::FocusGroup2),
+            (ShortcutAction::FocusStrip3, ShortcutAction::FocusGroup3),
+            (ShortcutAction::FocusStrip4, ShortcutAction::FocusGroup4),
+            (ShortcutAction::FocusStrip5, ShortcutAction::FocusGroup5),
+            (ShortcutAction::FocusStrip6, ShortcutAction::FocusGroup6),
+            (ShortcutAction::FocusStrip7, ShortcutAction::FocusGroup7),
+            (ShortcutAction::FocusStrip8, ShortcutAction::FocusGroup8),
+            (ShortcutAction::FocusStrip9, ShortcutAction::FocusGroup9),
         ]
         .into_iter()
         .enumerate()
         {
-            assert_eq!(shown(action), format!("Super+{}", n + 1));
-            assert_eq!(action.focus_group_index(), Some(n));
+            assert_eq!(shown(strip), format!("Super+{}", n + 1));
+            assert_eq!(strip.focus_strip_index(), Some(n));
+            assert_eq!(strip.focus_group_index(), None);
+            assert_eq!(shown(group), format!("Super+Ctrl+{}", n + 1));
+            assert_eq!(group.focus_group_index(), Some(n));
+            assert_eq!(group.focus_strip_index(), None);
         }
         assert_eq!(shown(ShortcutAction::OpenFiles), "Super+e");
         assert_eq!(shown(ShortcutAction::OpenTerminal), "Ctrl+Alt+t");
@@ -3089,17 +3162,23 @@ mod tests {
             for (action, chord) in [
                 (ShortcutAction::FocusPreviousWindow, "Super+Left"),
                 (ShortcutAction::FocusNextWindow, "Super+Right"),
-                (ShortcutAction::PreviousStrip, "Super+Up"),
-                (ShortcutAction::NextStrip, "Super+Down"),
+                (ShortcutAction::MaximizeWindow, "Super+Up"),
+                (ShortcutAction::RestoreWindow, "Super+Down"),
+                (ShortcutAction::PreviousStrip, "Super+Ctrl+Up"),
+                (ShortcutAction::NextStrip, "Super+Ctrl+Down"),
                 (ShortcutAction::MoveGroupLeft, "Super+Shift+Left"),
                 (ShortcutAction::MoveGroupRight, "Super+Shift+Right"),
-                (ShortcutAction::MoveGroupToPreviousStrip, "Super+Shift+Up"),
-                (ShortcutAction::MoveGroupToNextStrip, "Super+Shift+Down"),
+                (
+                    ShortcutAction::MoveGroupToPreviousStrip,
+                    "Super+Ctrl+Shift+Up",
+                ),
+                (ShortcutAction::MoveGroupToNextStrip, "Super+Ctrl+Shift+Down"),
             ] {
                 assert_eq!(
                     cfg.bindings[&action].display(),
                     chord,
-                    "arrows move focus and Shift carries the group the same way"
+                    "Super+Up/Down maximize and restore, Ctrl+Super is strips, \
+                     and Shift carries the group the same way"
                 );
             }
             assert_eq!(
@@ -3258,7 +3337,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 51);
+            assert_eq!(cfg.bindings.len(), 62);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3282,6 +3361,65 @@ mod tests {
             );
         }
     }
+    /// A table saved while Super+Up/Down switched strips, Super+Shift+Up/Down
+    /// carried the group and Super+number focused a window takes today's
+    /// defaults: Super+Up/Down maximize and restore, Ctrl+Super is strips,
+    /// Super+number goes to a strip. A chord the person chose stays.
+    #[test]
+    fn a_table_saved_when_super_arrows_switched_strips_takes_the_new_scheme() {
+        let mut saved = ShortcutConfig::default();
+        for action in [
+            ShortcutAction::MaximizeWindow,
+            ShortcutAction::RestoreWindow,
+            ShortcutAction::FocusStrip1,
+            ShortcutAction::FocusStrip2,
+            ShortcutAction::FocusStrip3,
+            ShortcutAction::FocusStrip4,
+            ShortcutAction::FocusStrip5,
+            ShortcutAction::FocusStrip6,
+            ShortcutAction::FocusStrip7,
+            ShortcutAction::FocusStrip8,
+            ShortcutAction::FocusStrip9,
+        ] {
+            saved.bindings.remove(&action);
+        }
+        for (action, chord) in [
+            (ShortcutAction::PreviousStrip, "Super+Up"),
+            (ShortcutAction::NextStrip, "Super+Down"),
+            (ShortcutAction::MoveGroupToPreviousStrip, "Super+Shift+Up"),
+            (ShortcutAction::MoveGroupToNextStrip, "Super+Shift+Down"),
+            (ShortcutAction::FocusGroup1, "Super+1"),
+            (ShortcutAction::FocusGroup5, "Super+5"),
+            (ShortcutAction::FocusGroup9, "Super+9"),
+        ] {
+            saved
+                .bindings
+                .insert(action, KeyChord::parse(chord).unwrap());
+        }
+        let section = saved.section().unwrap();
+        assert_eq!(
+            ShortcutConfig::from_section(section),
+            ShortcutConfig::default(),
+            "an untouched table from before is today's defaults"
+        );
+
+        saved.bindings.insert(
+            ShortcutAction::FocusGroup2,
+            KeyChord::parse("Alt+Shift+2").unwrap(),
+        );
+        let repaired = ShortcutConfig::normalise(saved);
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::FocusGroup2].display(),
+            "Alt+Shift+2",
+            "a chord the person chose is kept"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::FocusStrip2].display(),
+            "Super+2"
+        );
+        assert!(repaired.validate().is_ok());
+    }
+
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
         let dir = tempfile::tempdir().unwrap();

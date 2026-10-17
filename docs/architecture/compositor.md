@@ -752,10 +752,12 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Ctrl+K                    | Search the focused app                         |
 | Super+Space               | Search all of Tilo                             |
 | Super+Page Up / Page Down | Previous / next workspace                      |
-| Super+Up / Down           | Previous / next strip                          |
-| Super+Shift+Up / Down     | Carry the focused group to the strip above / below |
+| Super+Up / Down           | Maximize / restore the focused window group    |
+| Ctrl+Super+Up / Down      | Strip above / below                            |
+| Shift+Ctrl+Super+Up / Down | Carry the focused group to the strip above / below |
+| Super+1..9                | Go to the Nth strip from the top (Lounge is 1) |
 | Super+Left / Right        | Previous / next window in the strip            |
-| Super+1..9                | Focus the Nth window group of the strip        |
+| Ctrl+Super+1..9           | Focus the Nth window group of the strip        |
 | Alt+Tab                   | Most recently used window of the workspace     |
 | Ctrl+Tab                  | Next tab in the focused window group           |
 | Super+T                   | New tab in the focused window group            |

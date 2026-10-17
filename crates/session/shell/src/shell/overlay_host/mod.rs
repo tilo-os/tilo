@@ -357,7 +357,7 @@ const SHORTCUT_GUIDE_ROWS: [(
     &str,
     settings_store::hardware::ShortcutAction,
     settings_store::hardware::ShortcutAction,
-); 8] = {
+); 9] = {
     use settings_store::hardware::ShortcutAction as A;
     [
         (
@@ -367,6 +367,7 @@ const SHORTCUT_GUIDE_ROWS: [(
         ),
         ("guide-row-tabs", A::PreviousTab, A::NextTab),
         ("guide-row-move-tab", A::AttachTabLeft, A::AttachTabRight),
+        ("guide-row-maximize", A::MaximizeWindow, A::RestoreWindow),
         ("guide-row-strips", A::PreviousStrip, A::NextStrip),
         (
             "guide-row-workspaces",
@@ -8023,16 +8024,6 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Whether the focused group is maximized.
-    pub(crate) fn focused_group_maximized(&mut self) -> bool {
-        self.mutate_focused_group_widget(|row, group| {
-            row.groups
-                .iter()
-                .find(|candidate| candidate.id == group)
-                .is_some_and(|g| g.maximized)
-        })
-    }
-
     /// Maximize or restore the focused group; `false` when it already is in
     /// that state or nothing is focused.
     pub(crate) fn set_focused_group_maximized(&mut self, maximized: bool) -> bool {
@@ -14261,6 +14252,8 @@ impl ShellOverlayHost {
             ShortcutAction::PreviousWorkspace,
             ShortcutAction::NextWorkspace,
             ShortcutAction::ToggleMaximize,
+            ShortcutAction::MaximizeWindow,
+            ShortcutAction::RestoreWindow,
             ShortcutAction::DetachTab,
             ShortcutAction::AttachTabLeft,
             ShortcutAction::AttachTabRight,
@@ -14326,6 +14319,12 @@ impl ShellOverlayHost {
                     let _ = self.toggle_focused_group_maximized();
                 }
             }
+            ShortcutAction::MaximizeWindow | ShortcutAction::RestoreWindow => {
+                if !repeat {
+                    let _ = self
+                        .set_focused_group_maximized(action == ShortcutAction::MaximizeWindow);
+                }
+            }
             ShortcutAction::DetachTab => {
                 if !repeat {
                     let _ = self.detach_focused_tab();
@@ -14386,23 +14385,7 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                // Super+Up/Down are strip navigation first. Where there is
-                // no strip to go to they are the Windows-style maximize and
-                // restore: Up on the topmost strip maximizes the focused
-                // group, Down on a maximized group restores it.
-                let focused = self
-                    .chrome
-                    .as_ref()
-                    .map_or(0, |c| c.borrow().strip_focus().1);
-                if direction < 0 && focused == 0 {
-                    if !repeat {
-                        let _ = self.set_focused_group_maximized(true);
-                    }
-                } else if direction > 0 && self.focused_group_maximized() {
-                    if !repeat {
-                        let _ = self.set_focused_group_maximized(false);
-                    }
-                } else if let Some(chrome) = self.chrome.clone() {
+                if let Some(chrome) = self.chrome.clone() {
                     let _ = chrome.borrow_mut().switch_strip(direction);
                 }
             }
@@ -14616,7 +14599,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
+    /// The conventional desktop chords (Super+1…9 for strips, Ctrl+Super+1…9
+    /// for windows, Super+E, Ctrl+Alt+T,
     /// Super+V, Super+A, Super+F, Super+Alt+8, Ctrl+Alt+Delete by
     /// default). Returns `false` for any other action. A held chord acts
     /// once: every action here is an edge, not a step.
@@ -14632,6 +14616,12 @@ impl ShellOverlayHost {
             if !repeat {
                 self.begin_motion(source);
                 let _ = self.focus_nth_group_in_strip(index);
+            }
+            return true;
+        }
+        if let Some(index) = action.focus_strip_index() {
+            if !repeat && let Some(chrome) = self.chrome.clone() {
+                let _ = chrome.borrow_mut().focus_strip_index(index);
             }
             return true;
         }
@@ -20901,8 +20891,12 @@ impl Widget for ShellOverlayHost {
                                     ("window-next", chord(ShortcutAction::FocusNextWindow).into()),
                                     ("tab-back", chord(ShortcutAction::PreviousTab).into()),
                                     ("tab-next", chord(ShortcutAction::NextTab).into()),
+                                    ("maximize", chord(ShortcutAction::MaximizeWindow).into()),
+                                    ("restore", chord(ShortcutAction::RestoreWindow).into()),
                                     ("strip-back", chord(ShortcutAction::PreviousStrip).into()),
                                     ("strip-next", chord(ShortcutAction::NextStrip).into()),
+                                    ("strip-first", chord(ShortcutAction::FocusStrip1).into()),
+                                    ("strip-last", chord(ShortcutAction::FocusStrip9).into()),
                                     (
                                         "workspace-back",
                                         chord(ShortcutAction::PreviousWorkspace).into(),
@@ -23871,6 +23865,7 @@ impl ShellOverlayHost {
                     note_y += 18.0;
                 };
                 note(&t("guide-pointer"), scene);
+                note(&shortcuts::shortcut_strip_jump_note(shortcuts), scene);
                 if let Some(summary) = &summary {
                     note(summary, scene);
                 }
