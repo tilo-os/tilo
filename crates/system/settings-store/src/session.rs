@@ -984,7 +984,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn only_checked_open_rejects_malformed_copies() {
+    fn checked_open_rejects_malformed_copies_and_legacy_preserves_unreadable_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let paths = SessionPaths::beside(root.join("settings.json"));
@@ -998,7 +998,19 @@ mod tests {
                 std::io::ErrorKind::InvalidData
             );
             assert!(load_at(&paths.copy).is_empty());
-            assert!(SessionSettings::open(paths.clone()).is_ok());
+            let legacy = SessionSettings::open(paths.clone());
+            if std::str::from_utf8(invalid).is_ok() {
+                assert!(legacy.is_ok(), "legacy repairs malformed readable JSON");
+            } else {
+                assert_eq!(
+                    legacy
+                        .err()
+                        .expect("unreadable bytes must refuse import")
+                        .kind(),
+                    std::io::ErrorKind::InvalidData
+                );
+                assert_eq!(std::fs::read(&paths.copy).unwrap(), invalid);
+            }
         }
     }
 
