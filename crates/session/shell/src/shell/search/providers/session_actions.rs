@@ -306,6 +306,18 @@ impl SessionActionsProvider {
 }
 
 impl SearchProvider for SessionActionsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        use ui::icons::Icon;
+        Some(match result.id.as_str() {
+            "lock" => Icon::Lock,
+            "switch-user" => Icon::Users,
+            "suspend" => Icon::Moon,
+            "restart" => Icon::RotateCcw,
+            "shut-down" => Icon::Power,
+            LOGOUT_ID => Icon::ArrowLeft,
+            _ => return None,
+        })
+    }
     fn id(&self) -> &str {
         PROVIDER_ID
     }

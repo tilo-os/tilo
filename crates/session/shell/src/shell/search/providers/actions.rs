@@ -3117,6 +3117,9 @@ impl Default for ActionsProvider {
 pub(crate) const PROVIDER_ID: &str = "actions";
 
 impl SearchProvider for ActionsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        action_icon(&result.id)
+    }
     fn id(&self) -> &'static str {
         PROVIDER_ID
     }
@@ -4472,6 +4475,69 @@ pub(crate) fn action_keywords(id: &str) -> Vec<String> {
 /// Actions that change a setting the row itself shows, so choosing one
 /// leaves the palette open on the row's new state: a person flipping Wi-Fi
 /// or Do Not Disturb wants to see it flip, not lose the palette.
+/// The picture of an action, by what it acts on: the most specific family
+/// its id names (`appearance.theme.dark` before `appearance`). Families
+/// are whole id segments, so `tab` never claims `table.*`.
+pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
+    use ui::icons::Icon;
+    const FAMILIES: &[(&str, Icon)] = &[
+        ("quick-settings.wifi", Icon::Wifi),
+        ("quick-settings.network", Icon::Wifi),
+        ("quick-settings.bluetooth", Icon::Bluetooth),
+        ("quick-settings.airplane-mode", Icon::Plane),
+        ("quick-settings.devices", Icon::MonitorSmartphone),
+        ("quick-settings.clipboard", Icon::ClipboardPaste),
+        ("quick-settings", Icon::Settings2),
+        ("appearance.theme.dark", Icon::Moon),
+        ("appearance.theme.light", Icon::Sun),
+        ("appearance.high-contrast", Icon::Contrast),
+        ("appearance.language", Icon::Globe),
+        ("appearance", Icon::Palette),
+        ("notifications", Icon::Bell),
+        ("capture", Icon::Camera),
+        ("dictation", Icon::Mic),
+        ("presence.follow", Icon::Eye),
+        ("presence", Icon::User),
+        ("peer", Icon::UserPlus),
+        ("agent", Icon::Bot),
+        ("invitation", Icon::Send),
+        ("identity", Icon::Fingerprint),
+        ("ownership", Icon::Shield),
+        ("collaborators", Icon::Users),
+        ("history.undo", Icon::Undo2),
+        ("history", Icon::History),
+        ("room.activity", Icon::History),
+        ("record", Icon::FileText),
+        ("tab.close", Icon::Trash2),
+        ("tab.reopen", Icon::RotateCcw),
+        ("tab.split-right", Icon::Columns2),
+        ("tab.new.terminal", Icon::SquareTerminal),
+        ("window.new.terminal", Icon::SquareTerminal),
+        ("group.fullscreen", Icon::Maximize2),
+        ("group.maximize", Icon::Maximize2),
+        ("tab", Icon::AppWindow),
+        ("window", Icon::AppWindow),
+        ("group", Icon::AppWindow),
+        ("strip", Icon::Layers),
+        ("workspace", Icon::Layers),
+        ("overview", Icon::LayoutGrid),
+        ("projection", Icon::ScreenShare),
+        ("navigation", Icon::Navigation),
+        ("settings", Icon::Settings),
+        ("feedback", Icon::MessageSquare),
+        ("desktop-tour", Icon::Info),
+        ("shortcut-help", Icon::Keyboard),
+        ("topbar", Icon::Menu),
+    ];
+    FAMILIES
+        .iter()
+        .find(|(family, _)| {
+            id.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+        .map(|(_, icon)| *icon)
+}
+
 pub(crate) fn toggles_in_place(id: &str) -> bool {
     matches!(
         id,

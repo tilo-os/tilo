@@ -499,6 +499,13 @@ pub trait SearchProvider {
         None
     }
 
+    /// The picture for one of this provider's rows when the row has one of
+    /// its own (a settings page's, an action's); `None` keeps its kind's
+    /// glyph. A picture tells rows apart faster than their text does.
+    fn row_icon(&self, _result: &SearchResult) -> Option<ui::icons::Icon> {
+        None
+    }
+
     /// Resource hierarchy for one result already admitted to the caller's
     /// catalog. Providers derive identity from their authoritative source,
     /// never presentation labels. This does not resolve or invoke an action.
@@ -1088,6 +1095,15 @@ impl SearchRegistry {
 
     /// Union of every registered provider's [`ResourceKind`]s, ordered by
     /// `ResourceKind::sort_key` — one chip per kind in the palette.
+    /// The picture the provider that returned `result` gives it, if any
+    /// ([`SearchProvider::row_icon`]).
+    pub fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)?
+            .row_icon(result)
+    }
+
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
         let mut out: Vec<ResourceKind> = Vec::new();
         for provider in self.enabled_providers() {
