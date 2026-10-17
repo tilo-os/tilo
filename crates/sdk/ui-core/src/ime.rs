@@ -210,6 +210,70 @@ impl InputContent {
     }
 }
 
+/// What a browser's text control is told about a field: the attributes a
+/// web runner sets on the editor it focuses for the field. An empty
+/// `enterkeyhint` leaves the browser's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HtmlInputHints {
+    pub inputmode: &'static str,
+    pub enterkeyhint: &'static str,
+    pub autocapitalize: &'static str,
+    pub autocomplete: &'static str,
+    pub spellcheck: bool,
+}
+
+impl InputContent {
+    /// The browser attributes for this content. Free text keeps what a web
+    /// runner's editor always had: no capitalisation, autofill or
+    /// spellchecking of the browser's own, which the toolkit does itself.
+    #[must_use]
+    pub const fn html(self) -> HtmlInputHints {
+        let inputmode = match self.purpose {
+            InputPurpose::Search => "search",
+            InputPurpose::Email => "email",
+            InputPurpose::Url => "url",
+            InputPurpose::Number | InputPurpose::Decimal => "decimal",
+            InputPurpose::Phone => "tel",
+            InputPurpose::Pin | InputPurpose::OneTimeCode => "numeric",
+            InputPurpose::Text
+            | InputPurpose::Name
+            | InputPurpose::Password
+            | InputPurpose::Date
+            | InputPurpose::Time
+            | InputPurpose::Terminal => "text",
+        };
+        let secret = self.is_secret();
+        let autocapitalize = match self.hints.capitalization {
+            _ if secret || self.hints.lowercase => "off",
+            Capitalization::None => "off",
+            Capitalization::Sentences => "sentences",
+            Capitalization::Words => "words",
+        };
+        // Autofill offers only what a field of this purpose holds, and
+        // never anything for a secret it could leak into.
+        let autocomplete = match self.purpose {
+            _ if secret => "off",
+            InputPurpose::Name => "name",
+            InputPurpose::Email => "email",
+            InputPurpose::Url => "url",
+            InputPurpose::Phone => "tel",
+            InputPurpose::OneTimeCode => "one-time-code",
+            _ => "off",
+        };
+        HtmlInputHints {
+            inputmode,
+            enterkeyhint: if matches!(self.purpose, InputPurpose::Search) {
+                "search"
+            } else {
+                ""
+            },
+            autocapitalize,
+            autocomplete,
+            spellcheck: self.hints.spellcheck && !secret,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImeWindowState {
     /// What the field holds and how the input method may help in it,
@@ -354,6 +418,57 @@ mod tests {
                 .with_secret(true)
                 .ime_edit_fingerprint(&key)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_browser_editor_is_told_each_purpose_and_keeps_free_texts_defaults() {
+        use super::{Capitalization, HtmlInputHints, InputContent, InputPurpose};
+        let html = |content: InputContent| content.html();
+        let attrs =
+            |inputmode, enterkeyhint, autocapitalize, autocomplete, spellcheck| HtmlInputHints {
+                inputmode,
+                enterkeyhint,
+                autocapitalize,
+                autocomplete,
+                spellcheck,
+            };
+        assert_eq!(
+            html(InputContent::TEXT),
+            attrs("text", "", "off", "off", false)
+        );
+        let of = InputContent::of;
+        assert_eq!(
+            html(of(InputPurpose::Email)),
+            attrs("email", "", "off", "email", false)
+        );
+        assert_eq!(
+            html(of(InputPurpose::Phone)),
+            attrs("tel", "", "off", "tel", false)
+        );
+        assert_eq!(
+            html(of(InputPurpose::Search)),
+            attrs("search", "search", "off", "off", false)
+        );
+        assert_eq!(
+            html(of(InputPurpose::OneTimeCode)),
+            attrs("numeric", "", "off", "one-time-code", false)
+        );
+        let mut name = of(InputPurpose::Name);
+        name.hints.capitalization = Capitalization::Words;
+        assert_eq!(html(name), attrs("text", "", "words", "name", false));
+        let mut checked = InputContent::TEXT;
+        checked.hints.spellcheck = true;
+        checked.hints.capitalization = Capitalization::Sentences;
+        assert_eq!(html(checked), attrs("text", "", "sentences", "off", true));
+        // A secret offers no autofill, capitalisation or spellchecking.
+        let mut secret = of(InputPurpose::Email).secret();
+        secret.hints.spellcheck = true;
+        secret.hints.capitalization = Capitalization::Words;
+        assert_eq!(html(secret), attrs("email", "", "off", "off", false));
+        assert_eq!(
+            html(InputContent::PASSWORD),
+            attrs("text", "", "off", "off", false)
         );
     }
 

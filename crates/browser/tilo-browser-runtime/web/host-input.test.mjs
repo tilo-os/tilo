@@ -180,6 +180,19 @@ test('current standalone and legacy runtimes retain local text input without des
   assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','local']]);assert.equal(f.ownershipReads,0);
  }
 });
+test('the focused field\'s purpose reaches the browser editor and free text keeps its defaults',async()=>{
+ const f=await fixture({legacy:true});
+ const hints=(inputmode,autocomplete,extra={})=>({inputmode,enterkeyhint:'',autocapitalize:'off',autocomplete,spellcheck:false,...extra});
+ const field=(purpose,fieldHints)=>f.update({phase:'presented',frames:2,ime:{x:0,y:0,width:1,height:20,purpose,hints:fieldHints}});
+ const editor=()=>f.host.editor;
+ const attributes=()=>({inputmode:editor().inputMode,enterkeyhint:editor().enterKeyHint,autocapitalize:editor().autocapitalize,autocomplete:editor().autocomplete,spellcheck:editor().spellcheck});
+ field('Phone',hints('tel','tel'));await tick();
+ assert.deepEqual(attributes(),hints('tel','tel'));
+ field('Search',hints('search','off',{enterkeyhint:'search'}));await tick();
+ assert.deepEqual(attributes(),hints('search','off',{enterkeyhint:'search'}));
+ field('Text',hints('text','off'));await tick();
+ assert.deepEqual(attributes(),hints('text','off'),'free text: no capitalisation, autofill or browser spellcheck');
+});
 test('asynchronous Rust Search activation retains local gesture authority but respects later outside focus',async()=>{
  for(const outside of [false,true]){
   const f=await fixture();const search=new Node('textarea');f.host.canvas.parentNode.append(search);search.focus();let complete;
