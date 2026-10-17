@@ -246,6 +246,11 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
     ui::i18n::I18nManager::init("en-US");
     // Either the parked host wakes at the deadline, or the next wheel
     // arrives after it. Neither is a view-only continuation of the pan.
+    // That wheel is input, so before it reaches a widget the windows the
+    // last pan frame replayed are drawn again, in a full frame that already
+    // ends the gesture; the wheel then starts a new pan and the frame polled
+    // after it may be a quiet pan frame. What ends the gesture is therefore
+    // asserted over every frame from the deadline on, not on the polled one.
     for next_wheel in [false, true] {
         ui::time::testing::with_monotonic_time(ui::time::now(), || {
             let f = NotebookFixture::rich();
@@ -278,6 +283,7 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
                 },
             );
             let quiet = harness.quiet_frames();
+            let frames = harness.relayout_frames();
             let ((), rows) = ui::time::testing::with_monotonic_time(deadline, || {
                 observe(|| {
                     if next_wheel {
@@ -290,7 +296,18 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
                     );
                 })
             });
-            assert_eq!(harness.quiet_frames(), quiet, "ending a pan is not quiet");
+            let quiet = harness
+                .quiet_frames()
+                .checked_sub(quiet)
+                .expect("quiet frame count never decreases");
+            let frames = harness
+                .relayout_frames()
+                .checked_sub(frames)
+                .expect("frame count never decreases");
+            assert!(
+                quiet < frames,
+                "ending a pan is not quiet: {quiet} of its {frames} frames were: {rows:?}"
+            );
             assert_ne!(
                 handle.snapshot("g", vec![]).active,
                 active,
