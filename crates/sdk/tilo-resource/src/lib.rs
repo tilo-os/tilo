@@ -257,6 +257,16 @@ pub mod __private {
         T::edit(doc, crate::Slot::Key(obj, key), rest, op, cx).located(key)
     }
 
+    /// How a verb's change is undone.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum VerbUndo {
+        /// By reverting the document: the change is all there is.
+        Revert,
+        /// By its compensating verb (`#[action(undo = ...)]`): it also
+        /// queued an outside consequence, which only that takes back.
+        Compensation,
+    }
+
     /// What a verb answers its caller.
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum VerbAnswer {
@@ -284,9 +294,8 @@ pub mod __private {
         pub answer: VerbAnswer,
         /// It records a message someone received (`#[action(incoming_message)]`).
         pub incoming_message: bool,
-        /// Its outside consequence is undone by a compensating verb
-        /// (`#[action(undo = ...)]`).
-        pub compensated: bool,
+        /// How its change is undone.
+        pub undo: VerbUndo,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -437,7 +446,7 @@ pub mod __private {
             decl.tags
                 .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
         }
-        if verb.compensated {
+        if verb.undo == VerbUndo::Compensation {
             decl.tags
                 .push(tilo_actions::COMPENSATED_UNDO_TAG.to_owned());
         }
