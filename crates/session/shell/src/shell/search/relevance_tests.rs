@@ -239,6 +239,9 @@ const fn action(id: &'static str) -> Expect {
 const fn page(id: &'static str) -> Expect {
     Expect::Top(PAGE, id)
 }
+const fn setting(id: &'static str) -> Expect {
+    Expect::Top(PAGE, id)
+}
 const fn not_app(id: &'static str) -> Expect {
     Expect::Not(APP, id)
 }
@@ -395,12 +398,23 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("flugmodus", action("quick-settings.airplane-mode.toggle")),
         // Settings pages: by name and by what is on them.
         ("bluetooth", page("page:bluetooth")),
-        ("keyboard layout", page("page:keyboard")),
+        ("keyboard layout", setting("setting:keyboard.layout")),
+        ("tastaturbelegung", setting("setting:keyboard.layout")),
+        ("qwertz", setting("setting:keyboard.layout")),
         ("tastatur", page("page:keyboard")),
         ("touchpad", page("page:pointing")),
-        ("night light", page("page:displays")),
-        ("time zone", page("page:time_date")),
-        ("zeitzone", page("page:time_date")),
+        ("night light", setting("setting:display.night_light")),
+        ("dark mode", action("appearance.theme.dark")),
+        ("charge cap", setting("setting:power.charge_limit")),
+        ("touchpad speed", setting("setting:pointing.touchpad_speed")),
+        ("tap to click", setting("setting:pointing.tap_to_click")),
+        (
+            "disable touchpad while typing",
+            setting("setting:pointing.disable_while_typing"),
+        ),
+        ("24-hour", setting("setting:region.time")),
+        ("time zone", setting("setting:time.zone")),
+        ("zeitzone", setting("setting:time.zone")),
         ("default browser", page("page:default-apps")),
         ("firmware", page("page:updates")),
         ("battery", page("page:power")),

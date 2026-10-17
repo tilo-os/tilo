@@ -16364,12 +16364,7 @@ impl ShellOverlayHost {
             }
             DeviceFabricPaneRow::SpeakerSetup => {
                 if let Some(chrome) = self.chrome.clone() {
-                    {
-                        let mut state = chrome.borrow_mut();
-                        state.overlays.quick_settings = false;
-                        state.bump();
-                    }
-                    (self.app_launcher)(&chrome, "so.tilo.settings", "Settings");
+                    self.open_settings(&chrome, Some("settings://speakers"));
                 }
                 return;
             }
@@ -17262,6 +17257,33 @@ impl ShellOverlayHost {
         self.qs_refresh.kick_field(field);
     }
 
+    /// Close quick settings and open Settings, at `link` when it names a
+    /// page or a setting (`settings://speakers`). A link goes through the
+    /// same door as a palette hit on that page, so placement, duplicate
+    /// focusing and an already-open Settings window behave the same; a bare
+    /// open uses the app launcher, which reports a missing package. Either
+    /// way this is the device's settings, never the workspace's.
+    fn open_settings(&self, chrome: &Chrome, link: Option<&str>) {
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = false;
+            state.bump();
+        }
+        if let Some(link) = link {
+            match crate::shell::uri_open::open_in_workspace(link, chrome) {
+                Ok(_) => return,
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        link,
+                        "could not open the Settings link; opening Settings"
+                    );
+                }
+            }
+        }
+        (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
+    }
+
     fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
@@ -17307,20 +17329,9 @@ impl ShellOverlayHost {
             }
             RootAction::OpenSettings => {
                 // This is the device settings affordance, not workspace
-                // sharing settings. Use the same launcher path as the app
-                // palette so placement, duplicate focusing, sandbox grants,
-                // loading feedback and failures all behave consistently.
-                {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.quick_settings = false;
-                    st.bump();
-                }
-                (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
-                // A missing Settings package is already reported by the
-                // ordinary launcher as an actionable failure notification.
-                // Workspace settings controls sharing, members and room
-                // policy; opening it as a fallback would silently change the
-                // meaning of this personal/device-settings action.
+                // sharing settings. Settings opens on the page the person
+                // used last.
+                self.open_settings(chrome, None);
             }
             RootAction::OpenPrivacy => {
                 // The same destination as the `settings.privacy.open` action:
@@ -18542,7 +18553,10 @@ impl ShellOverlayHost {
                     .status(crate::compositor::dictation_status::DictationStatus::Idle);
                 self.layers.dictation.request_cancel();
                 if let Some(chrome) = self.chrome.clone() {
-                    self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+                    self.open_settings(
+                        &chrome,
+                        Some("settings://accessibility#a11y.dictation_language"),
+                    );
                     true
                 } else {
                     false
