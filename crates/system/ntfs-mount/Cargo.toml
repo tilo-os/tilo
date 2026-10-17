@@ -1,0 +1,35 @@
+[package]
+name = "tilo-ntfs-mount"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Consent-gated NTFS access: the root service that opens a drive only after the person agrees in the shell, its topology-bound remembered choices, and the protocol the shell and Settings speak"
+
+[lib]
+name = "ntfs_mount"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-ntfs-mount"
+path = "src/main.rs"
+required-features = ["service"]
+
+[features]
+default = ["service"]
+# The root service. The shell and Settings only speak the protocol and
+# depend on this crate without it.
+service = ["dep:tilo-sandbox-core"]
+
+[dependencies]
+libc.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tilo-sandbox-core = { path = "../sandbox-core", optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

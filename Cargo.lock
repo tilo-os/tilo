@@ -14479,6 +14479,7 @@ dependencies = [
  "tilo-locale",
  "tilo-media",
  "tilo-net",
+ "tilo-ntfs-mount",
  "tilo-oauth",
  "tilo-paths",
  "tilo-relay-protocol",
@@ -14813,6 +14814,7 @@ dependencies = [
  "tilo-net",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-ntfs-mount",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",
@@ -18278,6 +18280,18 @@ dependencies = [
  "tempfile",
  "tilo-ntfs-protocol",
  "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ntfs-mount"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-sandbox-core",
  "workspace-hack",
 ]
 
