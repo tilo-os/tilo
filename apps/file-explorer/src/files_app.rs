@@ -101,6 +101,24 @@ fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Result<PathBuf
     Ok(copy)
 }
 
+/// A paste's policy for names the folder already has, as callers name it.
+fn paste_conflict(
+    name: Option<&str>,
+) -> Result<ui::collaboration::file_clipboard::Conflict, String> {
+    use ui::collaboration::file_clipboard::Conflict;
+    Ok(match name {
+        None | Some("keep-both") => Conflict::KeepBoth,
+        Some("skip") => Conflict::Skip,
+        Some("replace") => Conflict::Replace,
+        Some("ask") => Conflict::Ask,
+        Some(other) => {
+            return Err(format!(
+                "conflict must be keep-both, skip, replace or ask, not {other:?}"
+            ));
+        }
+    })
+}
+
 /// Whether `path` and `dir` are on one filesystem, so a move is a rename.
 /// When either can't be read, assume so: the move itself then says why.
 fn same_filesystem(path: &Path, dir: &Path) -> bool {
@@ -2133,9 +2151,9 @@ impl FileExplorerWidget {
                 });
                 None
             }
-            FilesEffect::Paste => {
+            FilesEffect::Paste { conflict } => {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
-                    return self.paste_clipboard(invocation);
+                    return self.paste_clipboard(invocation, paste_conflict(conflict.as_deref())?);
                 }
                 self.paste()?;
                 None
@@ -4903,7 +4921,11 @@ impl FileExplorerWidget {
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
                 if self.can_paste_clipboard() {
-                    self.perform(crate::effects::FilesEffect::Paste);
+                    // The person pasting is here to answer: clashing names
+                    // are asked about once.
+                    self.perform(crate::effects::FilesEffect::Paste {
+                        conflict: Some("ask".into()),
+                    });
                 }
                 true
             }
@@ -5665,6 +5687,21 @@ impl FileExplorerWidget {
         self.favs.clone()
     }
 
+    /// Stage the preview of the folder's first text file, for an offscreen
+    /// review.
+    #[doc(hidden)]
+    pub fn debug_show_preview(&mut self) {
+        let text = |entry: &Entry| {
+            entry.path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("txt")
+            })
+        };
+        if let Some(i) = self.displayed_entries().iter().position(text) {
+            self.select(Some(i));
+            self.show_preview();
+        }
+    }
+
     /// Stage the name-clash question, for an offscreen review. Nothing is
     /// copied: the sheet is only shown.
     #[doc(hidden)]
@@ -5929,16 +5966,7 @@ impl FileExplorerWidget {
             Some("menu" | "archive-menu") => self.open_view_menu(),
             Some("undo-trash") => self.debug_show_trash_notice(),
             Some("clash") => self.debug_show_clash(),
-            Some("preview") => {
-                if let Some(i) = self
-                    .displayed_entries()
-                    .iter()
-                    .position(|entry| entry.name.ends_with(".md") || entry.name.ends_with(".txt"))
-                {
-                    self.select(Some(i));
-                    self.show_preview();
-                }
-            }
+            Some("preview") => self.debug_show_preview(),
             Some("context-menu") => {
                 // A right-click in the content pane, away from the toolbar's
                 // menu, with its first row armed as the keyboard would.
@@ -6631,6 +6659,18 @@ impl FileExplorerWidget {
             return;
         };
         self.structure_dirty = true;
+        if pending.clipboard.is_some() {
+            use ui::collaboration::file_clipboard::Conflict;
+            let conflict = choice.map(|choice| match choice {
+                ClashChoice::Skip => Conflict::Skip,
+                ClashChoice::KeepBoth => Conflict::KeepBoth,
+                ClashChoice::Replace => Conflict::Replace,
+            });
+            if let Some(result) = self.local_clipboard.decide(conflict) {
+                self.complete_clipboard_publication(result);
+            }
+            return;
+        }
         match choice {
             None => {}
             Some(ClashChoice::KeepBoth) => {

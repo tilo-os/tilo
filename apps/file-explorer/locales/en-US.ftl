@@ -28,7 +28,8 @@ files-clipboard-unavailable = Copy and paste isn’t available right now.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.
 files-selection-unavailable = That item is no longer in this folder.
-files-selection-too-large = Select at most 256 entries in one request, or use Select all.
+files-selection-too-large = Select at most 256 items in one request.
+files-copy-too-large = Copy at most 1,024 items at once.
 
 ## Availability actions and status
 files-opening-document = Opening document…

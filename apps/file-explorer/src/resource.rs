@@ -1204,8 +1204,10 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         }
         let recovery =
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
-        let receipt = matches!(effect, FilesEffect::Paste | FilesEffect::Restore { .. })
-            && self.hosted_clipboard();
+        let receipt = matches!(
+            effect,
+            FilesEffect::Paste { .. } | FilesEffect::Restore { .. }
+        ) && self.hosted_clipboard();
         Ok(match self.run_effect_for(effect, cx.invocation())? {
             Ran::Done(Some(answer)) => Effected::value(answer),
             Ran::Done(None) => Effected::done(),
@@ -1599,7 +1601,7 @@ mod tests {
             path: destination.display().to_string(),
         })
         .unwrap();
-        app.effect(&FilesEffect::Paste).unwrap();
+        app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
         app.settle();
         for name in ["a.txt", "c.txt"] {
             assert_eq!(
@@ -1715,7 +1717,7 @@ mod tests {
             path: projects.clone(),
         })
         .unwrap();
-        app.effect(&FilesEffect::Paste).unwrap();
+        app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
         app.settle();
         assert!(folder.path().join("Projects/notes.txt").exists());
         assert!(app.undo());
@@ -1744,7 +1746,7 @@ mod tests {
             path: projects.clone(),
         })
         .unwrap();
-        app.effect(&FilesEffect::Paste).unwrap();
+        app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
         app.settle();
         assert!(folder.path().join("Projects/plan.txt").exists());
         assert!(app.undo());
@@ -1922,7 +1924,7 @@ mod tests {
             path: folder.path().join("Projects").display().to_string(),
         })
         .unwrap();
-        app.effect(&FilesEffect::Paste).unwrap();
+        app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
         assert!(folder.path().join("Projects/notes.txt").exists());
         assert!(
             app.effect(&FilesEffect::EmptyTrash).is_err(),
