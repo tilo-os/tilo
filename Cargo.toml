@@ -592,7 +592,7 @@ flate2 = "1"
 miniz_oxide = "0.8"
 # A standalone build (a published crate) needs flate2 to name its backend;
 # zlib-rs is the one the workspace already links.
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------

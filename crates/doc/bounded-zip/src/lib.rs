@@ -21,6 +21,7 @@
 #[cfg(feature = "epub")]
 pub mod epub;
 
+use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
@@ -191,9 +192,10 @@ impl<R: Read + Seek> BoundedArchive<R> {
         self.archive.is_empty()
     }
 
-    /// Names of every entry, in no particular order.
-    pub fn file_names(&self) -> impl Iterator<Item = &str> {
-        self.archive.file_names()
+    /// Names of every entry, in no particular order. An entry whose name does
+    /// not decode is left out: reading it fails with [`ZipError::Entry`].
+    pub fn file_names(&self) -> impl Iterator<Item = Cow<'_, str>> {
+        self.archive.file_names().filter_map(Result::ok)
     }
 
     /// Rejects the archive up front if any entry *declares* more than
@@ -214,7 +216,10 @@ impl<R: Read + Seek> BoundedArchive<R> {
             let declared = file.size();
             if declared > self.limits.max_part_bytes {
                 return Err(ZipError::PartTooLarge {
-                    name: file.name().to_string(),
+                    name: file
+                        .name()
+                        .map_err(|source| ZipError::Entry { index, source })?
+                        .into_owned(),
                     declared,
                     limit: self.limits.max_part_bytes,
                 });
@@ -332,7 +337,10 @@ impl<R: Read + Seek> BoundedArchive<R> {
                 .archive
                 .by_index(index)
                 .map_err(|source| ZipError::Entry { index, source })?;
-            let name = file.name().to_string();
+            let name = file
+                .name()
+                .map_err(|source| ZipError::Entry { index, source })?
+                .into_owned();
             if name.ends_with('/') {
                 continue;
             }
@@ -369,7 +377,10 @@ impl<R: Read + Seek> BoundedArchive<R> {
                 .archive
                 .by_index(index)
                 .map_err(|source| ZipError::Entry { index, source })?;
-            let name = file.name().to_string();
+            let name = file
+                .name()
+                .map_err(|source| ZipError::Entry { index, source })?
+                .into_owned();
             let Some(relative) = file.enclosed_name() else {
                 return Err(ZipError::UnsafeName { name });
             };
@@ -419,14 +430,31 @@ fn read_capped(
     // than a small first allocation.
     let mut buf = Vec::with_capacity(usize::try_from(declared.min(64 * 1024)).unwrap_or(0));
     // Enforce the cap even if the header lied: inflate at most `cap + 1`, and
-    // hitting that means over-limit.
-    let read = (&mut file)
+    // hitting that means over-limit. The zip reader also refuses on its own to
+    // inflate past the declared size, with an InvalidData error that only its
+    // message tells apart from a checksum failure; that is the same lie,
+    // caught earlier. (The bomb tests pin the message.)
+    let read = match (&mut file)
         .take(cap.saturating_add(1))
         .read_to_end(&mut buf)
-        .map_err(|source| ZipError::Read {
-            name: name.to_string(),
-            source,
-        })? as u64;
+    {
+        Ok(read) => read as u64,
+        Err(source)
+            if source.kind() == std::io::ErrorKind::InvalidData
+                && source.to_string().contains("larger than its declared") =>
+        {
+            return Err(ZipError::PartInflatesTooLarge {
+                name: name.to_string(),
+                limit: cap,
+            });
+        }
+        Err(source) => {
+            return Err(ZipError::Read {
+                name: name.to_string(),
+                source,
+            });
+        }
+    };
     if read > cap {
         return Err(ZipError::PartInflatesTooLarge {
             name: name.to_string(),

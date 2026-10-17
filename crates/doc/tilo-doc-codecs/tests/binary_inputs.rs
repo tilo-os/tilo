@@ -28,7 +28,7 @@ fn with_parts(package: &[u8], extra: &[(&str, &[u8])]) -> Vec<u8> {
         .compression_method(zip::CompressionMethod::Deflated);
     for i in 0..source.len() {
         let mut entry = source.by_index(i).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
         let stored = zip::write::SimpleFileOptions::default()

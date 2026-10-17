@@ -197,7 +197,7 @@ fn list_zip<R: Read + Seek>(reader: R) -> io::Result<Vec<ArchiveEntry>> {
         }
         total = account(result.len(), total, entry.size())?;
         result.push(ArchiveEntry {
-            path: safe_relative(Path::new(entry.name()))?,
+            path: safe_relative(Path::new(&*entry.name().map_err(io::Error::other)?))?,
             size: entry.size(),
             is_dir: entry.is_dir(),
         });
@@ -305,7 +305,7 @@ fn extract_zip<R: Read + Seek>(reader: R, destination: &Path) -> io::Result<Vec<
         let size = entry.size();
         total = account(count, total, size)?;
         count = count.saturating_add(1);
-        let relative = safe_relative(Path::new(entry.name()))?;
+        let relative = safe_relative(Path::new(&*entry.name().map_err(io::Error::other)?))?;
         let output = destination.join(&relative);
         if entry.is_dir() {
             fs::create_dir_all(&output)?;

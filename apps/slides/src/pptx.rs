@@ -138,7 +138,7 @@ pub fn read_pptx(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> 
         .unwrap_or_else(|| "Imported PowerPoint".into());
     let mut names: Vec<String> = zip
         .file_names()
-        .map(str::to_string)
+        .map(std::borrow::Cow::into_owned)
         .filter(|n| {
             n.starts_with("ppt/slides/slide")
                 && std::path::Path::new(n)
