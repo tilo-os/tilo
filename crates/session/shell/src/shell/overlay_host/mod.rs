@@ -1841,8 +1841,10 @@ impl ShellOverlayHost {
         for &(strip, row) in &apart {
             let mut scene = Scene::new();
             // A blurred surface drawn into a strip is recorded as drawn into
-            // the workspace, so the frame producer sees it.
+            // the workspace, so the frame producer sees it; the desktop
+            // section is all that is behind its windows' tab strips.
             ui::backdrop::layer_scene(&scene, backdrop_layer::WORKSPACE);
+            ui::backdrop::mark_desktop(&scene);
             // Each window group is a damage part of the strip's drawing.
             let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
                 // SAFETY: as above.
@@ -4951,6 +4953,7 @@ impl ShellOverlayHost {
             display_size,
             hdr_static_metadata,
             ref input_sink,
+            ref keyframe_sink,
             tab,
         } = *stream;
         let key = (source_peer, surface_id);
@@ -4999,6 +5002,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_keyframe_sink(std::sync::Arc::clone(keyframe_sink));
         peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by

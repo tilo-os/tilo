@@ -216,27 +216,47 @@ def main() -> int:
     # Failed resolution/downloads must leave the working registry intact.
     # Staging beside it keeps the publication renames on one filesystem.
     directory = pathlib.Path(tempfile.mkdtemp(prefix=".tilo-registry-", dir=out.parent))
-    backup = directory / "old"
     try:
         staged = directory / "new"
         build_registry(staged, ours)
-        if out.exists():
-            out.rename(backup)
-        try:
-            staged.rename(out)
-        except OSError:
-            if backup.exists():
-                backup.rename(out)
-            raise
-        if backup.exists():
-            shutil.rmtree(backup)
+        publish(staged, out, f"{directory.name}-")
     finally:
-        if backup.exists():
-            print(f"previous registry retained at {backup}", file=sys.stderr)
-        else:
-            shutil.rmtree(directory)
+        shutil.rmtree(directory, ignore_errors=True)
     print(f"registry: {out}")
     return 0
+
+
+def publish(staged: pathlib.Path, out: pathlib.Path, prefix: str) -> None:
+    """Make `out` hold what `staged` holds, renaming only the directories
+    this run made. On an overlay filesystem (a CI job's build directory
+    stacked on earlier builds' layers) renaming a directory that came from a
+    lower layer fails with EXDEV, so an existing registry is never renamed
+    aside: it is emptied in place once the new entries are beside it.
+
+    Until then a failure moves the new entries back and leaves the old
+    registry as it was."""
+    if not out.exists():
+        staged.rename(out)
+        return
+    old = list(out.iterdir())
+    moved: list[tuple[pathlib.Path, pathlib.Path]] = []
+    try:
+        for entry in sorted(staged.iterdir()):
+            # Under a name of this run's, which no old entry has.
+            beside = out / f"{prefix}{entry.name}"
+            entry.rename(beside)
+            moved.append((beside, entry))
+    except OSError:
+        for beside, entry in reversed(moved):
+            beside.rename(entry)
+        raise
+    for path in old:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    for beside, entry in moved:
+        beside.rename(out / entry.name)
 
 
 def build_registry(out: pathlib.Path, ours: list[pathlib.Path]) -> None:

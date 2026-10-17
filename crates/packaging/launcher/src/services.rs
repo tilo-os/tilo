@@ -1132,7 +1132,8 @@ mod tests {
                     bytes,
                     serde_json::to_vec(&runtime_identity::wire::Handshake {
                         workspace_id: "room-7".into(),
-                        app_id: "so.tilo.notes".into()
+                        app_id: "so.tilo.notes".into(),
+                        surface: None,
                     })
                     .unwrap()
                 );

@@ -487,3 +487,140 @@ fn native_task_benchmark() {
         "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
     );
 }
+
+/// The descriptor of Writer's `append-paragraph`, as the agent reads it.
+fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
+    let catalogue = f.session.task_catalogue();
+    surface::find(&catalogue.offers, &op("append-paragraph"))
+        .unwrap()
+        .descriptor
+        .clone()
+}
+
+/// A run delivered again after its agent restarted, while one of its steps
+/// waited for the person: the agent takes up exactly the drafted step before
+/// the model plans anything, waits for the person's answer as before, and
+/// tells the model what happened instead of planning the task over.
+#[test]
+fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
+    let mut f = native_run_fixture(
+        "add a closing line",
+        World {
+            awaiting: Some(("append-paragraph".into(), 1)),
+            ..World::default()
+        },
+        vec![turn(&[finish("Added the closing line.", true)], 24)],
+    );
+    let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
+    let descriptor = drafted(&mut f);
+    f.run.paused = Some(runtime_collab::TaskRunPausedStep {
+        app: "so.tilo.word-processor".into(),
+        resource: DOC.into(),
+        action: "append-paragraph".into(),
+        draft: tilo_actions::Draft::render(&descriptor, &arguments),
+        arguments_digest: tilo_actions::draft::arguments_digest(&arguments),
+    });
+    f.session.run_task(&f.run).unwrap();
+
+    let sent = f.sent.borrow();
+    let asks: Vec<_> = sent
+        .iter()
+        .filter_map(|request| match request {
+            CollabRequest::InvokeTaskAction {
+                invocation,
+                action,
+                arguments,
+                wait: None,
+                ..
+            } => Some((*invocation, action.clone(), arguments.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asks.len(), 2, "asked, then asked again once: {asks:?}");
+    for (invocation, action, asked) in &asks {
+        assert_eq!(action, "append-paragraph");
+        assert_eq!(asked, &arguments, "exactly the drafted arguments");
+        assert_eq!(*invocation, asks[0].0, "one child, asked again by its id");
+    }
+    let world = f.world.borrow();
+    assert_eq!(world.steps.len(), 1, "the step ran once: {:?}", world.steps);
+    assert_eq!(world.blocks.last().unwrap().1, "Kind regards");
+    drop(world);
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 1, "the model planned only what was left");
+    let first = bodies[0].to_string();
+    assert!(first.contains("has resumed at that step"), "{first}");
+    assert!(first.contains("Append paragraph"), "{first}");
+    assert_eq!(
+        native_terminal(&sent),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Added the closing line.".into()
+        }
+    );
+}
+
+/// A paused step whose draft does not give back the exact arguments it was
+/// confirmed for is not guessed at: nothing runs before the model, which is
+/// told what waits so that it asks for that step again.
+#[test]
+fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
+    let mut f = native_run_fixture(
+        "add a closing line",
+        World::default(),
+        vec![turn(&[finish("Waiting on the person.", true)], 24)],
+    );
+    let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
+    let descriptor = drafted(&mut f);
+    f.run.paused = Some(runtime_collab::TaskRunPausedStep {
+        app: "so.tilo.word-processor".into(),
+        resource: DOC.into(),
+        action: "append-paragraph".into(),
+        draft: tilo_actions::Draft::render(&descriptor, &arguments),
+        arguments_digest: [7; 32],
+    });
+    f.session.run_task(&f.run).unwrap();
+    assert!(children_started(&f.sent.borrow()).is_empty());
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    let first = bodies[0].to_string();
+    assert!(first.contains("still waits for them"), "{first}");
+    assert!(first.contains("Kind regards"), "{first}");
+}
+
+/// A native child's id names its request: the same request in a run
+/// delivered again (a new agent process) finds the same child, a different
+/// request at the same position is a different child, and asking the same
+/// thing twice in one run makes two children.
+#[test]
+fn a_native_child_id_names_its_request_not_its_position() {
+    let ids = |requests: &[&str]| {
+        let mut f = native_run_fixture("ids", World::default(), Vec::new());
+        f.session.native_task = Some(crate::session::native_task::NativeTaskState {
+            run_id: f.run.run_id,
+            task_id: f.run.task_id.clone(),
+            base: "00000000000000000000000000000000".into(),
+            ..Default::default()
+        });
+        let offers = f.session.task_catalogue();
+        requests
+            .iter()
+            .map(|text| {
+                let arguments =
+                    serde_json::Map::from_iter([("text".to_owned(), Value::from(*text))]);
+                let offer = surface::find(&offers.offers, &op("append-paragraph")).unwrap();
+                let action = task_action_from_offer(offer, arguments.clone()).unwrap();
+                f.session
+                    .task_child_id(&f.run, &action, &arguments)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = ids(&["a", "b", "a"]);
+    let after = ids(&["b", "a"]);
+    assert_ne!(before[0], before[2], "asking twice makes two children");
+    assert_eq!(
+        after[0], before[1],
+        "the same request finds its child again"
+    );
+    assert_eq!(after[1], before[0]);
+    assert_ne!(after[0], before[0], "another request at the same position");
+}

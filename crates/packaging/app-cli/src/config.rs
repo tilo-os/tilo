@@ -33,6 +33,10 @@ pub enum ConfigError {
     InvalidOwnerKey,
     #[error("could not determine the Tilo Store config directory")]
     NoConfigDir,
+    #[error("could not read the existing registry configuration; fix it before saving: {0}")]
+    Read(#[source] std::io::Error),
+    #[error("the existing registry configuration is invalid; fix it before saving: {0}")]
+    Decode(#[from] toml::de::Error),
     #[error("could not encode the registry configuration: {0}")]
     Encode(#[from] toml::ser::Error),
     #[error("could not save the registry configuration: {0}")]
@@ -239,10 +243,20 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error when no config directory is available, serialization
-/// fails, or the crash-safe write cannot be completed.
+/// Returns an error when no config directory is available, the existing
+/// file cannot be read or parsed, serialization fails, or the crash-safe
+/// write cannot be completed.
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
+    // A failed load answers with defaults for browsing. Those defaults are
+    // not a replacement for the user's hand-edited repository configuration.
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            toml::from_str::<RegistriesFile>(&text)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(ConfigError::Read(error)),
+    }
     let text = toml::to_string_pretty(registries)?;
     tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
     Ok(())
@@ -409,6 +423,39 @@ mod tests {
         env.set("TILO_STORE_CONFIG_DIR", td.path())
             .set("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust);
         env
+    }
+
+    #[test]
+    fn repository_mutations_do_not_overwrite_a_broken_hand_edited_config() {
+        let td = TempDir::new().unwrap();
+        let _guard = scoped_dir(&td);
+        let path = td.path().join("registries.toml");
+        let broken = "[[registry]]\nname = \"My mirror\"\nbase_url = \"https://mirror.example\n";
+        fs::write(&path, broken).unwrap();
+        let mut registries = load_registries();
+        add_registry(
+            &mut registries,
+            "Another mirror",
+            "https://other.example",
+            &"12".repeat(32),
+        )
+        .unwrap();
+        assert!(matches!(
+            save_registries(&registries),
+            Err(ConfigError::Decode(_))
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+
+        // Repairing the original file makes the same save usable again.
+        fs::write(
+            &path,
+            "[[registry]]\nname = \"My mirror\"\nbase_url = \"https://mirror.example\"\n",
+        )
+        .unwrap();
+        let mut repaired = load_registries();
+        set_registry_enabled(&mut repaired, "My mirror", false).unwrap();
+        save_registries(&repaired).unwrap();
+        assert_eq!(load_registries().registries, repaired.registries);
     }
 
     #[test]

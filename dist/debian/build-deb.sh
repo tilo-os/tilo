@@ -60,7 +60,9 @@ shlib_line=$(
         -e"$main/usr/bin/tilo-shell" \
         -e"$main/usr/bin/tilo-launcher" \
         -e"$main/usr/bin/tilo-import-folders" \
-        -e"$main/usr/libexec/tilo-unlock-helper"
+        -e"$main/usr/libexec/tilo-unlock-helper" \
+        -e"$main/usr/libexec/tilo-flight-recorder" \
+        -e"$main/usr/libexec/tilo-session-report"
 )
 shlib_deps=${shlib_line#shlibs:Depends=}
 cat > "$main/DEBIAN/control" <<EOF
@@ -71,7 +73,7 @@ Priority: optional
 Architecture: $arch
 Maintainer: Tilo contributors <tilo@code.tilo.so>
 Installed-Size: $(installed_size "$main")
-Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap, systemd, xdg-desktop-portal, xdg-dbus-proxy, python3
+Depends: $shlib_deps, libpam0g, libvulkan1, libegl1, bubblewrap, systemd, xdg-desktop-portal, xdg-dbus-proxy
 Recommends: mesa-vulkan-drivers, xwayland-satellite, greetd | gdm3 | sddm
 Description: Tilo collaborative compositor as a Wayland session
  Installs the Tilo compositor, launcher, unlock helper, PAM policy, portal

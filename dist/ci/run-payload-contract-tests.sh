@@ -34,8 +34,6 @@ if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]
 fi
 
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
-python3 "$repo_root/dist/session/tests/flight-recorder.py"
-python3 "$repo_root/dist/session/tests/session-report.py"
 python3 "$repo_root/dist/session/tests/vm-e2e-exit-status.py"
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
@@ -84,14 +82,13 @@ fi
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-              "$fhs/usr/libexec/tilo-unlock-helper"; do
+              "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
+              "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
-install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$fhs/usr/libexec/tilo-flight-recorder"
-install -m755 "$repo_root/dist/session/tilo-session-report.py" "$fhs/usr/libexec/tilo-session-report"
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-app.desktop" "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
@@ -162,7 +159,8 @@ EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
     for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-                  "$fhs/usr/libexec/tilo-unlock-helper"; do
+                  "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
+                  "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
     done
     PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE=error \
@@ -196,7 +194,8 @@ for object_mode in -shared -c; do
     fi
 done
 for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
-              "$fhs/usr/libexec/tilo-unlock-helper"; do
+              "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
+              "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
@@ -231,14 +230,13 @@ fi
 nix=$work/nix-result
 mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
 for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
-              "$nix/libexec/tilo-unlock-helper"; do
+              "$nix/libexec/tilo-unlock-helper" "$nix/libexec/tilo-flight-recorder" \
+              "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
 done
 sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/dist/session/tilo-import-folders.desktop" > "$nix/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
-install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$nix/libexec/tilo-flight-recorder"
-install -m755 "$repo_root/dist/session/tilo-session-report.py" "$nix/libexec/tilo-session-report"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \

@@ -1533,10 +1533,13 @@ impl MapsApp {
         }
         std::mem::swap(&mut self.model.origin, &mut self.model.dest);
         std::mem::swap(&mut self.model.origin_name, &mut self.model.dest_name);
-        // Re-route: `recompute_route` reads `dest` (now the old origin) and
-        // `resolve_origin` reads `origin` (now the old destination), so the
-        // journey is genuinely reversed rather than routed to itself.
-        self.recompute_route();
+        // Both planners read the exchanged endpoints. Transit must discard
+        // the old direction's departures rather than request a road route.
+        if self.model.mode.is_transit() {
+            self.recompute_transit();
+        } else {
+            self.recompute_route();
+        }
     }
 
     fn fit_route(&mut self) {

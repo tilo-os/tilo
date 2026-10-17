@@ -320,6 +320,8 @@ pub struct NotesApp {
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
+    /// The last copied link, whose outcome can arrive after its toast.
+    pub(crate) link_copy: ui::CopyWatch,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -694,6 +696,7 @@ impl NotesApp {
             save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
+            link_copy: ui::CopyWatch::default(),
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
@@ -2548,6 +2551,12 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.link_copy.failed() {
+            self.transfer_toasts.push(
+                "Could not copy the link: the clipboard is unavailable",
+                ui::widget::toast::ToastKind::Error,
+            );
+        }
         let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
         self.drain_header_requests();

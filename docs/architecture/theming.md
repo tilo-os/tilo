@@ -78,7 +78,7 @@ and a theme sets them through one document:
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
 | `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
-| `material` | `blur`, `tint_opacity` of floating chrome | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material` | `tokens/colors.rs`, `backdrop.rs` |
+| `material` | `blur`, `tint_opacity` of floating chrome; `selector`: what the window group's tab strip is made of (`floating` or `opaque`), the active selector's lit rim (`rim_span`, `rim_alpha`) and the hover film's opacity (`hover_alpha`, admitted only where a hover clears the selection step) | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material`, `tokens.selector` | `tokens/colors.rs`, `tokens/selector.rs`, `backdrop.rs`, `chrome/selector.rs` |
 
 Not theme roles, by design: there is no accent and no app colour (an app
 has no brand colour in this language), no per-widget colour, no way to
@@ -95,11 +95,11 @@ at the palette's hue and chroma, so a hue never moves contrast.
 ### Data, versioned
 
 The document is `ThemeDocument`
-(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 6):
+(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 7):
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "id": "ember",
   "name": "Ember",
   "palette": {
@@ -116,7 +116,10 @@ The document is `ThemeDocument`
   "density": { "spacing": 1.0 },
   "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0 },
   "motion": { "character": 1.0 },
-  "material": { "blur": 24.0, "tint_opacity": 0.72 }
+  "material": {
+    "blur": 24.0, "tint_opacity": 0.72,
+    "selector": { "strip": "opaque", "rim_span": 0.55, "rim_alpha": 0.22, "hover_alpha": 0.75 }
+  }
 }
 ```
 
@@ -375,7 +378,9 @@ Verified against the code at the time of writing:
   person's presence and paint them in it.
 - **The material.** Blur and tint opacity are theme roles read by the
   backdrop pass; reduce transparency, forced colours and the high-contrast
-  palettes keep floating chrome opaque.
+  palettes keep floating chrome opaque. The selector finish
+  (`material.selector`) is read by `chrome::paint_selector`; the same three
+  make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
   live findings and applies or exports only legible themes. Settings does
   not yet expose the appearance controls; `docs/ui-migration.md`

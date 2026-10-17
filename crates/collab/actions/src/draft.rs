@@ -326,6 +326,37 @@ impl Draft {
         })
     }
 
+    /// The arguments this draft shows: each text, number and flag field set
+    /// at its path. `None` when a field shows its value only in part (a
+    /// secret, a list, a resource, a text cut short). A draft also leaves
+    /// out nulls and empty texts, so what this returns is only a candidate:
+    /// act on it only when it digests ([`arguments_digest`]) to the digest
+    /// the draft was confirmed for.
+    #[must_use]
+    pub fn arguments(&self) -> Option<Map<String, Value>> {
+        let mut arguments = Map::new();
+        for field in &self.fields {
+            let value = match &field.value {
+                DraftValue::Text { text } => Value::String(text.clone()),
+                DraftValue::Number { text } => Value::Number(text.parse().ok()?),
+                DraftValue::Flag { on } => Value::Bool(*on),
+                DraftValue::List { .. } | DraftValue::Resource { .. } | DraftValue::Withheld => {
+                    return None;
+                }
+            };
+            let (last, parents) = field.path.split_last()?;
+            let mut object = &mut arguments;
+            for parent in parents {
+                object = object
+                    .entry(parent.clone())
+                    .or_insert_with(|| Value::Object(Map::new()))
+                    .as_object_mut()?;
+            }
+            object.insert(last.clone(), value);
+        }
+        Some(arguments)
+    }
+
     /// The draft as `edits` change it: what the person confirmed, shown
     /// back to them. Edits this draft does not offer are left out.
     #[must_use]
@@ -430,6 +461,12 @@ fn value_field(
         .map_or_else(|| humanize(name), str::to_owned);
     let mut made = field(path, name, DraftValue::Withheld);
     made.label = label;
+    if schema
+        .and_then(|schema| schema.get("format"))
+        .is_some_and(|format| format == "password")
+    {
+        return Some(made);
+    }
     match value {
         Value::Null => return None,
         Value::String(text) if text.trim().is_empty() => return None,
@@ -439,10 +476,7 @@ fn value_field(
             made.multiline = text.contains('\n')
                 || text.chars().count() > 120
                 || made.role == Some(MessageRole::Body);
-            made.editable = !long
-                && schema
-                    .and_then(|schema| schema.get("format"))
-                    .is_none_or(|format| format != "password");
+            made.editable = !long;
             made.value = DraftValue::Text { text: shown };
         }
         Value::Number(number) => {

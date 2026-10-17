@@ -420,6 +420,112 @@ fn deleting_clips_sources_and_tracks_takes_what_hangs_off_them() {
 }
 
 #[test]
+fn trim_actions_reach_the_requested_timeline_time_at_every_speed() {
+    for rate in [0.5, 1.0, 2.0] {
+        let (mut project, clip) = one_clip();
+        project.clip_mut(clip).unwrap().start = 10.0;
+        project.set_speed_linked(clip, rate, false);
+        let track = Uuid::new_v4();
+        project.tracks.push(Track {
+            id: track,
+            kind: TrackKind::Audio,
+            ..Default::default()
+        });
+        let audio = project.add_linked_audio(clip, track).unwrap();
+        let original_end = project.clip(clip).unwrap().end();
+        let mut replica = holding(&project);
+        replica
+            .apply(Project::TRIM_HEAD.with((id(clip), 12.0)))
+            .unwrap();
+        for member in [clip, audio] {
+            let state = replica.state().unwrap();
+            let trimmed = state.clip(member).unwrap();
+            assert_eq!(trimmed.start, 12.0, "head at {rate}x");
+            assert_eq!(trimmed.end(), original_end);
+            assert_eq!(trimmed.in_point, 2.0 * rate);
+        }
+        let target = original_end - 3.0;
+        replica
+            .apply(Project::TRIM_TAIL.with((id(clip), target)))
+            .unwrap();
+        for member in [clip, audio] {
+            let state = replica.state().unwrap();
+            let trimmed = state.clip(member).unwrap();
+            assert_eq!(trimmed.start, 12.0);
+            assert_eq!(trimmed.end(), target, "tail at {rate}x");
+            assert_eq!(trimmed.out_point, 30.0 - 3.0 * rate);
+        }
+    }
+}
+
+#[test]
+fn trimming_a_reversed_clip_keeps_the_surviving_source_frames() {
+    for rate in [0.5, 1.0, 2.0] {
+        let (mut project, clip) = one_clip();
+        project.clip_mut(clip).unwrap().start = 10.0;
+        project.set_speed_linked(clip, rate, true);
+        let original = project.clip(clip).unwrap().clone();
+        let tail = original.end() - 3.0;
+        let mut replica = holding(&project);
+        replica
+            .apply(Project::TRIM_HEAD.with((id(clip), 12.0)))
+            .unwrap();
+        let state = replica.state().unwrap();
+        let head_trimmed = state.clip(clip).unwrap();
+        assert_eq!(head_trimmed.start, 12.0);
+        assert_eq!(head_trimmed.in_point, original.in_point);
+        assert_eq!(head_trimmed.out_point, 30.0 - 2.0 * rate);
+        assert_eq!(head_trimmed.source_time(13.0), original.source_time(13.0));
+        replica
+            .apply(Project::TRIM_TAIL.with((id(clip), tail)))
+            .unwrap();
+        let state = replica.state().unwrap();
+        let trimmed = state.clip(clip).unwrap();
+        assert_eq!(trimmed.end(), tail);
+        assert_eq!(trimmed.in_point, 3.0 * rate);
+        assert_eq!(trimmed.source_time(13.0), original.source_time(13.0));
+    }
+}
+
+#[test]
+fn linked_actions_refuse_to_change_a_locked_partner() {
+    let (mut project, clip) = one_clip();
+    let track = Uuid::new_v4();
+    project.tracks.push(Track {
+        id: track,
+        kind: TrackKind::Audio,
+        locked: true,
+        ..Default::default()
+    });
+    let audio = project.add_linked_audio(clip, track).unwrap();
+    let actions = [
+        Project::REMOVE_CLIP.with(id(clip)),
+        Project::CLOSE_GAP.with(id(clip)),
+        Project::CUT.with((id(clip), 10.0)),
+        Project::TRIM_HEAD.with((id(clip), 5.0)),
+        Project::TRIM_TAIL.with((id(clip), 20.0)),
+        Project::RETIME.with((id(clip), 2.0)),
+        Project::REVERSE.with(id(clip)),
+        Project::NORMAL_SPEED.with(id(clip)),
+    ];
+    for action in actions {
+        let mut replica = holding(&project);
+        // Persisted map entries have a canonical order, unlike insertion-order
+        // fixture collections. Compare the complete state before and after.
+        let before = replica.state().unwrap();
+        assert!(replica.apply_confirmed(action).is_err());
+        assert_eq!(replica.state().unwrap(), before);
+    }
+
+    // Unlinking stops edits following the sound, so its locked lane no
+    // longer prevents editing the picture alone.
+    project.unlink_clips(&[clip]);
+    let mut replica = holding(&project);
+    replica.apply(Project::CUT.with((id(clip), 10.0))).unwrap();
+    assert_eq!(replica.state().unwrap().clip(audio), project.clip(audio));
+}
+
+#[test]
 fn an_effect_is_added_moved_set_and_removed_by_its_own_id() {
     let (p, cid) = one_clip();
     let mut replica = holding(&p);

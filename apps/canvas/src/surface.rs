@@ -3371,10 +3371,8 @@ impl Widget for CanvasSurface {
         self.focused
     }
 
-    fn ime_purpose(&self) -> Option<ui::winit::window::ImePurpose> {
-        self.text
-            .is_some()
-            .then_some(ui::winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        self.text.is_some().then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {

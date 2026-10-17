@@ -206,6 +206,137 @@ impl RelayRuntimeStatus {
     }
 }
 
+/// How often a shown pane asks a home server how it is, once each has
+/// been asked on opening. A home server's health is a network probe with
+/// no local change to watch.
+const HOME_PEER_HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The home-server removals the host still has to deliver, in the
+/// identity root.
+const PENDING_DECOMMISSIONS: &str = "pending-home-peer-decommissions.json";
+
+/// What a shown Device mesh pane follows: the relay's status, read on a
+/// thread of its own, and the files the pane shows.
+///
+/// The relay rewrites its metrics every second as a heartbeat, so a watch
+/// that woke the window for each would be a one-second timer again. The
+/// thread re-reads the status on each heartbeat and once its freshness
+/// would lapse, and wakes the window only when the status changes.
+struct MeshFollow {
+    status: Arc<Mutex<Option<RelayRuntimeStatus>>>,
+    /// The roaming provenance and the pending home-server removals.
+    files: crate::watch::Watched,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    poke: std::sync::mpsc::Sender<()>,
+}
+
+impl MeshFollow {
+    /// Follow `config`'s relay and `files`; `None` when no thread can be
+    /// started (the pane then reads on its timer). Must be called on the
+    /// UI thread, in the window's wake scope.
+    fn start(config: &RelayConfig, files: &[PathBuf]) -> Option<Self> {
+        let status = Arc::new(Mutex::new(None));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (poke, events) = std::sync::mpsc::channel();
+        let follow = {
+            let (config, latest, stop, poke) = (
+                config.clone(),
+                Arc::clone(&status),
+                Arc::clone(&stop),
+                poke.clone(),
+            );
+            let wake = ui::WakeHandle::new();
+            Box::new(move || follow_relay(&config, &latest, &stop, poke, &events, &wake))
+        };
+        crate::device_read::thread("settings-relay-status", follow).ok()?;
+        Some(Self {
+            status,
+            files: crate::watch::Watched::files(files),
+            stop,
+            poke,
+        })
+    }
+
+    /// Driven by hand: no thread, files flagged by [`Self::files`]'s touch.
+    #[cfg(test)]
+    fn by_hand() -> Self {
+        Self {
+            status: Arc::new(Mutex::new(None)),
+            files: crate::watch::Watched::by_hand(),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            poke: std::sync::mpsc::channel().0,
+        }
+    }
+
+    /// The relay's status as the thread last read it.
+    fn status(&self) -> Option<RelayRuntimeStatus> {
+        self.status.lock().ok().and_then(|status| *status)
+    }
+}
+
+impl Drop for MeshFollow {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.poke.send(());
+    }
+}
+
+/// The relay-status thread: read the status, publish it to `latest` and
+/// wake the window when it changed, then wait for the relay's next write
+/// (or for its freshness to lapse) until `stop`.
+fn follow_relay(
+    config: &RelayConfig,
+    latest: &Mutex<Option<RelayRuntimeStatus>>,
+    stop: &std::sync::atomic::AtomicBool,
+    poke: std::sync::mpsc::Sender<()>,
+    events: &std::sync::mpsc::Receiver<()>,
+    wake: &ui::WakeHandle,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let heartbeat = [
+        config
+            .state_root
+            .join(tilo_relay_protocol::metrics::METRICS_FILE),
+        config.full_replica_status.clone(),
+    ];
+    let on_change: crate::watch::OnChange = Arc::new(move || {
+        let _ = poke.send(());
+    });
+    let mut watch = crate::watch::Watched::calling(&heartbeat, &on_change);
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        let status = RelayRuntimeStatus::read(config, ui::time::wall());
+        if latest
+            .lock()
+            .is_ok_and(|mut latest| latest.replace(status) != Some(status))
+        {
+            wake.wake();
+        }
+        let wait = if !watch.is_complete() {
+            // Not there to watch yet (no relay ran here): look again.
+            Some(STATUS_REFRESH_INTERVAL)
+        } else if matches!(
+            status,
+            RelayRuntimeStatus::Offline | RelayRuntimeStatus::Unreadable
+        ) {
+            None
+        } else {
+            // Without another write the status goes stale after this.
+            Some(STATUS_FRESHNESS + Duration::from_secs(1))
+        };
+        let event = match wait {
+            Some(wait) => events.recv_timeout(wait),
+            None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match event {
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) if !watch.is_complete() => {
+                watch = crate::watch::Watched::calling(&heartbeat, &on_change);
+            }
+            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
 fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
     match status {
         RelayRuntimeStatus::Ready | RelayRuntimeStatus::Online => StatusTone::Success,
@@ -455,6 +586,10 @@ impl DeviceMeshArea {
 }
 
 /// Editor for the daemon's real device-mesh configuration.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: what is being saved, paired and delivered, and whether it changed"
+)]
 pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: RelayConfig,
@@ -501,7 +636,17 @@ pub struct DeviceMeshModel {
     /// The pane's client for the action door: pairing runs on the host,
     /// behind its actions, never in this process.
     remote: ui::RemoteActions,
+    /// When the status is read again while no pane follows it; while one
+    /// does, when the next home server is asked how it is.
     next_status_refresh: Instant,
+    /// While a pane shows the area: the relay's status and the files the
+    /// pane shows, followed for it.
+    following: std::rc::Weak<MeshFollow>,
+    /// Home servers still to ask on opening, one after another.
+    health_round: usize,
+    /// A home server's removal still waits to be delivered; it is retried
+    /// with the health checks.
+    removals_pending: bool,
 }
 
 /// A device revocation the host is signing.
@@ -950,6 +1095,9 @@ impl DeviceMeshModel {
             pairing_target: PairingTarget::HomePeer,
             remote: ui::RemoteActions::current(),
             next_status_refresh: ui::time::now() + STATUS_REFRESH_INTERVAL,
+            following: std::rc::Weak::new(),
+            health_round: 0,
+            removals_pending: false,
         }
     }
 
@@ -2071,12 +2219,12 @@ impl DeviceMeshModel {
         if self.management_child.is_some() || self.management_call.is_some() {
             return;
         }
-        let pending = identity_root().join("pending-home-peer-decommissions.json");
-        if std::fs::read(&pending)
+        let pending = identity_root().join(PENDING_DECOMMISSIONS);
+        self.removals_pending = std::fs::read(&pending)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
-            .is_some_and(|pending| !pending.is_empty())
-        {
+            .is_some_and(|pending| !pending.is_empty());
+        if self.removals_pending {
             // Delivering a removal signs with the root key: the host runs it.
             use ui::tilo_actions::remote::{InvokeArgument, identity_admin};
             let call = self.remote.invoke(
@@ -2173,7 +2321,9 @@ impl PaneModel for DeviceMeshModel {
             self.continuity = self.continuity_settings.get().clone();
             self.changed = true;
         }
-        if ui::time::now() >= self.next_status_refresh {
+        if let Some(follow) = self.following.upgrade() {
+            self.take_followed(&follow);
+        } else if ui::time::now() >= self.next_status_refresh {
             self.refresh_runtime_status();
             self.refresh_one_home_peer();
         }
@@ -2200,7 +2350,67 @@ impl PaneModel for DeviceMeshModel {
     }
 
     fn next_wake(&self) -> Option<Instant> {
-        shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)
+        if !shows_advanced_services(self.config.device_role) {
+            return None;
+        }
+        match self.following.upgrade() {
+            // Only home servers' health is asked on a timer, and files that
+            // cannot be watched are read with it.
+            Some(follow) => (!self.home_peers.is_empty()
+                || self.removals_pending
+                || !follow.files.is_complete())
+            .then_some(self.next_status_refresh),
+            None => Some(self.next_status_refresh),
+        }
+    }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        // Only a serving device shows the relay's status; a pane opened
+        // before the role changed reads it on its timer instead.
+        if !self.cx.reaches_devices() || !shows_advanced_services(self.config.device_role) {
+            return None;
+        }
+        if let Some(follow) = self.following.upgrade() {
+            return Some(follow);
+        }
+        let files: Vec<PathBuf> = self
+            .roaming_provenance_path
+            .iter()
+            .cloned()
+            .chain([identity_root().join(PENDING_DECOMMISSIONS)])
+            .collect();
+        let follow = Rc::new(MeshFollow::start(&self.config, &files)?);
+        self.following = Rc::downgrade(&follow);
+        // Ask every home server once on opening, then once a minute.
+        self.health_round = self.home_peers.len().max(1);
+        self.next_status_refresh = ui::time::now();
+        Some(follow)
+    }
+}
+
+impl DeviceMeshModel {
+    /// Take in what the shown pane follows: the relay's status as its
+    /// thread read it, the files when their watch says they changed, and
+    /// the next home server's health when it is due.
+    fn take_followed(&mut self, follow: &MeshFollow) {
+        if let Some(status) = follow.status()
+            && status != self.runtime_status
+        {
+            self.runtime_status = status;
+            self.changed = true;
+        }
+        let now = ui::time::now();
+        let due = now >= self.next_status_refresh;
+        let changed = follow.files.take() || (due && !follow.files.is_complete());
+        if changed {
+            self.refresh_roaming_provenance();
+        }
+        let idle = self.management_child.is_none() && self.management_call.is_none();
+        if idle && (changed || due || self.health_round > 0) {
+            self.health_round = self.health_round.saturating_sub(1);
+            self.next_status_refresh = now + HOME_PEER_HEALTH_INTERVAL;
+            self.refresh_one_home_peer();
+        }
     }
 }
 
@@ -2253,6 +2463,68 @@ mod tests {
         assert_eq!(
             RelayRuntimeStatus::read(&config, ui::time::wall()),
             RelayRuntimeStatus::Offline
+        );
+    }
+
+    /// The status thread follows the relay's heartbeat as it is written
+    /// and notices when it stops, so a shown pane wakes for a change of
+    /// status rather than for every heartbeat or on a timer.
+    #[test]
+    fn the_relay_status_follows_its_heartbeat_and_its_lapse() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_root = dir.path().join("tilo-relay");
+        std::fs::create_dir_all(&state_root).unwrap();
+        let config = RelayConfig {
+            full_replica_status: state_root.join("full-replica.json"),
+            state_root,
+            device_role: DeviceRole::Hybrid,
+            ..RelayConfig::default()
+        };
+        let follow = MeshFollow::start(&config, &[]).expect("the status thread starts");
+        tilo_test_env::wait_until("the first read", || {
+            follow.status() == Some(RelayRuntimeStatus::Offline)
+        });
+        let metrics = tilo_relay_protocol::metrics::MetricsSnapshot::default();
+        tilo_relay_protocol::metrics::save_metrics(&config.state_root, &metrics).unwrap();
+        tilo_test_env::wait_until("the heartbeat to show the relay online", || {
+            follow.status() == Some(RelayRuntimeStatus::Online)
+        });
+        tilo_test_env::wait_until("the lapsed heartbeat to show it offline", || {
+            follow.status() == Some(RelayRuntimeStatus::Offline)
+        });
+    }
+
+    /// A shown pane takes the status its thread read and re-reads its
+    /// files on their watch's word; with no home server to ask it sets no
+    /// deadline, and a removal still to deliver is retried once a minute.
+    #[test]
+    fn a_followed_pane_reads_on_a_change_and_sets_no_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", dir.path());
+        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        pane.config.device_role = DeviceRole::Hybrid;
+        let follow = Rc::new(MeshFollow::by_hand());
+        pane.following = Rc::downgrade(&follow);
+        let _ = pane.poll();
+        assert_eq!(pane.next_wake(), None, "an idle pane sets no deadline");
+
+        *follow.status.lock().unwrap() = Some(RelayRuntimeStatus::Online);
+        assert!(pane.poll(), "the thread's status is shown");
+        assert_eq!(pane.runtime_status, RelayRuntimeStatus::Online);
+        assert!(!pane.poll(), "once");
+
+        let provenance = pane.roaming_provenance_path.clone().unwrap();
+        std::fs::write(&provenance, "{}").unwrap();
+        assert!(!pane.poll(), "nothing is read without the watch's word");
+        follow.files.touch();
+        assert!(pane.poll(), "the changed provenance is read");
+
+        pane.removals_pending = true;
+        assert!(
+            pane.next_wake()
+                .is_some_and(|at| at >= ui::time::now() + Duration::from_secs(30)),
+            "a pending removal is retried once a minute, not every two seconds"
         );
     }
 

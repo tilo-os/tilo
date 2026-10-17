@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use shell::collab::flatpak_share::SharedFlatpakSession;
+use shell::collab::flatpak_share::{self, SharedFlatpakSession};
 use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::diagnostics::PeerSurfaceMetrics;
 use shell::network::streaming::InputEvent;
@@ -79,6 +79,20 @@ async fn wait_joined(events: &mut mpsc::Receiver<NetEvent>) {
             }
         }
         panic!("event channel closed before the other device joined");
+    })
+    .await;
+}
+
+/// Wait until this device has met `peer` itself: a device that meets
+/// another first would send `peer` a stream start before knowing it.
+async fn wait_joined_by(events: &mut mpsc::Receiver<NetEvent>, peer: iroh::EndpointId) {
+    tilo_test_env::within("the device met that peer on the workspace topic", async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, NetEvent::PeerJoined { peer: joined, .. } if joined == peer) {
+                return;
+            }
+        }
+        panic!("event channel closed before that peer joined");
     })
     .await;
 }
@@ -145,11 +159,14 @@ async fn a_legacy_window_streams_between_two_devices() {
         })
         .await
         .unwrap();
+    let viewer_id = viewer_addr.id;
     bystander_cmd
         .send(NetCmd::Connect { addr: host_addr })
         .await
         .unwrap();
-    wait_joined(&mut host_events).await;
+    // The host names the viewer in the stream start, so it must have met the
+    // viewer, not only the bystander that may join first.
+    wait_joined_by(&mut host_events, viewer_id).await;
     wait_joined(&mut viewer_events).await;
     wait_joined(&mut bystander_events).await;
 
@@ -756,6 +773,115 @@ fn a_lost_or_overtaken_unit_waits_for_the_next_keyframe() {
     assert!(
         decoded(&sixteen[0]) && sixteen[1] == PushOutcome::Stale,
         "a repeated unit decodes once: {outcomes:?}"
+    );
+}
+
+/// A viewer that lost a unit asks the host for a keyframe, and the host's
+/// next unit is one: the picture recovers a frame later, not at the next
+/// periodic keyframe a second away. The host forces at most one keyframe per
+/// interval, and none for a request a keyframe already answers.
+#[test]
+fn a_viewer_that_lost_a_unit_gets_a_keyframe_at_once() {
+    let session = SharedFlatpakSession::start_with_metrics(
+        0xA,
+        APP,
+        SURFACE,
+        WIDTH,
+        HEIGHT,
+        &FlatpakShareConfig {
+            max_bitrate_kbps: 8000,
+            target_fps: 60,
+            encoder: EncoderChoice::Auto,
+            hdr: None,
+        },
+        &[media::realtime::local_capabilities()],
+        None,
+    )
+    .expect("an encoder for the window");
+    session.add_viewer(0xB, false);
+    let codec = session.chosen_codec();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut view = PeerView::new_with_metrics(SURFACE, 0xB, PeerSurfaceMetrics::default());
+    view.restart_stream(codec.wire_label(), Some((WIDTH, HEIGHT)));
+    view.set_keyframe_sink({
+        let requests = Arc::clone(&requests);
+        Arc::new(move |seq| requests.lock().expect("requests").push(seq))
+    });
+    let mut now = Instant::now();
+    let mut index = 0_u32;
+    let mut encode = |now: Instant| {
+        session.deposit_captured_rgba(window_frame(index.saturating_mul(23)));
+        index += 1;
+        let NeighbourMsg::SurfaceFrame {
+            encoded_h264, seq, ..
+        } = session
+            .encode_next_frame(now)
+            .expect("one encoded unit")
+            .into_neighbour_msg()
+        else {
+            panic!("an encoded frame");
+        };
+        (seq, encoded_h264)
+    };
+    for _ in 0..3 {
+        now += Duration::from_millis(40);
+        let (seq, unit) = encode(now);
+        assert!(matches!(
+            push_and_settle(&mut view, seq, &unit, None),
+            PushOutcome::Decoded | PushOutcome::DroppedOldest
+        ));
+        view.mark_drawn();
+    }
+    now += Duration::from_millis(40);
+    let _lost = encode(now);
+    now += Duration::from_millis(40);
+    let (seq, unit) = encode(now);
+    assert!(!media::realtime::is_keyframe(codec, &unit));
+    assert_eq!(
+        push_and_settle(&mut view, seq, &unit, None),
+        PushOutcome::AwaitingKeyframe
+    );
+    let asked = requests.lock().expect("requests").clone();
+    assert_eq!(asked, vec![seq], "the viewer asks once, naming the unit");
+
+    assert!(
+        session.request_keyframe(seq, now),
+        "the host forces a keyframe"
+    );
+    assert!(
+        !session.request_keyframe(seq, now),
+        "a second request within the interval forces none"
+    );
+    now += Duration::from_millis(40);
+    let (keyframe_seq, keyframe) = encode(now);
+    assert!(
+        media::realtime::is_keyframe(codec, &keyframe),
+        "the next unit is the keyframe, five units into a stream whose periodic one is sixty away"
+    );
+    assert!(matches!(
+        push_and_settle(&mut view, keyframe_seq, &keyframe, None),
+        PushOutcome::Decoded | PushOutcome::DroppedOldest
+    ));
+    view.mark_drawn();
+    now += Duration::from_millis(40);
+    let (seq, unit) = encode(now);
+    assert!(
+        matches!(
+            push_and_settle(&mut view, seq, &unit, None),
+            PushOutcome::Decoded | PushOutcome::DroppedOldest
+        ),
+        "decoding continues from the keyframe"
+    );
+    assert!(
+        !session.request_keyframe(
+            keyframe_seq.saturating_sub(1),
+            now + flatpak_share::KEYFRAME_REQUEST_INTERVAL
+        ),
+        "a request the sent keyframe answers forces none"
+    );
+    assert!(
+        session.request_keyframe(seq, now + flatpak_share::KEYFRAME_REQUEST_INTERVAL),
+        "a later loss is answered once the interval passed"
     );
 }
 

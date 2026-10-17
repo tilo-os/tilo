@@ -2228,6 +2228,7 @@ impl FrameBuilder {
                     blur_px: surface.blur_px * scale,
                     below: self.below_to_scene(below),
                     ground: surface.ground,
+                    over_desktop: surface.over_desktop,
                 })
             })
             .collect();
@@ -7341,7 +7342,7 @@ mod tests {
         let field = fb
             .focused_ime_field(None)
             .expect("the open palette owns the input method even without a native focus node");
-        assert_eq!(field.purpose, winit::window::ImePurpose::Normal);
+        assert_eq!(field.content, ui::ime::InputContent::TEXT);
         assert!(field.width > 0 && field.height > 0);
         fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Escape)),

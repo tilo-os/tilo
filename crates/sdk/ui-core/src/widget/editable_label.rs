@@ -571,7 +571,9 @@ impl Widget for EditableLabel {
     /// counterpart to a click-outside.
     fn set_focus(&mut self, focused: bool) {
         if focused {
-            self.input.set_focus(true);
+            if !self.editing {
+                self.begin_edit();
+            }
         } else if self.editing {
             self.commit();
         }
@@ -590,8 +592,8 @@ impl Widget for EditableLabel {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Widget::ime_purpose(&self.input)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Widget::ime_content(&self.input)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -712,6 +714,23 @@ mod tests {
         assert!(harness.root::<EditableLabel>().layout_needs_measure());
         harness.relayout();
         assert!(!harness.root::<EditableLabel>().layout_needs_measure());
+    }
+
+    #[test]
+    fn keyboard_focus_opens_the_label_without_resetting_an_active_draft() {
+        let mut label = EditableLabel::new("Old name");
+        let mut doc = AutoCommit::new();
+        label.set_focus(true);
+        assert!(label.is_focused());
+        drive(&mut label, &mut doc, &char_key("New name"), no_mods());
+        label.set_focus(true);
+        assert_eq!(label.current_text(), "New name");
+        label.set_focus(false);
+        assert_eq!(label.value(), "New name");
+        assert_eq!(
+            label.take_outcome(),
+            EditOutcome::Committed("New name".into())
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub struct DeviceDisplaySnapshot {
 
 impl DeviceDisplaySnapshot {
     pub fn load() -> Option<Self> {
-        Self::load_at(&snapshot_path()?)
+        Self::load_at(&path()?)
     }
 
     /// Read an observation only while its compositor owns the runtime lease.
@@ -69,7 +69,7 @@ impl DeviceDisplaySnapshot {
     /// # Errors
     /// Fails if the private runtime directory is unavailable or writing fails.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = snapshot_path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
+        let path = path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
         // The clock's sample must not re-author unchanged runtime observations.
         // Loading still validates the live PID/start-time lease; missing,
         // corrupt, changed or stale-publisher state takes the atomic path.
@@ -83,7 +83,8 @@ impl DeviceDisplaySnapshot {
     }
 }
 
-fn snapshot_path() -> Option<std::path::PathBuf> {
+/// Where the compositor keeps the observation, beside its own display snapshot.
+pub fn path() -> Option<std::path::PathBuf> {
     crate::hardware::display_snapshot_path()
         .map(|path| path.with_file_name("device-display-state.json"))
 }
@@ -174,7 +175,7 @@ mod publication_regressions {
             displays: Vec::new(),
         };
         snapshot.save().unwrap();
-        let path = snapshot_path().unwrap();
+        let path = path().unwrap();
         let retained = std::fs::File::open(&path).unwrap();
         let original = tilo_files::native::atomic::FileIdentity::of(&retained).unwrap();
         snapshot.save().unwrap();

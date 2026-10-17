@@ -226,6 +226,7 @@ impl Calendar {
             .ok_or_else(|| Refusal::new("that event is gone"))?;
         event.start = start;
         event.end = end;
+        event.end_later_fold = false;
         Ok(())
     }
 
@@ -355,7 +356,7 @@ impl Calendar {
     #[action(id = "import-items")]
     pub fn import_items(
         &mut self,
-        #[param("The events, each under its own new id")] events: Vec<EventData>,
+        #[param("The events, retaining their source identities")] events: Vec<EventData>,
         #[param("The tasks")] tasks: Vec<TaskData>,
     ) -> Result<(), Refusal> {
         if events.len().saturating_add(tasks.len()) > MAX_ITEMS_PER_ACTION {
@@ -384,8 +385,9 @@ impl Calendar {
             })
             .collect::<Result<Vec<_>, Refusal>>()?;
         // What the calendar already holds is not imported twice: an event is
-        // the same title at the same start, a task the same title and due
-        // date under another id.
+        // the same source identity even after local edits, or the same title
+        // at the same start under another id. A task is the same title and
+        // due date under another id.
         for event in events {
             if self.events.iter().any(|held| {
                 held.id == event.id || (held.title == event.title && held.start == event.start)

@@ -5,7 +5,7 @@
 #   . "$repo/tools/desktop-isolation.sh"
 #   tilo_test_isolate "$@"
 #   tilo_stage_script "$repo/dist/session/tilo-session-runner" "$work/runner" \
-#       SYSTEMCTL="$work/systemctl" FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py"
+#       SYSTEMCTL="$work/systemctl" FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
 #
 # tilo_test_isolate re-runs the calling script inside
 # tools/with-test-environment.sh unless it already runs in one: no display,

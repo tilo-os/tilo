@@ -183,7 +183,7 @@ pub(crate) fn structure_signature(snapshot: &InspectionSnapshot) -> u64 {
     hasher.finish()
 }
 
-/// Identity of the IME window's line: presence, purpose, vertical position and
+/// Identity of the IME window's line: presence, content type, vertical position and
 /// height. The caret's horizontal position moves with every typed character
 /// and is ordinary typing, not a change assistive technology must see at once.
 pub(crate) fn ime_signature(ime: Option<&ImeWindowState>) -> u64 {
@@ -192,7 +192,7 @@ pub(crate) fn ime_signature(ime: Option<&ImeWindowState>) -> u64 {
         None => 0u8.hash(&mut hasher),
         Some(ime) => {
             1u8.hash(&mut hasher);
-            std::mem::discriminant(&ime.purpose).hash(&mut hasher);
+            ime.content.hash(&mut hasher);
             ime.y.hash(&mut hasher);
             ime.height.hash(&mut hasher);
         }
@@ -256,8 +256,7 @@ mod tests {
     }
     fn ime(x: u32, y: u32) -> ImeWindowState {
         ImeWindowState {
-            purpose: winit::window::ImePurpose::Normal,
-            multiline: false,
+            content: ui::ime::InputContent::TEXT,
             x,
             y,
             width: 1,

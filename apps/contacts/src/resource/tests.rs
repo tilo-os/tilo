@@ -227,6 +227,47 @@ fn merging_unions_rows_and_takes_the_chosen_fields() {
     assert_eq!(peer.state().unwrap(), book.state().unwrap());
 }
 
+/// Reviewed merges must not erase dial strings whose significant symbols or
+/// vanity letters differ, even when their decimal digits happen to match.
+#[test]
+fn regression_merge_preserves_distinct_dial_strings() {
+    let mut survivor = person("Ada", "Lovelace");
+    survivor.id = Uuid::from_u128(1);
+    survivor.phones = vec![
+        Labeled::new("work", "123"),
+        Labeled::new("work", "1-800-FLOWERS"),
+        Labeled::new("home", "+1 (555) 0100"),
+    ]
+    .into();
+    let mut source = person("Ada", "Lovelace");
+    source.id = Uuid::from_u128(2);
+    source.phones = vec![
+        Labeled::new("work", "*123#"),
+        Labeled::new("work", "1-800-PIZZA"),
+        Labeled::new("home", "15550100"),
+    ]
+    .into();
+    let mut book = book_of(&[survivor.clone(), source.clone()]);
+    book.apply_confirmed(Contacts::merge(survivor.id, source.id, []))
+        .unwrap();
+    let merged = contact(&book, survivor.id).unwrap();
+    assert_eq!(
+        merged
+            .phones
+            .iter()
+            .map(|row| row.value.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "123",
+            "1-800-FLOWERS",
+            "+1 (555) 0100",
+            "*123#",
+            "1-800-PIZZA"
+        ],
+        "only formatting-equivalent numbers are deduplicated"
+    );
+}
+
 /// The book publishes the favorites, every group and its likely duplicates
 /// as places; each contact is an item carrying its delete and merge;
 /// search finds contacts by what they hold and groups by name.

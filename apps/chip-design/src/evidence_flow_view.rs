@@ -74,7 +74,10 @@ pub fn body(
     };
     let mut page = Column::new()
         .push(Box::new(Text::new(&flow.title)))
-        .push(Box::new(Text::new(&tr("chip-flow-disclaimer"))));
+        .push(Box::new(Text::new(&tr("chip-flow-disclaimer"))))
+        .push(Box::new(crate::view::remove_verification_button(
+            cx, report,
+        )));
     let mut provenance = vec![property("chip-flow-input", &flow.input_identity_sha256)];
     for (tool, identity) in &record.receipt.tools {
         provenance.push(Property::new(

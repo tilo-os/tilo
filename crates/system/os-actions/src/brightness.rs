@@ -193,6 +193,8 @@ pub struct MonitorLevel {
 enum Request {
     Rescan,
     Set(MonitorBrightness, f32),
+    /// Call once every request sent before it is done.
+    Then(Box<dyn FnOnce() + Send>),
 }
 
 #[derive(Default)]
@@ -284,6 +286,23 @@ impl BrightnessService {
         }
     }
 
+    /// Call `done` on the worker once every rescan and write asked for
+    /// before it has finished, so a reader of [`Self::levels`] learns when
+    /// they are fresh instead of reading them on a timer. Without a worker
+    /// it is called at once.
+    pub fn when_idle(&self, done: Box<dyn FnOnce() + Send>) {
+        let unsent = match &self.tx {
+            Some(tx) => match tx.send(Request::Then(done)) {
+                Err(std::sync::mpsc::SendError(Request::Then(done))) => Some(done),
+                Ok(()) | Err(_) => None,
+            },
+            None => Some(done),
+        };
+        if let Some(done) = unsent {
+            done();
+        }
+    }
+
     /// The controllable monitors, built-in panel first.
     pub fn levels(&self) -> Vec<MonitorLevel> {
         self.lock()
@@ -350,10 +369,12 @@ fn run_worker(
     while let Ok(first) = rx.recv() {
         let mut rescan = false;
         let mut writes = Vec::new();
+        let mut then = Vec::new();
         for request in std::iter::once(first).chain(rx.try_iter()) {
             match request {
                 Request::Rescan => rescan = true,
                 Request::Set(monitor, pct) => writes.push((monitor, pct)),
+                Request::Then(done) => then.push(done),
             }
         }
         for (monitor, pct) in coalesce(writes) {
@@ -377,6 +398,9 @@ fn run_worker(
         if rescan {
             let monitors = probe(discover, read);
             shared.lock_recover().monitors = monitors;
+        }
+        for done in then {
+            done();
         }
     }
 }
@@ -644,6 +668,21 @@ mod tests {
         );
         eventually(|| !applied.lock().unwrap().is_empty());
         assert_eq!(*applied.lock().unwrap(), vec![("/dev/DP-2".into(), 80.0)]);
+    }
+
+    #[test]
+    fn a_reader_is_told_once_the_scan_asked_before_it_lands() {
+        let (service, _) = fake_service(vec![ddc_monitor("DP-1")]);
+        let (done, told) = std::sync::mpsc::channel();
+        service.when_idle(Box::new(move || {
+            let _ = done.send(());
+        }));
+        told.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(
+            service.levels().len(),
+            1,
+            "the scan asked for before landed first"
+        );
     }
 
     #[test]

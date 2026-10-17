@@ -524,18 +524,34 @@ impl EditorView {
                 .skip(start)
                 .take(end - start)
                 .collect();
+            let lines = self
+                .primary()
+                .selection()
+                .map_or((0, 0), |(from, to)| (from.0.min(to.0), from.0.max(to.0)));
             return Some(
                 SharedSelection::of_text(&selected)
-                    .at(ui::tilo_actions::SelectionPlace::range(file, start, end)),
+                    .at(ui::tilo_actions::SelectionPlace::range(file, start, end))
+                    .within(self.lines_drawn(lines.0, lines.1)),
             );
         }
         let caret = self.primary();
         Some(
-            SharedSelection::default().at(ui::tilo_actions::SelectionPlace::caret(
-                file,
-                self.char_index(caret.line, caret.col),
-            )),
+            SharedSelection::default()
+                .at(ui::tilo_actions::SelectionPlace::caret(
+                    file,
+                    self.char_index(caret.line, caret.col),
+                ))
+                .within(self.lines_drawn(caret.line, caret.line)),
         )
+    }
+
+    /// Where lines `first..=last` are drawn: their rows across the editor,
+    /// clipped to what it shows.
+    fn lines_drawn(&self, first: usize, last: usize) -> Rect {
+        let line = |index: usize| f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+        let top = self.rect.y0 + (line(first) - self.scroll_y) * self.line_h;
+        let bottom = self.rect.y0 + (line(last) + 1.0 - self.scroll_y) * self.line_h;
+        Rect::new(self.rect.x0, top, self.rect.x1, bottom).intersect(self.rect)
     }
 
     /// Bind the authoritative Text while restoring this peer's recent render
@@ -2862,13 +2878,13 @@ impl Widget for EditorView {
         self.is_bound()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         // This is an action-owned source buffer, not input to a live process.
-        (self.is_focused && self.is_bound()).then_some(winit::window::ImePurpose::Normal)
+        (self.is_focused && self.is_bound()).then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.ime_purpose()?;
+        self.ime_content()?;
         if self.composition.has_preedit() || self.pending_text_edit.is_some() {
             return None;
         }
@@ -3330,7 +3346,7 @@ mod tests {
     fn dictation_target_tracks_code_selection_content_and_pending_edits() {
         let (mut view, mut doc) = bound_editor("same source");
         view.set_focus(true);
-        assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        assert_eq!(view.ime_content(), Some(ui::ime::InputContent::TEXT));
         let key = [17; 32];
         let stamp = view.ime_edit_fingerprint(&key).expect("editable code");
         let caret = view.ime_cursor_rect();
@@ -3360,7 +3376,7 @@ mod tests {
         assert!(view.take_text_edit().is_some());
         assert!(view.ime_edit_fingerprint(&key).is_some());
         view.set_focus(false);
-        assert!(view.ime_purpose().is_none());
+        assert!(view.ime_content().is_none());
         assert!(view.ime_edit_fingerprint(&key).is_none());
     }
 

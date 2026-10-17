@@ -877,11 +877,11 @@ pub trait FloatingSurfaceProvider {
         false
     }
 
-    /// IME purpose and desktop-logical caret rect for one secondary window.
+    /// IME content type and desktop-logical caret rect for one secondary window.
     fn floating_surface_ime(
         &self,
         _id: &str,
-    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
         None
     }
 
@@ -1940,7 +1940,7 @@ pub trait Widget {
         let caret = self.ime_cursor_rect();
         let mut required = false;
         self.for_each_child(&mut |child| {
-            if child.ime_cursor_rect() == caret && child.ime_purpose().is_some() {
+            if child.ime_cursor_rect() == caret && child.ime_content().is_some() {
                 required |= child.ime_requires_deferred_ack();
             }
         });
@@ -1952,7 +1952,7 @@ pub trait Widget {
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
         for child in self.children_mut() {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
                 return child.start_deferred_text();
             }
         }
@@ -1965,7 +1965,7 @@ pub trait Widget {
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
         for child in self.children_mut() {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
                 return child.commit_deferred_text(text);
             }
         }
@@ -1978,12 +1978,12 @@ pub trait Widget {
     /// compositor raise an on-screen keyboard over content that cannot accept
     /// the committed text.
     ///
-    /// Winit currently exposes the protocol's normal, password and terminal
-    /// purposes. Widgets should return the closest truthful value; the
-    /// compositor still receives the focus/enable/cursor lifecycle even when
-    /// a more specialised purpose (email, URL, numeric) is unavailable at the
-    /// toolkit boundary.
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    /// The answer is what the field holds and how the input method may help
+    /// in it, so the on-screen keyboard picks the matching layout (an email
+    /// field's `@`, a phone field's dial pad). Return the closest truthful
+    /// purpose; platforms that take less (winit's three purposes) get the
+    /// nearest of theirs.
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
         None
     }
 
@@ -1998,7 +1998,9 @@ pub trait Widget {
         let mut multiline = false;
         self.for_each_child(&mut |child| {
             if child.ime_cursor_rect() == Some(caret)
-                && child.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+                && child.ime_content().is_some_and(|content| {
+                    !content.is_secret() && content.purpose != crate::ime::InputPurpose::Terminal
+                })
             {
                 matching = matching.saturating_add(1);
                 multiline = child.ime_multiline();
@@ -2018,7 +2020,7 @@ pub trait Widget {
         let mut selected = None;
         let mut ambiguous = false;
         self.for_each_child(&mut |child| {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
                 if selected.is_some() {
                     ambiguous = true;
                 }
@@ -2582,7 +2584,7 @@ pub trait FloatingSurfaceWidgetExt {
     fn floating_surface_ime(
         &self,
         id: &str,
-    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)>;
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)>;
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
@@ -2656,7 +2658,7 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn floating_surface_ime(
         &self,
         id: &str,
-    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+    ) -> Option<(crate::ime::InputContent, vello::kurbo::Rect)> {
         capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
     }
 
@@ -3092,7 +3094,7 @@ pub use nav_shell::{
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowBar, WindowBarSlot,
-    WindowHeader,
+    WindowHeader, WindowHistory,
 };
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
@@ -3121,8 +3123,8 @@ mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
 pub use text_input::{
-    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
-    paint_preedit_underline,
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
+    TextInputKind, paint_preedit_underline,
 };
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};

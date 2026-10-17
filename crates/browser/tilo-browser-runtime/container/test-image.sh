@@ -150,6 +150,9 @@ version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get /app/)" || fail "the app entry points elsewhere"
 grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
+# Safari's home-screen icon sits beside the entry pages, as their links and
+# Safari's own unasked lookup expect.
+grep -q '^content-type: image/png' <(head_of /apple-touch-icon.png) || fail "/apple-touch-icon.png must be served as a PNG"
 # Every answer pins the host to HTTPS, the entry pages and the versioned
 # files alike, and never reaches past it to the workspace hosts beneath.
 for path in / /entry.json "/v/$version/entry-page.mjs"; do
@@ -158,8 +161,8 @@ for path in / /entry.json "/v/$version/entry-page.mjs"; do
 done
 # One complete, immutable version: version.json names the version the entry
 # pages import, and every file that version's build.json lists (bar the two
-# entry pages, which live at the top) is served under v/<version>/ with
-# exactly the bytes it records. A missing or substituted file fails here
+# entry pages and their icon, which live at the top) is served under
+# v/<version>/ with exactly the bytes it records. A missing or substituted file fails here
 # rather than in a visitor's tab when an app's module is first fetched.
 [[ $(get /version.json | json version) == "$version" ]] || fail "version.json names another version than the entry page imports"
 # A page opened before a deploy reads it to learn that its version's files
@@ -172,7 +175,7 @@ verify_version() {
   listed=$(get "/v/$1/build.json" | python3 -c '
 import json, sys
 for name, digest in json.load(sys.stdin)["files"].items():
-    if name not in ("index.html", "app/index.html"):
+    if name not in ("index.html", "app/index.html", "apple-touch-icon.png"):
         print(digest, name)')
   [[ $(wc -l <<<"$listed") -gt 1 ]] || fail "v/$1/build.json lists no files"
   # -g: font names carry [ ], which curl would otherwise read as a glob.

@@ -1324,6 +1324,12 @@ fn scan_review_view(
     let body = subpage("Scanned document", tx, items);
     let footer = actions(vec![
         command_button(
+            "print-centre.scan.new-document",
+            "New scanned document",
+            tx,
+            UiCommand::NewScannedDocument,
+        ),
+        command_button(
             "print-centre.scan.save-page",
             "Export this page",
             tx,
@@ -1464,12 +1470,21 @@ pub(super) fn scan_setup_view(
     items.push(titled_section("Page settings", scan_settings(scan, tx)));
     let body = subpage("Scan a document", tx, items);
 
-    let mut buttons = vec![command_button(
-        "print-centre.scan.cancel",
-        "Cancel",
-        tx,
-        UiCommand::Dashboard,
-    )];
+    let mut buttons = vec![
+        command_button(
+            "print-centre.scan.cancel",
+            "Cancel",
+            tx,
+            UiCommand::Dashboard,
+        ),
+        command_button(
+            "print-centre.scan.new-document",
+            "New scanned document",
+            tx,
+            UiCommand::NewScannedDocument,
+        )
+        .with_enabled(!scan.in_progress && tx.0.is_some()),
+    ];
     if scan.in_progress {
         buttons.push(
             command_button(

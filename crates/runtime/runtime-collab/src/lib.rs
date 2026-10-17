@@ -126,6 +126,11 @@ pub enum WorkspaceControlEvent {
         surface: u64,
         encoded_h264: Vec<u8>,
         timestamp: u64,
+        /// The unit's place in the target's encoded sequence. A gap means a
+        /// unit was lost on the way: the deltas after it cannot be decoded
+        /// until a keyframe, which [`WorkspaceControlInput::RequestKeyframe`]
+        /// asks for.
+        seq: u64,
     },
     Closed(WorkspaceControlCloseReason),
 }
@@ -147,6 +152,12 @@ pub enum WorkspaceControlInput {
     },
     KeyboardFocus {
         focused: bool,
+    },
+    /// Unit `seq` of the stream could not be decoded (one before it went
+    /// missing, or the decoder rejected one): ask the target for a keyframe.
+    /// Allowed for a session with a live stream, read-only or not.
+    RequestKeyframe {
+        seq: u64,
     },
 }
 
@@ -2803,6 +2814,28 @@ pub struct TaskRunEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
+    /// The step this run is paused at for its person's answer, when the run
+    /// is delivered again (its agent restarted while a draft waited). The
+    /// agent resumes there instead of planning the task over. Absent on a
+    /// first delivery, and from older senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<TaskRunPausedStep>,
+}
+
+/// A run's step that asks its person first and is still unsettled: the draft
+/// they are shown, and the digest binding it to the exact arguments the
+/// agent asked with. The arguments themselves are not carried; the agent
+/// rebuilds them from the draft and asks only when they digest the same.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunPausedStep {
+    /// The application that publishes the step's action, by package id.
+    pub app: String,
+    pub resource: String,
+    pub action: String,
+    pub draft: tilo_actions::Draft,
+    /// [`tilo_actions::draft::arguments_digest`] of the step's arguments.
+    pub arguments_digest: [u8; 32],
 }
 
 /// What opens the part of a task's instruction that says what the request is

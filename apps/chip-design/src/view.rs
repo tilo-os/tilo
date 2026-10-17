@@ -5,7 +5,9 @@ use ui::i18n::{EmbeddedCatalog, I18nManager};
 use ui::portal::{FileFilter, PickRequest};
 use ui::tilo_resource::{self, Effect, Invoke};
 use ui::tokens::TextRole;
-use ui::widget::{Column, Element, EmptyState, NavShell, Property, PropertyList, Scrollable, Text};
+use ui::widget::{
+    Button, Column, Element, EmptyState, NavShell, Property, PropertyList, Scrollable, Text,
+};
 
 use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
 use crate::resource::{Project as ChipProject, ProjectState, import};
@@ -239,6 +241,16 @@ impl ResourceApp for ChipDesignShell {
     }
 }
 
+pub(super) fn remove_verification_button(cx: &ViewCx<ChipProject>, id: &str) -> Button {
+    cx.actions().bind_invocation(
+        Button::new(
+            &format!("chip-remove-verification-{id}"),
+            &tr("chip-remove"),
+        ),
+        ChipProject::REMOVE_VERIFICATION.with(id),
+    )
+}
+
 fn evidence_body(
     cx: &ViewCx<ChipProject>,
     state: &ProjectState,
@@ -288,12 +300,14 @@ fn evidence_body(
             continue;
         }
         if let Some(flow) = &record.receipt.evidence_flow {
-            body = body.push(Box::new(cx.effect_button(
-                &flow.title,
-                &ChipEffect::Inspect {
-                    report: Some(id.clone()),
-                },
-            )));
+            body = body
+                .push(Box::new(cx.effect_button(
+                    &flow.title,
+                    &ChipEffect::Inspect {
+                        report: Some(id.clone()),
+                    },
+                )))
+                .push(Box::new(remove_verification_button(cx, id)));
             continue;
         }
         body = body
@@ -310,10 +324,7 @@ fn evidence_body(
                 },
             ))))
             .push(Box::new(verification_properties(id, record)))
-            .push(Box::new(cx.button(
-                tr("chip-remove"),
-                ChipProject::REMOVE_VERIFICATION.with(id.as_str()),
-            )));
+            .push(Box::new(remove_verification_button(cx, id)));
     }
     Box::new(Scrollable::new_vertical().with_child(Box::new(body)))
 }

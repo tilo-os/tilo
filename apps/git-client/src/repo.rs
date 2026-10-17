@@ -179,6 +179,7 @@ fn collect_worktree_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut 
     let mut opts = DiffOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
+        .show_untracked_content(true)
         .context_lines(3);
     let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) else {
         return;
@@ -519,7 +520,11 @@ pub fn stage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let mut index = repo.index()?;
     let rel = Path::new(file);
-    let wt_exists = repo.workdir().is_some_and(|w| w.join(rel).exists());
+    // A dangling symlink is still a Git entry; checking its target would
+    // mistake it for a deletion.
+    let wt_exists = repo
+        .workdir()
+        .is_some_and(|w| w.join(rel).symlink_metadata().is_ok());
     if wt_exists {
         index
             .add_path(rel)
@@ -700,7 +705,7 @@ pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
         // Untracked: remove it from the working tree.
         if let Some(wd) = repo.workdir() {
             let full = wd.join(rel);
-            if full.exists() {
+            if full.symlink_metadata().is_ok() {
                 std::fs::remove_file(&full).with_context(|| format!("remove untracked {file}"))?;
             }
         }

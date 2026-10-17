@@ -2803,10 +2803,10 @@ impl Widget for SheetsApp {
     }
 
     /// A cell being edited takes input-method composition.
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.grid
             .is_editing()
-            .then_some(winit::window::ImePurpose::Normal)
+            .then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -6058,8 +6058,8 @@ pub(crate) mod tests {
         ));
         assert!(app.grid.is_editing());
         assert_eq!(
-            app.ime_purpose(),
-            Some(winit::window::ImePurpose::Normal),
+            app.ime_content(),
+            Some(ui::ime::InputContent::TEXT),
             "the editing cell asks for the input method"
         );
         assert!(app.ime_cursor_rect().is_some());

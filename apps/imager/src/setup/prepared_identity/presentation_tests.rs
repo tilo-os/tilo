@@ -69,6 +69,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         handshake: runtime_identity::wire::Handshake {
             workspace_id: room.to_string(),
             app_id: "so.tilo.imager".into(),
+            surface: None,
         },
         presentation_version: runtime_identity::wire::PRESENTATION_VERSION,
     };

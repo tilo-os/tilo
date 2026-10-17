@@ -199,7 +199,8 @@ and presence palette. There is no accent colour any more: nothing in
 | `surfaces.glass` | `surfaces.material` (overlay at 72 %, only behind a compositor blur); paint `surfaces.overlay` where nothing blurs the backdrop |
 | `surfaces.glass_blur_px` | `surfaces.material_blur_px` |
 | `theme.material_glass()` | `theme.tokens.colors.surfaces.overlay` (opaque) |
-| `theme.material_film()` | `theme.tokens.colors.glass_film()` |
+| `theme.material_film()`, `colors.glass_film()` | delete: a selector's body is `chrome::selector_tier(theme, state, ground)`, painted with `chrome::paint_selector` |
+| `chrome::shell::glass_selector`, `chrome::shell::paint_glass_body`, `GLASS_*` | `chrome::selector_tier` and `chrome::paint_selector(scene, transform, &shape, SelectorRole::Item(&tier), theme)`; a docked strip's body is `SelectorRole::Strip`; rim and hover strength are the theme's `material.selector` |
 | `tokens.material_tint`, `CustomThemeSpec::material_tint`, `MATERIAL_TINT_*` | delete |
 | `theme.on_card()`, `colors.on_card()` | `theme.on_content()`, `colors.on_content()` |
 | `theme.on_window_card()` | `theme` itself (the theme's text tiers are already ink on content); `.clone()` where an owned theme was needed |

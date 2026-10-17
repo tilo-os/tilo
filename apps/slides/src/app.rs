@@ -1413,6 +1413,7 @@ impl SlidesApp {
     }
 
     fn new_slide(&mut self) {
+        self.end_notes_edit();
         let s = actions::new_slide_template();
         let at = self.cur_slide + 1;
         self.submit(&actions::insert_slide_action(at, &s));
@@ -1427,6 +1428,7 @@ impl SlidesApp {
         let Some(slide) = self.deck.slides.get(self.cur_slide).cloned() else {
             return;
         };
+        self.end_notes_edit();
         let mut copy = slide;
         copy.id = new_id();
         for e in &mut copy.elements {
@@ -1447,6 +1449,7 @@ impl SlidesApp {
         let Some(id) = self.slide().map(|slide| slide.id.clone()) else {
             return;
         };
+        self.end_notes_edit();
         self.submit(&actions::delete_slide_action(&id));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
@@ -1689,6 +1692,7 @@ impl SlidesApp {
         i = i.clamp(0, n - 1);
         let from = self.cur_slide;
         if i as usize != from {
+            self.end_notes_edit();
             // Cross-fade only in present mode; edit/overview jumps are instant.
             if self.mode == Mode::Present {
                 self.presentation.start_transition(from);
@@ -1709,6 +1713,7 @@ impl SlidesApp {
         let target = idx.min(n - 1);
         let from = self.cur_slide;
         if target != from {
+            self.end_notes_edit();
             if self.mode == Mode::Present {
                 self.presentation.start_transition(from);
             }
@@ -3145,9 +3150,9 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.editing_notes
-            .then(|| self.notes.control().ime_purpose())
+            .then(|| self.notes.control().ime_content())
             .flatten()
     }
 

@@ -779,10 +779,15 @@ pub(crate) fn apply_handoff_stage_onto_mounted_root(mnt: &Path, staged: &Path) -
 
 #[cfg(test)]
 use block_devices::installed_root::{
-    mountpoint_listing_is_busy, root_listing_waits_for_filesystem_type, select_tilo_root_partition,
+    root_listing_waits_for_filesystem_type, select_tilo_root_partition,
 };
+// Only the Linux tests mount an installed root or read a mountpoint listing.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+use block_devices::installed_root::mountpoint_listing_is_busy;
 
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 fn copy_handoff_onto_installed_root(root_part: &str, staged: &Path) -> io::Result<()> {
     let mountpoint = tempfile::tempdir()?;
     block_devices::installed_root::with_mounted_root(root_part, mountpoint.path(), |mnt| {

@@ -26,6 +26,7 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
+import {followRefusal, refusalText, rejoinedName, retryRejoin} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
@@ -538,7 +539,9 @@ export async function startEntryPage({mode}) {
         // and never makes a person of its own.
         const kept = keptMembership(workspace);
         const identity = kept?.paired ? undefined : await browserPerson();
-        displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? randomDisplayName();
+        // A page that came back here by itself because the host turned it
+        // away (session-refusal.mjs) joins under the name it went by.
+        displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? randomDisplayName();
         const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
         entered = 'joined';
         return peer;
@@ -698,6 +701,35 @@ export async function startEntryPage({mode}) {
       },
     }) : null;
     void workspaceActions?.attach(hostActions('workspace'));
+    if (page.peer) {
+      // The host turning this page's session away while it is open: a page
+      // that came in through the host's door joins again through it, as on
+      // arrival; anything else is said, with the one thing left to do.
+      const home = page.entry?.home ?? null;
+      followRefusal({
+        peer: page.peer,
+        displayName: () => displayName,
+        canRejoin: () => Boolean(home?.admission) && ['joined', 'watching', 'seatless'].includes(entered)
+          && !remembering(() => keptMembership(home))?.paired,
+        rejoin: async () => {
+          await closeRoom(page);
+          // The bare entry is the door's: a link naming the room the host
+          // forgot would be refused. An embed keeps the address it was given.
+          if (embed) location.reload(); else loadPage(page.entry.base);
+        },
+        refuse: async code => {
+          tell('unavailable');
+          document.documentElement.dataset.refusal = code;
+          const known = remembering(() => rememberedRoom(here));
+          if (known) remembering(() => markUnavailable(known));
+          if (embed) return;
+          const own = await card(refusalText(code, workspaceName), [['Open your own desktop', true]]);
+          if (!own) return;
+          await closeRoom(page);
+          loadPage(page.link.format({mode: 'desktop', target: {scope: {kind: 'own'}}}));
+        },
+      });
+    }
     if (page.install && !embed) void setUpFromLink(page.install, setUp);
     // The outcome, for tests and tools driving the page: open, refused or failed.
     document.documentElement.dataset.entry = 'open';
@@ -729,6 +761,14 @@ export async function startEntryPage({mode}) {
       page.navigation?.subscribe(offerTab);
     }
   } catch (error) {
+    // A page that joined again by itself and found the door not answering
+    // yet (the host is still starting) tries again, still loading.
+    const again = error instanceof HostAdmissionError && error.code === 'unavailable' ? retryRejoin() : null;
+    if (again !== null) {
+      console.warn('admission: the door did not answer yet, trying again', error?.message);
+      setTimeout(() => location.reload(), again);
+      return;
+    }
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     arrive('stopped');
     // A refusal is the host's answer, which trying again does not change.
@@ -748,7 +788,14 @@ export async function startEntryPage({mode}) {
         status.textContent = `${known.name ?? 'This workspace'} did not let this browser in. You may have been removed from it, or it no longer exists.`;
       }
     }
-    if (!embed && mode === 'desktop' && admitting) void offerOtherWorkspaces({...admitting, runtime});
+    if (!embed && mode === 'desktop' && admitting) {
+      const refused = document.documentElement.dataset.entry === 'refused';
+      void offerOtherWorkspaces({...admitting, runtime}).then(offered => {
+        // Nothing to try again and nowhere else of theirs to go: the
+        // person's own desktop is always there.
+        if (!offered && refused) offerOwnDesktop({...admitting, runtime});
+      });
+    }
     throw error;
   }
 }
@@ -861,17 +908,34 @@ async function offerUpdate({page, status}) {
   location.reload();
 }
 
-/** After a failure to open `scope`, offer the person's other workspaces. */
+/** The page's own-desktop button (index.html), shown on a refusal: it opens
+ * the person's own desktop under this entry. */
+function offerOwnDesktop({entry, runtime}) {
+  const button = document.getElementById('arrival-own');
+  if (!button) return;
+  let url;
+  try {
+    url = grammar(runtime, entry).format({mode: 'desktop', target: {scope: {kind: 'own'}}});
+  } catch {
+    url = new URL('#/me', entry.base).href;
+  }
+  button.addEventListener('click', () => loadPage(url), {once: true});
+  document.documentElement.dataset.ownDesktop = '';
+}
+
+/** After a failure to open `scope`, offer the person's other workspaces;
+ * resolves to whether there were any to offer. */
 async function offerOtherWorkspaces({scope, entry, runtime}) {
   const link = runtime ? grammar(runtime, entry) : null;
   const choices = (remembering(() => workspaceChoices({home: entry.home, homeRoom: homeRoomOf(entry),
     entered: enteredWorkspaces(), current: scope})) ?? []).filter(choice => choice.home || link);
-  if (!choices.length) return;
+  if (!choices.length) return false;
   const choice = await card('Open another of your workspaces',
     [...choices.map(option => [option.unavailable ? `${option.name} (did not open last time)` : option.name, option]), ['Not now', null]]);
-  if (!choice) return;
+  if (!choice) return true;
   remembering(() => chooseWorkspace(choice.home ? null : choice));
   loadPage(choiceUrl(choice, entry, link));
+  return true;
 }
 
 /** Offer to set up the machine an `install` link names (`machine-setup.mjs`). */

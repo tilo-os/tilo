@@ -557,3 +557,85 @@ fn launchers_build_on_the_shared_launch_specs() {
         );
     }
 }
+
+/// What a hovered selector looks like where it lands: its film composited
+/// over the ground.
+fn seen_over(fill: vello::peniko::Color, ground: vello::peniko::Color) -> vello::peniko::Color {
+    let [fr, fg, fb, a] = fill.components;
+    let [gr, gg, gb, _] = ground.components;
+    vello::peniko::Color::new([
+        fr * a + gr * (1.0 - a),
+        fg * a + gg * (1.0 - a),
+        fb * a + gb * (1.0 - a),
+        1.0,
+    ])
+}
+
+/// Every selector paints through `chrome::selector_tier`; this holds its
+/// tiers to the selection step on each ground a selector really stands on,
+/// in every preset, with transparency on and reduced: the window group's
+/// docked strip, the window ground (in-app tabs, page tabs), a segmented
+/// track and the desktop (the top bar). The active tab is opaque, the hover
+/// clears the step without reaching the active one, and reduced
+/// transparency (as high contrast) drops the rim.
+#[test]
+fn selector_tiers_clear_the_selection_step_on_every_ground_they_stand_on() {
+    use tilo_ui::chrome::{
+        SELECTION_MIN_STEP, SelectionState, lightness_step, selector_finish, selector_tier,
+        strip_ground,
+    };
+    use tilo_ui::theme::{Preset, Theme};
+    let mut failures = Vec::new();
+    for preset in Preset::ALL {
+        for reduced in [false, true] {
+            let theme = Theme::from_document(&preset.document())
+                .expect("a preset is a theme")
+                .with_reduce_transparency(reduced);
+            let colors = &theme.tokens.colors;
+            let opaque = !selector_finish(&theme).translucent();
+            for (name, ground) in [
+                ("strip", strip_ground(&theme)),
+                ("window", colors.surfaces.content),
+                ("track", colors.surfaces.raised),
+                ("desktop", colors.surfaces.base),
+            ] {
+                let at = format!("{} reduced={reduced} on {name}", preset.name());
+                let active = selector_tier(&theme, SelectionState::active(true), ground);
+                let hover = selector_tier(&theme, SelectionState::new(false, true, false), ground);
+                let idle = selector_tier(&theme, SelectionState::default(), ground);
+                let active_step = lightness_step(active.fill, ground);
+                let hover_step = lightness_step(seen_over(hover.fill, ground), ground);
+                if active.fill.components[3] < 1.0 {
+                    failures.push(format!("{at}: the active selector is not opaque"));
+                }
+                if active_step < SELECTION_MIN_STEP {
+                    failures.push(format!("{at}: active ΔL {active_step:.3}"));
+                }
+                if hover_step < SELECTION_MIN_STEP || hover_step >= active_step {
+                    failures.push(format!(
+                        "{at}: hover ΔL {hover_step:.3} against active {active_step:.3}"
+                    ));
+                }
+                if opaque && hover.fill.components[3] < 1.0 {
+                    failures.push(format!("{at}: an opaque finish hovers translucent"));
+                }
+                if idle.fill.components[3] > 0.0 || idle.border.is_some() {
+                    failures.push(format!("{at}: an idle selector paints"));
+                }
+                let lit = selector_finish(&theme).rim().is_some();
+                if active.border.is_none() || active.inner_glow.is_some() != lit || (lit && reduced)
+                {
+                    failures.push(format!(
+                        "{at}: active edge {:?}, rim {:?}",
+                        active.border, active.inner_glow
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "selector tiers off the selection step:\n  {}",
+        failures.join("\n  ")
+    );
+}

@@ -10060,8 +10060,8 @@ impl Widget for BlockEditor {
         Some(stamp)
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
+    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        Some(crate::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
@@ -10595,7 +10595,7 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
                 .selected_text()
                 .or_else(|| text.get(from..to).map(str::to_owned))
                 .filter(|selected| !selected.trim().is_empty())
-                .map(|selected| SharedSelection::of_text(&selected));
+                .map(|selected| self.drawn_at(SharedSelection::of_text(&selected)));
         };
         let chars = |byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
         let selected = text.get(from..to).unwrap_or_default();
@@ -10610,7 +10610,40 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
                 .anchor
                 .spanning("body", self.spanned_ranges(selection_across));
         }
-        Some(selection)
+        Some(self.drawn_at(selection))
+    }
+}
+
+impl BlockEditor {
+    /// `selection` placed where it is drawn: the blocks it spans (the
+    /// focused one when it spans none), so the shell's composer keeps clear
+    /// of the whole selected text rather than only the caret's line.
+    fn drawn_at(
+        &self,
+        selection: crate::shared_selection::SharedSelection,
+    ) -> crate::shared_selection::SharedSelection {
+        let (first, last) = match self.document_selection {
+            Some(across) => {
+                let (start, end) = across.ordered();
+                (start.block, end.block)
+            }
+            None => match self.focused {
+                Some(focused) => (focused, focused),
+                None => return selection,
+            },
+        };
+        let bounds = self
+            .blocks
+            .get(first..=last.min(self.blocks.len().saturating_sub(1)))
+            .unwrap_or_default()
+            .iter()
+            .map(|block| Widget::get_rect(&block.line))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .reduce(|all, rect| all.union(rect));
+        match bounds {
+            Some(bounds) => selection.within(bounds),
+            None => selection,
+        }
     }
 }
 

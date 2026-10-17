@@ -104,10 +104,11 @@ impl Model for Counter {
             slot.current(doc)?,
             Some((Value::Scalar(scalar), _)) if matches!(scalar.as_ref(), ScalarValue::Counter(_))
         );
-        if counter && stored == self.0 {
-            return Ok(());
+        if counter {
+            slot.increment(doc, self.0.saturating_sub(stored))
+        } else {
+            slot.put_scalar(doc, ScalarValue::counter(self.0))
         }
-        slot.increment(doc, self.0.saturating_sub(if counter { stored } else { 0 }))
     }
     #[inline(never)]
     fn edit(
@@ -131,6 +132,33 @@ impl Model for Counter {
                     by: after.0.saturating_sub(self.0),
                 },
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::*;
+    use automerge::ROOT;
+
+    #[test]
+    fn saving_a_counter_over_an_integer_preserves_its_value() {
+        for (original, wanted) in [(5, 5), (5, 7), (-5, -7)] {
+            let mut doc = Doc::new();
+            doc.put(ROOT, "count", original).unwrap();
+            let mut count: Counter = read_key(&doc, &ROOT, "count").unwrap();
+            count.add(wanted - original);
+            write_key(&mut doc, &ROOT, "count", &count).unwrap();
+            assert_eq!(
+                read_key::<Counter>(&doc, &ROOT, "count").unwrap().get(),
+                wanted
+            );
+            count.add(1);
+            write_key(&mut doc, &ROOT, "count", &count).unwrap();
+            assert_eq!(
+                read_key::<Counter>(&doc, &ROOT, "count").unwrap().get(),
+                wanted + 1
+            );
         }
     }
 }

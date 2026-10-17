@@ -42,6 +42,12 @@ pub struct SharedSelection {
     /// published resource when [`Self::resource`] is absent. Local only.
     #[serde(skip)]
     pub resource_kind: Option<String>,
+    /// Where the selection is drawn, in the window's logical coordinates:
+    /// the selected text's lines, else the text block holding it. The shell
+    /// keeps its agent composer clear of it. Local only: geometry is no part
+    /// of what an agent is told.
+    #[serde(skip)]
+    pub bounds: Option<vello::kurbo::Rect>,
 }
 
 impl SharedSelection {
@@ -89,6 +95,28 @@ impl SharedSelection {
     pub fn in_kind(mut self, kind: impl Into<String>) -> Self {
         self.resource_kind = Some(kind.into());
         self
+    }
+
+    /// This selection drawn within `bounds`, in window coordinates.
+    #[must_use]
+    pub fn within(mut self, bounds: vello::kurbo::Rect) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
+    /// Where the selection is drawn, as the shell protocol carries it:
+    /// `None` when unknown or degenerate.
+    #[must_use]
+    pub fn protocol_bounds(&self) -> Option<[f64; 4]> {
+        self.bounds
+            .filter(|rect| {
+                [rect.x0, rect.y0, rect.x1, rect.y1]
+                    .iter()
+                    .all(|value| value.is_finite())
+                    && rect.width() > 0.0
+                    && rect.height() > 0.0
+            })
+            .map(crate::floating_surface::protocol_rect_array)
     }
 
     /// Whether there is nothing to ask about.
@@ -185,6 +213,8 @@ pub fn selection_of(widget: &(impl Widget + ?Sized)) -> Option<SharedSelection> 
         (_, Some((_, _, _, text))) => SharedSelection::of_text(text),
         _ => return None,
     };
+    // The widget holding the selection is the text block it is drawn in.
+    let selection = selection.within(widget.get_rect());
     (!selection.is_empty()).then_some(selection)
 }
 
@@ -282,6 +312,29 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn where_a_selection_is_drawn_stays_with_the_shell_and_out_of_the_selection() {
+        let drawn = vello::kurbo::Rect::new(10.0, 20.0, 300.0, 60.0);
+        let selection = SharedSelection::of_text("late results")
+            .at(SelectionPlace::range("block-2", 4, 16))
+            .within(drawn);
+        assert_eq!(selection.protocol_bounds(), Some([10.0, 20.0, 300.0, 60.0]));
+        let wire = serde_json::to_value(&selection).unwrap();
+        assert!(
+            wire.get("bounds").is_none(),
+            "geometry is no part of what an agent is told: {wire}"
+        );
+        let back: SharedSelection = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.bounds, None);
+        for empty in [
+            vello::kurbo::Rect::ZERO,
+            vello::kurbo::Rect::new(10.0, 20.0, 10.0, 60.0),
+            vello::kurbo::Rect::new(f64::NAN, 0.0, 1.0, 1.0),
+        ] {
+            assert_eq!(selection.clone().within(empty).protocol_bounds(), None);
+        }
     }
 
     #[test]

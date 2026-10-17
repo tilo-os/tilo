@@ -118,12 +118,21 @@ fn is_numeric_column(result: &QueryResult, column: usize) -> bool {
     any
 }
 
-fn cell_number(cell: &Cell) -> Option<f64> {
-    match cell {
-        Cell::Integer(value) => Some(*value as f64),
-        Cell::Real(value) => Some(*value),
-        _ => None,
+/// Compare before converting: rounding an integer to f64 can equate adjacent IDs.
+fn compare_integer_real(integer: i64, real: f64) -> Ordering {
+    // i64::MAX rounds up to 2^63 as f64, so the upper bound is exclusive.
+    // NaNs sort after all other numbers, rather than equating unequal values.
+    if real.is_nan() || real >= 9_223_372_036_854_775_808.0 {
+        return Ordering::Less;
     }
+    if real < -9_223_372_036_854_775_808.0 {
+        return Ordering::Greater;
+    }
+    integer.cmp(&(real as i64)).then_with(|| {
+        0.0_f64
+            .partial_cmp(&real.fract())
+            .unwrap_or(Ordering::Equal)
+    })
 }
 
 /// Nulls first, then numbers by value, then everything else by its text
@@ -133,10 +142,18 @@ fn compare_cells(a: Option<&Cell>, b: Option<&Cell>) -> Ordering {
         (None | Some(Cell::Null), None | Some(Cell::Null)) => Ordering::Equal,
         (None | Some(Cell::Null), Some(_)) => Ordering::Less,
         (Some(_), None | Some(Cell::Null)) => Ordering::Greater,
-        (Some(a), Some(b)) => match (cell_number(a), cell_number(b)) {
-            (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
-            _ => a.display().to_lowercase().cmp(&b.display().to_lowercase()),
-        },
+        // Database integers exceed f64's exact range (2^53), notably IDs.
+        (Some(Cell::Integer(a)), Some(Cell::Integer(b))) => a.cmp(b),
+        (Some(Cell::Integer(a)), Some(Cell::Real(b))) => compare_integer_real(*a, *b),
+        (Some(Cell::Real(a)), Some(Cell::Integer(b))) => compare_integer_real(*b, *a).reverse(),
+        (Some(Cell::Real(a)), Some(Cell::Real(b))) => a
+            .partial_cmp(b)
+            .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan())),
+        // Cross-type comparisons must use the same rank for both numeric types:
+        // comparing their display text against nonnumbers would create cycles.
+        (Some(Cell::Integer(_) | Cell::Real(_)), Some(_)) => Ordering::Less,
+        (Some(_), Some(Cell::Integer(_) | Cell::Real(_))) => Ordering::Greater,
+        (Some(a), Some(b)) => a.display().to_lowercase().cmp(&b.display().to_lowercase()),
     }
 }
 
@@ -359,6 +376,155 @@ mod tests {
         // A new result starts unsorted.
         table.bind(Some(result()));
         assert_eq!(table.sorted(), None);
+    }
+
+    #[test]
+    fn sorting_integer_ids_preserves_all_64_bits() {
+        let values = [
+            i64::MAX,
+            9_007_199_254_740_993,
+            9_007_199_254_740_992,
+            i64::MIN + 1,
+            i64::MIN,
+            i64::MAX - 1,
+        ];
+        let mut table = ResultsTable::new("results");
+        table.bind(Some(Arc::new(QueryResult {
+            columns: vec!["id".into()],
+            rows: values
+                .iter()
+                .map(|value| vec![Cell::Integer(*value)])
+                .collect(),
+            is_select: true,
+            ..Default::default()
+        })));
+        table.sort_by(0);
+        assert_eq!(table.display_order(), [4, 3, 2, 1, 5, 0]);
+        table.sort_by(0);
+        assert_eq!(table.display_order(), [0, 5, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn mixed_types_sort_consistently_in_every_input_order() {
+        // SQLite columns can contain numbers and text in the same result.
+        // Comparing cross-type pairs as text used to create 2 < 10.0 < "11" < 2.
+        let cells = [Cell::Integer(2), Cell::Real(10.0), Cell::Text("11".into())];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut table = ResultsTable::new("results");
+            table.bind(Some(Arc::new(QueryResult {
+                columns: vec!["mixed".into()],
+                rows: order.iter().map(|&i| vec![cells[i].clone()]).collect(),
+                is_select: true,
+                ..Default::default()
+            })));
+            table.sort_by(0);
+            let ascending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+            assert_eq!(ascending, [0, 1, 2], "input: {order:?}");
+            table.sort_by(0);
+            let descending: Vec<_> = table.display_order().iter().map(|&i| order[i]).collect();
+            assert_eq!(descending, [2, 1, 0], "input: {order:?}");
+        }
+    }
+
+    #[test]
+    fn mixed_numbers_compare_exactly_and_sort_consistently() {
+        // Ascending equivalence classes, including nulls, nonnumbers, both sides
+        // of f64's exact integer range and i64's bounds. Every triple must be transitive.
+        let groups = [
+            vec![Cell::Null],
+            vec![Cell::Real(f64::NEG_INFINITY)],
+            vec![Cell::Real(-18_446_744_073_709_551_616.0)],
+            vec![Cell::Integer(i64::MIN), Cell::Real(i64::MIN as f64)],
+            vec![Cell::Integer(i64::MIN + 1)],
+            vec![Cell::Integer(-9_007_199_254_740_993)],
+            vec![
+                Cell::Integer(-9_007_199_254_740_992),
+                Cell::Real(-9_007_199_254_740_992.0),
+            ],
+            vec![Cell::Real(-1.5)],
+            vec![Cell::Integer(-1)],
+            vec![Cell::Real(-0.5)],
+            vec![Cell::Integer(0), Cell::Real(-0.0), Cell::Real(0.0)],
+            vec![Cell::Real(0.5)],
+            vec![Cell::Integer(1)],
+            vec![Cell::Real(1.5)],
+            vec![Cell::Integer(2)],
+            vec![Cell::Real(10.0)],
+            vec![
+                Cell::Integer(9_007_199_254_740_992),
+                Cell::Real(9_007_199_254_740_992.0),
+            ],
+            vec![Cell::Integer(9_007_199_254_740_993)],
+            vec![Cell::Integer(i64::MAX - 1)],
+            vec![Cell::Integer(i64::MAX)],
+            vec![Cell::Real(9_223_372_036_854_775_808.0)],
+            vec![Cell::Real(f64::INFINITY)],
+            vec![Cell::Real(f64::NAN)],
+            vec![Cell::Text("".into())],
+            vec![Cell::Text("11".into())],
+            vec![Cell::Text("A".into()), Cell::Text("a".into())],
+            vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],
+            vec![Cell::Blob(2)],
+            vec![Cell::Text("z".into())],
+            vec![Cell::Text("Ä".into()), Cell::Text("ä".into())],
+        ];
+        let values: Vec<_> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(rank, group)| group.iter().map(move |cell| (rank, cell)))
+            .collect();
+        for &(rank_a, a) in &values {
+            for &(rank_b, b) in &values {
+                assert_eq!(
+                    compare_cells(Some(a), Some(b)),
+                    rank_a.cmp(&rank_b),
+                    "{a:?} vs {b:?}"
+                );
+                for &(_, c) in &values {
+                    if compare_cells(Some(a), Some(b)).is_le()
+                        && compare_cells(Some(b), Some(c)).is_le()
+                    {
+                        assert!(compare_cells(Some(a), Some(c)).is_le());
+                    }
+                }
+            }
+        }
+        let mut table = ResultsTable::new("results");
+        table.bind(Some(Arc::new(QueryResult {
+            columns: vec!["number".into()],
+            rows: values
+                .iter()
+                .rev()
+                .map(|(_, cell)| vec![(*cell).clone()])
+                .collect(),
+            is_select: true,
+            ..Default::default()
+        })));
+        let ranks: Vec<_> = values.iter().rev().map(|(rank, _)| *rank).collect();
+        table.sort_by(0);
+        let ascending: Vec<_> = table
+            .display_order()
+            .iter()
+            .map(|&row| ranks[row])
+            .collect();
+        assert_eq!(
+            ascending,
+            values.iter().map(|(rank, _)| *rank).collect::<Vec<_>>()
+        );
+        table.sort_by(0);
+        let descending: Vec<_> = table
+            .display_order()
+            .iter()
+            .map(|&row| ranks[row])
+            .collect();
+        assert_eq!(descending, ranks);
     }
 
     /// Text sorts without regard to case and numbers sort by value, not by their digits.

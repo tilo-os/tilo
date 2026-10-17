@@ -5,6 +5,8 @@
   <meta name="referrer" content="no-referrer">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
   <title>Tilo</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z' fill='%239fa6e0'/%3E%3Cpath d='M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z' fill='%239fa6e0'/%3E%3Crect x='29' y='16' width='42' height='68' rx='6' fill='%232a3fd1'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png">
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
@@ -53,8 +55,8 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
     /* Arrival: until the desktop draws its first frame, the page is the
-       desktop's own ground with Tilo's mark, its three dots (as in the
-       desktop's top bar, `paint_tilo_mark`), breathing slowly. Below, from the
+       desktop's own ground with Tilo's mark (the brand's dark variant, as
+       the desktop's top bar draws it, `paint_tilo_mark`), breathing slowly. Below, from the
        first second on, one rotating line (a joke or a tip) over a thin bar,
        the one sign of progress, moved by the real steps of getting in
        (arrival.mjs). The step notes in #status stay for screen readers
@@ -64,13 +66,9 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
        and the desktop is under it. Steps come from entry-page.mjs
        (`data-arrival`). */
     #arrival { position: fixed; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; background: #121214; transition: opacity 360ms ease-out, visibility 0s linear 360ms; }
-    #arrival > i { display: flex; gap: 2px; animation: tilo-breathe 5s ease-in-out infinite; }
-    #arrival b { width: 12px; height: 12px; border-radius: 50%; }
-    #arrival b:nth-child(1) { background: #7c5cff; }
-    #arrival b:nth-child(2) { background: #5394dd; }
-    #arrival b:nth-child(3) { background: #31c6b5; }
+    #arrival > svg { display: block; margin-bottom: 16px; animation: tilo-breathe 5s ease-in-out infinite; }
     @keyframes tilo-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
-    [data-arrival=stopped] #arrival > i { visibility: hidden; }
+    [data-arrival=stopped] #arrival > svg { visibility: hidden; }
     [data-arrival=done] #arrival { opacity: 0; visibility: hidden; }
     #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
@@ -87,14 +85,14 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     .tilo-entry-card { z-index: 3; }
     @media (prefers-reduced-motion: reduce) {
       #arrival { transition: none; }
-      #arrival > i { animation: none; }
+      #arrival > svg { animation: none; }
       #arrival > p, #arrival-bar > span { transition: none; }
     }
   </style>
 </head>
 <body>
   <div id="surface"></div>
-  <div id="arrival" aria-hidden="true"><i><b></b><b></b><b></b></i><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
+  <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span><a id="other-mode" hidden>Open in desktop</a></div>

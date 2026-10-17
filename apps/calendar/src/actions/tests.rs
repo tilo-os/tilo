@@ -4,6 +4,7 @@ use crate::resource::{CalendarEffect, RemoteAt, calendar, fingerprint, notes_pat
 use tilo_actions::{ActionRegistry, EncodedAction, Resource};
 use tilo_document::RichTextAction;
 use ui::tilo_resource::{Invoke, Replica, Resource as _};
+use uuid::Uuid;
 
 /// The sample calendar, written through its own verbs.
 fn seeded() -> Replica<Calendar> {
@@ -320,6 +321,181 @@ fn replicated_edits_of_one_event_converge() {
             .attendees
             .is_empty()
     );
+}
+
+#[test]
+fn importing_a_duration_through_the_autumn_fold_keeps_actual_instants() {
+    // Both a reversed wall interval and a later-fold endpoint after the
+    // start need an unambiguous representation, not just a local-order fix.
+    for (duration, expected_end) in [("PT30M", "01:15"), ("PT60M", "01:45"), ("PT65M", "01:50")] {
+        let source = format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-visit@example.com\r\nSUMMARY:Visit\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:{duration}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:other-visit@example.com\r\nSUMMARY:Other\r\nDTSTART:20261026T090000\r\nDTEND:20261026T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let mut calendar = Replica::<Calendar>::new();
+        calendar
+            .apply(crate::resource::import(&source).unwrap())
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert_eq!(state.events.len(), 2);
+        let event = state
+            .events
+            .iter()
+            .find(|event| event.title == "Visit")
+            .unwrap();
+        let start = crate::timezone::wall_to_utc(&event.timezone, event.start)
+            .unwrap()
+            .0;
+        assert_eq!(event.timezone, "Europe/Berlin");
+        assert!(event.end_later_fold);
+        let end = event.end_instant().unwrap();
+        assert_eq!(start.to_rfc3339(), "2026-10-25T00:45:00+00:00");
+        assert_eq!(
+            end.to_rfc3339(),
+            format!("2026-10-25T{expected_end}:00+00:00")
+        );
+        let exported = crate::ics::export(&state);
+        let mut copy = Replica::<Calendar>::new();
+        copy.apply(crate::resource::import(&exported).unwrap())
+            .unwrap();
+        let copy_state = copy.state().unwrap();
+        let copied = copy_state
+            .events
+            .iter()
+            .find(|event| event.title == "Visit")
+            .unwrap();
+        assert_eq!(
+            (
+                copied.start,
+                copied.end,
+                &copied.timezone,
+                copied.end_later_fold
+            ),
+            (
+                event.start,
+                event.end,
+                &event.timezone,
+                event.end_later_fold
+            )
+        );
+    }
+}
+
+#[test]
+fn recurring_fold_duration_preserves_wall_schedule_and_detached_overrides() {
+    let detached = "BEGIN:VEVENT\r\nUID:fold-series@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261101T024500\r\nDTSTART;TZID=Europe/Berlin:20261102T041500\r\nDTEND;TZID=Europe/Berlin:20261102T052000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\n";
+    for overrides in ["", detached] {
+        let source = format!(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-series@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n{overrides}END:VCALENDAR\r\n"
+        );
+        let mut calendar = Replica::<Calendar>::new();
+        calendar
+            .apply(crate::resource::import(&source).unwrap())
+            .unwrap();
+        let original = calendar.state().unwrap();
+        let event = &original.events[0];
+        assert_eq!(event.timezone, "Europe/Berlin");
+        assert_eq!(event.start.to_string(), "2026-10-25 02:45:00");
+        assert_eq!(event.end.to_string(), "2026-10-25 02:50:00");
+        assert_eq!(event.elapsed_duration(), chrono::Duration::minutes(65));
+        assert_eq!(event.hours(), 65.0 / 60.0);
+        let next = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let start = next.and_time(event.start.time());
+        assert_eq!(start.to_string(), "2026-11-01 02:45:00");
+        assert_eq!(
+            event.occurrence_end(start).to_string(),
+            "2026-11-01 03:50:00"
+        );
+        assert_eq!(
+            crate::timezone::wall_to_utc(&event.timezone, start)
+                .unwrap()
+                .0
+                .to_rfc3339(),
+            "2026-11-01T01:45:00+00:00"
+        );
+        assert_eq!(
+            event.occurrences_in(next, next).is_empty(),
+            !overrides.is_empty()
+        );
+        let exported = crate::ics::export(&original);
+        assert!(exported.contains("DTSTART;TZID=Europe/Berlin:20261025T024500"));
+        assert!(exported.contains("DURATION:PT3900S"));
+        let mut copy = Replica::<Calendar>::new();
+        copy.apply(crate::resource::import(&exported).unwrap())
+            .unwrap();
+        let copied = copy.state().unwrap();
+        assert_eq!(&copied.events[0], event);
+        if !overrides.is_empty() {
+            let edit = &copied.events[0].occurrence_overrides[0];
+            assert_eq!(edit.original_date, next);
+            assert_eq!(edit.original_time, Some(event.start.time()));
+            assert_eq!(edit.start.unwrap().to_string(), "2026-11-02 04:15:00");
+            assert_eq!(edit.end.unwrap().to_string(), "2026-11-02 05:20:00");
+        }
+    }
+}
+
+#[test]
+fn detached_fold_endpoint_round_trips_with_its_parent_timezone() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nSUMMARY:Weekly\r\nDTSTART;TZID=Europe/Berlin:20261018T024500\r\nDTEND;TZID=Europe/Berlin:20261018T034500\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261025T024500\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut calendar = Replica::<Calendar>::new();
+    calendar
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let state = calendar.state().unwrap();
+    let event = &state.events[0];
+    let edit = &event.occurrence_overrides[0];
+    assert!(edit.end_later_fold);
+    assert_eq!(edit.end.unwrap().to_string(), "2026-10-25 02:15:00");
+    assert_eq!(
+        crate::timezone::endpoint_utc(&event.timezone, edit.end.unwrap(), edit.end_later_fold)
+            .unwrap()
+            .to_rfc3339(),
+        "2026-10-25T01:15:00+00:00"
+    );
+    let exported = crate::ics::export(&state);
+    let mut copy = Replica::<Calendar>::new();
+    copy.apply(crate::resource::import(&exported).unwrap())
+        .unwrap();
+    assert_eq!(copy.state().unwrap().events[0], *event);
+}
+
+#[test]
+fn reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences() {
+    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut calendar = Replica::<Calendar>::new();
+    calendar
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let imported = calendar.state().unwrap().events[0].clone();
+    assert_eq!(imported.recurrence, Recurrence::Weekly);
+    assert_eq!(imported.occurrence_overrides.len(), 1);
+    assert!(imported.occurrence_overrides[0].cancelled);
+    let fields = Calendar::paths().events.item(&key(imported.id));
+    calendar
+        .apply(Invoke::from(fields.title.set("Local title".into())))
+        .unwrap();
+    calendar
+        .apply(crate::resource::import(source).unwrap())
+        .unwrap();
+    let state = calendar.state().unwrap();
+    assert_eq!(state.events.len(), 1);
+    let held = state.event(imported.id).unwrap();
+    assert_eq!(held.title, "Local title");
+    assert_eq!(held.occurrence_overrides, imported.occurrence_overrides);
+    let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+    let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+    assert_eq!(held.occurrences_in(from, to).len(), 2);
+
+    // Deliberate copies use the new-event action with a fresh identity;
+    // retaining import UIDs must not turn that operation into deduplication.
+    let mut copy = EventData::from_event(held);
+    copy.id.clear();
+    calendar
+        .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: copy }))
+        .unwrap();
+    let state = calendar.state().unwrap();
+    assert_eq!(state.events.len(), 2);
+    assert_ne!(state.events[0].id, state.events[1].id);
 }
 
 /// One import is one action, and its payload replays to the same calendar

@@ -518,6 +518,8 @@ pub struct PhotosApp {
     /// Where the last export went, or why it failed. Shown once in the status
     /// bubble so an action is never silent.
     notice: Option<String>,
+    /// The last copy, whose outcome can arrive after its notice.
+    pub(crate) copy: ui::CopyWatch,
     status_bubble: ui::StatusBubble,
     /// The empty state's one action, where it was painted.
     empty_state: Option<EmptyState>,
@@ -932,6 +934,7 @@ impl PhotosApp {
             layout_theme: Theme::dark(),
             pending,
             notice: None,
+            copy: ui::CopyWatch::default(),
             status_bubble: ui::StatusBubble::new(),
             empty_state: None,
             empty_state_key: None,
@@ -1449,12 +1452,12 @@ impl PhotosApp {
     /// `ImageViewer` exposes no direct query for this either, so it is derived
     /// in `visible_image_rect` from the same "contain fit, then zoom and
     /// pan" transform `ImageViewer::draw` applies — using only the widget's
-    /// already-public `zoom()` / `pan()` / rect, and this app's own knowledge
-    /// of the original image's pixel size.
+    /// already-public `zoom()` / `pan()` / rect, and the rendered image's
+    /// pixel size, after the current crop and rotation.
     pub fn visible_rect(&self) -> Rect01 {
-        match (self.viewer.as_ref(), self.original.as_ref()) {
-            (Some(v), Some((_, original))) => {
-                visible_image_rect(v, f64::from(original.w), f64::from(original.h))
+        match (self.viewer.as_ref(), self.rendered.as_ref()) {
+            (Some(v), Some(rendered)) => {
+                visible_image_rect(v, f64::from(rendered.rgba.w), f64::from(rendered.rgba.h))
                     .unwrap_or(Rect01::FULL)
             }
             _ => Rect01::FULL,
@@ -1471,7 +1474,11 @@ impl PhotosApp {
         let Some(img) = self.edited_pixels() else {
             return false;
         };
-        let ok = ui::clipboard_copy_image(img.w as usize, img.h as usize, &img.bytes);
+        let ok = self.copy.watch(ui::clipboard_copy_image(
+            img.w as usize,
+            img.h as usize,
+            &img.bytes,
+        ));
         self.notice = Some(if ok {
             tr("photos-copied")
         } else {

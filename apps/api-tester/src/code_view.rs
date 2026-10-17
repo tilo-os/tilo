@@ -415,6 +415,45 @@ mod tests {
         assert_eq!(d.root::<CodeView>().visible().len(), all);
     }
 
+    #[test]
+    fn folding_a_nonfinal_container_keeps_its_siblings_visible() {
+        let mut view = CodeView::json(
+            "Body",
+            r#"{"a":{"items":[1,2],"empty":{}},"b":[3,4],"c":true}"#,
+        );
+        let all = view.visible();
+        let line_text = |line: &JsonLine| {
+            line.tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>()
+        };
+        let a = view
+            .lines
+            .iter()
+            .position(|line| line_text(line).contains("\"a\""))
+            .unwrap();
+        let b = view
+            .lines
+            .iter()
+            .position(|line| line_text(line).contains("\"b\""))
+            .unwrap();
+        let c = view
+            .lines
+            .iter()
+            .position(|line| line_text(line).contains("\"c\""))
+            .unwrap();
+        assert_eq!(view.lines[a].close_line, Some(b - 1));
+        assert_eq!(view.lines[0].close_line, Some(view.lines.len() - 1));
+        view.toggle(a);
+        assert_eq!(view.visible(), vec![0, a, b, b + 1, b + 2, b + 3, c, c + 1]);
+        view.toggle(b);
+        assert_eq!(view.visible(), vec![0, a, b, c, c + 1]);
+        view.toggle(a);
+        view.toggle(b);
+        assert_eq!(view.visible(), all);
+    }
+
     /// Plain text has no folds and one numbered line per line of text.
     #[test]
     fn plain_text_is_numbered_without_folds() {

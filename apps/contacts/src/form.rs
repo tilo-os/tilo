@@ -545,7 +545,7 @@ impl EditForm {
             Slot::First | Slot::Last => input = input.with_kind(TextInputKind::Name),
             Slot::Website => input = input.with_kind(TextInputKind::Url),
             Slot::Email(_) => input = input.with_kind(TextInputKind::Email),
-            Slot::Phone(_) => input = input.with_kind(TextInputKind::Number),
+            Slot::Phone(_) => input = input.with_kind(TextInputKind::Phone),
             Slot::Notes => input = input.with_min_lines(6),
             _ => {}
         }

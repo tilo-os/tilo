@@ -341,6 +341,8 @@ pub struct CameraApp {
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
     toast: Option<String>,
+    /// The last copy, whose outcome can arrive after its confirmation.
+    copy: ui::CopyWatch,
     /// The toast on screen and when it appeared, so it can expire.
     toast_shown: Option<(String, Instant)>,
     last_mouse: Point,
@@ -512,6 +514,7 @@ impl CameraApp {
             scanned: None,
             scan_gen: (0, 0),
             toast: None,
+            copy: ui::CopyWatch::default(),
             toast_shown: None,
             last_mouse: Point::new(-1_000.0, -1_000.0),
             document_scan: crate::document_scan::ScanSession::default(),
@@ -667,6 +670,11 @@ impl CameraApp {
             self.toast = Some("Timer cancelled".into());
             self.dirty = true;
             return Ok(());
+        }
+        // Stopping must be immediate, including when the camera disconnected
+        // after recording began. The timer only delays the start of a capture.
+        if self.is_recording() {
+            return self.stop_recording(None);
         }
         if !self.feed_active() {
             return Err(if self.mode == CaptureMode::Video {
@@ -2378,7 +2386,10 @@ impl CameraApp {
             }
             ("Copy password", CodeKind::Wifi { password, .. }) => {
                 self.toast = Some(
-                    if ui::try_clipboard_copy_secret(password, WIFI_PASSWORD_ON_CLIPBOARD_FOR) {
+                    if self.copy.watch(ui::try_clipboard_copy_secret(
+                        password,
+                        WIFI_PASSWORD_ON_CLIPBOARD_FOR,
+                    )) {
                         "Wi-Fi password copied"
                     } else {
                         "Could not copy the Wi-Fi password"
@@ -2850,6 +2861,9 @@ impl Widget for CameraApp {
         self.poll_video_results(state);
         self.poll_thumbnail_results();
         self.poll_scan_results(state);
+        if self.copy.failed() {
+            self.toast = Some("Could not copy the Wi-Fi password".into());
+        }
         for capture in std::mem::take(&mut self.sample_captures) {
             if let Err(error) = self
                 .try_perform_action(state, crate::record::Record::REGISTER_CAPTURE.with(capture))
@@ -3550,6 +3564,32 @@ mod tests {
             frame.captures.len() == captures,
             "mode gestures leave the capture resource unchanged"
         );
+    }
+
+    #[test]
+    fn shutter_stops_recording_without_timer_or_live_feed() {
+        for disconnected in [false, true] {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+            assert!(app.is_recording());
+            app.apply(
+                Action::SetTimer(Timer::S3),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
+            if disconnected {
+                app.camera_issue = Some(CameraIssue::StartFailed);
+            }
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+            assert!(!app.is_recording(), "stop is immediate even without a feed");
+            assert!(!app.is_counting_down());
+            assert!(app.video_finalizing, "the recorded clip is finalized");
+        }
     }
 
     #[test]

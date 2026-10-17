@@ -1346,7 +1346,10 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        if crate::transport::parse_addr_list(&draft.to).is_empty() {
+        if [&draft.to, &draft.cc, &draft.bcc]
+            .into_iter()
+            .all(|field| crate::transport::parse_addr_list(field).is_empty())
+        {
             self.shared.borrow_mut().status = Some("Add a recipient before sending".into());
             self.dirty = true;
             return;
@@ -5226,6 +5229,77 @@ mod tests {
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         (app, doc)
+    }
+
+    #[test]
+    fn compose_send_accepts_recipients_in_any_header_field() {
+        for (to, cc, bcc) in [
+            ("dest@example.test", "", ""),
+            ("", "dest@example.test", ""),
+            ("", "", "hidden@example.test"),
+            ("", "", ""),
+        ] {
+            let (mut app, mut doc) = app();
+            // Replace the engine with an in-memory backend: no SMTP or other network IO.
+            let (requests, outgoing) = std::sync::mpsc::channel();
+            let (_events, incoming) = std::sync::mpsc::channel();
+            app.engine = Some(EngineHandle {
+                tx: requests,
+                rx: incoming,
+            });
+            let sent_before = app.shared.borrow().mailbox.count(Folder::Sent);
+            let draft = Draft {
+                to: to.into(),
+                cc: cc.into(),
+                bcc: bcc.into(),
+                subject: "Recipient regression".into(),
+                body: "Hello".into(),
+                ..Default::default()
+            };
+            app.compose.open_with_draft(&draft);
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            assert!(TestMail::outbox(&doc).is_empty());
+            assert!(outgoing.try_recv().is_err(), "no delivery before consent");
+            if to.is_empty() && cc.is_empty() && bcc.is_empty() {
+                assert!(app.compose.open, "an empty recipient list keeps the draft");
+                assert_eq!(
+                    app.shared.borrow().status.as_deref(),
+                    Some("Add a recipient before sending")
+                );
+                continue;
+            }
+            assert!(!app.compose.open, "To={to:?}, Cc={cc:?}, Bcc={bcc:?}");
+            let dispatcher = app.shared.borrow().dispatcher.clone().unwrap();
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
+            let [(queued, None)] = outbox.as_slice() else {
+                panic!("one confirmed send action must queue a message: {outbox:?}");
+            };
+            assert_eq!(queued.draft.to, to);
+            assert_eq!(queued.draft.cc, cc);
+            assert_eq!(queued.draft.bcc, bcc);
+            app.server_outbox()
+                .borrow_mut()
+                .deliver(queued.clone(), Box::new(|_| {}));
+            app.flush_server_outbox();
+            let EngineRequest::Send { account, draft, .. } = outgoing.try_recv().unwrap() else {
+                panic!("the compose action must reach the send backend");
+            };
+            assert_eq!(draft.to, to);
+            assert_eq!(draft.cc, cc);
+            assert_eq!(draft.bcc, bcc);
+            let wire = crate::transport::build_mime(
+                &app.content,
+                &Addr::new(account.display_name, account.email),
+                &draft,
+            )
+            .unwrap();
+            let wire = String::from_utf8(wire).unwrap();
+            assert!(!wire.to_ascii_lowercase().contains("bcc:"));
+            assert!(!wire.contains("hidden@example.test"));
+            assert!(outgoing.try_recv().is_err(), "only one send is submitted");
+            assert_eq!(app.shared.borrow().mailbox.count(Folder::Sent), sent_before);
+        }
     }
 
     struct InterleavedEngineFixture {

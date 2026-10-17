@@ -1841,6 +1841,7 @@ impl InvocationEnvelope {
 
 #[derive(Clone, Debug)]
 struct TaskRunEnvelope {
+    paused: Option<runtime_collab::TaskRunPausedStep>,
     task_id: String,
     title: String,
     instruction: Option<String>,
@@ -6576,6 +6577,7 @@ impl CapnpBrokerState {
         let lease = uuid::Uuid::new_v4().to_string();
         let context = task.action_context();
         tx.send(TaskRunEnvelope {
+            paused: None,
             task_id: task.id.clone(),
             title: task.title.clone(),
             instruction: Some(
@@ -12743,6 +12745,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
             let payload = runtime_collab::TaskRunEnvelope {
+                paused: run.paused,
                 version: 1,
                 task_id: run.task_id,
                 title: run.title,

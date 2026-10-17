@@ -3,6 +3,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::time::Instant;
 
 use settings::SettingsShell;
@@ -11,6 +12,7 @@ use settings::panes::accounts::{AccountsPane, BrowserOpener};
 use ui::framework::testing::TestApp;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[cfg(target_os = "linux")]
 type Files = TestApp<file_explorer::FileExplorerShell>;
 
 struct Browser;
@@ -238,6 +240,7 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn wait(
     app: &mut TestApp<file_explorer::FileExplorerShell>,
     service: &mut fs::cloud::CloudService,
@@ -268,6 +271,7 @@ fn assert_button<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, label: &st
     );
 }
 
+#[cfg(target_os = "linux")]
 fn wait_phase(
     app: &mut TestApp<file_explorer::FileExplorerShell>,
     service: &mut fs::cloud::CloudService,
@@ -284,6 +288,7 @@ fn wait_phase(
     })
 }
 
+#[cfg(target_os = "linux")]
 fn progress_phase(app: &mut Files) -> TestResult<String> {
     let progress = app
         .call("cloud-progress", serde_json::json!({}))?
@@ -297,9 +302,15 @@ fn progress_phase(app: &mut Files) -> TestResult<String> {
 
 struct Profile {
     _env: tilo_test_env::ScopedEnv,
-    scratch: tempfile::TempDir,
+    /// Keeps the isolated profile on disk for the test's lifetime.
+    _scratch: tempfile::TempDir,
+    // Only the Linux import journey runs a cloud service inside the profile.
+    #[cfg(target_os = "linux")]
     home: std::path::PathBuf,
+    #[cfg(target_os = "linux")]
     runtime: std::path::PathBuf,
+    #[cfg(target_os = "linux")]
+    state: std::path::PathBuf,
     root: AccountRoot,
 }
 
@@ -328,13 +339,18 @@ impl Profile {
 
         Ok(Self {
             _env: env,
-            scratch,
+            #[cfg(target_os = "linux")]
+            state: scratch.path().join("state"),
+            _scratch: scratch,
+            #[cfg(target_os = "linux")]
             home,
+            #[cfg(target_os = "linux")]
             runtime,
             root,
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn service(
         &self,
         custodian: account_custody::Custodian,
@@ -343,7 +359,7 @@ impl Profile {
             fs::cloud::ServiceConfig {
                 config_root: Some(self.root.path().ok_or("isolated account root")?),
                 mounts_root: self.home.join("Remote"),
-                state_root: self.scratch.path().join("state"),
+                state_root: self.state.clone(),
                 refresher: Arc::new(custodian),
                 control_socket: None,
                 file_socket: None,
@@ -391,6 +407,7 @@ fn open_settings(
     Ok(settings)
 }
 
+#[cfg(target_os = "linux")]
 fn capture_provider_form(settings: &mut TestApp<SettingsShell>) -> TestResult {
     for (theme_name, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
         settings.harness().set_theme(theme);
@@ -406,6 +423,7 @@ fn capture_provider_form(settings: &mut TestApp<SettingsShell>) -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn sign_in(
     settings: &mut TestApp<SettingsShell>,
     root: &AccountRoot,
@@ -434,10 +452,12 @@ fn sign_in(
     Ok(account)
 }
 
+#[cfg(target_os = "linux")]
 fn row(id: &str) -> String {
     format!("files.cloud-entry:{}", hex::encode(id))
 }
 
+#[cfg(target_os = "linux")]
 fn browse_and_select(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
@@ -475,6 +495,7 @@ fn browse_and_select(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn cancel_import(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
@@ -509,6 +530,7 @@ fn cancel_import(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn recover_import(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
@@ -536,6 +558,7 @@ fn recover_import(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn save_imported_data(
     recorder: &ui::host::HostRecorder,
     destination: &std::path::Path,
@@ -553,6 +576,7 @@ fn save_imported_data(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn assert_imported_data(
     recorder: &ui::host::HostRecorder,
     destination: &std::path::Path,
@@ -750,7 +774,10 @@ fn google_mail_only_is_not_presented_as_drive() -> TestResult {
     Ok(())
 }
 
+// The import journey runs on the FUSE-backed cloud service, which exists
+// only on Linux; the Settings-only journeys above stay portable.
 #[test]
+#[cfg(target_os = "linux")]
 fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
     let profile = Profile::new()?;
     let drive = cloud_source_gdrive::fake::FakeDrive::start();
@@ -791,6 +818,7 @@ fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn assert_within_bound(started: Instant, message: &str) {
     assert!(started.elapsed() < tilo_test_env::hang_bound(), "{message}");
 }
@@ -803,6 +831,7 @@ fn assert_empty_profile(home_entries: usize, root: &AccountRoot) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_import_only(service: &fs::cloud::CloudService) {
     assert!(
         service.mounted().is_empty(),
@@ -810,6 +839,7 @@ fn assert_import_only(service: &fs::cloud::CloudService) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_provider_controls(settings: &mut TestApp<SettingsShell>) {
     let nodes = settings.harness().a11y_nodes();
     for (name, role) in [
@@ -829,11 +859,13 @@ fn assert_provider_controls(settings: &mut TestApp<SettingsShell>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn assert_sign_in_finished(finished: bool, account_count: usize) {
     assert!(finished);
     assert_eq!(account_count, 1);
 }
 
+#[cfg(target_os = "linux")]
 fn assert_import_account(account: &accounts::Account) {
     assert_eq!(
         accounts::cloud_types::files_mode(account),
@@ -841,6 +873,7 @@ fn assert_import_account(account: &accounts::Account) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_action_bindings(bindings: &[ui::widget::ControlBindingMetadata]) {
     assert!(
         bindings
@@ -850,6 +883,7 @@ fn assert_action_bindings(bindings: &[ui::widget::ControlBindingMetadata]) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_read_only_row(actions: &[tilo_actions::ActionDescriptor], id: &str) {
     let row_actions = actions
         .iter()
@@ -868,6 +902,7 @@ fn assert_read_only_row(actions: &[tilo_actions::ActionDescriptor], id: &str) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_no_import_job(files: &Files) {
     assert_eq!(
         files.state().ops.entries().count(),
@@ -876,6 +911,7 @@ fn assert_no_import_job(files: &Files) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_no_imported_files(destination: &std::path::Path) {
     assert!(!destination.join("Essay.docx").exists());
     assert!(!destination.join("note.txt").exists());

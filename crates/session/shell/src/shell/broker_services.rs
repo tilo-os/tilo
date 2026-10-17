@@ -2162,10 +2162,12 @@ fn workspace_control_event(
             surface,
             encoded_h264,
             timestamp,
+            seq,
         } => runtime_collab::WorkspaceControlEvent::Frame {
             surface,
             encoded_h264,
             timestamp,
+            seq,
         },
         crate::network::WorkspaceControlUpdate::Closed(reason) => {
             runtime_collab::WorkspaceControlEvent::Closed(reason)
@@ -2292,6 +2294,14 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                 let session = this.session.lock().await;
                 (this.revalidate)()?;
                 let input = match input {
+                    runtime_collab::WorkspaceControlInput::RequestKeyframe { seq } => {
+                        let published = this
+                            .network
+                            .publish_workspace_control_keyframe_request(&session, seq)
+                            .map_err(capnp::Error::failed);
+                        drop(session);
+                        return published;
+                    }
                     runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
                         crate::network::InputEvent::PointerMotion { x, y }
                     }

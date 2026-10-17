@@ -2,15 +2,19 @@
 //! These calls carry no transcript and grant no microphone or input ownership.
 use winit::window::Window;
 
-/// Publish multiline intent when the native input protocol supports it.
-pub fn set_multiline(window: &Window, multiline: bool) {
+/// Publish a field's `zwp_text_input_v3` content hint bits and purpose when
+/// the native input protocol takes them.
+pub fn set_content_type(window: &Window, hint: u32, purpose: u32) {
     #[cfg(target_os = "linux")]
     {
         use winit::platform::wayland::WindowExtWayland;
-        window.set_ime_multiline(multiline);
+        window.set_ime_content_type(Some(winit::platform::wayland::ImeContentType {
+            hint,
+            purpose,
+        }));
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (window, multiline);
+    let _ = (window, hint, purpose);
 }
 
 /// Advertise an opaque field stamp. Missing native protocol support returns false.

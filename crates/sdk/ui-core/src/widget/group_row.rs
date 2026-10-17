@@ -1333,6 +1333,7 @@ impl GroupRow {
             if rect.area() <= 0.0 {
                 continue;
             }
+            group.draw_docked_strip(scene, transform, theme);
             group.draw(scene, transform, text_renderer, theme, presence);
             rects.push(rect);
         }
@@ -1545,6 +1546,7 @@ impl GroupRow {
                 transform,
                 &rect.inflate(16.0, 16.0),
             );
+            self.groups[i].draw_docked_strip(scene, transform, theme);
             self.groups[i].draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -3707,7 +3709,7 @@ impl FloatingSurfaceProvider for GroupRow {
         })
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         self.groups
             .iter()
             .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))
@@ -5057,6 +5059,13 @@ impl GroupRow {
                     t,
                     &rect.inflate(160.0, 160.0),
                 );
+            }
+            // Into the row's scene, not the group's drawing, so a replayed
+            // drawing still stands on a strip whose blur is recorded. Only
+            // where the screen shows the group: a strip drawn off screen
+            // would spend a blurred region on nothing.
+            if seen_across(presence, rect).is_none_or(|(x0, x1)| x1 > x0) {
+                self.groups[i].draw_docked_strip(scene, t, theme);
             }
             match self.apart_window {
                 // Only a group at rest in its slot: one moving, lifted or

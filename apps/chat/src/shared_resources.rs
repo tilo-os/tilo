@@ -13,6 +13,8 @@ use ui::{InvocationCall, LocalState, RemoteActions, RemoteCall};
 
 use crate::app::ChatApp;
 
+const CLIPBOARD_REFUSED: &str = "The system clipboard did not accept the link";
+
 /// How long a link request may run before the control gives up on it.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -21,6 +23,10 @@ pub(crate) struct Navigation {
     pending: Option<Pending>,
     /// What the last request came to, shown on the control that asked.
     status: Option<Status>,
+    /// The last copied link and its message: the copy can fail after the
+    /// control said it was copied.
+    copy: ui::CopyWatch,
+    copied_for: String,
 }
 
 struct Status {
@@ -36,6 +42,8 @@ impl Default for Navigation {
             remote: RemoteActions::current(),
             pending: None,
             status: None,
+            copy: ui::CopyWatch::default(),
+            copied_for: String::new(),
         }
     }
 }
@@ -150,6 +158,14 @@ impl ChatApp {
     /// Finish the running link request once its answer has arrived: copy or
     /// open the link, or show why there is none.
     pub(crate) fn settle_resource_navigation(&mut self) {
+        if self.resource_navigation.copy.failed() {
+            self.resource_navigation.status = Some(Status {
+                message: std::mem::take(&mut self.resource_navigation.copied_for),
+                open: false,
+                outcome: Err(CLIPBOARD_REFUSED.to_owned()),
+            });
+            self.request_relayout();
+        }
         let Some(pending) = &self.resource_navigation.pending else {
             return;
         };
@@ -193,10 +209,17 @@ impl ChatApp {
                 Err("The message no longer shares this resource".to_owned())
             } else if pending.open {
                 ui::widget::try_open_external_url(&url).map_err(|error| error.to_string())
-            } else if ui::try_clipboard_copy(&url) {
+            } else if self
+                .resource_navigation
+                .copy
+                .watch(ui::try_clipboard_copy(&url))
+            {
+                self.resource_navigation
+                    .copied_for
+                    .clone_from(&pending.message);
                 Ok(())
             } else {
-                Err("The system clipboard did not accept the link".to_owned())
+                Err(CLIPBOARD_REFUSED.to_owned())
             }
         });
         self.resource_navigation.status = Some(Status {

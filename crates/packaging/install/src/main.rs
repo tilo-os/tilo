@@ -945,7 +945,7 @@ fn replace_cli_shims(
     if let Some(old) = previous
         && !old.cli_commands.is_empty()
     {
-        let _ = shim::remove_shims(&bin_root()?, &old.cli_commands);
+        let _ = shim::remove_shims(&bin_root()?, &old.id, &old.cli_commands);
     }
     write_cli_shims(manifest, id_field)
 }
@@ -1515,7 +1515,7 @@ fn drop_superseded() -> Result<(), Error> {
     for entry in superseded {
         store.remove(&entry.id, true).map_err(store_error)?;
         if !entry.cli_commands.is_empty() {
-            let _ = shim::remove_shims(&bin_root()?, &entry.cli_commands);
+            let _ = shim::remove_shims(&bin_root()?, &entry.id, &entry.cli_commands);
         }
         println!(
             "{} {}: the system image ships a newer version; removed this copy",
@@ -1903,7 +1903,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
     // Undo PATH shims, best-effort — a missing bin_dir just means none were installed.
     if !entry.cli_commands.is_empty() {
         let bin_dir = bin_root()?;
-        shim::remove_shims(&bin_dir, &entry.cli_commands)
+        shim::remove_shims(&bin_dir, &entry.id, &entry.cli_commands)
             .map_err(|e| Error::Shim(e.to_string()))?;
         println!(
             "  removed {} PATH shim(s) from {}",

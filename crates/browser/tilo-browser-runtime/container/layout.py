@@ -6,9 +6,11 @@ The bundle's files keep their names, which say nothing about their content,
 so the whole bundle goes under one directory named after its content,
 `v/<hash>/`, which never changes once published and is cached as immutable.
 Only the two entry pages (`index.html`, `app/index.html`) stay at the top,
-revalidated on every visit and pointing into that directory; every other
-file is found relative to its module (`import.meta.url`), so it follows. The
-entry configuration (`entry.json`) is written when the container starts.
+revalidated on every visit and pointing into that directory, and beside them
+their home-screen icon (`apple-touch-icon.png`), where Safari also looks for
+it unasked; every other file is found relative to its module
+(`import.meta.url`), so it follows. The entry configuration (`entry.json`) is
+written when the container starts.
 """
 
 import hashlib
@@ -40,5 +42,6 @@ for page, module in pages.items():
     # wrong entry.json (its own directory's).
     (assets / page).unlink()
 (assets / 'app').rmdir()
+(assets / 'apple-touch-icon.png').rename(site / 'apple-touch-icon.png')
 (site / 'version.json').write_text(json.dumps({'version': version, 'revision': build['revision']}) + '\n')
 print(version)

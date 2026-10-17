@@ -50,6 +50,8 @@ struct Peer {
     text_input_done: u32,
     keys: Vec<u32>,
     // Input method side.
+    /// What the on-screen keyboard reads of the input method's events.
+    keyboard_events: Vec<osk::imclient::ImEvent>,
     activated: u32,
     im_done: u32,
     unavailable: bool,
@@ -103,8 +105,22 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for Peer {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_input_method_v2::Event::Activate => state.activated += 1,
-            zwp_input_method_v2::Event::Done => state.im_done += 1,
+            zwp_input_method_v2::Event::Activate => {
+                state.activated += 1;
+                state.keyboard_events.push(osk::imclient::ImEvent::Activate);
+            }
+            zwp_input_method_v2::Event::ContentType { hint, purpose } => {
+                state
+                    .keyboard_events
+                    .push(osk::imclient::ImEvent::ContentType {
+                        hint: u32::from(hint),
+                        purpose: u32::from(purpose),
+                    });
+            }
+            zwp_input_method_v2::Event::Done => {
+                state.im_done += 1;
+                state.keyboard_events.push(osk::imclient::ImEvent::Done);
+            }
             zwp_input_method_v2::Event::Unavailable => state.unavailable = true,
             _ => {}
         }
@@ -534,8 +550,7 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
     let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
-        purpose: winit::window::ImePurpose::Normal,
-        multiline: false,
+        content: ui::ime::InputContent::TEXT,
         x: 420,
         y: 100,
         width: 1,
@@ -571,6 +586,99 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
     assert!(!h.state.text_input_active());
 }
 
+/// The content type a focused field of an app asks for, as the toolkit
+/// derives it for the native text input.
+fn app_field(input: ui::widget::TextInput) -> shell::compositor::shell_text_input::FieldRequest {
+    let mut app = ui::headless::FrameHarness::for_root(
+        ui::State::new(),
+        input.with_id("field"),
+        (400, 80),
+        ui::Theme::dark(),
+    );
+    app.perform_named("field", &ui::a11y::Action::Focus)
+        .expect("focus the field");
+    app.ime_window()
+        .expect("a focused field asks for the input method")
+}
+
+/// A field as an app builds it, the keyboard layout it must reach, and
+/// whether it is secret.
+type FieldCase = (fn() -> ui::widget::TextInput, osk::InputPurpose, bool);
+
+#[test]
+fn an_email_field_reaches_the_on_screen_keyboard_as_an_email_field() {
+    use osk::InputPurpose;
+    use osk::imclient::{ImState, content_hint, may_learn};
+    use ui::widget::{TextInput, TextInputKind};
+    let secret = content_hint::HIDDEN_TEXT | content_hint::SENSITIVE_DATA;
+    // Each field is built for its case: four are too large for the stack.
+    let cases: [FieldCase; 4] = [
+        (
+            || TextInput::local().with_kind(TextInputKind::Email),
+            InputPurpose::Email,
+            false,
+        ),
+        (
+            || TextInput::local().with_kind(TextInputKind::Phone),
+            InputPurpose::Telephone,
+            false,
+        ),
+        (
+            || TextInput::local().with_secret(true),
+            InputPurpose::Password,
+            true,
+        ),
+        (TextInput::local, InputPurpose::Text, false),
+    ];
+    for (input, purpose, hidden) in cases {
+        let field = app_field(input());
+        let mut h = Harness::new();
+        h.state
+            .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+        let keyboard = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+        let _input_method = {
+            let client = &h.clients[keyboard];
+            let qh = client.queue.handle();
+            let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+            client
+                .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                    INPUT_METHOD_MANAGER,
+                    1,
+                )
+                .expect("trusted keyboard may bind")
+                .get_input_method(&seat, &qh, ())
+        };
+        h.pump();
+        let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
+            .expect("chrome stand-in");
+        let mut keyboard_state = ImState::new();
+        let mut read = 0;
+        let deadline = tilo_test_env::hang_deadline();
+        while !keyboard_state.visible() || keyboard_state.purpose() != purpose {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the keyboard never showed the {purpose:?} layout: {:?}",
+                h.clients[keyboard].peer.keyboard_events
+            );
+            proxy.sync(&mut h.state, Some(field));
+            h.pump();
+            for event in &h.clients[keyboard].peer.keyboard_events[read..] {
+                keyboard_state.reduce(*event);
+            }
+            read = h.clients[keyboard].peer.keyboard_events.len();
+        }
+        assert_eq!(
+            keyboard_state.hints() & secret == secret,
+            hidden,
+            "{purpose:?}: hidden and sensitive exactly for a secret"
+        );
+        assert_eq!(
+            may_learn(keyboard_state.purpose(), keyboard_state.hints()),
+            !hidden
+        );
+    }
+}
+
 #[test]
 fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
     let mut h = Harness::new();
@@ -579,8 +687,7 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
     let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
-        purpose: winit::window::ImePurpose::Normal,
-        multiline: false,
+        content: ui::ime::InputContent::TEXT,
         x: 420,
         y: 100,
         width: 1,
@@ -791,8 +898,7 @@ fn public_aot_transcripts_reach_native_notes_with_selection_undo_and_redo() {
 
 fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
     let field = shell::compositor::shell_text_input::FieldRequest {
-        purpose: winit::window::ImePurpose::Normal,
-        multiline: false,
+        content: ui::ime::InputContent::TEXT,
         x: 420,
         y: 100,
         width: 1,
@@ -836,7 +942,7 @@ fn native_multiline_intent_reaches_dictation_through_the_existing_bridge() {
         &editor as &dyn Widget,
     ] {
         let field = ui::ime::ImeWindowState::from_widget(widget).unwrap();
-        assert!(field.multiline);
+        assert!(field.content.hints.multiline);
         assert_eq!(
             receive_native_dictation(&["Provisional\nparagraph".into()], paragraph, field),
             paragraph
@@ -983,7 +1089,7 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
             .ime_window()
             .expect("actual Notes editing field");
         assert!(
-            field.multiline,
+            field.content.hints.multiline,
             "the original Notes field declares paragraph intent"
         );
         let committed =
@@ -1155,8 +1261,7 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
     let mut h = Harness::new();
     let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
     let field = FieldRequest {
-        purpose: winit::window::ImePurpose::Normal,
-        multiline: false,
+        content: ui::ime::InputContent::TEXT,
         x: 420,
         y: 100,
         width: 1,

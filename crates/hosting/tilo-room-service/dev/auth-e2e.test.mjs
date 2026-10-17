@@ -3,8 +3,8 @@
 // the `Browser / authentication` workflow has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, PRUNE_AFTER_MINS, PRUNE_WAIT_MS, REMOVE_MEMBER, SETTLED}
-  from './auth-e2e.mjs';
+import {blake3, currentDevice, joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, PRUNE_AFTER_MINS,
+  PRUNE_WAIT_MS, REMOVE_MEMBER, revocationDigest, revocationEntry, SETTLED} from './auth-e2e.mjs';
 
 test('the arguments name every input, absolute', () => {
   const options = parseArgs(['--bundle', 'b', '--relay-bin', 'r', '--room-service-bin', 's', '--out', 'o',
@@ -104,4 +104,39 @@ test("a moderator removes someone through the desktop's door, confirmed, and onl
   } finally {
     delete globalThis.tiloMount;
   }
+});
+
+test('BLAKE3 of one chunk matches the reference vectors', () => {
+  const hex = bytes => Buffer.from(bytes).toString('hex');
+  const pattern = length => Uint8Array.from({length}, (_, i) => i % 251);
+  assert.equal(hex(blake3(new Uint8Array())), 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262');
+  assert.equal(hex(blake3(new TextEncoder().encode('abc'))), '6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85');
+  assert.equal(hex(blake3(pattern(1023))), '10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11');
+  assert.throws(() => blake3(pattern(1025)), RangeError);
+});
+
+test("a revocation is the root's signature over its tagged postcard preimage, kept as the relay reads it", () => {
+  const user = '01'.repeat(32);
+  const device = '02'.repeat(32);
+  const tag = new TextEncoder().encode('tilo-revocation-v1\0');
+  assert.deepEqual(revocationDigest(user, device),
+    blake3(Uint8Array.from([...tag, ...Array(32).fill(1), ...Array(32).fill(2), 1, 1])));
+  // tilo-user-identity pins the same digest (revocation.rs).
+  assert.equal(Buffer.from(revocationDigest(user, device)).toString('hex'),
+    '51d3fa67bb622325b1fd36a8930f6ed801df50f5814546dab3c6f522e5bcca5a');
+  const entry = revocationEntry(user, device, 'ff'.repeat(64));
+  assert.deepEqual(Object.keys(entry), ['user_public_key', 'revoked_device_public_key', 'revoked_at_ns', 'reason', 'signature']);
+  assert.equal(entry.reason, 'Stolen');
+  assert.equal(entry.signature.length, 64);
+});
+
+test("the page's device is the one its current namespace's certificate names", () => {
+  const certificate = device => JSON.stringify({cert: {device_public_key: Array(32).fill(device)}, hostCert: {}});
+  const rows = [
+    {device: 'tilo-browser-device', key: 'a', certificate: certificate(1)},
+    {device: 'tilo-browser-device:ab', key: 'a', certificate: certificate(2)},
+  ];
+  assert.equal(currentDevice({rows, devices: {}}, 'p'), '01'.repeat(32));
+  assert.equal(currentDevice({rows, devices: {p: 'tilo-browser-device:ab'}}, 'p'), '02'.repeat(32));
+  assert.equal(currentDevice({rows, devices: {p: 'other'}}, 'p'), null);
 });

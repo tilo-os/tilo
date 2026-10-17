@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
+use crate::ime::{Capitalization, InputContent, InputPurpose};
 use crate::paint::PaintCtx;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
@@ -91,6 +92,7 @@ enum CtxAction {
     ApplySpelling {
         start: usize,
         end: usize,
+        original: String,
         replacement: String,
     },
     AddToDictionary(String),
@@ -142,6 +144,30 @@ pub struct TextActionRequest {
     pub range: (usize, usize),
 }
 
+impl TextActionRequest {
+    /// What the action made of the requested text (a rewrite, a
+    /// translation, a grammar fix), to write back with
+    /// [`TextInput::apply_text_action_result`].
+    #[must_use]
+    pub fn result(&self, replacement: impl Into<String>) -> TextActionResult {
+        TextActionResult {
+            range: self.range,
+            original: self.text.clone(),
+            replacement: replacement.into(),
+        }
+    }
+}
+
+/// A text action's result for the range it was requested for. It applies
+/// only while the range still holds `original`: the field may have been
+/// edited, by the person or a collaborator, while the action ran.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextActionResult {
+    pub range: (usize, usize),
+    pub original: String,
+    pub replacement: String,
+}
+
 /// Semantic intent of a field. Ordinary [`TextInput`] construction defaults to
 /// Prose, so apps opt out only for the smaller set of structured fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -156,6 +182,10 @@ pub enum TextInputKind {
     Path,
     Code,
     Number,
+    /// A telephone number: the dial pad.
+    Phone,
+    /// Digits only, such as a pairing passkey: the digit pad.
+    Pin,
     Password,
     /// A code or key typed or pasted in the clear: verification and
     /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
@@ -176,9 +206,35 @@ impl TextInputKind {
             Self::Username | Self::Email | Self::Path => TextKind::Identifier,
             Self::Url => TextKind::Url,
             Self::Code => TextKind::Code,
-            Self::Number => TextKind::Numeric,
+            Self::Number | Self::Phone | Self::Pin => TextKind::Numeric,
             Self::Password | Self::Secret => TextKind::Secret,
         }
+    }
+
+    /// What a field of this kind asks of an input method, before the
+    /// field's own overrides. Prose asks for nothing beyond the input
+    /// method's defaults, so ordinary text keeps the prediction and
+    /// capitalisation it always had.
+    #[must_use]
+    pub const fn input_content(self) -> InputContent {
+        let mut content = match self {
+            Self::Prose | Self::Path | Self::Code => InputContent::TEXT,
+            Self::Name => InputContent::of(InputPurpose::Name),
+            Self::Search => InputContent::of(InputPurpose::Search),
+            Self::Username => InputContent::of(InputPurpose::Text),
+            Self::Email => InputContent::of(InputPurpose::Email),
+            Self::Url => InputContent::of(InputPurpose::Url),
+            Self::Number => InputContent::of(InputPurpose::Number),
+            Self::Phone => InputContent::of(InputPurpose::Phone),
+            Self::Pin => InputContent::of(InputPurpose::Pin),
+            Self::Password | Self::Secret => InputContent::PASSWORD,
+        };
+        match self {
+            Self::Name => content.hints.capitalization = Capitalization::Words,
+            Self::Username | Self::Email | Self::Url => content.hints.lowercase = true,
+            _ => {}
+        }
+        content
     }
 }
 
@@ -937,29 +993,105 @@ impl TextInput {
         let Some(pending) = self.pending_autocorrection.take() else {
             return false;
         };
-        let caret = self.core.caret();
-        let boundary = self.text.get(pending.end..caret).unwrap_or_default();
+        let boundary = self.text.get(pending.end..self.core.caret());
+        boundary.is_some_and(|boundary| boundary.chars().count() == 1)
+            && self.apply_autocorrection(pending)
+    }
+
+    /// Make `correction` of the word right before the caret, or before the
+    /// one word boundary after it, as a step of its own: undoing it gives
+    /// back the word as typed and keeps the typing before it. The caret
+    /// stays after the boundary.
+    fn apply_autocorrection(&mut self, correction: AutocorrectionPreview) -> bool {
+        let Some(boundary) = self.text.get(correction.end..self.core.caret()) else {
+            return false;
+        };
         if self.has_selection()
-            || self.text.get(pending.start..pending.end) != Some(pending.original.as_str())
-            || boundary.chars().count() != 1
+            || boundary.chars().count() > 1
             || boundary.chars().any(char::is_alphanumeric)
         {
             return false;
         }
         let boundary_len = boundary.len();
-        self.core.set_selection(pending.start, pending.end);
-        self.insert_str(&pending.replacement);
-        let end = pending.start.saturating_add(pending.replacement.len());
+        let Some(end) = self.replace_step(
+            correction.start..correction.end,
+            &correction.original,
+            &correction.replacement,
+        ) else {
+            return false;
+        };
         let boundary_end = end.saturating_add(boundary_len);
         self.set_cursor_pos(boundary_end);
         self.last_autocorrection = Some(Autocorrection {
-            start: pending.start,
+            start: correction.start,
             end,
             boundary_end,
-            original: pending.original,
-            replacement: pending.replacement,
+            original: correction.original,
+            replacement: correction.replacement,
         });
         true
+    }
+
+    /// Replace `range`, which must still hold `expected`, with `replacement`
+    /// as exactly one undo step: the typing before it is closed off as a
+    /// step of its own, and typing after it starts a new one. Leaves the
+    /// replacement selected.
+    ///
+    /// Refuses, changing nothing, when the range no longer holds `expected`
+    /// (the text moved while an asynchronous action ran, or a collaborator
+    /// edited it), when the field is read-only or disabled, or while an
+    /// input method composition is open.
+    pub fn replace_range(
+        &mut self,
+        range: Range<usize>,
+        expected: &str,
+        replacement: &str,
+    ) -> bool {
+        let start = range.start;
+        let Some(end) = self.replace_step(range, expected, replacement) else {
+            return false;
+        };
+        self.core.set_selection(start, end);
+        true
+    }
+
+    /// Write back what a text action made of the text it was handed
+    /// ([`Self::take_text_action_request`]), as [`Self::replace_range`] does.
+    pub fn apply_text_action_result(&mut self, result: &TextActionResult) -> bool {
+        let (start, end) = result.range;
+        self.replace_range(start..end, &result.original, &result.replacement)
+    }
+
+    /// [`Self::replace_range`] with the caret after the replacement; where
+    /// the replacement ends.
+    fn replace_step(
+        &mut self,
+        range: Range<usize>,
+        expected: &str,
+        replacement: &str,
+    ) -> Option<usize> {
+        if self.read_only
+            || self.effectively_disabled()
+            || self.core.has_preedit()
+            || self.text.get(range.clone()) != Some(expected)
+        {
+            return None;
+        }
+        // What was typed so far reaches the owner first, so the replacement
+        // does not join it.
+        self.notify_user_change(true);
+        self.typing.close();
+        let edit = self.core.replace(range.clone(), replacement);
+        let end = edit.at.saturating_add(edit.inserted.len());
+        if !edit.is_noop() && !self.apply_edit(&edit) {
+            return None;
+        }
+        self.last_autocorrection = None;
+        self.typing.close();
+        // A discrete change of its own, which the typing after it does not
+        // continue.
+        self.notify_user_change(false);
+        Some(end)
     }
 
     pub fn autocorrect_enabled(&self) -> bool {
@@ -3608,6 +3740,7 @@ impl TextInput {
     pub fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;
+            self.pending_paste = None;
             self.drop_shaped_layouts();
             self.model_layout_dirty = true;
         }
@@ -4262,7 +4395,10 @@ impl TextInput {
         self.field_allows_spelling() && crate::text_assistance::preferences().check_spelling
     }
 
-    fn autocorrect_previous_word(&mut self) -> Option<Autocorrection> {
+    /// The correction a word boundary typed now makes of the word before the
+    /// caret, made by [`Self::apply_autocorrection`] once the boundary is
+    /// written, unless the owner defers it.
+    fn autocorrect_previous_word(&mut self) -> Option<AutocorrectionPreview> {
         if !self.autocorrect_enabled() || self.has_selection() || self.core.caret() == 0 {
             return None;
         }
@@ -4280,18 +4416,7 @@ impl TextInput {
             self.pending_autocorrection = Some(preview);
             return None;
         }
-        let (start, end) = (preview.start, preview.end);
-        let (original, replacement) = (preview.original, preview.replacement);
-        self.core.set_selection(start, end);
-        self.insert_str(&replacement);
-        let replacement_end = start.saturating_add(replacement.len());
-        Some(Autocorrection {
-            start,
-            end: replacement_end,
-            boundary_end: replacement_end,
-            original,
-            replacement,
-        })
+        Some(preview)
     }
 
     fn word_ending_at_caret(&self) -> Option<(usize, usize)> {
@@ -4463,12 +4588,17 @@ impl TextInput {
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
-        if self.text.get(preview.start..preview.end) != Some(preview.original.as_str()) {
+        if self
+            .replace_step(
+                preview.start..preview.end,
+                &preview.original,
+                &preview.replacement,
+            )
+            .is_none()
+        {
             self.clear_suggestion();
             return false;
         }
-        self.core.set_selection(preview.start, preview.end);
-        self.insert_str(&preview.replacement);
         self.clear_suggestion();
         self.suggestion_chip = None;
         self.spell_cache_key = None;
@@ -4497,12 +4627,13 @@ impl TextInput {
         })
     }
 
+    /// The boundary is written before the correction, so undoing the
+    /// correction keeps the boundary that was typed.
     fn insert_word_boundary(&mut self, boundary: &str) {
         let correction = self.autocorrect_previous_word();
         self.insert_str(boundary);
-        if let Some(mut correction) = correction {
-            correction.boundary_end = self.core.caret();
-            self.last_autocorrection = Some(correction);
+        if let Some(correction) = correction {
+            self.apply_autocorrection(correction);
         }
     }
 
@@ -4793,13 +4924,14 @@ impl TextInput {
         }
 
         let can_share = self.shareable_selection().is_some();
-        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
+        let can_paste = !self.read_only && clipboard_paste().is_some_and(|s| !s.is_empty());
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
         self.refresh_spelling();
         if let (Some((start, end)), Some(correction)) =
             (self.selection_range(), self.last_autocorrection.as_ref())
+            && !self.read_only
             && start == correction.start
             && end == correction.end
         {
@@ -4812,6 +4944,7 @@ impl TextInput {
             actions.push(None);
         }
         if let Some((start, end)) = self.selection_range()
+            && !self.read_only
             && self.spell_spans.contains(&(start, end))
             && let Some(word) = self.text.get(start..end)
         {
@@ -4822,6 +4955,7 @@ impl TextInput {
                 actions.push(Some(CtxAction::ApplySpelling {
                     start,
                     end,
+                    original: word.clone(),
                     replacement,
                 }));
             }
@@ -4859,8 +4993,10 @@ impl TextInput {
             actions.push(None);
         }
         if can_share {
-            menu.push(MenuItem::action("Cut", || {}));
-            actions.push(Some(CtxAction::Cut));
+            if !self.read_only {
+                menu.push(MenuItem::action("Cut", || {}));
+                actions.push(Some(CtxAction::Cut));
+            }
             menu.push(MenuItem::action("Copy", || {}));
             actions.push(Some(CtxAction::Copy));
         }
@@ -4892,6 +5028,17 @@ impl TextInput {
         let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
+        if self.read_only
+            && matches!(
+                action,
+                CtxAction::Cut
+                    | CtxAction::Paste
+                    | CtxAction::ApplySpelling { .. }
+                    | CtxAction::UndoAutocorrection
+            )
+        {
+            return false;
+        }
         match action {
             CtxAction::Cut => self.do_cut(),
             CtxAction::Copy => self.do_copy(),
@@ -4900,10 +5047,15 @@ impl TextInput {
             CtxAction::ApplySpelling {
                 start,
                 end,
+                original,
                 replacement,
             } => {
-                self.core.set_selection(start, end);
-                self.insert_str(&replacement);
+                if self
+                    .replace_step(start..end, &original, &replacement)
+                    .is_none()
+                {
+                    return false;
+                }
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
@@ -5685,7 +5837,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() && !self.read_only => {
+            } if self.is_hovered && !self.effectively_disabled() => {
                 self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
@@ -5901,12 +6053,24 @@ impl Widget for TextInput {
         Some(Rect::new(x, top, x + self.last_caret_width, top + height))
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(if self.holds_secret() {
-            winit::window::ImePurpose::Password
-        } else {
-            winit::window::ImePurpose::Normal
-        })
+    fn ime_content(&self) -> Option<InputContent> {
+        let mut content = self.kind.input_content();
+        if self.secret && !content.is_secret() {
+            // A secret PIN keeps its digit pad.
+            content = if content.purpose == InputPurpose::Pin {
+                content.secret()
+            } else {
+                InputContent::PASSWORD
+            };
+        }
+        if !content.is_secret() {
+            // Only a field's explicit opt-in adds help; turning the
+            // toolkit's own checking off leaves the input method's defaults.
+            content.hints.spellcheck |= self.spellcheck == Some(true);
+            content.hints.completion |= self.autocorrect == Some(true);
+            content.hints.multiline = self.multiline;
+        }
+        Some(content)
     }
 
     fn ime_multiline(&self) -> bool {
@@ -6186,7 +6350,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
         self.is_focused
             .then(|| self.shareable_selection())
             .flatten()
-            .map(crate::shared_selection::SharedSelection::of_text)
+            .map(|text| crate::shared_selection::SharedSelection::of_text(text).within(self.rect))
     }
 }
 
@@ -7007,15 +7171,18 @@ impl TextInput {
             .then(|| self.autocorrect_previous_word())
             .flatten();
         if self.enter_submits && !shift {
+            // What is submitted is the corrected word.
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
             self.fire_submit();
             *handled = true;
         } else if self.multiline {
             self.insert_str("\n");
+            if let Some(correction) = correction {
+                self.apply_autocorrection(correction);
+            }
             *handled = true;
-        }
-        if let Some(mut correction) = correction {
-            correction.boundary_end = self.core.caret();
-            self.last_autocorrection = Some(correction);
         }
     }
 

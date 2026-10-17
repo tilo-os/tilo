@@ -7,6 +7,8 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 . "$repo_root/tools/desktop-isolation.sh"
+. "$repo_root/dist/session/tests/build-flight-recorder.sh"
+tilo_flight_recorder_build "$repo_root"
 # The private bus below re-enters this script with its own address.
 if [[ ${1:-} != --private-bus ]]; then
     tilo_test_isolate "$@"
@@ -54,7 +56,7 @@ private_bus() {
     tilo_stage_script "$repo/dist/session/tilo-session-runner" "$root/tilo-session-runner" \
         SYSTEMCTL="$root/systemctl" \
         LOGINCTL="$root/loginctl" \
-        FLIGHT_RECORDER="$repo/dist/session/tilo-flight-recorder.py" || return 1
+        FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER" || return 1
     tilo_stage_script "$repo/dist/session/tilo-session" "$root/tilo-session" \
         TILO_SHELL="$root/tilo-shell" \
         SESSION_RUNNER="$root/tilo-session-runner" || return 1

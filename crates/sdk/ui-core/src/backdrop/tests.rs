@@ -304,6 +304,135 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
     }
 }
 
+/// A window drawn before a strip and beside it: content a docked strip
+/// never stands on.
+fn window_beside(scene: &mut Scene, colour: Color) {
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        colour,
+        None,
+        &Rect::new(200.0, 0.0, 256.0, 40.0),
+    );
+}
+
+fn over_desktop(scene: &mut Scene, theme: &Theme) {
+    fill_over_desktop(
+        scene,
+        Affine::IDENTITY,
+        &panel(),
+        Material::Floating,
+        theme,
+        crate::chrome::panel_ground(theme),
+    );
+}
+
+#[test]
+fn a_surface_over_the_desktop_takes_the_marked_desktop_and_nothing_drawn_after() {
+    let theme = Theme::dark();
+    let mut scene = stripes(256, 192);
+    let desktop_len = scene.encoding().draw_tags.len();
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    mark_desktop(&scene);
+    window_beside(&mut scene, Color::WHITE);
+    over_desktop(&mut scene, &theme);
+    // A strip drawn by a row into a nested scene lands on the desktop of
+    // the scene the row is appended to.
+    let mut row = Scene::new();
+    nest_scene(&row);
+    window_beside(&mut row, Color::WHITE);
+    over_desktop(&mut row, &theme);
+    append_nested(&mut scene, &row, Affine::translate((0.0, 20.0)));
+    // A scene with no mark gives it everything drawn before it.
+    let mut unmarked = stripes(256, 192);
+    layer_scene(&unmarked, 1);
+    window_beside(&mut unmarked, Color::WHITE);
+    let unmarked_len = unmarked.encoding().draw_tags.len();
+    over_desktop(&mut unmarked, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 3);
+    for surface in &surfaces[..2] {
+        assert!(surface.over_desktop);
+        assert_eq!(
+            surface.below.encoding().draw_tags.len(),
+            desktop_len,
+            "the window drawn before the strip is not behind it"
+        );
+    }
+    assert_eq!(surfaces[1].bounds, PANEL + Vec2::new(0.0, 20.0));
+    assert!(!surfaces[2].over_desktop);
+    assert_eq!(surfaces[2].below.encoding().draw_tags.len(), unmarked_len);
+}
+
+/// The strip is always on screen; its blur is made once and kept while the
+/// desktop, its place and the blur hold, however much the windows change.
+#[test]
+fn a_blur_over_an_unchanged_desktop_is_kept_and_made_again_when_it_changes() {
+    let gpu = crate::offscreen::shared_gpu().expect("a wgpu adapter");
+    let mut renderer = Renderer::new(
+        &gpu.device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .expect("vello renderer");
+    let theme = Theme::dark();
+    let target = (256, 192);
+    let frame = |desktop: &Scene, window: Color| {
+        let mut scene = desktop.clone();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        mark_desktop(&scene);
+        window_beside(&mut scene, window);
+        over_desktop(&mut scene, &theme);
+        BackdropFrame::from_single_scene(recording.finish())
+    };
+    let mut blur = BackdropBlur::new(&gpu.device);
+    let mut prepare = |frame: &BackdropFrame| {
+        let stats = blur.prepare(
+            &gpu.device,
+            &gpu.queue,
+            &mut renderer,
+            frame,
+            target,
+            Color::BLACK,
+        );
+        blur.release(&mut renderer);
+        stats
+    };
+    let desktop = stripes(target.0, target.1);
+    let first = prepare(&frame(&desktop, Color::WHITE));
+    assert_eq!((first.substituted, first.kept), (1, 0));
+    let window_changed = prepare(&frame(&desktop, Color::BLACK));
+    assert_eq!(
+        (window_changed.substituted, window_changed.kept),
+        (1, 1),
+        "a window repainting beside the strip leaves its blur as it was"
+    );
+    let mut moved = desktop.clone();
+    window_beside(&mut moved, Color::WHITE);
+    let desktop_changed = prepare(&frame(&moved, Color::WHITE));
+    assert_eq!(
+        (desktop_changed.substituted, desktop_changed.kept),
+        (1, 0),
+        "a changed desktop is blurred again"
+    );
+    // A surface over whatever was drawn before it is never kept.
+    let below = {
+        let mut scene = desktop.clone();
+        let recording = BackdropRecording::begin();
+        layer_scene(&scene, 0);
+        floating(&mut scene, Affine::IDENTITY, &theme);
+        BackdropFrame::from_single_scene(recording.finish())
+    };
+    assert_eq!(prepare(&below).kept, 0);
+    assert_eq!(prepare(&below).kept, 0);
+}
+
 /// Median wall time, GPU completion included, of `run` over `samples`
 /// iterations after a warm-up.
 fn median_us(device: &wgpu::Device, samples: usize, mut run: impl FnMut()) -> u128 {
@@ -352,6 +481,7 @@ fn cost_at_1080p() {
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
         below: stripes(target.0, target.1),
         ground,
+        over_desktop: false,
     };
     let frame = BackdropFrame {
         regions: vec![region.clone()],

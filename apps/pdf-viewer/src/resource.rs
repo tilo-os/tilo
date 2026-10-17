@@ -345,14 +345,7 @@ impl PdfMarkup {
         if copy.as_str().is_empty() || self.pages.contains(&copy) {
             return Err(Refusal::new("the copy needs an id of its own"));
         }
-        self.pages.insert(
-            at + 1,
-            copy,
-            PageOccurrence {
-                rotation: 0,
-                ..original
-            },
-        );
+        self.pages.insert(at + 1, copy, original);
         Ok(())
     }
 
@@ -612,8 +605,14 @@ impl PdfMarkup {
             .comments
             .take(comment)
             .ok_or("there is no such comment")?;
-        if !thread.anno.is_empty() {
-            self.delete_annotation(&Id::from_raw(thread.anno)).ok();
+        let annotation = Id::from_raw(thread.anno.clone());
+        let orphan_note = self
+            .annotations
+            .find(&annotation)
+            .is_some_and(|stored| matches!(stored.mark, AnnoKind::Note { .. }))
+            && !self.comments.iter().any(|other| other.anno == thread.anno);
+        if orphan_note {
+            self.delete_annotation(&annotation)?;
         }
         Ok(())
     }

@@ -366,6 +366,8 @@ pub(crate) struct Core {
     /// Explicit, short-lived disclosure. The value zeroizes when it expires,
     /// when focus leaves the window, or when another item is revealed.
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
+    /// The last copy, whose outcome can arrive after its confirmation.
+    pub(crate) copy: ui::CopyWatch,
     /// A notice for the window to hand its shell, which shows and expires it.
     pub(crate) toast: Option<String>,
     /// The title of an item just saved from the editor, for the window to
@@ -417,6 +419,7 @@ impl Core {
             draft_custom_fields: Zeroizing::new(String::new()),
             draft_error: None,
             revealed: None,
+            copy: ui::CopyWatch::default(),
             toast: None,
             saved: None,
             health: crate::VaultHealth::default(),
@@ -689,7 +692,10 @@ impl Core {
         };
         match model.reveal_value(&id) {
             Ok(secret) => {
-                if !ui::try_clipboard_copy_secret(&secret, CLIPBOARD_FOR) {
+                if !self
+                    .copy
+                    .watch(ui::try_clipboard_copy_secret(&secret, CLIPBOARD_FOR))
+                {
                     self.toast("Could not copy to the clipboard. Try again.");
                     return;
                 }
@@ -758,7 +764,7 @@ impl Core {
         if value.is_empty() {
             return;
         }
-        if !ui::try_clipboard_copy(&value) {
+        if !self.copy.watch(ui::try_clipboard_copy(&value)) {
             self.toast("Could not copy to the clipboard. Try again.");
             return;
         }
@@ -778,7 +784,7 @@ impl Core {
         }
         let count = item.origins.len();
         let origins = item.origins.iter().cloned().collect::<Vec<_>>().join("\n");
-        if !ui::try_clipboard_copy(&origins) {
+        if !self.copy.watch(ui::try_clipboard_copy(&origins)) {
             self.toast("Could not copy to the clipboard. Try again.");
             return;
         }
@@ -1440,6 +1446,10 @@ impl Core {
     pub(crate) fn poll_transfers(&mut self) {
         use std::sync::mpsc::TryRecvError;
         use ui::portal::{OpenFileOutcome, PortalOutcome};
+
+        if self.copy.failed() {
+            self.toast("Could not copy to the clipboard. Try again.");
+        }
 
         if let Some(rx) = self.restore_portal.as_ref() {
             match rx.try_recv() {

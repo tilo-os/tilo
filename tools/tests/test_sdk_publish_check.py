@@ -182,17 +182,53 @@ class RegistryRebuildTests(unittest.TestCase):
                     patch.object(registry, "probe_lock", return_value={"package": []}):
                 rename = Path.rename
                 def fail_publication(path, destination):
-                    if path.name == "new":
+                    if path.parent.name == "new" and path.name == "index":
                         raise OSError("publication failed")
                     return rename(path, destination)
                 with patch.object(Path, "rename", fail_publication):
                     with self.assertRaisesRegex(OSError, "publication failed"):
                         registry.main()
-                self.assertTrue((out / "obsolete").exists(), "publication failure must roll back")
+                self.assertEqual(
+                    sorted(p.name for p in out.iterdir()), ["obsolete"], "publication failure must roll back"
+                )
+                self.assertEqual(list(root.glob(".tilo-registry-*")), [])
                 self.assertEqual(registry.main(), 0)
             self.assertFalse((out / "obsolete").exists())
             self.assertEqual((out / "example-1.0.0.crate").read_bytes(), b"package")
             self.assertTrue((out / "index/ex/am/example").is_file())
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["example-1.0.0.crate", "index"])
+
+    def test_rebuild_never_renames_a_directory_it_did_not_make(self):
+        """On an overlay, a directory from a lower layer can't be renamed (EXDEV):
+        a registry an earlier build left is replaced without renaming it or its
+        directories."""
+        with tempfile.TemporaryDirectory() as directory:
+            # Resolved, as the registry's path is: the paths renamed are compared.
+            root = Path(directory).resolve()
+            out, packages = root / "out", root / "packages"
+            (out / "index/ol/d-").mkdir(parents=True)
+            (out / "index/ol/d-/old-crate").write_text("{}")
+            (out / "old-crate-1.0.0.crate").write_bytes(b"old")
+            packages.mkdir()
+            (packages / "example-1.0.0.crate").write_bytes(b"package")
+            (root / "Cargo.lock").write_text("package = []")
+            (root / "Cargo.toml").write_text("")
+            lower = {out, *out.rglob("*")}
+            rename = Path.rename
+            def overlay_rename(path, destination):
+                if path in lower and path.is_dir():
+                    raise OSError(errno.EXDEV, "Invalid cross-device link", str(path))
+                return rename(path, destination)
+            with patch.object(sys, "argv", ["registry", str(out), "--packages", str(packages)]), \
+                    patch.object(registry, "REPO", root), \
+                    patch.object(registry, "packaged_entry", return_value={"name": "example", "vers": "1.0.0"}), \
+                    patch.object(registry, "probe_lock", return_value={"package": []}), \
+                    patch.object(Path, "rename", overlay_rename):
+                self.assertEqual(registry.main(), 0)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["example-1.0.0.crate", "index"])
+            self.assertTrue((out / "index/ex/am/example").is_file())
+            self.assertFalse((out / "index/ol").exists())
+            self.assertEqual(list(root.glob(".tilo-registry-*")), [])
 
 
 class ForkManifestRestorationTests(unittest.TestCase):

@@ -9,6 +9,7 @@
 pub mod header_row;
 pub mod nav_row;
 pub mod page;
+pub mod selector;
 pub mod shell;
 pub mod status_bar;
 
@@ -20,10 +21,12 @@ pub use nav_row::{
     paint_nav_row, paint_nav_section, rail_caption_lines,
 };
 pub use page::PageGeometry;
+pub use selector::{
+    SelectorRole, paint_selector, selector_finish, selector_tier, strip_ground, strip_shape,
+};
 pub use shell::{
     ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, RowJoin, SELECTION_MIN_STEP,
-    SelectionState, SelectionTier, chrome_hairline, column_gutter, fill_scrim, glass_selector,
-    lightness_step, paint_row_selection, paint_row_selection_joined, panel_border, panel_ground,
-    panel_shadow, row_bleed, scrim_channel, scrim_maps, selection_floor_ramp, selection_tier,
-    selection_tier_on,
+    SelectionState, SelectionTier, chrome_hairline, column_gutter, fill_scrim, lightness_step,
+    paint_row_selection, paint_row_selection_joined, panel_border, panel_ground, panel_shadow,
+    row_bleed, scrim_channel, scrim_maps, selection_floor_ramp, selection_tier, selection_tier_on,
 };

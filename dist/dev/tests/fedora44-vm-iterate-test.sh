@@ -39,7 +39,8 @@ case " $* " in
     [[ " $* " != *' --release '* ]] || exit 99
     mkdir -p "$CARGO_TARGET_DIR/debug"
     printf 'tilo-app-session-build-marker-v1\n' >"$CARGO_TARGET_DIR/debug/shell"
-    chmod 700 "$CARGO_TARGET_DIR/debug/shell"
+    printf 'recorder\n' >"$CARGO_TARGET_DIR/debug/tilo-flight-recorder"
+    chmod 700 "$CARGO_TARGET_DIR/debug/shell" "$CARGO_TARGET_DIR/debug/tilo-flight-recorder"
     ;;
   *' -p launcher '* )
     mkdir -p "$CARGO_TARGET_DIR/debug"

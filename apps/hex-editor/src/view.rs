@@ -993,12 +993,12 @@ impl Widget for HexView {
         None
     }
 
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         if self.goto.is_open() {
-            return Widget::ime_purpose(self.goto.content());
+            return Widget::ime_content(self.goto.content());
         }
         if self.find_open && Widget::is_focused(&self.find_bar) {
-            return self.find_bar.ime_purpose();
+            return self.find_bar.ime_content();
         }
         None
     }
@@ -1530,6 +1530,34 @@ mod tests {
         view.present(&state(&[5, 6], 2));
         assert_eq!(view.model.cursor(), 0, "a new open starts at the top");
         assert_eq!(view.model.dirty_count(), 0);
+    }
+
+    #[test]
+    fn presented_local_edits_clear_highlights_when_saved_bytes_are_restored() {
+        let mut view = HexView::empty();
+        let state = |bytes: &[u8]| {
+            Rc::new(HexEditor {
+                name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+                bytes: crate::buffer::ByteBuffer::of(bytes),
+                opened: 1,
+            })
+        };
+        view.present(&state(&[0x12, 0x34]));
+        view.model.input_hex_digit(0xa);
+        view.model.input_hex_digit(0xb);
+        view.present(&state(&[0xab, 0x34]));
+        assert!(view.model.is_dirty(0));
+        view.model.move_to(0, false);
+        view.model.input_hex_digit(1);
+        view.model.input_hex_digit(2);
+        view.present(&state(&[0x12, 0x34]));
+        assert_eq!(view.model.dirty_count(), 0);
+        assert_eq!(
+            view.model.cursor(),
+            1,
+            "reconciliation preserves typing state"
+        );
+        assert_eq!(view.model.bytes(), &[0x12, 0x34]);
     }
 
     /// Find runs through the framework's `Findable` contract: hex and text

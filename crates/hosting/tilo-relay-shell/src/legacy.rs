@@ -43,6 +43,9 @@ const DEPARTURE: Duration = Duration::from_secs(15);
 /// The session is reminded who sends it input at least this often: it drops
 /// a device's identity when its route goes quiet.
 const HELLO_EVERY: Duration = Duration::from_secs(30);
+/// A stream that lost a unit asks its session for a keyframe again this
+/// often until one arrives, in case the request or the keyframe was lost.
+const KEYFRAME_RETRY: Duration = Duration::from_millis(500);
 /// Most bytes of one coded sequence kept for a member that subscribes later.
 const MAX_SEQUENCE_BYTES: usize = 8 * 1024 * 1024;
 /// Most streams the host re-publishes for one room.
@@ -113,6 +116,12 @@ struct Stream {
     sequence_bytes: usize,
     /// A relay group is open: new frames join it.
     started: bool,
+    /// Which of the session's units continue the coded sequence, by their
+    /// `SurfaceFrame::seq`.
+    chain: neighbour_wire::unit_chain::UnitChain,
+    /// A unit went missing on the way here: the unit after the gap, and when
+    /// the session was last asked for a keyframe.
+    keyframe_wanted: Option<(u64, Option<Instant>)>,
 }
 
 /// What one session device publishes in one room.
@@ -416,7 +425,7 @@ impl LegacyWindows {
                 source_peer,
                 encoded_h264,
                 ts,
-                ..
+                seq,
             } if *source_peer == own => {
                 let cached = rooms
                     .values()
@@ -439,7 +448,15 @@ impl LegacyWindows {
                     stream.started = false;
                     return;
                 }
-                Self::frame(&self.live, &room, &publisher_hex, stream, encoded_h264, *ts);
+                Self::frame(
+                    &self.live,
+                    &room,
+                    &publisher_hex,
+                    stream,
+                    encoded_h264,
+                    *ts,
+                    *seq,
+                );
             }
             NeighbourMsg::SurfaceStreamEnd {
                 surface,
@@ -566,6 +583,8 @@ impl LegacyWindows {
                 sequence: Vec::new(),
                 sequence_bytes: 0,
                 started: false,
+                chain: neighbour_wire::unit_chain::UnitChain::default(),
+                keyframe_wanted: None,
             },
         );
     }
@@ -577,8 +596,29 @@ impl LegacyWindows {
         stream: &mut Stream,
         encoded: &[u8],
         ts_ns: u64,
+        unit_seq: u64,
     ) {
         let key = wire::keyframe(&stream.listed.codec, encoded);
+        match stream.chain.admit(unit_seq, key) {
+            neighbour_wire::unit_chain::Admission::Decode => {}
+            neighbour_wire::unit_chain::Admission::Stale => return,
+            neighbour_wire::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                // A unit lost on the way here: members fed the deltas after
+                // it could not decode them. End the group and ask the session
+                // for a keyframe ([`Self::keyframe_requests`]).
+                if broke {
+                    live.end_stream(room, publisher_hex, &stream.record);
+                    stream.sequence.clear();
+                    stream.sequence_bytes = 0;
+                    stream.started = false;
+                    stream.keyframe_wanted = Some((unit_seq, None));
+                }
+                return;
+            }
+        }
+        if key {
+            stream.keyframe_wanted = None;
+        }
         if !key && stream.sequence.is_empty() {
             return;
         }
@@ -615,6 +655,65 @@ impl LegacyWindows {
         } else {
             live.inject_stream(room, publisher_hex, &stream.record, false, &chunks)
         };
+    }
+
+    /// The presence payloads that ask each session for a keyframe of a
+    /// stream that lost a unit on the way here, so members watching it
+    /// recover without waiting for the session's periodic keyframe. Asked
+    /// again every [`KEYFRAME_RETRY`] until a keyframe arrives; the session
+    /// rate-limits what it forces.
+    pub fn keyframe_requests(
+        &self,
+        identity: &tilo_user_identity::DeviceCert,
+        now: Instant,
+    ) -> Vec<Advert> {
+        if self.closed.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let mut rooms = self.rooms();
+        let mut adverts = Vec::new();
+        for (workspace_id, state) in rooms.iter_mut() {
+            for (device, publisher) in &mut state.publishers {
+                let mut messages = Vec::new();
+                for (surface, stream) in &mut publisher.streams {
+                    let Some((seq, asked)) = stream.keyframe_wanted.as_mut() else {
+                        continue;
+                    };
+                    if asked.is_some_and(|at| now.saturating_duration_since(at) < KEYFRAME_RETRY) {
+                        continue;
+                    }
+                    *asked = Some(now);
+                    messages.push(NeighbourMsg::SurfaceKeyframeRequest {
+                        peer: self.handle,
+                        surface: *surface,
+                        seq: *seq,
+                    });
+                }
+                if messages.is_empty() {
+                    continue;
+                }
+                if publisher
+                    .hello
+                    .is_none_or(|sent| now.saturating_duration_since(sent) >= HELLO_EVERY)
+                {
+                    publisher.hello = Some(now);
+                    messages.insert(
+                        0,
+                        NeighbourMsg::IdentityHello {
+                            cert: Box::new(identity.clone()),
+                            revocations: Vec::new(),
+                        },
+                    );
+                }
+                adverts.push(Advert {
+                    workspace_id: *workspace_id,
+                    device: *device,
+                    payloads: self.presence(&messages),
+                });
+            }
+        }
+        drop(rooms);
+        adverts
     }
 
     /// The devices publishing streams, per room, for [`Self::present`].
@@ -886,13 +985,13 @@ mod tests {
             tab: 0,
         }
     }
-    fn frame(surface: u64, bytes: &[u8]) -> NeighbourMsg {
+    fn frame(surface: u64, seq: u64, bytes: &[u8]) -> NeighbourMsg {
         NeighbourMsg::SurfaceFrame {
             surface,
             source_peer: own(),
             encoded_h264: bytes.to_vec(),
             ts: 5_000,
-            seq: 0,
+            seq,
         }
     }
     fn presence(author: [u8; 32], message: &NeighbourMsg) -> Vec<u8> {
@@ -970,9 +1069,9 @@ mod tests {
         assert_eq!(listed, std::slice::from_ref(&expected));
 
         // Before any keyframe there is nothing to decode from.
-        observe(&bridge, &frame(7, &DELTA));
+        observe(&bridge, &frame(7, 0, &DELTA));
         // A static window: one keyframe before anyone watches, then nothing.
-        observe(&bridge, &frame(7, &IDR));
+        observe(&bridge, &frame(7, 1, &IDR));
         let mut video = namespace
             .track(&track(&wire::stream_record(7)))
             .unwrap()
@@ -1003,7 +1102,7 @@ mod tests {
         };
         assert_eq!(flags & wire::CHUNK_KEY, wire::CHUNK_KEY);
         assert_eq!(data, IDR);
-        observe(&bridge, &frame(7, &DELTA));
+        observe(&bridge, &frame(7, 2, &DELTA));
         let wire::Frame::Chunk { flags, data, .. } = next().await else {
             panic!("a delta joins the group");
         };
@@ -1030,6 +1129,61 @@ mod tests {
         assert!(emptied);
     }
 
+    /// A unit of a granted stream lost on its way here: the bridge stops
+    /// feeding members the deltas after it and asks the session for a
+    /// keyframe, again while none comes, and no more once one does.
+    #[tokio::test]
+    async fn a_lost_unit_asks_the_session_for_a_keyframe_until_one_arrives() {
+        let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
+        let bridge = LegacyWindows::new(live.relay.clone(), HOST);
+        let host = tilo_peer_state::peer_handle(&HOST);
+        let identity = host_identity();
+        observe(&bridge, &grant(7, host, "granted"));
+        observe(&bridge, &start(7));
+        let now = Instant::now();
+        observe(&bridge, &frame(7, 0, &IDR));
+        observe(&bridge, &frame(7, 1, &DELTA));
+        assert!(
+            bridge.keyframe_requests(&identity, now).is_empty(),
+            "an intact stream asks for nothing"
+        );
+        observe(&bridge, &frame(7, 3, &DELTA));
+        let requests = |at: Instant| {
+            bridge
+                .keyframe_requests(&identity, at)
+                .into_iter()
+                .flat_map(|advert| {
+                    assert_eq!((advert.workspace_id, advert.device), (WORKSPACE, SESSION));
+                    advert.payloads
+                })
+                .map(|payload| {
+                    let presence = AttributedPresence::decode(&payload).unwrap();
+                    assert_eq!(presence.author, HOST);
+                    postcard::from_bytes::<NeighbourMsg>(&presence.body).unwrap()
+                })
+                .filter(|message| !matches!(message, NeighbourMsg::IdentityHello { .. }))
+                .collect::<Vec<_>>()
+        };
+        let asked = NeighbourMsg::SurfaceKeyframeRequest {
+            peer: host,
+            surface: 7,
+            seq: 3,
+        };
+        assert_eq!(requests(now), vec![asked.clone()], "unit 2 went missing");
+        assert!(requests(now).is_empty(), "asked once per retry interval");
+        observe(&bridge, &frame(7, 4, &DELTA));
+        assert_eq!(
+            requests(now + KEYFRAME_RETRY),
+            vec![asked],
+            "asked again while no keyframe came"
+        );
+        observe(&bridge, &frame(7, 5, &IDR));
+        assert!(
+            requests(now + KEYFRAME_RETRY * 3).is_empty(),
+            "the keyframe answered it"
+        );
+    }
+
     #[tokio::test]
     async fn paint_streams_reach_a_live_member_grouped_from_whole_frames() {
         const KEY: [u8; 4] = [0, 9, 9, 9];
@@ -1051,8 +1205,8 @@ mod tests {
             .await
             .expect("announced by the index");
         // Patches before a whole frame have nothing to apply to.
-        observe(&bridge, &frame(7, &PATCHES));
-        observe(&bridge, &frame(7, &KEY));
+        observe(&bridge, &frame(7, 0, &PATCHES));
+        observe(&bridge, &frame(7, 1, &KEY));
         let mut track = namespace
             .track(&track(&wire::stream_record(7)))
             .unwrap()
@@ -1088,7 +1242,7 @@ mod tests {
             (flags & wire::CHUNK_KEY, data.as_slice()),
             (wire::CHUNK_KEY, KEY.as_slice())
         );
-        observe(&bridge, &frame(7, &PATCHES));
+        observe(&bridge, &frame(7, 2, &PATCHES));
         let wire::Frame::Chunk { flags, data, .. } = next().await else {
             panic!("patches join the group");
         };
@@ -1115,7 +1269,7 @@ mod tests {
                 WORKSPACE,
                 SESSION,
                 USER,
-                &presence(SESSION, &frame(7, &IDR)),
+                &presence(SESSION, &frame(7, 0, &IDR)),
             );
         };
         publish();
@@ -1166,7 +1320,7 @@ mod tests {
             WORKSPACE,
             SESSION,
             USER,
-            &presence(SESSION, &frame(7, &IDR)),
+            &presence(SESSION, &frame(7, 0, &IDR)),
         );
         bridge.observe_presence(
             WORKSPACE,
@@ -1350,8 +1504,8 @@ mod tests {
             .await
             .expect("announced by the index");
         // An inter frame before any key frame has nothing to decode from.
-        observe(&bridge, &frame(7, &VP9_INTER));
-        observe(&bridge, &frame(7, &VP9_KEY));
+        observe(&bridge, &frame(7, 0, &VP9_INTER));
+        observe(&bridge, &frame(7, 1, &VP9_KEY));
         let mut track = namespace
             .track(&track(&wire::stream_record(7)))
             .unwrap()
@@ -1393,7 +1547,7 @@ mod tests {
             (flags & wire::CHUNK_KEY, data.as_slice()),
             (wire::CHUNK_KEY, VP9_KEY.as_slice())
         );
-        observe(&bridge, &frame(7, &VP9_INTER));
+        observe(&bridge, &frame(7, 2, &VP9_INTER));
         let wire::Frame::Chunk { flags, data, .. } = next().await else {
             panic!("an inter frame joins the group");
         };
