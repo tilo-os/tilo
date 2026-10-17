@@ -360,6 +360,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                     driver.control_failures()
                 ));
             }
+            let _ = let_drawer_open(driver);
         }
         Some("drag") => {
             let from = semantic_name_rect(driver, LAUNCH).ok_or("sidebar drag source missing")?;
@@ -652,8 +653,23 @@ fn reveal_sidebar(driver: &mut FrameHarness) {
     {
         driver.click_at(toggle.center().x, toggle.center().y);
         driver.relayout();
+        let _ = let_drawer_open(driver);
     }
 }
+
+/// Run frames until the drawer has slid fully in. A capture waits for
+/// visual work, not for motion, so a shot taken straight after the toggle
+/// caught the drawer part-way in, its left edge and title cut off. Returns
+/// whether every animation came to rest within the bound; a blinking caret
+/// may keep asking for frames, and the bound outlasts the slide either way.
+fn let_drawer_open(driver: &mut FrameHarness) -> bool {
+    driver.wait_until(DRAWER_SETTLE, |driver| {
+        !driver.frame_schedule().needs_animation_frame
+    })
+}
+
+/// Longer than the drawer's slide at any motion setting.
+const DRAWER_SETTLE: ui::time::Duration = ui::time::Duration::from_millis(600);
 
 fn chord(driver: &mut FrameHarness, modifiers: &[&str], key: &str) {
     driver.set_modifiers(
