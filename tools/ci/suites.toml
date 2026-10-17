@@ -1087,10 +1087,15 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  # The provider admin pane's tests run the shared provider settings fake
+  # backend and mounted tests against Settings' own mount.
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
 ]
 readers = [
   "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings/tests/cloud_ux.rs",
+  "apps/settings/src/panes/agent_models/admin_tests.rs",
 ]
 
 [[cargo]]
