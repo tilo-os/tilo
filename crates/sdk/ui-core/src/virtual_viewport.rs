@@ -64,6 +64,37 @@ impl ScrollAlignment {
     }
 }
 
+/// How quickly a fling slows, per second: velocity decays as
+/// `v(t) = v₀·e^(−k·t)`. One rate for every scroll surface, so lists
+/// ([`ScrollMomentum`]) and documents (`Scrollable`) glide alike.
+pub const FLING_DECAY_PER_SECOND: f64 = 9.0;
+
+/// Below this speed (logical px/s) a glide has come to rest.
+pub const GLIDE_REST_SPEED: f64 = 2.0;
+
+/// Advance a fling by `seconds`: the distance it covers and the velocity it
+/// keeps. The distance is the exact integral of the decay, so one 40 ms step
+/// lands where four 10 ms steps do — a fling travels the same at 25, 60 and
+/// 90 fps, and after a stalled frame. No clamp: a stall is covered, not
+/// dropped.
+#[must_use]
+pub fn glide_step(velocity: f64, seconds: f64) -> (f64, f64) {
+    let velocity = finite_or_zero(velocity);
+    if seconds.is_nan() || seconds <= 0.0 || velocity == 0.0 {
+        return (0.0, velocity);
+    }
+    let k = FLING_DECAY_PER_SECOND;
+    let keep = (-k * seconds).exp();
+    let displacement = velocity * (1.0 - keep) / k;
+    let remaining = velocity * keep;
+    let remaining = if remaining.abs() < GLIDE_REST_SPEED {
+        0.0
+    } else {
+        remaining
+    };
+    (displacement, remaining)
+}
+
 /// Deterministic single-axis momentum used by virtualized collection widgets.
 /// Wheel input moves immediately; line-wheel impulses additionally feed this
 /// decay curve so detented wheels can traverse long collections without
@@ -71,7 +102,10 @@ impl ScrollAlignment {
 #[derive(Clone, Debug)]
 pub struct ScrollMomentum {
     velocity: f64,
-    decay_per_second: f64,
+    /// When the glide was last advanced, or started: the next
+    /// [`Self::advance`] covers the time since, never an idle gap before
+    /// the glide began.
+    last_step: Option<Instant>,
     max_velocity: f64,
     kinetic: KineticSampler,
     pending_pixel: bool,
@@ -81,7 +115,7 @@ impl Default for ScrollMomentum {
     fn default() -> Self {
         Self {
             velocity: 0.0,
-            decay_per_second: 9.0,
+            last_step: None,
             max_velocity: 6_000.0,
             kinetic: KineticSampler::new(),
             pending_pixel: false,
@@ -99,8 +133,16 @@ impl ScrollMomentum {
     /// caller can apply it in the same input frame.
     pub fn push(&mut self, delta: f64) -> f64 {
         let delta = finite_or_zero(delta);
+        self.start_clock();
         self.velocity = (self.velocity + delta * 18.0).clamp(-self.max_velocity, self.max_velocity);
         delta
+    }
+
+    /// A glide that was at rest starts its clock now.
+    fn start_clock(&mut self) {
+        if !self.is_active() {
+            self.last_step = Some(crate::time::now());
+        }
     }
 
     /// Continue from a content-space drag velocity after pointer release.
@@ -108,25 +150,38 @@ impl ScrollMomentum {
     /// impulses, keeping a bad timestamp or synthetic pointer from launching
     /// the viewport an unbounded distance.
     pub fn fling(&mut self, velocity: f64) {
+        self.start_clock();
         self.velocity = finite_or_zero(velocity).clamp(-self.max_velocity, self.max_velocity);
     }
 
-    /// Advance the curve and return the logical-pixel displacement.
+    /// Advance the glide to `now` (the frame's time) and return the
+    /// logical-pixel displacement since the last step or since it started.
+    pub fn advance(&mut self, now: Instant) -> f64 {
+        if !self.is_active() {
+            self.last_step = None;
+            return 0.0;
+        }
+        let elapsed = self
+            .last_step
+            .replace(now)
+            .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
+        self.tick(elapsed)
+    }
+
+    /// Advance the curve by `elapsed` and return the logical-pixel
+    /// displacement ([`glide_step`]).
     pub fn tick(&mut self, elapsed: Duration) -> f64 {
         if !self.is_active() {
             return 0.0;
         }
-        let seconds = elapsed.as_secs_f64().clamp(0.0, 0.05);
-        let displacement = self.velocity * seconds;
-        self.velocity *= (-self.decay_per_second * seconds).exp();
-        if self.velocity.abs() < 2.0 {
-            self.velocity = 0.0;
-        }
+        let (displacement, velocity) = glide_step(self.velocity, elapsed.as_secs_f64());
+        self.velocity = velocity;
         displacement
     }
 
     pub fn stop(&mut self) {
         self.velocity = 0.0;
+        self.last_step = None;
     }
 
     /// Classify one vertical wheel event. Line (detented) wheels accelerate
@@ -197,7 +252,7 @@ impl ScrollMomentum {
 
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.velocity.abs() >= 2.0
+        self.velocity.abs() >= GLIDE_REST_SPEED
     }
 }
 
@@ -1296,6 +1351,46 @@ mod tests {
             momentum.wheel_applied(20.0, false);
             let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, false);
             assert_eq!(end, WheelStep::Ignored);
+        }
+
+        // Case `a_fling_travels_the_same_at_any_frame_rate`.
+        {
+            // Half a second at each rate.
+            let travel = |hz: u32| {
+                let mut momentum = ScrollMomentum::new();
+                momentum.fling(3_000.0);
+                let frames = hz / 2;
+                let step = Duration::from_secs_f64(1.0 / f64::from(hz));
+                (0..frames).map(|_| momentum.tick(step)).sum::<f64>()
+            };
+            let at_60 = travel(60);
+            for hz in [24, 90, 120] {
+                let other = travel(hz);
+                assert!(
+                    (other - at_60).abs() < 0.5,
+                    "{hz} Hz covers {other:.2} px, 60 Hz {at_60:.2} px"
+                );
+            }
+            let stalled = {
+                let mut momentum = ScrollMomentum::new();
+                momentum.fling(3_000.0);
+                momentum.tick(Duration::from_millis(500))
+            };
+            assert!(
+                (stalled - at_60).abs() < 0.5,
+                "a stall is covered, not dropped"
+            );
+        }
+
+        // Case `a_glide_starts_its_clock_when_it_starts_not_at_the_last_frame`.
+        {
+            let mut momentum = ScrollMomentum::new();
+            momentum.fling(3_000.0);
+            let started = momentum.last_step.expect("a fling starts its clock");
+            let frame = started + Duration::from_millis(11);
+            let first = momentum.advance(frame);
+            let expected = glide_step(3_000.0, 0.011).0;
+            assert!((first - expected).abs() < 1e-6, "{first} vs {expected}");
         }
 
         // Case `scroll_momentum_accelerates_repeated_wheel_input_and_settles`.

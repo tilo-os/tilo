@@ -2819,7 +2819,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         let mut changed = received_changes;
         if self.momentum.is_active() {
-            let delta = self.momentum.tick(elapsed);
+            let delta = self.momentum.advance(now);
             let before = self.scroll_offset();
             self.set_scroll_offset(before + delta);
             let moved = self.scroll_offset().to_bits() != before.to_bits();
@@ -5891,16 +5891,10 @@ mod tests {
             let immediate = view.scroll_y();
             assert_eq!(immediate, 60.0);
             assert!(view.needs_animation_frame());
-            view.last_tick = Some(
-                crate::time::now()
-                    .checked_sub(Duration::from_millis(16))
-                    .expect("a 16 ms earlier instant is representable"),
-            );
-            assert!(Widget::update(
-                &mut view,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
+            let frame = crate::time::now() + Duration::from_millis(16);
+            assert!(crate::time::testing::with_monotonic_time(frame, || {
+                Widget::update(&mut view, &AutoCommit::new(), &automerge::ROOT)
+            }));
             assert!(view.scroll_y() > immediate, "momentum advances after input");
         }
 

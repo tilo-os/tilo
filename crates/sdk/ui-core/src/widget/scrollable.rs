@@ -90,7 +90,10 @@ pub struct Scrollable {
     viewport_h: f32,
     vx: f32,
     vy: f32,
-    decay: f32,
+    /// When the glide was last advanced, or started; `None` at rest. The
+    /// glide shares the lists' time-based model
+    /// ([`crate::virtual_viewport::glide_step`]).
+    glide_clock: Option<crate::time::Instant>,
     /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
     /// which resolves against nothing (viewport collapses to zero) when the
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
@@ -233,7 +236,7 @@ impl Scrollable {
             viewport_h: 0.0,
             vx: 0.0,
             vy: 0.0,
-            decay: 0.92,
+            glide_clock: None,
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
@@ -600,21 +603,38 @@ impl Scrollable {
         self.bar_dirty = true;
     }
     pub fn fling(&mut self, vx: f32, vy: f32) {
+        if self.momentum_speed() == 0.0 {
+            self.glide_clock = Some(crate::time::now());
+        }
         self.vx = vx;
         self.vy = vy;
+        if self.momentum_speed() == 0.0 {
+            self.glide_clock = None;
+        }
     }
+
+    /// Advance a glide to `now` (the frame's time): by the time since the
+    /// last step, or since the fling began — never by an idle gap before it.
+    pub fn advance_momentum(&mut self, now: crate::time::Instant) {
+        let elapsed = self.glide_clock.replace(now).map_or(0.0, |last| {
+            now.saturating_duration_since(last).as_secs_f32()
+        });
+        self.tick(elapsed);
+        if self.momentum_speed() == 0.0 {
+            self.glide_clock = None;
+        }
+    }
+
+    /// Advance a glide by `dt` seconds ([`crate::virtual_viewport::glide_step`]).
     pub fn tick(&mut self, dt: f32) {
         let (ox, oy) = (self.offset_x, self.offset_y);
-        self.offset_x += self.vx * dt;
-        self.offset_y += self.vy * dt;
-        self.vx *= self.decay;
-        self.vy *= self.decay;
-        if self.vx.abs() < 1.0 {
-            self.vx = 0.0;
-        }
-        if self.vy.abs() < 1.0 {
-            self.vy = 0.0;
-        }
+        let seconds = f64::from(dt);
+        let (dx, vx) = crate::virtual_viewport::glide_step(f64::from(self.vx), seconds);
+        let (dy, vy) = crate::virtual_viewport::glide_step(f64::from(self.vy), seconds);
+        self.offset_x += f32_of_f64(dx);
+        self.offset_y += f32_of_f64(dy);
+        self.vx = f32_of_f64(vx);
+        self.vy = f32_of_f64(vy);
         self.clamp();
         if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
             self.scroll_dirty = true;
@@ -1379,10 +1399,6 @@ impl Widget for Scrollable {
         Some(self.content_viewport_rect())
     }
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
-        // Drives click-and-hold auto-repeat while the host pumps frames.
-        if self.hold.is_some() {
-            self.advance_hold(crate::time::now());
-        }
         if let Some(c) = &mut self.child {
             c.sync(s, p);
         }
@@ -1391,8 +1407,16 @@ impl Widget for Scrollable {
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let ticking = self.momentum_speed() > 0.0;
         if ticking {
-            self.tick(1.0 / 60.0);
+            self.advance_momentum(crate::time::now());
         }
+        // Click-and-hold auto-repeat: the host wakes on the repeat's
+        // deadline (`next_wake_deadline`), not on animation frames.
+        let held = self.hold.is_some() && {
+            let before = (self.offset_x, self.offset_y);
+            self.advance_hold(crate::time::now());
+            (self.offset_x, self.offset_y) != before
+        };
+        let ticking = ticking || held;
         let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
         ticking || child
     }
@@ -1875,7 +1899,6 @@ impl Widget for Scrollable {
 
     fn needs_animation_frame(&self) -> bool {
         self.momentum_speed() > 0.0
-            || self.hold.is_some()
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
             || self
@@ -1887,6 +1910,7 @@ impl Widget for Scrollable {
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.fade_start_deadline_at(crate::time::now())
             .into_iter()
+            .chain(self.hold.map(|hold| hold.next_at))
             .chain(
                 self.child
                     .as_ref()
@@ -2961,8 +2985,12 @@ mod tests {
                 s.hold.is_some(),
                 "a track press below the thumb arms a hold"
             );
-            assert!(s.needs_animation_frame(), "track repeat must still pump");
-            assert_eq!(s.next_wake_deadline(), None, "a held track pins the bar");
+            assert!(!s.needs_animation_frame(), "a repeat is a wait, not motion");
+            assert_eq!(
+                s.next_wake_deadline(),
+                s.hold.map(|h| h.next_at),
+                "a held track pins the bar and wakes for its next page"
+            );
             let after_first = s.offset_y();
             assert!(after_first > 0.0, "first page moved down: {after_first}");
             assert!(
@@ -3807,12 +3835,17 @@ mod tests {
             );
             let doc = AutoCommit::new();
             // Match the admitted primary-frame lifecycle: update runs even when
-            // the prior frame consumed all ordinary dirty flags.
+            // the prior frame consumed all ordinary dirty flags. Frames are
+            // 1/60 s apart on the clock the glide reads.
+            let mut frame = crate::time::now();
             for _ in 0..240 {
                 if !s.needs_animation_frame() {
                     break;
                 }
-                s.update(&doc, &automerge::ROOT);
+                frame += Duration::from_nanos(16_666_667);
+                crate::time::testing::with_monotonic_time(frame, || {
+                    s.update(&doc, &automerge::ROOT);
+                });
                 s.sync(&doc, &automerge::ROOT);
                 s.mark_drawn();
             }

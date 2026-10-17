@@ -11,7 +11,6 @@
 //! same visible rows.
 
 use crate::num::f32_of_f64;
-use crate::time::Instant;
 use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -713,7 +712,6 @@ pub struct DataTable<Row> {
     drag_scroll: DragScroller,
     momentum: ScrollMomentum,
     reduce_motion: bool,
-    last_tick: Option<Instant>,
     /// Header band, resolved from the theme's label line at layout time
     /// (`HEADER_HEIGHT` at the default text scale, taller at 2×).
     header_h: f64,
@@ -826,7 +824,6 @@ impl<Row> DataTable<Row> {
             drag_scroll: DragScroller::new(),
             momentum: ScrollMomentum::new(),
             reduce_motion: false,
-            last_tick: None,
             header_h: HEADER_HEIGHT,
             authored_row_height: None,
             row_type: None,
@@ -2621,7 +2618,6 @@ impl<Row> DataTable<Row> {
             if let Some(update) = self.drag_scroll.update(pt.y, now) {
                 self.momentum.stop();
                 self.set_scroll_offset(update.target_offset);
-                self.last_tick = Some(now);
                 *handled = true;
             }
             return;
@@ -2835,7 +2831,6 @@ impl<Row> DataTable<Row> {
                     self.momentum.stop();
                 } else {
                     self.momentum.fling(drag.velocity);
-                    self.last_tick = Some(crate::time::now());
                 }
             } else {
                 self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
@@ -2882,7 +2877,6 @@ impl<Row> DataTable<Row> {
         }
         if self.internal_scroll() {
             self.drag_scroll.cancel();
-            self.last_tick = Some(crate::time::now());
             *handled = match self.momentum.wheel(delta, phase, self.reduce_motion) {
                 WheelStep::Scroll(dy) => {
                     let before = self.viewport.offset();
@@ -3147,12 +3141,6 @@ impl<Row: 'static> Widget for DataTable<Row> {
             self.notify_model_changes(&model_changes);
         }
         let now = crate::time::now();
-        let elapsed = self
-            .last_tick
-            .replace(now)
-            .map_or(crate::time::Duration::ZERO, |last| {
-                now.saturating_duration_since(last)
-            });
         let mut children_changed = false;
         for cell in &mut self.mounted_cells {
             children_changed |= cell.widget.update(state, path);
@@ -3161,7 +3149,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             self.refresh_view_anchor();
             return received_changes || children_changed;
         }
-        let delta = self.momentum.tick(elapsed);
+        let delta = self.momentum.advance(now);
         let before = self.viewport.offset();
         self.set_scroll_offset(before + delta);
         let moved = self.viewport.offset().to_bits() != before.to_bits();
@@ -6140,16 +6128,10 @@ mod tests {
             let immediate = table.scroll_y();
             assert_eq!(immediate, 60.0);
             assert!(table.needs_animation_frame());
-            table.last_tick = Some(
-                crate::time::now()
-                    .checked_sub(crate::time::Duration::from_millis(16))
-                    .expect("a 16 ms earlier instant is representable"),
-            );
-            assert!(Widget::update(
-                &mut table,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
+            let frame = crate::time::now() + crate::time::Duration::from_millis(16);
+            assert!(crate::time::testing::with_monotonic_time(frame, || {
+                Widget::update(&mut table, &AutoCommit::new(), &automerge::ROOT)
+            }));
             assert!(
                 table.scroll_y() > immediate,
                 "momentum advances after input"

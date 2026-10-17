@@ -362,8 +362,14 @@ fn touchpad_flick_keeps_gliding_after_release_then_settles() {
         start - released >= 120.0,
         "pixel deltas move the content at least as far as the fingers: {start} -> {released}"
     );
-    driver.relayout();
-    driver.relayout();
+    // The glide is time-based: frames 1/60 s apart on the clock it reads.
+    let mut clock = tilo_ui::time::now();
+    let mut frame = |driver: &mut FrameHarness| {
+        clock += tilo_ui::time::Duration::from_nanos(16_666_667);
+        tilo_ui::time::testing::with_monotonic_time(clock, || driver.relayout());
+    };
+    frame(&mut driver);
+    frame(&mut driver);
     let gliding = content_top(&driver);
     assert!(
         gliding < released - 1.0,
@@ -372,7 +378,7 @@ fn touchpad_flick_keeps_gliding_after_release_then_settles() {
     let mut last = gliding;
     let mut settled = false;
     for _ in 0..600 {
-        driver.relayout();
+        frame(&mut driver);
         let now = content_top(&driver);
         assert!(now <= last, "the glide never reverses: {last} -> {now}");
         if now.to_bits() == last.to_bits() {
