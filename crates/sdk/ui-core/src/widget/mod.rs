@@ -3094,7 +3094,7 @@ pub use nav_shell::{
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowBar, WindowBarSlot,
-    WindowHeader,
+    WindowHeader, WindowHistory,
 };
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};

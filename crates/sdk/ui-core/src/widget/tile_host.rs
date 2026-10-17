@@ -275,6 +275,13 @@ fn admit_record(
 pub struct TileHost {
     content: TileContent,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    /// Where the History control stands while History is closed: `None` in
+    /// the app's own header row (a tile outside a desktop window), `Some`
+    /// once a desktop window hosts the tile. `Some(true)`: the window's tab
+    /// row presents it, so the tile draws no History control of its own;
+    /// `Some(false)`: the tab row is hidden (a maximized window), so the
+    /// app's header row may hold it, but never a band of its own.
+    window_history: Option<bool>,
     automatic_history: bool,
     live_callback_node: Option<NodeId>,
     retained_invocations: HashMap<tilo_actions::InvocationId, crate::history_mode::HistoryOwner>,
@@ -464,6 +471,10 @@ impl TileHost {
             Ok(mut history) => {
                 history.set_enclosing_owner(owner);
                 history.set_keyboard_active(false);
+                if let Some(tab_presents) = self.window_history {
+                    history.remove_fallback_bar();
+                    history.set_open_button(!tab_presents);
+                }
                 self.history = Some(Box::new(history));
                 self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
                 self.structure_dirty = true;
@@ -474,6 +485,87 @@ impl TileHost {
             }
         }
     }
+
+    /// A desktop window hosts this tile; `tab_presents` says whether the
+    /// window's tab row shows (and so presents the History control). The
+    /// tile then never draws a History band of its own: closed, History is
+    /// opened from the tab row, or from the app's header row while the tab
+    /// row is hidden.
+    pub fn set_window_presents_history(&mut self, tab_presents: bool) {
+        if self.window_history == Some(tab_presents) {
+            return;
+        }
+        self.window_history = Some(tab_presents);
+        if let Some(history) = &mut self.history {
+            history.remove_fallback_bar();
+            history.set_open_button(!tab_presents);
+            self.structure_dirty = true;
+        }
+        if let Some(app) = self.app_history_mut() {
+            app.set_window_presents_history(tab_presents);
+        }
+    }
+
+    /// An app shown with a History of its own (an App in a region of the
+    /// host's scene), rather than the one this tile hosts for a component.
+    fn app_history(&self) -> Option<&dyn crate::widget::WindowHistory> {
+        match &self.content {
+            TileContent::App(app) => super::capability::capability::<
+                dyn crate::widget::WindowHistory,
+            >(app.as_ref() as &dyn Widget),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    fn app_history_mut(&mut self) -> Option<&mut (dyn crate::widget::WindowHistory + 'static)> {
+        match &mut self.content {
+            TileContent::App(app) => super::capability::capability_mut::<
+                dyn crate::widget::WindowHistory,
+            >(app.as_mut() as &mut dyn Widget),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    /// The History control the window's tab row shows for this tile: open
+    /// or closed, or `None` where the tile has no History to open.
+    #[must_use]
+    pub fn history_control(&self) -> Option<crate::widget::HistoryControl> {
+        match &self.history {
+            Some(history) => history
+                .offers_control()
+                .then(|| crate::widget::HistoryControl::of(history.is_open())),
+            None => self
+                .app_history()
+                .and_then(crate::widget::WindowHistory::window_history_control),
+        }
+    }
+
+    /// Press the window's History control for this tile: open History, or
+    /// close it while it shows, through the same History door the History
+    /// shortcut and the palette use.
+    ///
+    /// # Errors
+    ///
+    /// The tile has no History, or its door refused the operation.
+    pub fn invoke_history_control(
+        &mut self,
+        control: crate::widget::HistoryControl,
+    ) -> Result<(), String> {
+        let Some(history) = self.history.as_deref_mut() else {
+            return self
+                .app_history_mut()
+                .ok_or_else(|| "History is unavailable".to_owned())?
+                .invoke_window_history_control(control);
+        };
+        let intent = crate::standalone_history_host::history_control_binding(control)
+            .invoke(())
+            .map_err(|error| error.to_string())?;
+        crate::history_mode::embedded::run_door_control(history, &intent)
+            .map_err(|error| error.to_string())?;
+        self.structure_dirty = true;
+        Ok(())
+    }
+
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
@@ -530,6 +622,7 @@ impl TileHost {
         let mut tile = Self {
             content,
             history: None,
+            window_history: None,
             automatic_history: false,
             live_callback_node: None,
             retained_invocations: HashMap::new(),
@@ -5334,5 +5427,100 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tile with History, alone and inside a desktop window.
+    fn history_tile(record: u64, directory: &std::path::Path) -> TileHost {
+        let store = canonical_store(&directory.join("records"));
+        let checkout = tab_checkout(record);
+        store
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls))));
+        host.bind_record(store, checkout);
+        host.register_document_history(&DECLARED_HISTORY).unwrap();
+        host
+    }
+
+    fn harness(root: Box<dyn Widget>) -> crate::headless::FrameHarness {
+        crate::headless::FrameHarness::new_with_controlled_inputs(
+            crate::State::new(),
+            root,
+            (900, 600),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("reader".into()),
+        )
+    }
+
+    fn tab_history_control(driver: &crate::headless::FrameHarness, tab: u64) -> Option<bool> {
+        fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<bool> {
+            if node.action_target.as_deref() == Some(target) {
+                return Some(node.state.checked == Some(true));
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        fn walk(node: &crate::headless::InspectionNode, target: &str) -> Option<bool> {
+            node.semantics
+                .as_ref()
+                .and_then(|access| find(access, target))
+                .or_else(|| node.children.iter().find_map(|child| walk(child, target)))
+        }
+        walk(&driver.inspection().root, &format!("tab-history:{tab}"))
+    }
+
+    #[test]
+    fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
+        use crate::widget::{TabDescriptor, WindowGroup, WindowWidth};
+        let directory = tempfile::tempdir().unwrap();
+
+        // Alone, the tile has nowhere else to put History: its own bar.
+        let alone = harness(Box::new(history_tile(3920, &directory.path().join("a"))));
+        assert!(alone.targets().contains_key("history-open"));
+
+        // In a desktop window, the window's tab carries it, and the tile
+        // draws no band (nor a header control) of its own.
+        let tile = history_tile(3921, &directory.path().join("b"));
+        let group = WindowGroup::from_hosts(
+            1,
+            vec![(TabDescriptor::new(7, "Chat"), tile)],
+            7,
+            WindowWidth::Normal,
+        );
+        let mut driver = harness(Box::new(group));
+        let targets = driver.targets();
+        assert!(
+            !targets.contains_key("history-open")
+                && !targets.contains_key(crate::widget::HISTORY_CONTROL_ID),
+            "a hosted tile draws no History band: {:?}",
+            targets.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(tab_history_control(&driver, 7), Some(false));
+
+        // The tab's control opens History through the tile's History door,
+        // and reads as on while it shows; pressed again, it closes.
+        driver
+            .perform_semantic_named(
+                "tabs",
+                Some("tab-history:7"),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        driver.relayout();
+        assert!(driver.targets().contains_key("activity_timeline"));
+        assert_eq!(tab_history_control(&driver, 7), Some(true));
+        driver
+            .perform_semantic_named(
+                "tabs",
+                Some("tab-history:7"),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        driver.relayout();
+        assert!(!driver.targets().contains_key("activity_timeline"));
+        assert_eq!(tab_history_control(&driver, 7), Some(false));
     }
 }

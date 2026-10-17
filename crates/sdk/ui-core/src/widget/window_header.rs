@@ -53,6 +53,28 @@ impl HistoryControl {
     }
 }
 
+/// An app that runs a History of its own inside a desktop window (an app
+/// shown in a region of the host's scene). The window presents its History
+/// control in the tab row, as one more control of the window, so the app
+/// draws no History band of its own.
+pub trait WindowHistory {
+    /// The window's tab row shows (`true`) and presents the control, or is
+    /// hidden, so the app's header row may hold it instead.
+    fn set_window_presents_history(&mut self, tab_presents: bool);
+
+    /// The control to show for this app's History, or `None` where it has
+    /// no History to open.
+    fn window_history_control(&self) -> Option<HistoryControl>;
+
+    /// The window's History control was pressed: run it on this app's
+    /// History door, as the History shortcut does.
+    ///
+    /// # Errors
+    ///
+    /// The app has no History, or its door refused the operation.
+    fn invoke_window_history_control(&mut self, control: HistoryControl) -> Result<(), String>;
+}
+
 /// A widget that draws the window's header row.
 pub trait WindowHeader {
     /// Show the window's History control at the trailing edge of the row,

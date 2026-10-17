@@ -245,8 +245,22 @@ impl HistoryHost {
     }
 
     pub(crate) fn remove_open_button(&mut self) {
-        self.open_button = false;
-        self.rebuild_toolbar();
+        self.set_open_button(false);
+    }
+
+    /// Whether the app's header row is offered the History control while
+    /// History is closed. Off where the host's chrome presents it, such as
+    /// the desktop window's tab row.
+    pub(crate) fn set_open_button(&mut self, shown: bool) {
+        if self.open_button != shown {
+            self.open_button = shown;
+            self.rebuild_toolbar();
+        }
+    }
+
+    /// Whether this History can be opened at all: its owner is valid.
+    pub(crate) fn offers_control(&self) -> bool {
+        !self.invalid_owner
     }
 
     pub(crate) fn new(
