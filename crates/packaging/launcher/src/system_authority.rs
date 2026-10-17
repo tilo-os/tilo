@@ -29,6 +29,10 @@
 //! - the cloud account service's runtime directory with its control socket:
 //!   sync now, pause and resume a mounted account (no credential crosses it,
 //!   and file requests are served only on a socket outside this grant);
+//! - the NTFS mount service's directory with its control socket
+//!   ([`NTFS_MOUNT_DIR`]): the person's remembered drives, to list, forget
+//!   or switch to opening safely. Opening a drive is not among them: the
+//!   service opens one only for the compositor, after its own prompt;
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
@@ -155,6 +159,15 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
     Some(RuntimeState { dir, masked })
 }
 
+/// The consent-gated NTFS mount service's runtime directory, holding its
+/// control socket (`ntfs_mount::protocol::SOCKET_PATH`). Bound rather than
+/// the socket, like the cloud service's: the socket unit may be restarted,
+/// and the directory exists from boot (tmpfiles). The service answers a
+/// sandboxed caller only with what the person at the seat may do outside
+/// the shell's prompt: list, close and forget drives, and change how a
+/// remembered one opens.
+pub const NTFS_MOUNT_DIR: &str = "/run/tilo-ntfs-mount";
+
 /// The host sockets the control panel's clients use, for a session of `uid`:
 /// `PipeWire`, and the cloud account service's runtime directory, which holds
 /// its mount control socket (`runtime_fs::cloud::socket_in`; no credential
@@ -163,10 +176,13 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
 /// restart's new socket shows through. That socket only lists, syncs, pauses
 /// and resumes mounts; file requests (revisions, restore, share links) are
 /// served on the file socket in `tilo-fs-cloud-files`, which is not bound.
+/// And [`NTFS_MOUNT_DIR`]. A path that does not exist (no such service on
+/// this host) is left out by [`resolve`].
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     vec![
         PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
         PathBuf::from(format!("/run/user/{uid}/tilo-fs-cloud")),
+        PathBuf::from(NTFS_MOUNT_DIR),
     ]
 }
 
@@ -362,6 +378,23 @@ mod tests {
             !sockets.iter().any(|bound| files.starts_with(bound)),
             "Settings' grant reaches the cloud file socket: {sockets:?}"
         );
+    }
+
+    #[test]
+    fn the_ntfs_grant_reaches_the_mount_service_socket_for_settings_only() {
+        let sockets = authority_sockets(1000);
+        let control = std::path::Path::new("/run/tilo-ntfs-mount/control.sock");
+        assert!(
+            sockets.iter().any(|bound| control.starts_with(bound)),
+            "Settings cannot reach the NTFS mount service: {sockets:?}"
+        );
+        // Every other package gets no plan at all, so no path of it.
+        let declared: std::collections::BTreeMap<String, crate::manifest::ServiceReq> = [(
+            "system".to_owned(),
+            crate::manifest::service_req("required@1"),
+        )]
+        .into();
+        assert!(resolve("so.tilo.file-explorer", &declared, 1000).is_none());
     }
 
     #[test]
