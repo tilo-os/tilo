@@ -152,6 +152,7 @@ pub fn placement_for_target(
 pub fn explicit_group_placement(tree: &WorkspaceTree, target: OpenTarget) -> Option<Placement> {
     match target {
         OpenTarget::Here(group) if group_exists(tree, group) => Some(Placement::TabIn(group)),
+        OpenTarget::RightOf(group) if group_exists(tree, group) => Some(Placement::RightOf(group)),
         _ => None,
     }
 }
@@ -505,6 +506,11 @@ mod tests {
                 Some(Placement::TabIn(ids[1]))
             );
             assert_eq!(explicit_group_placement(&tree, OpenTarget::Beside), None);
+            assert_eq!(
+                explicit_group_placement(&tree, OpenTarget::RightOf(ids[1])),
+                Some(Placement::RightOf(ids[1])),
+                "Ctrl+Enter in search opens beside the named group"
+            );
             crate::shell::launcher::clear_pending_placements();
         }
 

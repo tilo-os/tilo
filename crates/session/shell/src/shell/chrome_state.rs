@@ -402,6 +402,9 @@ pub enum OpenTarget {
     Beside,
     /// Force the new window into `GroupId` as a tab.
     Here(u64),
+    /// Its own group, right beside `GroupId`: what Ctrl+Enter in search
+    /// asks for, beside the focused window whatever the default would say.
+    RightOf(u64),
 }
 
 /// Where clipboard history was summoned to paste: the focused field's caret

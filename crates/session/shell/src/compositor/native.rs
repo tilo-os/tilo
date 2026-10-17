@@ -11368,6 +11368,14 @@ pub fn run() {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
+                    // An open search previews on its selected row what Enter
+                    // does with the modifier just pressed or released.
+                    if frame_builder
+                        .host_mut()
+                        .note_held_modifiers(modifiers.state())
+                    {
+                        session_changed = true;
+                    }
                 }
                 BackendEvent::KeyboardConfiguration { scope, settings } => {
                     frame_builder.host_mut().set_keyboard_scope(scope.clone());

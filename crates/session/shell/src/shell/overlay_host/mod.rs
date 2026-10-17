@@ -53,6 +53,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
 mod sheet_accessibility;
@@ -567,10 +568,25 @@ pub struct ShellOverlayHost {
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
-    /// Parameterized result awaiting a JSON argument object in the palette's
-    /// query field. Keeping the inert result (not a pre-bound callback) lets
-    /// Enter perform the same strict `ActionArgs::bind_json` as scripts.
-    pending_palette_action: Option<crate::shell::search::SearchResult>,
+    /// A parameterized result whose arguments the palette is collecting,
+    /// one step per parameter. Keeping the inert result (not a pre-bound
+    /// callback) lets the last step perform the same strict
+    /// `ActionArgs::bind_json` as scripts.
+    param_flow: Option<palette_flow::ParamFlow>,
+    /// A file row whose other actions the palette is listing (Alt+Enter),
+    /// with the query to give back.
+    secondary_flow: Option<(crate::shell::search::SearchResult, String)>,
+    /// Kinds whose whole group the person asked to see ("Show all").
+    expanded_kinds: Vec<crate::shell::search::ResourceKind>,
+    /// The kind each "Show all" row stands for, by the number in its id.
+    more_rows: Vec<crate::shell::search::ResourceKind>,
+    /// Kinds the unfiltered results hold, most hits first: the only kinds
+    /// the filter band offers.
+    present_kinds: Vec<crate::shell::search::ResourceKind>,
+    /// The chrome revision the open palette's rows were built against: a
+    /// state the rows show (a switch's ON/OFF) changing moves it, and the
+    /// rows are rebuilt.
+    search_chrome_revision: u64,
     /// Atomic remote-directory admissions are not assumed accepted when the
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
@@ -1185,12 +1201,18 @@ pub enum PeerSyncAction {
     },
 }
 
-/// Rows the palette asks the registry for, shared round-robin between the
-/// matching kinds. Must equal what the card actually paints — asking for
-/// 16 let a three-group answer's third header land off the bottom of the
-/// card. Eight keeps every group's header on screen, each showing the
-/// total it's holding back, so clicking its chip is how you see the rest.
-const PALETTE_ROW_BUDGET: usize = 8;
+/// Row id of one of a file's other actions (Alt+Enter).
+const SECONDARY_PREFIX: &str = "secondary:";
+
+/// The share of the display's height the palette's result list may take
+/// before it scrolls: enough to see several groups at once, while the card
+/// still leaves the desktop around it visible.
+const PALETTE_LIST_SHARE: f64 = 0.55;
+
+/// The tallest the list grows on a large display, in logical pixels at
+/// 100 % text: twelve two-line rows. Past that it scrolls; a card standing
+/// over most of a 4K screen would cover the desktop the search is about.
+const PALETTE_LIST_MAX: f64 = 504.0;
 
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
@@ -2441,7 +2463,12 @@ impl ShellOverlayHost {
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
-            pending_palette_action: None,
+            param_flow: None,
+            secondary_flow: None,
+            expanded_kinds: Vec::new(),
+            more_rows: Vec::new(),
+            present_kinds: Vec::new(),
+            search_chrome_revision: 0,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),
@@ -6416,7 +6443,11 @@ impl ShellOverlayHost {
         if self.palette_visible {
             return;
         }
-        self.pending_palette_action = None;
+        if self.param_flow.is_some() || self.secondary_flow.is_some() {
+            self.end_palette_steps();
+        }
+        self.expanded_kinds.clear();
+        self.present_kinds.clear();
         self.palette
             .set_query_placeholder(t("host-search-placeholder"));
         self.active_kind_filter.clear();
@@ -7627,6 +7658,12 @@ impl ShellOverlayHost {
     /// Select the physical keyboard whose sources the switch shortcut cycles.
     pub(crate) fn set_keyboard_scope(&mut self, scope: String) {
         self.keyboard_scope = scope;
+    }
+
+    /// The modifiers held changed: the palette's selected row previews
+    /// what Enter would do with them. Whether that needs a new frame.
+    pub fn note_held_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        self.palette.set_held_modifiers(modifiers) && self.palette_visible
     }
 
     /// The modifier state changed with no key event to carry it (the
@@ -8990,11 +9027,19 @@ impl ShellOverlayHost {
 
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
+        // A step collecting an argument owns the list until it ends.
+        if self.param_flow.is_some() || self.secondary_flow.is_some() {
+            return;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
         let preserve_selection = current_query == self.last_search_query;
+        if !preserve_selection {
+            // "Show all" belongs to the search it was asked in.
+            self.expanded_kinds.clear();
+        }
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -9003,6 +9048,7 @@ impl ShellOverlayHost {
         };
         let groups = {
             let st = chrome.borrow();
+            self.search_chrome_revision = st.revision;
             let args = crate::shell::search::QueryArgs {
                 needle: &current_query,
                 scope,
@@ -9021,9 +9067,16 @@ impl ShellOverlayHost {
             }
             self.last_search_query.clone_from(&current_query);
             self.last_search_revision = revision;
-            self.search_registry
-                .query_grouped(&args, PALETTE_ROW_BUDGET)
+            // Every hit, grouped; the palette's own height decides how many
+            // each group shows below.
+            self.search_registry.query_grouped(&args, 0)
         };
+        self.note_present_kinds(&groups);
+        let groups = palette_flow::trim_groups(
+            groups,
+            self.palette.entry_row_capacity(),
+            &self.expanded_kinds,
+        );
 
         // Provider revisions may insert/re-rank rows without a query edit.
         // Keep the chosen resource, never its old callback or row index.
@@ -9038,49 +9091,32 @@ impl ShellOverlayHost {
         // of a path off the right edge.
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
+        self.more_rows.clear();
         for group in &groups {
             let label = group.kind.localized_label();
             for r in &group.results {
                 let idx = results.len();
-                let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
+                let e = self
+                    .palette_entry_for(r, format!("result:{idx}"))
                     .group(label.clone())
-                    .group_total(group.total)
-                    .icon(ui::search::system::icon_for_kind(&r.kind));
-                // The unconfined-host glyph stays the fallback; the app's own
-                // artwork is what a person recognises it by. Window rows wear
-                // the same tile face as the tab strip, not the magnifier.
-                if r.kind == crate::shell::search::ResourceKind::HostApplication
-                    && let Some(image) = crate::app_icons::for_desktop_id(&r.id)
-                {
-                    e = e.image(image);
-                }
-                if matches!(
-                    r.kind,
-                    crate::shell::search::ResourceKind::Tab
-                        | crate::shell::search::ResourceKind::WindowGroup
-                ) && let Some(chrome) = &self.chrome
-                {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
-                    {
-                        match crate::app_icons::for_tile(tile) {
-                            Some(image) => e = e.image(image),
-                            None => e = e.icon(crate::app_icons::glyph_for_tile(tile)),
-                        }
-                    }
-                }
-                if let Some(sub) = &r.subtitle {
-                    e = e.description(sub.clone());
-                }
-                if let Some(badge) = &r.badge {
-                    e = e.badge(badge.clone());
-                }
-                if let Some(shortcut) = &r.shortcut {
-                    e = e.keybinding(shortcut.clone());
-                }
+                    .group_total(group.total);
                 entries.push(e);
                 results.push(r.clone());
+            }
+            if palette_flow::is_capped(group) {
+                // The rest of a group the budget cut short is one row away,
+                // in place, under its own header.
+                let more = self.more_rows.len();
+                self.more_rows.push(group.kind.clone());
+                entries.push(
+                    CommandEntry::new(
+                        format!("{}{more}", palette_flow::MORE_PREFIX),
+                        t_args("palette-show-all", &[("count", group.total.into())]),
+                    )
+                    .icon(ui::icons::Icon::ChevronDown)
+                    .group(label.clone())
+                    .group_total(group.total),
+                );
             }
         }
 
@@ -9104,9 +9140,167 @@ impl ShellOverlayHost {
             self.palette.set_cursor(cursor);
         }
         self.search_results = results;
+        self.sync_filter_band();
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
+    }
+
+    /// Keep an open palette's rows true to what they show: rebuild them when
+    /// the query changed without a keystroke (Escape cleared it, a scope
+    /// was left) or when the chrome state rows read has moved (a switch
+    /// just flipped, a device answered). The registry's own revision check
+    /// keeps an unchanged answer from being rebuilt.
+    fn refresh_open_palette(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        if !self.palette_visible || self.param_flow.is_some() || self.secondary_flow.is_some() {
+            return;
+        }
+        let revision = self.chrome.as_ref().map(|chrome| chrome.borrow().revision);
+        if self.palette.query() != self.last_search_query
+            || revision.is_some_and(|revision| revision != self.search_chrome_revision)
+        {
+            self.refresh_search_results(doc, root);
+        }
+        self.sync_scope_token();
+    }
+
+    /// Show the scope as a token at the start of the field: nothing for
+    /// "Everywhere", else what the search is narrowed to.
+    fn sync_scope_token(&mut self) {
+        use crate::shell::chrome_state::SearchScope;
+        let scope = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().search_scope)
+            .unwrap_or_default();
+        let token = (scope != SearchScope::All).then(|| self.search_scope_pill_label(scope));
+        self.palette.set_scope_token(token);
+    }
+
+    /// Backspace took the scope token away: search one scope wider.
+    fn widen_search_scope(&mut self) {
+        use crate::shell::chrome_state::SearchScope;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let scopes = self.search_scope_list();
+        let mut state = chrome.borrow_mut();
+        state.search_resource_scope = None;
+        let at = scopes
+            .iter()
+            .position(|scope| *scope == state.search_scope)
+            .unwrap_or(0);
+        state.search_scope = scopes
+            .get(at.saturating_add(1))
+            .copied()
+            .unwrap_or(SearchScope::All);
+        state.bump();
+        drop(state);
+        // Never equal to a real query: the next frame fans out again.
+        self.last_search_query = "\0scope-widened\0".into();
+        self.sync_scope_token();
+    }
+
+    /// The kinds an unfiltered search found, most hits first: the filter
+    /// band offers these and nothing else.
+    fn note_present_kinds(&mut self, groups: &[crate::shell::search::KindGroup]) {
+        if !self.active_kind_filter.is_empty() {
+            return;
+        }
+        let mut present: Vec<(usize, crate::shell::search::ResourceKind)> =
+            groups.iter().map(|g| (g.total, g.kind.clone())).collect();
+        present.sort_by_key(|(total, _)| std::cmp::Reverse(*total));
+        self.present_kinds = present.into_iter().map(|(_, kind)| kind).collect();
+    }
+
+    /// One result as a palette row: its picture, its text, its state, and
+    /// where it can open.
+    fn palette_entry_for(
+        &self,
+        r: &crate::shell::search::SearchResult,
+        id: String,
+    ) -> CommandEntry {
+        use crate::shell::search::ResourceKind;
+        let mut e = CommandEntry::new(id, r.title.clone()).icon(
+            self.search_registry
+                .row_icon(r)
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&r.kind)),
+        );
+        // The app's own artwork is what a person recognises it by; the kind
+        // glyph is only the fallback. A Tilo app wears its artwork or its
+        // own symbol, never the generic grid. Window rows wear the same
+        // tile face as the tab strip.
+        match &r.kind {
+            ResourceKind::HostApplication => {
+                if let Some(image) = crate::app_icons::for_desktop_id(&r.id) {
+                    e = e.image(image);
+                }
+            }
+            ResourceKind::Application => {
+                let package = r.id.strip_prefix("app:").unwrap_or(&r.id);
+                e = e.icon(ui::icons::app_glyph(package, None));
+                if let Some(image) = crate::app_icons::for_window_app_id(package) {
+                    e = e.image(image);
+                }
+            }
+            ResourceKind::Tab | ResourceKind::WindowGroup => {
+                if let Some(chrome) = &self.chrome {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
+                    {
+                        match crate::app_icons::for_tile(tile) {
+                            Some(image) => e = e.image(image),
+                            None => e = e.icon(crate::app_icons::glyph_for_tile(tile)),
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(sub) = &r.subtitle {
+            e = e.description(sub.clone());
+            if matches!(r.kind, ResourceKind::File | ResourceKind::Folder) {
+                e = e.path_description();
+            }
+        }
+        if let Some(badge) = &r.badge {
+            e = e.badge(badge.clone());
+        }
+        if let Some(shortcut) = &r.shortcut {
+            e = e.keybinding(shortcut.clone());
+        }
+        if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) {
+            use ui::widget::command_palette::ActivationModifier;
+            e = e
+                .alternate(
+                    ActivationModifier::Shift,
+                    palette_flow::Activation::TabHere.label(),
+                )
+                .alternate(
+                    ActivationModifier::Ctrl,
+                    palette_flow::Activation::Beside.label(),
+                );
+            if r.kind == ResourceKind::File {
+                e = e.alternate(
+                    ActivationModifier::Alt,
+                    palette_flow::Activation::More.label(),
+                );
+            }
+        }
+        e
+    }
+
+    /// Show the filter band only when it has something to tell apart: two
+    /// kinds or more in the results, or a filter already chosen.
+    fn sync_filter_band(&mut self) {
+        // A chosen filter keeps its band, so it can be changed or cleared
+        // (the "+" picker opens on one before anything is typed).
+        let shown = !self.active_kind_filter.is_empty()
+            || (!self.palette.query().is_empty() && self.present_kinds.len() > 1);
+        if self.palette.set_filter_band_shown(shown) {
+            self.palette_layout_dirty = true;
+        }
     }
 
     fn poll_pending_action_admissions(&mut self) {
@@ -9584,6 +9778,9 @@ impl ShellOverlayHost {
     /// band. Computed from the palette's own tree rather than pinned to a
     /// literal, so the two can never disagree if the palette grows a child.
     fn search_filters_child_index(&self) -> Option<usize> {
+        if !self.palette.filter_band_shown() || self.palette.shows_field_only() {
+            return None;
+        }
         let palette = self.palette.accessibility()?;
         (!palette.children.is_empty()).then_some(palette.children.len())
     }
@@ -9591,20 +9788,23 @@ impl ShellOverlayHost {
     /// The band's inputs as this host shows them now: the registered kinds
     /// with their labels, the chosen kinds, and the scopes with theirs.
     fn search_filter_inputs(&self) -> SearchFilterInputs {
-        let kinds = self
-            .search_registry
-            .registered_kinds()
+        // The kinds the results hold, most hits first, and any kind chosen
+        // already: never a kind with nothing to show. The scope is not a
+        // control here; it is the token at the start of the field.
+        let mut present = self.present_kinds.clone();
+        for kind in &self.active_kind_filter {
+            if !present.contains(kind) {
+                present.push(kind.clone());
+            }
+        }
+        let kinds = present
             .into_iter()
             .map(|kind| {
                 let label = kind.localized_label();
                 (kind, label)
             })
             .collect();
-        let scopes = self
-            .search_scope_list()
-            .into_iter()
-            .map(|scope| (scope, self.search_scope_pill_label(scope)))
-            .collect();
+        let scopes = Vec::new();
         let active_scope = self
             .chrome
             .as_ref()
@@ -9676,35 +9876,352 @@ impl ShellOverlayHost {
         filters.accessibility()
     }
 
-    /// Dispatch the selected palette row through the provider callback
-    /// (`result:N`) or the legacy chrome-command dispatcher (`peer:*`,
-    /// a bridge until peer commands get their own provider).
+    /// [`Self::activate_selected_result_with`] with no modifier held.
+    #[cfg(test)]
+    fn activate_selected_result(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        self.activate_selected_result_with(doc, root, None);
+    }
+
+    /// Dispatch the selected palette row: a value of the argument step on
+    /// screen, one of a file's other actions, a "Show all" row, or a search
+    /// result through its provider callback. With `modifier` held a row that
+    /// opens a window opens as a tab here (Shift), beside the focused window
+    /// (Ctrl), or lists its other actions (Alt).
+    fn activate_selected_result_with(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+        modifier: Option<ui::widget::command_palette::ActivationModifier>,
+    ) {
+        let Some(id) = self
+            .palette
+            .selected_id()
+            .map(std::string::ToString::to_string)
+        else {
+            return;
+        };
+        if let Some(index) = id
+            .strip_prefix(palette_flow::CHOICE_PREFIX)
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            self.choose_param_value(index, doc, root);
+            return;
+        }
+        if let Some(slug) = id.strip_prefix(SECONDARY_PREFIX) {
+            self.run_secondary_action(slug, doc, root);
+            return;
+        }
+        if let Some(more) = id
+            .strip_prefix(palette_flow::MORE_PREFIX)
+            .and_then(|more| more.parse::<usize>().ok())
+        {
+            self.show_whole_group(more, doc, root);
+            return;
+        }
+        let Some(result) = id
+            .strip_prefix("result:")
+            .and_then(|idx| idx.parse::<usize>().ok())
+            .and_then(|idx| self.search_results.get(idx).cloned())
+        else {
+            return;
+        };
+        let activation = modifier
+            .filter(|_| result.params.is_empty() && palette_flow::opens_a_window(&result.kind))
+            .map(palette_flow::Activation::of);
+        match activation {
+            Some(palette_flow::Activation::More)
+                if result.kind == crate::shell::search::ResourceKind::File =>
+            {
+                self.show_secondary_actions(result);
+            }
+            Some(palette_flow::Activation::TabHere) => {
+                let target = self
+                    .focused_group()
+                    .map(crate::shell::chrome_state::OpenTarget::Here);
+                self.run_result(result, doc, root, target);
+            }
+            Some(palette_flow::Activation::Beside) => {
+                let target = self
+                    .focused_group()
+                    .map(crate::shell::chrome_state::OpenTarget::RightOf);
+                self.run_result(result, doc, root, target);
+            }
+            _ => self.run_result(result, doc, root, None),
+        }
+    }
+
+    /// The group of the focused window: where "here" and "beside" are.
+    fn focused_group(&self) -> Option<GroupId> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        let strip = state.active_strip_id()?;
+        state.tree().desktop.active_group_for(strip)
+    }
+
+    /// Run one search result. An action that takes arguments first asks for
+    /// them, one step each, unless the query already named them. `target`
+    /// overrides where a window it opens lands, for this one run.
     #[allow(
         clippy::too_many_lines,
-        reason = "Argument validation, action dispatch, and one Automerge transaction must stay in their visible order to keep palette actions atomic."
+        reason = "invocation, its failure report and the three ways a run ends (resource scope, a switch kept open, close) stay in their visible order"
     )]
-    fn activate_selected_result(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
-        if let Some(result) = self.pending_palette_action.take() {
-            let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-                self.palette.query(),
-            );
-            let outcome = parsed
-                .map_err(|error| {
-                    crate::shell::search::action_api::ActionError::Refused(format!(
-                        "arguments must be a JSON object: {error}"
-                    ))
+    fn run_result(
+        &mut self,
+        result: crate::shell::search::SearchResult,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+        target: Option<crate::shell::chrome_state::OpenTarget>,
+    ) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        if !result.params.is_empty() {
+            self.begin_param_flow(result, doc, root);
+            return;
+        }
+        let previous_target = target.map(|target| {
+            let mut state = chrome.borrow_mut();
+            std::mem::replace(&mut state.open_target, target)
+        });
+        let args = crate::shell::search::action_api::ActionArgs::none();
+        let previous_notice = chrome
+            .borrow()
+            .notifications()
+            .last()
+            .map(|notice| notice.id);
+        let outcome = if let Some(begin) = &result.on_begin_invoke {
+            begin(doc, root, &chrome, &args).map(|disposition| match disposition {
+                crate::shell::search::InvocationDisposition::Accepted(_) => (),
+                crate::shell::search::InvocationDisposition::Pending(ticket) => {
+                    self.pending_action_admissions
+                        .push((result.title.clone(), ticket));
+                }
+            })
+        } else if let Some(invoke) = &result.on_invoke {
+            invoke(doc, root, &chrome, &args).map(|_| ())
+        } else {
+            (result.on_open)(doc, root, &chrome, &args)
+        };
+        if let Some(previous) = previous_target {
+            chrome.borrow_mut().open_target = previous;
+        }
+        let entered_resource_scope =
+            outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
+        if let Err(err) = outcome {
+            let reported_detail = chrome
+                .borrow()
+                .notifications()
+                .last()
+                .filter(|notice| {
+                    Some(notice.id) != previous_notice
+                        && matches!(
+                            notice.severity,
+                            tilo_desktop::notifications::NotificationSeverity::Warning
+                                | tilo_desktop::notifications::NotificationSeverity::Error
+                        )
                 })
-                .and_then(|arguments| {
-                    let Some(chrome) = self.chrome.clone() else {
-                        return Err(crate::shell::search::action_api::ActionError::Refused(
-                            "search has no active desktop".into(),
-                        ));
-                    };
-                    let bound = crate::shell::search::action_api::ActionArgs::bind_json(
-                        &result.params,
-                        &arguments,
-                    )
-                    .map_err(crate::shell::search::action_api::ActionError::Arguments)?;
+                .map(|notice| notice.body.clone());
+            // The failure is told once, on the row that failed. The error's
+            // own text is for agents and logs; people get its catalogue
+            // sentence (or the notice the action already posted).
+            tracing::info!(
+                provider = %result.provider_id,
+                action = %result.id,
+                code = err.code(),
+                detail = %err,
+                "palette action did not run"
+            );
+            let detail = reported_detail.unwrap_or_else(|| err.user_message());
+            self.palette
+                .set_selected_status(t("host-action-failed-status"), detail);
+            self.palette_layout_dirty = true;
+            return;
+        }
+        if entered_resource_scope {
+            let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
+                || t("host-search-in-resource-fallback"),
+                |scope| scope.label.clone(),
+            );
+
+            self.palette.set_query("");
+            self.palette.set_query_placeholder(t_args(
+                "host-search-in",
+                &[("scope", label.as_str().into())],
+            ));
+
+            self.last_search_query = "\0resource-scope-enter\0".into();
+            self.palette_visible = true;
+            return;
+        }
+        crate::shell::search::usage::record(&result.provider_id, &result.id);
+        // A switch flips where the person can see it: keep the palette open
+        // and rebuild its rows now, so the row shows the state it was just
+        // switched to. One whose state lands later is rebuilt when the
+        // chrome revision it reads moves (`Self::refresh_open_palette`).
+        if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+            && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+        {
+            self.last_search_revision.clear();
+            self.refresh_search_results(doc, root);
+            return;
+        }
+        self.palette_visible = false;
+        self.palette.close();
+    }
+
+    /// Start collecting `result`'s arguments. Words after its title in the
+    /// query fill the first one ("scale 125"): a declared value or a number
+    /// runs the action at once; free text waits in its field for Enter.
+    fn begin_param_flow(
+        &mut self,
+        result: crate::shell::search::SearchResult,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+    ) {
+        let query = self.palette.query().to_string();
+        let mut values = serde_json::Map::new();
+        let mut prefill = None;
+        if let Some(inline) = palette_flow::inline_argument(&query, &result.title, &result.params) {
+            if inline.certain {
+                values.insert(inline.name, inline.value);
+            } else if let serde_json::Value::String(text) = inline.value {
+                prefill = Some((inline.name, text));
+            }
+        }
+        let pending = palette_flow::missing_params(&result.params, &values);
+        self.param_flow = Some(palette_flow::ParamFlow {
+            result,
+            values,
+            pending,
+            asked: Vec::new(),
+            choices: Vec::new(),
+            query,
+            prefill,
+        });
+        self.advance_param_flow(doc, root);
+    }
+
+    /// Show the next step, or run the action once nothing is missing.
+    fn advance_param_flow(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        if self
+            .param_flow
+            .as_ref()
+            .is_some_and(|flow| flow.pending.is_empty())
+        {
+            self.finish_param_flow(doc, root);
+        } else {
+            self.show_param_step();
+        }
+    }
+
+    /// Put the step for the parameter on screen: its values as rows to pick
+    /// from, or a field of its kind.
+    fn show_param_step(&mut self) {
+        let Some(flow) = self.param_flow.as_mut() else {
+            return;
+        };
+        let Some(param) = flow.param().cloned() else {
+            return;
+        };
+        let title = flow.result.title.clone();
+        match palette_flow::step_for(&param, &title) {
+            palette_flow::Step::Choices(rows) => {
+                flow.choices = rows.iter().map(|(value, _)| value.clone()).collect();
+                let entries = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (_, label))| {
+                        CommandEntry::new(format!("{}{i}", palette_flow::CHOICE_PREFIX), label)
+                            .group(title.clone())
+                    })
+                    .collect();
+                self.palette.cancel_argument();
+                // Typing narrows the values, as it narrows any list.
+                self.palette.set_bypass_fuzzy(false);
+                self.palette.set_query("");
+                self.palette.set_entries(entries);
+                self.palette
+                    .set_query_placeholder(param.description.to_string());
+            }
+            palette_flow::Step::Field(mut spec) => {
+                flow.choices.clear();
+                if let Some((_, text)) = flow
+                    .prefill
+                    .take_if(|(name, _)| name.as_str() == param.name.as_ref())
+                {
+                    spec.prefill = Some(text);
+                }
+                self.palette.set_entries(Vec::new());
+                self.palette
+                    .open_argument_step(format!("param:{}", param.name), spec);
+            }
+        }
+        self.palette.set_filter_band_shown(false);
+        self.palette_layout_dirty = true;
+    }
+
+    /// The step on screen was answered with the value of its row `index`.
+    fn choose_param_value(&mut self, index: usize, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(flow) = self.param_flow.as_mut() else {
+            return;
+        };
+        let (Some(value), Some(param)) = (flow.choices.get(index).cloned(), flow.param()) else {
+            return;
+        };
+        let name = param.name.to_string();
+        flow.values.insert(name, value);
+        let asked = flow.pending.remove(0);
+        flow.asked.push(asked);
+        self.advance_param_flow(doc, root);
+    }
+
+    /// The field on screen was confirmed with `text`. A value the
+    /// parameter can't take asks again, saying why.
+    fn submit_param_field(&mut self, text: String, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(flow) = self.param_flow.as_mut() else {
+            return;
+        };
+        let Some(param) = flow.param().cloned() else {
+            return;
+        };
+        match palette_flow::value_of(param.ty, &text) {
+            Ok(value) => {
+                flow.values.insert(param.name.to_string(), value);
+                let asked = flow.pending.remove(0);
+                flow.asked.push(asked);
+                self.advance_param_flow(doc, root);
+            }
+            Err(reason) => {
+                let palette_flow::Step::Field(mut spec) =
+                    palette_flow::step_for(&param, &flow.result.title)
+                else {
+                    return;
+                };
+                spec.prompt = reason;
+                // A refused secret is not shown again; anything else stays
+                // to be corrected.
+                spec.prefill = (param.ty != crate::shell::search::action_api::ParamType::Secret)
+                    .then_some(text);
+                self.palette
+                    .open_argument_step(format!("param:{}", param.name), spec);
+            }
+        }
+    }
+
+    /// Run the action with the values collected. A refusal is reported and
+    /// the steps start over, so the values can be corrected.
+    fn finish_param_flow(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(mut flow) = self.param_flow.take() else {
+            return;
+        };
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let result = flow.result.clone();
+        let outcome =
+            crate::shell::search::action_api::ActionArgs::bind_json(&result.params, &flow.values)
+                .map_err(crate::shell::search::action_api::ActionError::Arguments)
+                .and_then(|bound| {
                     if let Some(begin) = &result.on_begin_invoke {
                         match begin(doc, root, &chrome, &bound)? {
                             crate::shell::search::InvocationDisposition::Accepted(_) => Ok(()),
@@ -9720,135 +10237,197 @@ impl ShellOverlayHost {
                         (result.on_open)(doc, root, &chrome, &bound)
                     }
                 });
-            if let Err(error) = outcome {
-                if let Some(chrome) = self.chrome.clone() {
-                    chrome.borrow_mut().push_warning_notification(
-                        t_args(
-                            "host-action-cannot-run",
-                            &[("title", result.title.clone().into())],
-                        ),
-                        error.to_string(),
-                    );
-                }
-                // Preserve the step and input so the caller can correct it.
-                self.pending_palette_action = Some(result);
-                return;
-            }
-            self.palette_visible = false;
-            self.palette.close();
+        if let Err(error) = outcome {
+            // Told once, where the person is: on the step that starts over.
+            tracing::info!(
+                provider = %result.provider_id,
+                action = %result.id,
+                code = error.code(),
+                detail = %error,
+                "palette action did not run"
+            );
+            flow.values.clear();
+            flow.asked.clear();
+            flow.pending = palette_flow::missing_params(&result.params, &flow.values);
+            self.param_flow = Some(flow);
+            self.show_param_step();
+            self.show_step_error(error.user_message());
             return;
         }
-        let Some(id) = self
-            .palette
-            .selected_id()
-            .map(std::string::ToString::to_string)
-        else {
+        crate::shell::search::usage::record(&result.provider_id, &result.id);
+        self.end_palette_steps();
+        self.palette_visible = false;
+        self.palette.close();
+    }
+
+    /// Say why a run was refused on the step on screen: as a field's
+    /// heading, or on the selected value.
+    fn show_step_error(&mut self, message: String) {
+        let Some(param) = self.param_flow.as_ref().and_then(|flow| {
+            flow.param()
+                .cloned()
+                .map(|param| (param, flow.result.title.clone()))
+        }) else {
             return;
         };
-        if let Some(idx) = id.strip_prefix("result:")
-            && let Ok(idx) = idx.parse::<usize>()
-            && let Some(result) = self.search_results.get(idx).cloned()
-        {
-            if let Some(chrome) = self.chrome.clone() {
-                if !result.params.is_empty() {
-                    let names = result
-                        .params
-                        .iter()
-                        .map(|parameter| parameter.name.as_ref())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.pending_palette_action = Some(result);
-                    self.palette.set_entries(Vec::new());
-                    self.palette.set_query("");
-                    self.palette.set_query_placeholder(t_args(
-                        "host-json-arguments",
-                        &[("names", names.into())],
-                    ));
-                    self.palette_layout_dirty = true;
-                    return;
-                }
-                let args = crate::shell::search::action_api::ActionArgs::none();
-                let previous_notice = chrome
-                    .borrow()
-                    .notifications()
-                    .last()
-                    .map(|notice| notice.id);
-                let outcome = if let Some(begin) = &result.on_begin_invoke {
-                    begin(doc, root, &chrome, &args).map(|disposition| match disposition {
-                        crate::shell::search::InvocationDisposition::Accepted(_) => (),
-                        crate::shell::search::InvocationDisposition::Pending(ticket) => {
-                            self.pending_action_admissions
-                                .push((result.title.clone(), ticket));
-                        }
-                    })
-                } else if let Some(invoke) = &result.on_invoke {
-                    invoke(doc, root, &chrome, &args).map(|_| ())
-                } else {
-                    (result.on_open)(doc, root, &chrome, &args)
-                };
-                let entered_resource_scope =
-                    outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
-                if let Err(err) = outcome {
-                    let reported_detail = chrome
-                        .borrow()
-                        .notifications()
-                        .last()
-                        .filter(|notice| {
-                            Some(notice.id) != previous_notice
-                                && matches!(
-                                    notice.severity,
-                                    tilo_desktop::notifications::NotificationSeverity::Warning
-                                        | tilo_desktop::notifications::NotificationSeverity::Error
-                                )
-                        })
-                        .map(|notice| notice.body.clone());
-                    // The failure is told once, on the row that failed. The
-                    // error's own text is for agents and logs; people get
-                    // its catalogue sentence (or the notice the action
-                    // already posted, with its own buttons).
-                    tracing::info!(
-                        provider = %result.provider_id,
-                        action = %result.id,
-                        code = err.code(),
-                        detail = %err,
-                        "palette action did not run"
-                    );
-                    let detail = reported_detail.unwrap_or_else(|| err.user_message());
-                    self.palette
-                        .set_selected_status(t("host-action-failed-status"), detail);
-                    self.palette_layout_dirty = true;
-                    return;
-                }
-                if entered_resource_scope {
-                    let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
-                        || t("host-search-in-resource-fallback"),
-                        |scope| scope.label.clone(),
-                    );
-
-                    self.palette.set_query("");
-                    self.palette.set_query_placeholder(t_args(
-                        "host-search-in",
-                        &[("scope", label.as_str().into())],
-                    ));
-
-                    self.last_search_query = "\0resource-scope-enter\0".into();
-                    self.palette_visible = true;
-                    return;
-                }
+        let (param, title) = param;
+        match palette_flow::step_for(&param, &title) {
+            palette_flow::Step::Field(mut spec) => {
+                spec.prompt = message;
+                self.palette
+                    .open_argument_step(format!("param:{}", param.name), spec);
             }
-            crate::shell::search::usage::record(&result.provider_id, &result.id);
-            // A switch flips where the person can see it: keep the palette
-            // open on the row's new state instead of closing it.
-            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
-                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
-            {
-                self.last_search_query = "\0toggled\0".into();
-                self.palette_layout_dirty = true;
+            palette_flow::Step::Choices(_) => {
+                self.palette
+                    .set_selected_status(t("host-action-failed-status"), message);
+            }
+        }
+    }
+
+    /// Escape inside the steps: back to the previous parameter, or from the
+    /// first one back to the results, with what was typed before.
+    fn palette_step_back(&mut self) {
+        if let Some(flow) = self.param_flow.as_mut() {
+            if let Some(previous) = flow.asked.pop() {
+                if let Some(param) = flow.result.params.get(previous) {
+                    flow.values.remove(param.name.as_ref());
+                }
+                flow.pending.insert(0, previous);
+                self.show_param_step();
                 return;
             }
-            self.palette_visible = false;
-            self.palette.close();
+            let query = flow.query.clone();
+            self.end_palette_steps();
+            self.restore_results(&query);
+            return;
         }
+        if let Some((_, query)) = self.secondary_flow.take() {
+            self.end_palette_steps();
+            self.restore_results(&query);
+        }
+    }
+
+    /// Back on the results for `query`; the next frame lists them.
+    fn restore_results(&mut self, query: &str) {
+        self.palette.set_query(query);
+        self.palette
+            .set_query_placeholder(t("host-search-placeholder"));
+        // Never equal to a real query: the next frame fans out again.
+        self.last_search_query = "\0steps-ended\0".into();
+        self.palette_layout_dirty = true;
+    }
+
+    /// Leave any argument step or list of other actions.
+    fn end_palette_steps(&mut self) {
+        self.param_flow = None;
+        self.secondary_flow = None;
+        self.palette.cancel_argument();
+        self.palette.set_bypass_fuzzy(true);
+    }
+
+    /// Show every row of the group behind "Show all" row `more`, in place:
+    /// the selection stays where the row was, now on the group's next hit.
+    fn show_whole_group(&mut self, more: usize, doc: &automerge::AutoCommit, root: &ObjId) {
+        let Some(kind) = self.more_rows.get(more).cloned() else {
+            return;
+        };
+        let cursor = self.palette.cursor();
+        if !self.expanded_kinds.contains(&kind) {
+            self.expanded_kinds.push(kind);
+        }
+        self.last_search_revision.clear();
+        // The same query keeps the expansion and the chosen row.
+        let query = self.palette.query().to_string();
+        self.last_search_query.clone_from(&query);
+        self.refresh_search_results(doc, root);
+        self.palette.set_cursor(cursor);
+    }
+
+    /// List a file's other actions (Alt+Enter) in place of the results.
+    fn show_secondary_actions(&mut self, result: crate::shell::search::SearchResult) {
+        let query = self.palette.query().to_string();
+        let entries = palette_flow::SecondaryAction::FOR_FILES
+            .into_iter()
+            .map(|action| {
+                CommandEntry::new(
+                    format!("{SECONDARY_PREFIX}{}", action.slug()),
+                    action.label(),
+                )
+                .group(result.title.clone())
+            })
+            .collect();
+        self.palette.set_bypass_fuzzy(false);
+        self.palette.set_query("");
+        self.palette.set_entries(entries);
+        self.palette.set_query_placeholder(result.title.clone());
+        self.palette.set_filter_band_shown(false);
+        self.secondary_flow = Some((result, query));
+        self.palette_layout_dirty = true;
+    }
+
+    /// Run one of the listed file's other actions.
+    fn run_secondary_action(&mut self, slug: &str, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let Some(action) = palette_flow::SecondaryAction::from_slug(slug) else {
+            return;
+        };
+        let Some((result, _)) = self.secondary_flow.clone() else {
+            return;
+        };
+        self.end_palette_steps();
+        match action {
+            palette_flow::SecondaryAction::TabHere => {
+                let target = self
+                    .focused_group()
+                    .map(crate::shell::chrome_state::OpenTarget::Here);
+                self.run_result(result, doc, root, target);
+            }
+            palette_flow::SecondaryAction::Beside => {
+                let target = self
+                    .focused_group()
+                    .map(crate::shell::chrome_state::OpenTarget::RightOf);
+                self.run_result(result, doc, root, target);
+            }
+            palette_flow::SecondaryAction::ContainingFolder => {
+                let folder = std::path::Path::new(&result.id)
+                    .parent()
+                    .and_then(|parent| self.resolve_folder_row(parent, doc, root));
+                if let Some(folder) = folder {
+                    self.run_result(folder, doc, root, None);
+                } else {
+                    self.palette_visible = false;
+                    self.palette.close();
+                }
+            }
+            palette_flow::SecondaryAction::CopyPath => {
+                ui::text_selection::clipboard_copy(&result.id);
+                self.palette_visible = false;
+                self.palette.close();
+            }
+        }
+    }
+
+    /// The folder row the files provider gives `path`, opened the way any
+    /// folder found by search opens.
+    fn resolve_folder_row(
+        &self,
+        path: &std::path::Path,
+        doc: &ui::widget::Edits<'_>,
+        root: &ObjId,
+    ) -> Option<crate::shell::search::SearchResult> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        let folder = [crate::shell::search::ResourceKind::Folder];
+        let args = crate::shell::search::QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &folder,
+            chrome: &state,
+            doc,
+            doc_root: root,
+        };
+        self.search_registry
+            .resolve("files", &path.display().to_string(), &args)
     }
 
     /// The command-palette visibility flag, for tests that only hold the
@@ -15219,26 +15798,41 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Escape in the open search: step back out of an action's steps,
+    /// then leave a resource scope, then clear what was typed, and only on
+    /// an empty field close, so a slip of the finger never costs the search.
+    fn palette_escape(&mut self) {
+        if self.param_flow.is_some() || self.secondary_flow.is_some() {
+            self.palette_step_back();
+            return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let mut state = chrome.borrow_mut();
+            if state.search_resource_scope.take().is_some() {
+                state.bump();
+                drop(state);
+                self.palette.set_query("");
+                self.palette
+                    .set_query_placeholder(t("host-search-placeholder"));
+                self.last_search_query = "\0resource-scope-back\0".into();
+                return;
+            }
+        }
+        if !self.palette.query().is_empty() {
+            self.palette.set_query("");
+            self.palette_layout_dirty = true;
+            return;
+        }
+        self.palette_visible = false;
+    }
+
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.cancel_tab_drags() {
             *handled = true;
             return true;
         }
         if self.palette_visible {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut state = chrome.borrow_mut();
-                if state.search_resource_scope.take().is_some() {
-                    state.bump();
-                    drop(state);
-                    self.palette.set_query("");
-                    self.palette
-                        .set_query_placeholder(t("host-search-placeholder"));
-                    self.last_search_query = "\0resource-scope-back\0".into();
-                    *handled = true;
-                    return true;
-                }
-            }
-            self.palette_visible = false;
+            self.palette_escape();
             *handled = true;
             return true;
         }
@@ -18103,6 +18697,54 @@ impl ShellOverlayHost {
         }
     }
 
+    /// What the palette asked of its host while handling an event: a
+    /// confirmed field, a step backed out of, a scope token taken away.
+    fn take_palette_requests(&mut self, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        if let Some(text) = self.palette.take_submitted_argument() {
+            self.submit_param_field(text, doc, root);
+        }
+        if self.palette.take_argument_cancelled() {
+            self.palette_step_back();
+        }
+        if self.palette.take_scope_token_removed() {
+            self.widen_search_scope();
+        }
+    }
+
+    /// A header row is a filter: a click on "Files" shows only files.
+    fn filter_by_clicked_header(
+        &mut self,
+        event: &WindowEvent,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(group) = self.last_cursor.and_then(|p| self.palette.header_at(p)) else {
+            return false;
+        };
+        if self.param_flow.is_some() || self.secondary_flow.is_some() {
+            return false;
+        }
+        if let Some(kind) = self
+            .present_kinds
+            .iter()
+            .find(|kind| kind.localized_label() == group)
+            .cloned()
+        {
+            self.active_kind_filter = vec![kind];
+            self.last_search_query.clear(); // force a refresh
+            self.refresh_search_results(doc, root);
+        }
+        true
+    }
+
     /// Palette-owned input, ahead of the sidebar/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
@@ -18144,7 +18786,7 @@ impl ShellOverlayHost {
                 *ctx.handled = true;
                 return true;
             }
-            let kinds = self.search_registry.registered_kinds();
+            let kinds: Vec<_> = self.search_filters.kinds().cloned().collect();
             for idx in 0..self.search_filters.search_chip_rects.len() {
                 if self.search_filters.search_chip_hit_rect(idx).contains(p) {
                     if let Some(kind) = kinds.get(idx).cloned() {
@@ -18157,6 +18799,14 @@ impl ShellOverlayHost {
                 }
             }
         }
+        // The selected row previews what a held modifier would do.
+        let held = ctx.modifiers.state();
+        self.palette.set_held_modifiers(held);
+        let modifier = ui::widget::command_palette::ActivationModifier::of(held);
+        if self.filter_by_clicked_header(event, &ctx.state, ctx.path) {
+            *ctx.handled = true;
+            return true;
+        }
         // Before delegating to the palette, so a single click both
         // selects and fires.
         if let WindowEvent::MouseInput {
@@ -18168,12 +18818,13 @@ impl ShellOverlayHost {
             && let Some(row) = self.palette.row_at(p)
         {
             self.palette.set_cursor(row);
-            self.activate_selected_result(&mut ctx.state, ctx.path);
+            self.activate_selected_result_with(&mut ctx.state, ctx.path, modifier);
             *ctx.handled = true;
             return true;
         }
         // One activation per press. A held Enter must not repeat a failed
-        // invocation while its recovery context stays open.
+        // invocation while its recovery context stays open. A field step
+        // takes its own Enter, below.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -18184,10 +18835,11 @@ impl ShellOverlayHost {
                 },
             ..
         } = event
+            && !self.palette.in_argument_mode()
         {
             // Nothing is listed while the field stands alone.
             if !repeat && !self.palette.shows_field_only() {
-                self.activate_selected_result(&mut ctx.state, ctx.path);
+                self.activate_selected_result_with(&mut ctx.state, ctx.path, modifier);
             }
             *ctx.handled = true;
             return true;
@@ -18197,8 +18849,12 @@ impl ShellOverlayHost {
             let query_before = self.palette.query().to_string();
             self.palette
                 .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
+            self.take_palette_requests(&mut ctx.state, ctx.path);
             // Recompute results when a character/backspace changes the query.
-            if self.palette.query() != query_before && self.pending_palette_action.is_none() {
+            if self.palette.query() != query_before
+                && self.param_flow.is_none()
+                && self.secondary_flow.is_none()
+            {
                 self.refresh_search_results(&ctx.state, ctx.path);
             }
             if *ctx.handled {
@@ -19201,6 +19857,7 @@ impl Widget for ShellOverlayHost {
             self.last_search_revision.clear();
             self.refresh_search_results(doc, path);
         }
+        self.refresh_open_palette(doc, path);
         #[allow(
             clippy::unnecessary_fold,
             reason = "every mirror update has side effects and must run even after one reports dirty"
@@ -19397,6 +20054,16 @@ impl Widget for ShellOverlayHost {
         }
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
+        // The list grows with its rows up to most of the display it is on,
+        // then scrolls; what fits decides how many rows each group shows.
+        let palette_area = self.overlay_area();
+        if palette_area.height() > 0.0 {
+            self.palette.set_max_list_height(
+                (palette_area.height() * PALETTE_LIST_SHARE)
+                    .min(PALETTE_LIST_MAX * f64::from(theme.text_scale))
+                    .max(160.0),
+            );
+        }
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Match children(): a closed composer has no live controls to measure
         // or query. Visibility changes retire/rebuild the map below.
@@ -20957,7 +21624,11 @@ impl Widget for ShellOverlayHost {
             let handled = self
                 .palette
                 .perform_semantic_action(target, action, state, path);
-            if handled && self.palette.query() != before && self.pending_palette_action.is_none() {
+            if handled
+                && self.palette.query() != before
+                && self.param_flow.is_none()
+                && self.secondary_flow.is_none()
+            {
                 let (doc, root) = ui::doc::document(state, path);
                 self.refresh_search_results(doc.doc(), root);
             }
@@ -24097,7 +24768,7 @@ impl ShellOverlayHost {
             &palette_theme,
             presence,
         );
-        if !self.palette.shows_field_only() {
+        if !self.palette.shows_field_only() && self.palette.filter_band_shown() {
             self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
         }
         if in_flight {
