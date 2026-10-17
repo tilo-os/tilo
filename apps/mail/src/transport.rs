@@ -76,6 +76,17 @@ pub fn build_mime(
         .from((from.display(), from.email.clone()))
         .subject(draft.subject.clone())
         .text_body(draft.body.clone());
+    // A reply names what it answers, so every mail program, this one
+    // included, shows it in its conversation.
+    if let Some(id) = &draft.wire.message_id {
+        builder = builder.message_id(id.clone());
+    }
+    if let Some(parent) = &draft.wire.in_reply_to {
+        builder = builder.in_reply_to(parent.clone());
+    }
+    if !draft.wire.references.is_empty() {
+        builder = builder.references(draft.wire.references.clone());
+    }
 
     // When the draft was authored in WYSIWYG mode, attach the HTML body as the
     // richer alternative. Receivers that render HTML show it; plain-text
@@ -219,6 +230,8 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         starred: false,
         folder,
         labels: Vec::new(),
+        account: String::new(),
+        server: None,
     })
 }
 

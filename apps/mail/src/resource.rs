@@ -206,6 +206,7 @@ impl DraftState {
             calendar_ics: self.calendar_ics.clone(),
             attachments: self.attachments.clone(),
             in_reply_to: None,
+            wire: crate::model::WireIds::default(),
         }
     }
 
@@ -716,6 +717,11 @@ impl Mail {
     /// Show the reader's flags, folders and labels on the loaded mail, and
     /// drop what was deleted for good. The mail's content is the engine's;
     /// what the reader did with it is the mailbox's.
+    /// Whether the record knows message `id`.
+    pub(crate) fn knows(&self, id: &str) -> bool {
+        self.messages.get(&Id::from_raw(id.to_owned())).is_some()
+    }
+
     pub fn apply_flags(&self, mailbox: &mut crate::model::Mailbox) {
         let ids: Vec<_> = mailbox.messages.keys().copied().collect();
         for id in ids {
@@ -726,20 +732,20 @@ impl Mail {
                 mailbox.purge(id);
                 continue;
             }
-            let mut changed = false;
-            if let Some(message) = mailbox.get_mut(id) {
-                let labels: Vec<String> = state.labels.iter().cloned().collect();
-                changed = message.read != state.read
+            let labels: Vec<String> = state.labels.iter().cloned().collect();
+            let changed = mailbox.get(id).is_some_and(|message| {
+                message.read != state.read
                     || message.starred != state.starred
                     || message.folder != state.folder
-                    || message.labels != labels;
+                    || message.labels != labels
+            });
+            // Only a message that differs is changed, so an unchanged
+            // mailbox keeps its revision and what is derived from it.
+            if changed && let Some(message) = mailbox.get_mut(id) {
                 message.read = state.read;
                 message.starred = state.starred;
                 message.folder = state.folder;
                 message.labels = labels;
-            }
-            if changed {
-                mailbox.touch_search_revision();
             }
         }
     }
@@ -1244,6 +1250,7 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         self.attach_framework(cx.dispatcher());
         // A screenshot shows its fixture as it is, whatever the profile holds.
         if cx.mode().is_live() {
+            self.wake_from_workers(cx.waker());
             self.follow_preferences(cx.settings::<MailPreferences>());
             self.contact_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
@@ -1435,6 +1442,8 @@ mod tests {
                     starred: false,
                     folder: Folder::Inbox,
                     labels: Vec::new(),
+                    account: String::new(),
+                    server: None,
                 });
         })
         .unwrap();
@@ -1576,7 +1585,7 @@ mod tests {
                         let email = crate::sample::sample_account_store().active_config().email;
                         assert!(frame.contains(&email), "{scenario}: {frame}");
                     }
-                    "error" => assert!(frame.contains("Couldn’t connect to IMAP"), "{frame}"),
+                    "error" => assert!(frame.contains("That password didn’t work."), "{frame}"),
                     _ => {}
                 }
             }

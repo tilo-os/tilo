@@ -204,6 +204,7 @@ impl DraftData {
                 .map(ToOwned::to_owned),
             attachments: attachment_store::bounded(&self.attachments),
             in_reply_to: None,
+            wire: crate::model::WireIds::default(),
         }
     }
 }
@@ -306,6 +307,7 @@ impl Outgoing {
     pub fn to_draft(&self) -> Draft {
         Draft {
             in_reply_to: self.in_reply_to.as_deref().and_then(|id| id.parse().ok()),
+            wire: crate::model::WireIds::default(),
             ..self.draft.to_draft()
         }
     }
@@ -478,6 +480,8 @@ impl ServerUpdate {
             starred,
             folder,
             labels: Vec::new(),
+            account: String::new(),
+            server: None,
         }
     }
 }

@@ -40,8 +40,78 @@ pub enum ValidationState {
     Invalid(String),
     /// Both IMAP and SMTP succeeded — safe to persist.
     Ok,
-    /// A round-trip failed; carries a specific, user-facing reason.
-    Failed(String),
+    /// A round-trip failed: what it says to the person, and where.
+    Failed(Failure),
+}
+
+/// What the person has to change for the account to work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trouble {
+    /// The server refused the password (or the sign-in).
+    Password,
+    /// The incoming server could not be reached or spoken to.
+    Incoming,
+    /// The outgoing server could not be reached or spoken to.
+    Outgoing,
+    /// Nothing in the form: the check itself stopped.
+    Other,
+}
+
+/// A failed check: the field it is about and what to say there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub trouble: Trouble,
+    pub message: String,
+}
+
+impl Failure {
+    /// A failure that is not about any one field.
+    pub fn other(message: impl Into<String>) -> Self {
+        Self {
+            trouble: Trouble::Other,
+            message: message.into(),
+        }
+    }
+
+    /// The server refused the password, saying `message`.
+    pub fn password(message: impl Into<String>) -> Self {
+        Self {
+            trouble: Trouble::Password,
+            message: message.into(),
+        }
+    }
+
+    /// The incoming server refused or failed with `reason`.
+    fn incoming(cfg: &AccountConfig, reason: &str) -> Self {
+        if is_auth_failure(reason) {
+            return Self {
+                trouble: Trouble::Password,
+                message: if cfg.auth == crate::model::AuthMethod::OAuth {
+                    "The sign-in has expired. Sign in again.".into()
+                } else {
+                    "That password didn’t work.".into()
+                },
+            };
+        }
+        Self {
+            trouble: Trouble::Incoming,
+            message: unreachable_message(cfg.imap_host.trim(), reason),
+        }
+    }
+
+    /// The outgoing server failed with `reason`.
+    fn outgoing(cfg: &AccountConfig, reason: &str) -> Self {
+        Self {
+            trouble: Trouble::Outgoing,
+            message: unreachable_message(cfg.smtp_host.trim(), reason),
+        }
+    }
+}
+
+/// "Can’t reach the server": the host by name, and why in plain words.
+fn unreachable_message(host: &str, reason: &str) -> String {
+    let host = if host.is_empty() { "the server" } else { host };
+    format!("Can’t reach {host}: {reason}.")
 }
 
 impl ValidationState {
@@ -54,7 +124,8 @@ impl ValidationState {
     pub fn message(&self) -> String {
         match self {
             ValidationState::Ok => String::new(),
-            ValidationState::Invalid(m) | ValidationState::Failed(m) => m.clone(),
+            ValidationState::Invalid(m) => m.clone(),
+            ValidationState::Failed(failure) => failure.message.clone(),
         }
     }
 }
@@ -83,10 +154,10 @@ pub fn validate_account<T: ProbeTransport + ?Sized>(
         (imap, smtp)
     });
     if let Err(e) = imap {
-        return ValidationState::Failed(format!("IMAP login failed: {e}"));
+        return ValidationState::Failed(Failure::incoming(cfg, &e));
     }
     if let Err(e) = smtp {
-        return ValidationState::Failed(format!("SMTP handshake failed: {e}"));
+        return ValidationState::Failed(Failure::outgoing(cfg, &e));
     }
     ValidationState::Ok
 }
@@ -100,18 +171,7 @@ pub fn classify_conn_failure(detail: &str) -> String {
     let d = detail.to_ascii_lowercase();
     // Auth first: a 535 / "authentication failed" is more specific than the
     // generic transport keywords that might co-occur in the message.
-    if d.contains("535")
-        || d.contains("authenticationfailed")
-        || d.contains("authentication failed")
-        || d.contains("invalid credentials")
-        || d.contains("auth")
-            && (d.contains("fail")
-                || d.contains("reject")
-                || d.contains("denied")
-                || d.contains("invalid"))
-        || d.contains("login failed")
-        || d.contains("[authenticationfailed]")
-    {
+    if is_auth_failure(&d) {
         return "authentication failed — check the username and password".into();
     }
     if d.contains("certificate")
@@ -144,6 +204,23 @@ pub fn classify_conn_failure(detail: &str) -> String {
     format!("connection failed: {detail}")
 }
 
+/// Whether a server's or transport's error says the credentials were
+/// refused, rather than that the server could not be reached.
+pub fn is_auth_failure(detail: &str) -> bool {
+    let d = detail.to_ascii_lowercase();
+    d.contains("535")
+        || d.contains("authenticationfailed")
+        || d.contains("authentication failed")
+        || d.contains("invalid credentials")
+        || d.contains("auth")
+            && (d.contains("fail")
+                || d.contains("reject")
+                || d.contains("denied")
+                || d.contains("invalid"))
+        || d.contains("login failed")
+        || d.contains("enter a password")
+}
+
 /// The offline probe used by the default build / `--shots`: it never opens a
 /// socket and reports success, so an account can still be saved without a
 /// network. (Config-level validation in [`validate_account`] still runs.)
@@ -164,7 +241,7 @@ pub fn validate_account_cancellable(
     cancellation: &std::sync::atomic::AtomicBool,
 ) -> ValidationState {
     if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
-        return ValidationState::Failed("Account verification cancelled".into());
+        return ValidationState::Failed(Failure::other("Account verification cancelled"));
     }
     #[cfg(feature = "live")]
     {
@@ -307,13 +384,11 @@ mod live_probe {
                         .await
                         .map_err(|(e, _)| classify_conn_failure(&e.to_string()))?,
                 };
-                // A successful SELECT proves the session is usable, not just that
-                // the greeting arrived.
-                session
-                    .select("INBOX")
-                    .await
-                    .map_err(|e| classify_conn_failure(&e.to_string()))?;
-                let _ = session.logout().await;
+                // The login is the proof. Saying goodbye is the server's
+                // business: the check does not wait for its answer.
+                tokio::spawn(async move {
+                    let _ = session.logout().await;
+                });
                 Ok::<(), String>(())
             },
             cancellation,
@@ -347,7 +422,9 @@ mod live_probe {
                 let mut connection =
                     crate::connect::smtp(host, port, tls_config(), starttls).await?;
                 let alive = connection.test_connected().await;
-                let _ = connection.quit().await;
+                tokio::spawn(async move {
+                    let _ = connection.quit().await;
+                });
                 if alive {
                     Ok(())
                 } else {
@@ -438,12 +515,14 @@ mod tests {
                 !st.persisted(),
                 "an IMAP failure must not persist the account"
             );
-            assert!(
-                st.message().contains("IMAP"),
-                "error names the failing stage: {}",
-                st.message()
+            assert_eq!(
+                st,
+                ValidationState::Failed(Failure {
+                    trouble: Trouble::Password,
+                    message: "That password didn’t work.".into(),
+                }),
+                "a refused login is about the password, said plainly"
             );
-            assert!(st.message().contains("535"));
         }
 
         // Phase `smtp_failure_does_not_persist_and_reports_smtp`.
@@ -456,7 +535,15 @@ mod tests {
                 },
             );
             assert!(!st.persisted());
-            assert!(st.message().contains("SMTP"), "{}", st.message());
+            assert!(
+                matches!(&st, ValidationState::Failed(failure) if failure.trouble == Trouble::Outgoing),
+                "{st:?}"
+            );
+            assert!(
+                st.message().contains("smtp.host.example"),
+                "{}",
+                st.message()
+            );
         }
 
         // Phase `invalid_config_short_circuits_before_network`.

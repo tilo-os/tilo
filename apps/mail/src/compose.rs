@@ -1,5 +1,12 @@
-//! The Compose window — a **movable, resizable, focus-capturing** floating
-//! panel for writing a message.
+//! The composer: where a message is written.
+//!
+//! ## Where it stands
+//! Beside the list, the composer takes the message column, where the open
+//! message is read ([`DockState::Pane`]): the list stays in reach, a click
+//! there gives it the keys back, and nothing floats over the mailbox. In a
+//! window too narrow for both it fills the window, as a page. Only where the
+//! app gives it no column (a bare host, a test) does it float as a modal
+//! panel over the app ([`DockState::Docked`]).
 //!
 //! ## Focus capture
 //! `ui`'s `App` has no modal/overlay focus-trap and `ModalDialog`'s "blocking"
@@ -15,24 +22,15 @@
 //!   so their hover state is correct, then forwards the press so the caret
 //!   lands. It owns explicit focus (one field at a time).
 //!
-//! ## Movable / resizable
-//! The title bar is a drag handle; the window's edges are resize handles.
-//! Geometry is clamped to a minimum size and kept on-screen.
+//! ## Floating
+//! Only the floating panel moves (its title bar) and resizes (its edges),
+//! clamped to a minimum size and kept on-screen.
 //!
 //! ## Look
-//! The window is a floating panel (the toolkit's material, radius and
-//! shadow) over the modal scrim. Its fields are the shared text inputs, its
-//! buttons and the formatting toolbar are the toolkit's, and every size
-//! comes from the theme it is drawn with.
-//!
-//! ## Detach (Tilo pop-out)
-//! [`DockState`] models two placements: `Docked` (centred in-app modal) and
-//! `Detached` (parked beside the app content, simulating a separate window).
-//! Both are movable + resizable. The Pop-out button toggles between them. A
-//! second top-level surface beside the app needs the Tilo compositor's
-//! window-group / multi-window support (`shell`), which is not available through
-//! the single-window `ui::App`; when that lands, a detached draft is handed back
-//! via [`ComposeWindow::reattach`].
+//! In the column it is the page's own ground; floating, a panel (the
+//! toolkit's material, radius and shadow) over the modal scrim. Its fields
+//! are the shared text inputs, its buttons and the formatting toolbar are the
+//! toolkit's, and every size comes from the theme it is drawn with.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -267,7 +265,6 @@ struct ComposeMetrics {
     cc_bcc_w: f64,
     format_w: f64,
     send_w: f64,
-    draft_w: f64,
     discard_w: f64,
     prompt_add_w: f64,
     prompt_cancel_w: f64,
@@ -323,7 +320,6 @@ impl ComposeMetrics {
                 theme,
             ),
             send_w: button(tr, "mail-compose-send", ControlSize::Regular),
-            draft_w: button(tr, "mail-compose-save-draft", ControlSize::Regular),
             discard_w: button(tr, "mail-compose-discard", ControlSize::Regular),
             prompt_add_w: button(tr, "mail-compose-prompt-add", ControlSize::Small),
             prompt_cancel_w: button(tr, "mail-compose-prompt-cancel", ControlSize::Small),
@@ -377,10 +373,12 @@ impl ComposeEventContext<'_> {
 /// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DockState {
-    /// Centred over the app content as an in-app modal.
+    /// Centred over the app content as an in-app modal: where the window
+    /// has no message column to write in.
     Docked,
-    /// Parked beside the app content, simulating a detached OS window.
-    Detached,
+    /// In the message column, where the open message is read: the list
+    /// beside it stays in reach, as in every desktop mail program.
+    Pane,
 }
 
 /// Which compose control currently has keyboard focus.
@@ -403,7 +401,6 @@ pub enum ComposeHit {
     SaveDraft,
     Attach,
     ToggleCcBcc,
-    PopOut,
     Close,
     FormatToggle,
     FieldTo,
@@ -442,7 +439,10 @@ pub enum ComposeAction {
     RequestAttachment,
     Send,
     SaveDraft,
+    /// The window closed; what was written stays a draft.
     Close,
+    /// The person threw the message away.
+    Discard,
 }
 
 /// A drag in progress on the window itself (move or resize).
@@ -473,12 +473,22 @@ enum Edge {
 )]
 pub struct ComposeWindow {
     pub open: bool,
+    /// The message this one answers, so the reply names it on the wire.
+    replying_to: Option<crate::model::MessageId>,
+    /// Whether the person typed, attached or formatted anything since the
+    /// window opened: closing such a message keeps it as a draft.
+    touched: bool,
     dock: DockState,
     /// Window rect in screen coordinates. The source of truth for placement;
     /// movable + resizable mutate it directly.
     rect: Rect,
     /// Bounds the window must stay within (the app content area).
     bounds: Rect,
+    /// The message column the composer takes, where there is one.
+    pane: Option<Rect>,
+    /// Whether keys go to the composer: it was opened or clicked into, and
+    /// the person has not clicked the list beside it since.
+    has_keys: bool,
     /// `true` once the window has been positioned for the current open, so a
     /// re-layout doesn't recentre it after the user has moved it.
     placed: bool,
@@ -543,7 +553,11 @@ impl ComposeWindow {
         let to = recipients().with_placeholder("mail-compose-placeholder-to");
         Self {
             open: false,
-            dock: DockState::Docked,
+            replying_to: None,
+            touched: false,
+            dock: DockState::Pane,
+            pane: None,
+            has_keys: false,
             rect: Rect::ZERO,
             bounds: Rect::ZERO,
             placed: false,
@@ -696,11 +710,17 @@ impl ComposeWindow {
             );
         }
         children.extend(self.accessibility_controls(rect_for));
-        AccessNode::new(Role::Dialog)
+        // Beside the list it is a part of the window, not a dialog over it.
+        let (role, modal) = if self.in_pane() {
+            (Role::Group, false)
+        } else {
+            (Role::Dialog, true)
+        };
+        AccessNode::new(role)
             .with_name("Compose email")
             .with_description("Email composer")
             .with_bounds(self.rect)
-            .with_state(AccessState::new().modal(true))
+            .with_state(AccessState::new().modal(modal))
             .with_children(children)
     }
 
@@ -863,7 +883,7 @@ impl ComposeWindow {
             "save" if matches!(action, Action::Activate) => return Some(ComposeAction::SaveDraft),
             "discard" if matches!(action, Action::Activate) => {
                 self.close();
-                return Some(ComposeAction::Close);
+                return Some(ComposeAction::Discard);
             }
             "attach" if matches!(action, Action::Activate) => {
                 return Some(ComposeAction::RequestAttachment);
@@ -910,6 +930,9 @@ impl ComposeWindow {
     /// the caller right after).
     pub fn open_blank(&mut self) {
         self.open = true;
+        self.has_keys = true;
+        self.replying_to = None;
+        self.touched = false;
         self.sender = None;
         self.placed = false;
         self.to.set_text("");
@@ -974,7 +997,20 @@ impl ComposeWindow {
             ComposeFormat::Text => self.plain_body.set_text(&draft.body),
         }
         self.heading = "Draft";
+        self.replying_to = draft.in_reply_to;
+        // A reopened draft is a draft already.
+        self.touched = true;
         self.set_focus(Field::Body);
+    }
+
+    /// The message this one answers.
+    pub fn reply_to(&mut self, message: crate::model::MessageId) {
+        self.replying_to = Some(message);
+    }
+
+    /// Whether closing should keep what was written as a draft.
+    pub fn touched(&self) -> bool {
+        self.touched
     }
 
     /// Open the window pre-filled with a representative formatted message, used
@@ -1036,16 +1072,6 @@ impl ComposeWindow {
         self.dirty = true;
     }
 
-    /// Pop the window out to the side (Detached) or back in (Docked).
-    pub fn toggle_dock(&mut self) {
-        self.dock = match self.dock {
-            DockState::Docked => DockState::Detached,
-            DockState::Detached => DockState::Docked,
-        };
-        self.placed = false; // reposition for the new placement
-        self.dirty = true;
-    }
-
     /// Seam for re-attaching an externally-edited draft back into the in-app
     /// window (e.g. after a real OS pop-out hands the draft back).
     pub fn reattach(&mut self, draft: &Draft) {
@@ -1055,7 +1081,6 @@ impl ComposeWindow {
         self.subject.set_text(&draft.subject);
         self.plain_body.set_text(&draft.body);
         self.start_body(DraftBodySeed::of_draft(draft));
-        self.dock = DockState::Docked;
         self.placed = false;
         self.dirty = true;
     }
@@ -1088,7 +1113,8 @@ impl ComposeWindow {
             html_body,
             calendar_ics: None,
             attachments: self.attachments.clone(),
-            in_reply_to: None,
+            in_reply_to: self.replying_to,
+            wire: crate::model::WireIds::default(),
         }
     }
 
@@ -1100,6 +1126,7 @@ impl ComposeWindow {
     /// Returns an error when metadata is invalid/duplicate or attachment
     /// count and total-byte bounds would be exceeded.
     pub fn add_attachment(&mut self, attachment: DraftAttachment) -> Result<(), String> {
+        self.touched = true;
         let mut next = self.attachments.clone();
         next.push(attachment);
         let bounded = crate::attachment_store::bounded(&next);
@@ -1343,8 +1370,35 @@ impl ComposeWindow {
 
     /// Position the window for the current dock state within `bounds`, then
     /// lay out every interactive region. `bounds` is the app content rect.
+    /// The message column to write in (`None` where there is none, and
+    /// the composer floats over the app instead).
+    pub fn set_pane(&mut self, pane: Option<Rect>) {
+        if self.pane != pane {
+            self.pane = pane;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the composer stands in the message column, beside the list.
+    pub fn in_pane(&self) -> bool {
+        matches!(self.dock, DockState::Pane) && self.pane.is_some() && !self.is_full_window_page()
+    }
+
+    /// Whether the composer holds every click and key while open: it
+    /// floats over the app or fills the window.
+    pub fn is_modal(&self) -> bool {
+        self.open && !self.in_pane()
+    }
+
     pub fn layout(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        if let Some(pane) = self.pane.filter(|_| self.in_pane()) {
+            self.rect = pane;
+            self.drag = None;
+            self.placed = false;
+            self.relayout_regions();
+            return;
+        }
         if self.is_full_window_page() {
             self.rect = bounds;
             self.drag = None;
@@ -1361,16 +1415,7 @@ impl ComposeWindow {
                 m.default_w.min(bounds.width() - margin).max(m.min_w),
                 m.default_h.min(bounds.height() - margin).max(m.min_h),
             );
-            self.rect = match self.dock {
-                DockState::Docked => Rect::from_center_size(bounds.center(), (w, h)),
-                DockState::Detached => {
-                    // Parked on the right edge of the content area, like a
-                    // window tiled beside the app.
-                    let x1 = bounds.x1 - m.pad;
-                    let y0 = bounds.y0 + m.pad;
-                    Rect::new(x1 - w, y0, x1, (y0 + h).min(bounds.y1 - m.pad))
-                }
-            };
+            self.rect = Rect::from_center_size(bounds.center(), (w, h));
             self.placed = true;
         }
         self.clamp_into_bounds();
@@ -1378,8 +1423,7 @@ impl ComposeWindow {
     }
 
     fn is_full_window_page(&self) -> bool {
-        matches!(self.dock, DockState::Docked)
-            && ui::widget::modal_dialog::uses_full_window(self.bounds, &self.theme)
+        ui::widget::modal_dialog::uses_full_window(self.bounds, &self.theme)
     }
 
     fn clamp_into_bounds(&mut self) {
@@ -1411,8 +1455,6 @@ impl ComposeWindow {
         let btn_y = title.center().y - side / 2.0;
         let close = Rect::new(rx - side, btn_y, rx, btn_y + side);
         self.hits.push((close, ComposeHit::Close));
-        let popout = Rect::new(close.x0 - side, btn_y, close.x0, btn_y + side);
-        self.hits.push((popout, ComposeHit::PopOut));
 
         let mut y = title.y1 + m.pad;
 
@@ -1488,8 +1530,9 @@ impl ComposeWindow {
             ComposeFormat::Text => self.plain_body.apply_layout_external(body),
         }
 
-        // Footer: Discard at the leading edge, Save draft and Send at the
-        // trailing edge with Send last.
+        // Footer: Discard at the leading edge, Send at the trailing edge.
+        // What is written is kept as a draft when the composer closes, so
+        // there is no Save draft button to remember.
         let bh = m.control_h;
         self.hits.push((
             Rect::new(lx, by, lx + m.discard_w, by + bh),
@@ -1497,10 +1540,6 @@ impl ComposeWindow {
         ));
         let send = Rect::new(rx - m.send_w, by, rx, by + bh);
         self.hits.push((send, ComposeHit::Send));
-        self.hits.push((
-            Rect::new(send.x0 - m.gap - m.draft_w, by, send.x0 - m.gap, by + bh),
-            ComposeHit::SaveDraft,
-        ));
 
         // The link prompt: a field and its two buttons.
         if let Some(p) = self.prompt.as_mut() {
@@ -1612,11 +1651,19 @@ impl ComposeWindow {
             } => {
                 let pt = self.last_mouse;
                 if !self.rect.contains(pt) {
-                    // Click outside the window: stay modal. Swallow it (do not
-                    // close — explicit Discard/Close only), so nothing behind
-                    // steals focus or clicks.
+                    if self.in_pane() {
+                        // The list beside it takes the click, and the keys
+                        // with it; the message stays as it is.
+                        self.has_keys = false;
+                        self.set_focus(Field::None);
+                        return (false, ComposeAction::None);
+                    }
+                    // Click outside the floating window: stay modal. Swallow
+                    // it (do not close — explicit Discard/Close only), so
+                    // nothing behind steals focus or clicks.
                     return (true, ComposeAction::None);
                 }
+                self.has_keys = true;
                 // Resize edge?
                 if let Some(edge) = self.resize_edge_at(pt) {
                     self.drag = Some(Drag::Resize {
@@ -1646,6 +1693,9 @@ impl ComposeWindow {
                     return (true, ComposeAction::None);
                 }
                 (self.rect.contains(self.last_mouse), ComposeAction::None)
+            }
+            WindowEvent::KeyboardInput { .. } if self.in_pane() && !self.has_keys => {
+                (false, ComposeAction::None)
             }
             WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(event, ctx),
             _ => (self.rect.contains(self.last_mouse), ComposeAction::None),
@@ -1743,6 +1793,7 @@ impl ComposeWindow {
     /// depending on the active compose format. Part of
     /// [`Self::handle_keyboard_input`].
     fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
+        self.touched = true;
         match self.format {
             ComposeFormat::Html => self.body_event(event, ctx),
             ComposeFormat::Text => {
@@ -1758,6 +1809,7 @@ impl ComposeWindow {
     /// Forward a key to whichever header field (To/Cc/Bcc/Subject) has focus.
     /// Part of [`Self::handle_keyboard_input`].
     fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
+        self.touched = true;
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
@@ -1775,19 +1827,22 @@ impl ComposeWindow {
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
-                if !self.is_full_window_page() {
+                if !self.is_full_window_page() && !self.in_pane() {
                     self.drag = Some(Drag::Move {
                         grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
                     });
                 }
             }
-            ComposeHit::Close | ComposeHit::Discard => {
+            ComposeHit::Close => {
                 self.close();
                 return ComposeAction::Close;
             }
+            ComposeHit::Discard => {
+                self.close();
+                return ComposeAction::Discard;
+            }
             ComposeHit::Send => return ComposeAction::Send,
             ComposeHit::SaveDraft => return ComposeAction::SaveDraft,
-            ComposeHit::PopOut => self.toggle_dock(),
             ComposeHit::ToggleCcBcc => {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
@@ -1967,7 +2022,7 @@ impl ComposeWindow {
     // ---- move / resize ----
 
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
-        if self.is_full_window_page() {
+        if self.is_full_window_page() || self.in_pane() {
             return None;
         }
         let r = self.rect;
@@ -2064,8 +2119,19 @@ impl ComposeWindow {
             self.metrics = measured;
             self.layout(self.bounds);
         }
-        // Docked, the window is modal over the app; detached, it is not.
-        if self.is_full_window_page() {
+        // In the message column, or filling the window, it is the page
+        // itself; floating, it is a modal panel over the app.
+        if self.in_pane() {
+            // The message column's own ground: the page where the open
+            // message is read.
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.surfaces.content,
+                None,
+                &self.rect,
+            );
+        } else if self.is_full_window_page() {
             ui::floating_surface::paint_material(
                 scene,
                 t,
@@ -2074,22 +2140,20 @@ impl ComposeWindow {
                 theme,
             );
         } else {
-            if matches!(self.dock, DockState::Docked) {
-                ui::overlay::scrim::behind_panel(
-                    scene,
-                    t,
-                    self.bounds,
-                    vello::kurbo::RoundedRect::from_rect(
-                        self.rect,
-                        ui::widget::floating_surface::radius(theme),
-                    ),
-                    theme,
-                );
-            }
+            ui::overlay::scrim::behind_panel(
+                scene,
+                t,
+                self.bounds,
+                vello::kurbo::RoundedRect::from_rect(
+                    self.rect,
+                    ui::widget::floating_surface::radius(theme),
+                ),
+                theme,
+            );
             ui::widget::floating_surface::paint(scene, t, self.rect, theme);
         }
         // What is drawn on the panel reads against the panel's ground.
-        let panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let panel = theme.on_ground(self.ground(theme));
         self.draw_title_bar(scene, t, tr, &panel);
         self.draw_header_fields(scene, t, tr, &panel);
         self.draw_body(scene, t, tr, &panel, presence);
@@ -2101,11 +2165,6 @@ impl ComposeWindow {
                 "mail-compose-discard",
                 ButtonRole::Destructive,
             ),
-            (
-                ComposeHit::SaveDraft,
-                "mail-compose-save-draft",
-                ButtonRole::Secondary,
-            ),
             (ComposeHit::Send, "mail-compose-send", ButtonRole::Primary),
         ] {
             self.draw_button(scene, t, tr, &panel, button);
@@ -2113,6 +2172,16 @@ impl ComposeWindow {
         // The toolbar's overflow menu floats over everything else.
         if matches!(self.format, ComposeFormat::Html) {
             ui::Widget::draw_overlay(&mut self.format_bar.bar, scene, t, tr, &panel, presence);
+        }
+    }
+
+    /// What the composer is painted on: the message column's ground, or
+    /// the panel's where it floats or fills the window.
+    fn ground(&self, theme: &Theme) -> vello::peniko::Color {
+        if self.in_pane() {
+            theme.tokens.colors.surfaces.content
+        } else {
+            ui::chrome::panel_ground(theme)
         }
     }
 
@@ -2126,9 +2195,9 @@ impl ComposeWindow {
         let r = self.rect;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h);
         let heading = self.heading;
-        let popout = self.hit_rect(ComposeHit::PopOut).unwrap_or(Rect::ZERO);
+        let close = self.hit_rect(ComposeHit::Close).unwrap_or(Rect::ZERO);
         let style = theme.text(TextRole::Subheading);
-        let width = (popout.x0 - m.gap - (r.x0 + m.pad)).max(0.0);
+        let width = (close.x0 - m.gap - (r.x0 + m.pad)).max(0.0);
         let heading = tr.elide_to_width_style(heading, ui::num::f32_of_f64(width), &style);
         let (_, h) = tr.measure_style(&heading, None, &style);
         tr.draw_style(
@@ -2139,15 +2208,7 @@ impl ComposeWindow {
             None,
             &style,
         );
-        let popout_name = match self.dock {
-            DockState::Docked => "Move beside the mailbox",
-            DockState::Detached => "Move over the mailbox",
-        };
-        let popout_icon = Icon::PanelRight;
-        for (hit, icon, name) in [
-            (ComposeHit::PopOut, popout_icon, popout_name),
-            (ComposeHit::Close, Icon::X, "Close"),
-        ] {
+        for (hit, icon, name) in [(ComposeHit::Close, Icon::X, "Close")] {
             let Some(rect) = self.hit_rect(hit) else {
                 continue;
             };
@@ -2443,7 +2504,7 @@ impl ComposeWindow {
         if !self.open {
             return;
         }
-        let panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let panel = theme.on_ground(self.ground(theme));
         self.to.draw(scene, t, tr, &panel, presence);
         if self.show_cc_bcc {
             self.cc.draw(scene, t, tr, &panel, presence);
@@ -2490,7 +2551,6 @@ mod tests {
             let to = hit_rect(&w, ComposeHit::FieldTo);
             let subject = hit_rect(&w, ComposeHit::FieldSubject);
             let send = hit_rect(&w, ComposeHit::Send);
-            let draft = hit_rect(&w, ComposeHit::SaveDraft);
             let discard = hit_rect(&w, ComposeHit::Discard);
             assert_eq!(to.height(), m.control_h);
             assert!(
@@ -2502,8 +2562,11 @@ mod tests {
                 "the fields clear their labels"
             );
             assert_eq!(send.width(), m.send_w, "Send holds its label");
-            assert!(draft.x1 <= send.x0, "Save draft sits before Send");
-            assert!(discard.x1 <= draft.x0, "Discard stands apart at the start");
+            assert!(discard.x1 < send.x0, "Discard stands apart at the start");
+            assert!(
+                w.hit_rect(ComposeHit::SaveDraft).is_none(),
+                "a draft keeps itself; there is no button for it"
+            );
             assert_eq!(send.height(), m.control_h);
             let body = hit_rect(&w, ComposeHit::Body);
             assert!(
@@ -2665,14 +2728,6 @@ mod tests {
             assert!(r.height() >= w.metrics.min_h - 0.5);
         }
 
-        // Phase `detach_toggles_dock_state`.
-        {
-            let mut w = win();
-            assert_eq!(w.dock(), DockState::Docked);
-            w.toggle_dock();
-            assert_eq!(w.dock(), DockState::Detached);
-        }
-
         // Phase `attach_button_requests_the_root_portal_boundary`.
         {
             let mut w = win();
@@ -2741,12 +2796,7 @@ mod tests {
                 );
                 assert_eq!(window.window_rect(), bounds);
                 assert!(window.body_rect().height() > 0.0);
-                for target in [
-                    ComposeHit::Close,
-                    ComposeHit::Send,
-                    ComposeHit::SaveDraft,
-                    ComposeHit::Discard,
-                ] {
+                for target in [ComposeHit::Close, ComposeHit::Send, ComposeHit::Discard] {
                     assert!(
                         bounds.contains_rect(hit_rect(&window, target)),
                         "{target:?} remains reachable"
@@ -2765,6 +2815,45 @@ mod tests {
                 assert!(!window.open);
             }
         }
+    }
+
+    /// Beside the list the composer takes the message column, and the list
+    /// keeps its clicks and keys.
+    #[test]
+    fn in_the_message_column_the_list_keeps_its_clicks_and_keys() {
+        let mut w = win();
+        assert_eq!(w.dock(), DockState::Pane);
+        let column = Rect::new(620.0, 56.0, 1280.0, 800.0);
+        w.set_pane(Some(column));
+        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert!(w.in_pane());
+        assert!(!w.is_modal(), "the list beside it stays usable");
+        assert_eq!(w.window_rect(), column, "it takes the message column");
+        assert!(
+            w.resize_edge_at(Point::new(column.x0 + 1.0, column.y0 + 100.0))
+                .is_none(),
+            "a column does not resize"
+        );
+        let (consumed, _) = press_at(&mut w, Point::new(100.0, 300.0));
+        assert!(!consumed, "a click on the list goes to the list");
+        let modifiers = winit::event::Modifiers::default();
+        let mut doc = crate::resource::TestMail::doc();
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let (consumed, _) = w.handle_event(
+            &key(Key::Character("j".into()), Some("j")),
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers,
+                state: ui::widget::Edits::lend(&mut doc),
+                path: &automerge::ROOT,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
+        );
+        assert!(!consumed, "and the keys with it");
+        let subject = hit_rect(&w, ComposeHit::FieldSubject);
+        let (consumed, _) = press_at(&mut w, subject.center());
+        assert!(consumed, "a click back into the message takes them again");
     }
 
     fn press_at(w: &mut ComposeWindow, p: Point) -> (bool, ComposeAction) {

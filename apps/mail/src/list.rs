@@ -82,6 +82,9 @@ fn row_actions(starred: bool) -> [(CtxAction, RowAction<'static>); 3] {
     ]
 }
 
+/// How many rows before the end of the list the older mail is asked for.
+const OLDER_AHEAD_ROWS: f64 = 10.0;
+
 const SWIPE_ARCHIVE: SwipeAction<'static> = SwipeAction {
     icon: Icon::Archive,
     label: "Archive",
@@ -322,6 +325,56 @@ impl MessageList {
         true
     }
 
+    /// The row under `point` and the row button under it, as painted.
+    fn hover_at(&self, point: Option<Point>) -> Option<(MessageId, Option<usize>)> {
+        let point = point?;
+        let slot = self.slots.iter().find(|slot| slot.rect.contains(point))?;
+        if !self.rect.contains(point) {
+            return None;
+        }
+        Some((
+            slot.id,
+            slot.actions.iter().position(|rect| rect.contains(point)),
+        ))
+    }
+
+    /// Ctrl- or Shift-click: choose rows instead of opening one. The open
+    /// conversation starts the selection; Shift takes every row up to the
+    /// clicked one.
+    fn pick(&self, point: Point, range: bool) -> bool {
+        let Some(slot) = self.slot_at(point).cloned() else {
+            return false;
+        };
+        let mut state = self.shared.borrow_mut();
+        if !state.bulk_selecting {
+            state.set_bulk_selecting(true);
+            if let Some(open) = state.selected
+                && open != slot.id
+            {
+                state.toggle_bulk_selection(open);
+            }
+        }
+        if range {
+            let ids: Vec<MessageId> = self.slots.iter().map(|slot| slot.id).collect();
+            let anchor = state
+                .bulk_selection
+                .last()
+                .and_then(|last| ids.iter().position(|id| id == last));
+            let target = ids.iter().position(|id| *id == slot.id);
+            if let (Some(anchor), Some(target)) = (anchor, target) {
+                let (from, to) = (anchor.min(target), anchor.max(target));
+                for id in ids.get(from..=to).unwrap_or_default() {
+                    if !state.bulk_selection.contains(id) {
+                        state.toggle_bulk_selection(*id);
+                    }
+                }
+                return true;
+            }
+        }
+        state.toggle_bulk_selection(slot.id);
+        true
+    }
+
     /// The row rects as last painted, for tests.
     #[cfg(test)]
     pub(crate) fn row_rects(&self) -> Vec<(MessageId, Rect)> {
@@ -402,7 +455,70 @@ impl MessageList {
             face = face.swiped(SWIPE_ARCHIVE, press.offset);
         }
         face.paint(ctx, slot.rect);
+        if text.unread {
+            paint_unread_dot(ctx, &face, slot.rect);
+        }
     }
+}
+
+/// Whether each of `rows` is chosen: the selection's rows while choosing
+/// several, otherwise the open one.
+fn selected_rows(state: &MailState, rows: &[(MessageId, usize)]) -> Vec<bool> {
+    rows.iter()
+        .map(|(id, _)| {
+            if state.bulk_selecting {
+                state.bulk_selection.contains(id)
+            } else {
+                state.selected == Some(*id)
+            }
+        })
+        .collect()
+}
+
+/// The first fetch is on its way: the rows it brings, in outline, filling
+/// `list`.
+fn paint_arriving_rows(ctx: &mut PaintCtx<'_>, list: Rect) {
+    let theme = ctx.theme;
+    let row_h = ListRowFace::new("Ag")
+        .subtitle("Ag")
+        .secondary("Ag")
+        .height(ctx.text, theme);
+    let frame = RowFrame::new(list, row_h, false, theme);
+    let skeleton = ui::widget::SkeletonFace::new(ui::widget::SkeletonShape::Row);
+    let mut index = 0;
+    loop {
+        let row = frame.row(index, 0.0);
+        if row.y0 >= list.y1 {
+            break;
+        }
+        skeleton.paint(ctx, row);
+        index += 1;
+    }
+}
+
+/// An unread conversation's dot: primary ink in the gutter before the
+/// avatar, on its centre line, so unread mail reads at a glance and not
+/// only by the heavier title.
+fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
+    let theme = ctx.theme;
+    let leading = face.leading_rect(row, ctx.text, theme);
+    let gutter = (leading.x0 - row.x0).max(0.0);
+    let diameter = f64::from(theme.tokens.spacing.s2).min(gutter * 0.75);
+    if diameter <= 0.0 {
+        return;
+    }
+    // Clear of the avatar by as much as the dot is wide.
+    let centre = Point::new(
+        (leading.x0 - diameter * 1.5).max(row.x0 + diameter / 2.0),
+        leading.center().y,
+    );
+    ctx.scene.fill(
+        Fill::NonZero,
+        ctx.transform,
+        theme.text_primary,
+        None,
+        &vello::kurbo::Circle::new(centre, diameter / 2.0),
+    );
 }
 
 impl Widget for MessageList {
@@ -436,6 +552,12 @@ impl Widget for MessageList {
         self.theme = theme.clone();
         self.region.set_viewport(r, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        if rows.is_empty() && state.fetching_first {
+            self.slots.clear();
+            self.region.set_content_size(r.width(), 0.0);
+            paint_arriving_rows(&mut ctx, r);
+            return;
+        }
         if rows.is_empty() {
             self.slots.clear();
             self.region.set_content_size(r.width(), 0.0);
@@ -469,16 +591,7 @@ impl Widget for MessageList {
         self.reveal(&rows, state.selected, frame);
         let scroll = self.region.offset().y;
 
-        let selected_rows: Vec<bool> = rows
-            .iter()
-            .map(|(id, _)| {
-                if state.bulk_selecting {
-                    state.bulk_selection.contains(id)
-                } else {
-                    state.selected == Some(*id)
-                }
-            })
-            .collect();
+        let selected_rows = selected_rows(&state, &rows);
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         let mut slots = Vec::with_capacity(rows.len());
@@ -486,15 +599,22 @@ impl Widget for MessageList {
             let band = frame.band(index, scroll);
             let rect = frame.row(index, scroll);
             let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
+            let shown = band.y1 >= r.y0 && band.y0 <= r.y1;
             let slot = Slot {
                 id: *id,
                 band,
                 rect,
                 starred,
                 messages: *len,
-                actions: action_rects(starred, rect, theme),
+                // Only a row on screen can be pointed at; one scrolled away
+                // costs no layout of its buttons.
+                actions: if shown {
+                    action_rects(starred, rect, theme)
+                } else {
+                    Vec::new()
+                },
             };
-            if band.y1 >= r.y0 && band.y0 <= r.y1 {
+            if shown {
                 self.paint_row(
                     &mut ctx,
                     &state,
@@ -512,6 +632,12 @@ impl Widget for MessageList {
             slots.push(slot);
         }
         ctx.scene.pop_layer();
+        // Near the last row, the older mail is fetched before it is reached.
+        if let Some(last) = slots.last()
+            && last.band.y0 - r.y1 < self.row_h * OLDER_AHEAD_ROWS
+        {
+            state.wants_older.set(true);
+        }
         self.region.note_shown(t, theme);
         self.region.paint_bars(ctx.scene, t, theme);
         self.hovered_drawing = self
@@ -541,11 +667,18 @@ impl Widget for MessageList {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
+                let before = self.hover_at(self.pointer);
                 self.pointer = Some(point);
                 if let Some(press) = self.press.as_mut() {
                     press.offset = (press.at.x - point.x).max(0.0);
+                    self.dirty = true;
                 }
-                self.dirty = true;
+                // Moving within one row (or over no row) changes nothing on
+                // screen: only a new row or row button under the pointer
+                // repaints.
+                if self.hover_at(self.pointer) != before {
+                    self.dirty = true;
+                }
             }
             WindowEvent::CursorLeft { .. } => {
                 self.pointer = None;
@@ -556,7 +689,15 @@ impl Widget for MessageList {
                 button: MouseButton::Left,
                 ..
             } => {
+                let held = ctx.modifiers.state();
+                let picking = held.control_key() || held.super_key() || held.shift_key();
                 if let Some(point) = self.pointer
+                    && picking
+                    && self.pick(point, held.shift_key())
+                {
+                    *ctx.handled = true;
+                    self.dirty = true;
+                } else if let Some(point) = self.pointer
                     && self.press(&mut ctx.state, point)
                 {
                     *ctx.handled = true;
