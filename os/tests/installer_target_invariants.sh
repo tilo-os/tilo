@@ -316,7 +316,7 @@ if [ -x "$preflight" ] \
         /usr/libexec/tilo-verified-boot-install-preflight \
    && grep -Fq '"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
    && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
-   && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
+   && grep -Fq '"$crypto_bin" verify-pcr-prediction "$pub" "$prediction" "$generation"' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
 else
   bad "TPM PIN preflight does not bind the exact target UKI and PCR11 policy"

@@ -8,6 +8,10 @@ use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(feature = "pcr-prediction")]
+mod pcr_prediction;
+#[cfg(feature = "pcr-prediction")]
+pub use pcr_prediction::verify_pcr_prediction;
 #[cfg(feature = "release-bundle")]
 mod release_bundle;
 #[cfg(feature = "release-bundle")]
