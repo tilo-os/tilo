@@ -30,6 +30,7 @@ pub use bounded::{
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
+use crate::shared::Shared;
 use backend::{LegacyNative, PeerCore, PeerDocument};
 mod bans;
 mod facades;
@@ -268,6 +269,16 @@ struct DurableDocument {
     covered: BTreeMap<String, u64>,
     covered_snapshot: Option<Vec<u8>>,
 }
+/// [`DurableDocument`] as it encodes, borrowed from the peer.
+#[derive(Serialize)]
+struct DurableDocumentRef<'a> {
+    route: &'a Route,
+    bytes: &'a [u8],
+    watermarks: Vec<([u8; 32], u64)>,
+    encryption_required: bool,
+    covered: &'a BTreeMap<String, u64>,
+    covered_snapshot: Option<&'a [u8]>,
+}
 #[derive(Serialize, Deserialize)]
 struct Durable {
     version: u32,
@@ -443,14 +454,14 @@ impl StatePeer {
             core: PeerCore {
                 room,
                 authority,
-                certificates,
+                certificates: certificates.into(),
                 revocations,
-                receipts: BTreeMap::new(),
+                receipts: Shared::default(),
                 room_doc: None,
-                documents: BTreeMap::new(),
+                documents: Shared::default(),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
-                checkpoint_times: BTreeMap::new(),
+                checkpoint_times: Shared::default(),
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
@@ -682,7 +693,7 @@ impl StatePeer {
             now,
         )
         .map_err(err)?;
-        self.core.certificates = certificates;
+        self.core.certificates = certificates.into();
         self.core.revocations = revocations;
         Ok(changed)
     }
@@ -1342,9 +1353,30 @@ impl StatePeer {
                 "admission candidate replaces namespace or downgrades native writer".into(),
             );
         }
+        let index = &self.core.exact_admissions;
+        let prior = &before.core.exact_admissions;
+        // A candidate staged from `before` shares its settled entries and
+        // marks until it settles or covers some itself: then both hold
+        // the same beyond their recent entries, and only those differ.
+        // Walking the whole index made each governance change cost every
+        // write the room ever kept.
+        if index.shares_settled(prior) {
+            for (key, id) in prior.recent() {
+                if index.get(key) != Some(id) {
+                    return Err("admission candidate discards exact evidence".into());
+                }
+            }
+            return Ok(index
+                .recent()
+                .filter(|(key, _)| prior.get(key).is_none())
+                .map(|(key, id)| DocumentAdmission {
+                    key: key.clone(),
+                    operation_id: *id,
+                })
+                .collect());
+        }
         // Evidence may only be kept exactly or folded under a mark that a
         // compaction raised; marks never fall.
-        let index = &self.core.exact_admissions;
         for (key, id) in before.core.exact_admissions.iter() {
             if index.get(key) != Some(id) && !index.covers(key) {
                 return Err("admission candidate discards exact evidence".into());
@@ -1816,19 +1848,17 @@ impl StatePeer {
             record: record_id,
         };
         let route_existed = self.core.documents.contains_key(&route);
-        let mut candidate = self
-            .core
-            .documents
-            .get(&route)
-            .cloned()
-            .unwrap_or_else(|| Document {
+        let mut candidate = self.core.documents.get(&route).cloned().unwrap_or_else(|| {
+            Document {
                 doc: AutoCommit::new().into(),
                 channel: ChannelState::default(),
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
                 sealed: backend::SealedLog::default(),
-            });
+            }
+            .into()
+        });
         candidate
             .channel
             .artifacts
@@ -2121,7 +2151,7 @@ impl StatePeer {
     fn admit_sealed(
         &mut self,
         route: Route,
-        mut candidate: Document,
+        mut candidate: backend::StoredDocument<LegacyNative>,
         validated: ChannelState,
         envelope: SignedOp,
     ) -> Result<AdmissionReport, AdmissionError> {
@@ -2715,8 +2745,12 @@ impl StatePeer {
             let document = candidate
                 .core
                 .documents
-                .get_mut(route)
+                .get(route)
                 .ok_or("publication discards a record")?;
+            // A record still shared with `before` discards nothing.
+            if backend::StoredDocument::ptr_eq(prior, document) {
+                continue;
+            }
             if prior
                 .doc
                 .base_heads()
@@ -2761,11 +2795,15 @@ impl StatePeer {
         for (route, document) in &candidate.core.documents {
             let route_key = crate::coverage::route_key(&route.app, &route.record);
             let changed = before.core.documents.get(route).is_none_or(|prior| {
-                prior.doc.base_heads() != document.doc.base_heads()
-                    || prior.channel.last_seq_per_author != document.channel.last_seq_per_author
-                    || prior.encryption_required != document.encryption_required
-                    || prior.covered != document.covered
-                    || prior.covered_snapshot != document.covered_snapshot
+                // A record this change did not touch is still shared.
+                let same = backend::StoredDocument::ptr_eq(prior, document);
+                (!same
+                    && (prior.doc.base_heads() != document.doc.base_heads()
+                        || prior.channel.last_seq_per_author
+                            != document.channel.last_seq_per_author
+                        || prior.encryption_required != document.encryption_required
+                        || prior.covered != document.covered
+                        || prior.covered_snapshot != document.covered_snapshot))
                     || old_coverage.get(&route_key) != coverage.get(&route_key)
                     || old_receipts.get(&route_key) != receipts.get(&route_key)
             });
@@ -2935,6 +2973,136 @@ impl StatePeer {
     ///
     /// Returns an error if the state cannot be encoded within its limits.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
+        let parts = self.durable_parts()?;
+        let mut bytes = Vec::with_capacity(parts.iter().map(|part| part.len()).sum());
+        for part in &parts {
+            bytes.extend_from_slice(part);
+        }
+        Ok(bytes)
+    }
+
+    /// [`Self::durable`] in parts, in order: concatenated, they are its
+    /// bytes, and [`Self::restore`] takes them so.
+    ///
+    /// A room's history is most of its state and hardly changes per
+    /// governance change, yet re-encoding all of it made every change cost
+    /// the whole history. So each record's part is encoded once per state of
+    /// the record, and the exact admission index's settled entries once per
+    /// settling: a part nothing changed since an earlier call is the same
+    /// allocation as then, and whoever stores the parts apart rewrites only
+    /// what changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the state cannot be encoded within its limits.
+    pub fn durable_parts(&self) -> Result<Vec<std::sync::Arc<[u8]>>, String> {
+        fn put<T: Serialize + ?Sized>(value: &T, out: Vec<u8>) -> Result<Vec<u8>, String> {
+            postcard::to_extend(value, out).map_err(err)
+        }
+        let sealed = self
+            .core
+            .documents
+            .values()
+            .filter(|entry| !entry.sealed.is_empty())
+            .count();
+        if sealed > 0 && !self.core.admission_v5 {
+            return Err("sealed record history requires durable admission v5".into());
+        }
+        let mut documents = Vec::with_capacity(self.core.documents.len());
+        for (route, entry) in &self.core.documents {
+            documents.push(entry.encoded(route, || {
+                let document = postcard::to_allocvec(&DurableDocumentRef {
+                    route,
+                    bytes: entry.doc.saved_bytes(),
+                    watermarks: entry
+                        .channel
+                        .last_seq_per_author
+                        .iter()
+                        .map(|(key, seq)| (*key.as_bytes(), *seq))
+                        .collect(),
+                    encryption_required: entry.encryption_required,
+                    covered: &entry.covered,
+                    covered_snapshot: entry
+                        .covered_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.0.bytes.as_slice()),
+                })
+                .map_err(err)?;
+                let sealed = if entry.sealed.is_empty() {
+                    None
+                } else {
+                    Some(entry.sealed.encode_into(route, Vec::new())?.into())
+                };
+                Ok(backend::EncodedDocument {
+                    route: route.clone(),
+                    document: document.into(),
+                    sealed,
+                })
+            })?);
+        }
+        // The fields of `DurableV6`/`DurableV5`/`DurableV4` in order: a
+        // postcard struct is its fields' encodings one after the other.
+        let mut parts: Vec<std::sync::Arc<[u8]>> = Vec::new();
+        let mut head = Vec::new();
+        if sealed > 0 {
+            head = put(&6u32, head)?;
+        } else if self.core.admission_v5 {
+            head = put(&5u32, head)?;
+        }
+        head = put(&4u32, head)?;
+        head = put(
+            &(
+                3u32,
+                &self.core.room,
+                &self.core.authority,
+                self.core.room_doc.as_ref().map(CachedDocument::saved_bytes),
+                documents.len(),
+            ),
+            head,
+        )?;
+        parts.push(head.into());
+        parts.extend(documents.iter().map(|encoded| encoded.document.clone()));
+        let mut revocations = self.core.revocations.iter().collect::<Vec<_>>();
+        revocations.sort_by_key(|entry| entry.revoked_device_public_key);
+        let certificates = self
+            .core
+            .certificates
+            .values()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&DeviceCert>>();
+        let mut tail = put(
+            &(
+                &*self.core.receipts,
+                certificates,
+                revocations,
+                &self.core.pending,
+                self.core.pending_bytes,
+            ),
+            Vec::new(),
+        )?;
+        if self.core.admission_v5 {
+            let (settled, rest) = self.core.exact_admissions.encode_parts().map_err(err)?;
+            tail = put(&settled.len().saturating_add(rest.len()), tail)?;
+            parts.push(tail.into());
+            parts.push(settled);
+            tail = rest;
+        }
+        if sealed > 0 {
+            tail = put(&sealed, tail)?;
+        }
+        parts.push(tail.into());
+        parts.extend(
+            documents
+                .iter()
+                .filter_map(|encoded| encoded.sealed.clone()),
+        );
+        Ok(parts)
+    }
+
+    /// The durable encoding as one `postcard` value, made whole each time:
+    /// what [`Self::durable_parts`] must equal.
+    #[cfg(test)]
+    pub(crate) fn durable_whole(&self) -> Result<Vec<u8>, String> {
         let documents = self
             .core
             .documents
@@ -2964,7 +3132,7 @@ impl StatePeer {
                 authority: self.core.authority.clone(),
                 room_bytes: self.core.room_doc.as_ref().map(CachedDocument::saved),
                 documents,
-                receipts: self.core.receipts.clone(),
+                receipts: (*self.core.receipts).clone(),
                 certificates: self
                     .core
                     .certificates
@@ -3089,14 +3257,14 @@ impl StatePeer {
             core: PeerCore {
                 room: canonical_room,
                 authority,
-                certificates: verified_certificates,
+                certificates: verified_certificates.into(),
                 revocations: RevocationList::new(),
-                receipts: BTreeMap::new(),
+                receipts: Shared::default(),
                 room_doc: None,
-                documents: BTreeMap::new(),
+                documents: Shared::default(),
                 pending,
                 pending_bytes,
-                checkpoint_times: BTreeMap::new(),
+                checkpoint_times: Shared::default(),
                 exact_admissions,
                 admission_v5: version >= 5,
                 native_cut_publisher: None,
@@ -3113,7 +3281,7 @@ impl StatePeer {
             peer.core.authority.device_public_key,
         )
         .map_err(err)?;
-        peer.core.receipts = durable.receipts;
+        peer.core.receipts = durable.receipts.into();
         peer.core.room_doc = durable
             .room_bytes
             .map(|bytes| {
@@ -3149,7 +3317,8 @@ impl StatePeer {
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                     sealed: backend::SealedLog::default(),
-                },
+                }
+                .into(),
             );
         }
         for (route, ops) in sealed {
@@ -3551,6 +3720,9 @@ mod sealed_compaction_tests;
 #[cfg(test)]
 #[path = "state/sealed_tests.rs"]
 mod sealed_tests;
+#[cfg(test)]
+#[path = "state/sharing_tests.rs"]
+mod sharing_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;
