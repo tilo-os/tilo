@@ -67,6 +67,10 @@ Covered by central admission when they reach the published application dispatche
   operation revalidates the original certificate and execution. A row must
   belong to the session's room as well as its exact root/device/agent owner;
   another device with the same displayed Person cannot observe or cancel it.
+  Existing actor-only rows remain reachable through an explicitly uncertified
+  compatibility lifecycle while their host dispatch paths are migrated. That
+  lifecycle cannot observe or cancel certificate-owned jobs and does not turn
+  a legacy actor label into signing authority.
 
 The following are **not** claimed to have this coverage:
 

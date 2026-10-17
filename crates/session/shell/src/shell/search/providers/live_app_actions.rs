@@ -1787,7 +1787,8 @@ impl LiveAppActionsProvider {
         ctx: &SearchContext<'_>,
     ) -> Vec<crate::shell::certified_action_session::ActionLifecycle> {
         let actor = ctx.chrome.active_local_user();
-        ctx.chrome
+        let mut lifecycles = ctx
+            .chrome
             .tree()
             .desktop
             .workspaces
@@ -1799,7 +1800,17 @@ impl LiveAppActionsProvider {
                     .lifecycle()
                     .ok()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // Existing host/system work can predate certificate admission. Keep
+        // those explicitly uncertified rows reachable during migration; this
+        // branch cannot see, cancel or relabel any certificate-owned job.
+        lifecycles.push(
+            crate::shell::certified_action_session::ActionLifecycle::Uncertified {
+                broker: self.broker.clone(),
+                actor,
+            },
+        );
+        lifecycles
     }
 
     fn owned_jobs(

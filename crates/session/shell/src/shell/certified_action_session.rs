@@ -154,8 +154,9 @@ impl ActionSessionSource {
 #[derive(Clone)]
 pub(crate) enum ActionLifecycle {
     Certified(tilo_action_broker::collab_broker_capnp::CertifiedActionLifecycle),
-    #[cfg(test)]
-    Fixture {
+    /// Compatibility for rows admitted without certificate custody. Never
+    /// reinterpret these as a certified person's jobs or issue evidence.
+    Uncertified {
         broker: AppActionBroker,
         actor: String,
     },
@@ -165,29 +166,25 @@ impl ActionLifecycle {
     pub(crate) fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         match self {
             Self::Certified(lifecycle) => lifecycle.statuses(),
-            #[cfg(test)]
-            Self::Fixture { broker, actor } => broker.statuses(actor),
+            Self::Uncertified { broker, actor } => broker.statuses(actor),
         }
     }
     pub(crate) fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         match self {
             Self::Certified(lifecycle) => lifecycle.status(id),
-            #[cfg(test)]
-            Self::Fixture { broker, actor } => broker.status_for_actor(id, actor),
+            Self::Uncertified { broker, actor } => broker.status_for_actor(id, actor),
         }
     }
     pub(crate) fn can_cancel(&self, id: u64) -> bool {
         match self {
             Self::Certified(lifecycle) => lifecycle.can_cancel(id),
-            #[cfg(test)]
-            Self::Fixture { broker, actor } => broker.can_cancel(id, actor),
+            Self::Uncertified { broker, actor } => broker.can_cancel(id, actor),
         }
     }
     pub(crate) fn cancel(&self, id: u64) -> Result<(), String> {
         match self {
             Self::Certified(lifecycle) => lifecycle.cancel(id),
-            #[cfg(test)]
-            Self::Fixture { broker, actor } => broker.cancel(id, actor),
+            Self::Uncertified { broker, actor } => broker.cancel(id, actor),
         }
     }
 }
@@ -201,7 +198,7 @@ impl DesktopActionSession {
                 .certified_action_lifecycle(&session.caller, &session.presentation)
                 .map(ActionLifecycle::Certified),
             #[cfg(test)]
-            Self::Fixture { host, caller } => Ok(ActionLifecycle::Fixture {
+            Self::Fixture { host, caller } => Ok(ActionLifecycle::Uncertified {
                 broker: host.broker_for_fixture(),
                 actor: match caller.principal() {
                     tilo_actions::remote::CallerPrincipal::Person(actor) => actor.clone(),
