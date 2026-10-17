@@ -460,6 +460,11 @@ find-bar-replace = Ersetzen
 find-bar-replace-all = Alle ersetzen
 find-bar-position = { $current } von { $total }
 find-bar-no-matches = Keine Treffer
+widget-mention-agent = Agent
+widget-mention-shortcut = Kurzbefehl
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = Personen zum Erwähnen
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

@@ -463,6 +463,11 @@ find-bar-replace = Replace
 find-bar-replace-all = Replace all
 find-bar-position = { $current } of { $total }
 find-bar-no-matches = No matches
+widget-mention-agent = Agent
+widget-mention-shortcut = Shortcut
+widget-mention-app = App
+widget-mention-bot = Bot
+widget-mention-list = People to mention
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
