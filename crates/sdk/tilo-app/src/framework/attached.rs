@@ -78,6 +78,13 @@ pub struct AttachedView {
     fresh: bool,
     /// This participant's changes set aside, untaken, while a peer's merged.
     unsent: Vec<Vec<u8>>,
+    /// What was taken or merged so far of each record the view holds
+    /// beside its own (the parts of a chain), by id.
+    beside: std::collections::HashMap<ui_core::record::RecordId, DocumentFrontier>,
+    /// Where the view keeps its records, and the room: what a record
+    /// beside its own that a peer started is kept in before it opens.
+    cache: PortableStorage,
+    room: String,
 }
 
 /// An [`AttachedView`] about to open ([`AttachedView::opening`]): whom it
@@ -232,6 +239,7 @@ impl AttachedView {
             }
         };
         cache.hydrate(key, document, Some(me.as_bytes().to_vec()))?;
+        let cache_kept = cache.clone();
         let records = RecordOwners::portable(cache.clone())
             .open(definition.app_id, room)
             .map_err(|error| error.to_string())?;
@@ -292,6 +300,9 @@ impl AttachedView {
             frontier,
             fresh: created,
             unsent: Vec::new(),
+            beside: std::collections::HashMap::new(),
+            cache: cache_kept,
+            room: room.to_owned(),
         })
     }
 
@@ -594,6 +605,79 @@ impl AttachedView {
             .records
             .merge_replica(&self.checkout, mutation.clone())?;
         self.frontier.observe(observed);
+        self.frame.relayout();
+        Ok(changed)
+    }
+
+    /// The records the view holds beside its own: the parts of a chain the
+    /// app keeps ([`Chain`](super::Chain)), as they sync on routes of their
+    /// own.
+    #[must_use]
+    pub fn records_beside(&self) -> Vec<RecordCheckout> {
+        self.records
+            .open_records()
+            .into_iter()
+            .filter(|checkout| checkout.id != self.checkout.id)
+            .collect()
+    }
+
+    /// The participant's changes to `record`, one the view holds beside
+    /// its own ([`Self::records_beside`]), since the last call or merge:
+    /// the whole record the first time.
+    pub fn take_record_changes(
+        &mut self,
+        record: &ui_core::record::RecordId,
+    ) -> Option<DocumentMutation> {
+        match self.beside.get_mut(record) {
+            Some(frontier) => {
+                let (delta, heads) = self.records.replication_delta(record, frontier).ok()?;
+                frontier.advance(heads);
+                (!delta.is_empty()).then_some(DocumentMutation::Incremental(delta))
+            }
+            None => {
+                let (bytes, heads) = self.records.replication_snapshot(record).ok()?;
+                let mut frontier = DocumentFrontier::default();
+                frontier.advance(heads);
+                self.beside.insert(record.clone(), frontier);
+                Some(DocumentMutation::Snapshot(bytes))
+            }
+        }
+    }
+
+    /// Merge a peer's change into `record`, one of the records the app
+    /// keeps beside its own, opening it first when the view holds it not
+    /// yet (a chain's part another device started). Whether it changed.
+    ///
+    /// # Errors
+    /// Returns why the record store refused the peer's document.
+    pub fn merge_record(
+        &mut self,
+        record: &RecordCheckout,
+        mutation: &DocumentMutation,
+    ) -> Result<bool, String> {
+        if !self.records.is_ready(&record.id) && self.records.try_open_record(record).is_err() {
+            // Kept as the peer sent it, then opened as the view's own are.
+            let DocumentMutation::Snapshot(bytes) = mutation else {
+                return Ok(false);
+            };
+            self.cache.hydrate(
+                StorageKey::Record {
+                    package: self.definition.app_id.into(),
+                    workspace: self.room.clone(),
+                    record: record.id.as_str().into(),
+                },
+                bytes.clone(),
+                Some(self.me.as_bytes().to_vec()),
+            )?;
+            self.records
+                .try_open_record(record)
+                .map_err(|error| error.to_string())?;
+        }
+        let (changed, observed) = self.records.merge_replica(record, mutation.clone())?;
+        self.beside
+            .entry(record.id.clone())
+            .or_default()
+            .observe(observed);
         self.frame.relayout();
         Ok(changed)
     }

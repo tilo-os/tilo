@@ -3,19 +3,9 @@ use automerge::transaction::Transactable;
 
 #[test]
 fn semantic_read_action_continuation_stays_with_its_real_channel() {
-    let mut chat = crate::record::Chat::default();
-    for channel in ["one", "two"] {
-        chat.channels.push(
-            ui::tilo_resource::Id::from_raw(channel),
-            crate::record::Channel {
-                workspace: ui::tilo_resource::Id::from_raw("ws"),
-                name: channel.into(),
-                ..crate::record::Channel::default()
-            },
-        );
-    }
+    let mut part = crate::parts::ChatPart::default();
     for id in ["m1", "m2"] {
-        chat.messages.push(
+        part.messages.push(
             ui::tilo_resource::Id::from_raw(id),
             crate::record::Message {
                 channel: ui::tilo_resource::Id::from_raw("one"),
@@ -25,7 +15,7 @@ fn semantic_read_action_continuation_stays_with_its_real_channel() {
         );
     }
     let mut doc = automerge::AutoCommit::new();
-    crate::demo::write(&mut doc, &chat).unwrap();
+    crate::demo::write_part(&mut doc, &part).unwrap();
     doc.commit();
     let page = super::super::read_messages(
         &doc,

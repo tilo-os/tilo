@@ -194,6 +194,14 @@
 //!   attributed, in its history and undone per step, and synced to the
 //!   person's devices only — never to a collaborator, whatever room the app
 //!   is open in. A preference is still a setting.
+//! * **What grows without end** — a chat's messages, a log — is a chain of
+//!   part records of another resource type kept beside the app's own in its
+//!   room ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],
+//!   read from a view or surface with [`RecordEnv::chain`], and published
+//!   beside the app's resource as one resource whose actions land on the
+//!   part they change (the head for something new, the part holding an
+//!   item for a change of it). A room's host replays a joining device the
+//!   head only; earlier parts are held when someone opens them.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
@@ -302,6 +310,7 @@
 
 mod app;
 mod attached;
+mod chain;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
@@ -344,6 +353,7 @@ pub use app::launch_spec;
 pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
+pub use chain::{Chain, Chained, chain_resource_id};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};

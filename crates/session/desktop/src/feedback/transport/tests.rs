@@ -289,12 +289,12 @@ fn canonical_owner_process() {
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
             assert_eq!(reports[0].author, hex::encode([12; 32]));
-            let message = tilo_app::tilo_resource::Id::from_raw(chat::feedback::message_id(ID));
+            // The report shows in its channel among the messages.
+            let message = chat::feedback::message_id(ID);
             assert_eq!(
                 chat::projection::read(doc)
-                    .messages
-                    .get(&message)
-                    .map(|posted| posted.channel.as_str().to_owned()),
+                    .message_row(&chat::messages::Messages::default(), &message)
+                    .map(|shown| shown.channel),
                 Some("feedback".to_owned())
             );
             true

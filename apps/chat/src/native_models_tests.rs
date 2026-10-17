@@ -84,7 +84,7 @@ fn answer(peer: &mut UnixStream, text: &str) {
     );
 }
 
-fn chat(client: &UnixStream) -> (ChatApp, automerge::AutoCommit) {
+fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
     let backend = tilo_model_gateway::runtime_client::from_descriptor_selection(
         client.as_fd(),
         "chat-profile".into(),
@@ -93,7 +93,7 @@ fn chat(client: &UnixStream) -> (ChatApp, automerge::AutoCommit) {
     .expect("bind Chat model descriptor");
     let models = Models::new(backend);
     let identity = LocalIdentity::demo();
-    let mut doc = automerge::AutoCommit::new();
+    let mut doc = crate::testing::Room::default();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     crate::testing::say(&mut doc, &identity.id, "c_general", "Question");
     let mut app = ChatApp::new(
@@ -106,6 +106,7 @@ fn chat(client: &UnixStream) -> (ChatApp, automerge::AutoCommit) {
         "so.tilo.chat",
         &identity.id,
     ));
+    app.attach_room(&doc);
     app.reload(&doc);
     app.ensure_selection();
     app.reload(&doc);
@@ -114,8 +115,8 @@ fn chat(client: &UnixStream) -> (ChatApp, automerge::AutoCommit) {
 
 fn pump_until(
     app: &mut ChatApp,
-    doc: &mut automerge::AutoCommit,
-    done: impl Fn(&ChatApp, &automerge::AutoCommit) -> bool,
+    doc: &mut crate::testing::Room,
+    done: impl Fn(&ChatApp, &crate::testing::Room) -> bool,
 ) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

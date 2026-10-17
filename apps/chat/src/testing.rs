@@ -1,20 +1,47 @@
-//! Test fixtures over a bare chat document: the demo and starter records,
-//! verbs applied as a named person, and the record read back as the window
-//! reads it.
+//! Test fixtures over a chat held without a window ([`Room`]): the demo and
+//! starter records, verbs applied as a named person, and the record and its
+//! messages read back as the window reads them.
 
 use automerge::AutoCommit;
 use ui::tilo_resource::{Id, Invoke};
 
-pub(crate) use crate::demo::{apply_as, apply_at, post};
+pub(crate) use crate::demo::{Room, apply_as, apply_at, post};
 use crate::model::{Channel, Message, User};
 use crate::record::chat;
 use crate::resource::Chat;
 
-/// A document holding the demo workspace, read by [`crate::model::ME`].
-pub(crate) fn demo_doc() -> AutoCommit {
+/// A room holding the demo workspace, read by [`crate::model::ME`].
+pub(crate) fn demo_doc() -> Room {
+    Room::demo().unwrap()
+}
+
+/// The demo workspace's chat record alone, read by [`crate::model::ME`]:
+/// for what reads no messages.
+pub(crate) fn demo_chat() -> AutoCommit {
     let mut doc = AutoCommit::new();
     crate::demo::seed(&mut doc).unwrap();
     doc
+}
+
+/// A verb on the messages of `room`, applied as `author` invokes it at
+/// `now_ms`; the part it changed.
+pub(crate) fn apply_part_at(
+    room: &mut Room,
+    author: &str,
+    now_ms: i64,
+    invoke: Invoke<crate::parts::ChatPart>,
+) -> Result<u64, ui::tilo_actions::DoorError> {
+    room.apply_part_at(author, now_ms, invoke)
+}
+
+/// A verb on the messages of `room`, applied as `author` invokes it; the
+/// part it changed.
+pub(crate) fn apply_part_as(
+    room: &mut Room,
+    author: &str,
+    invoke: Invoke<crate::parts::ChatPart>,
+) -> Result<u64, ui::tilo_actions::DoorError> {
+    room.apply_part_as(author, invoke)
 }
 
 /// Start the chat in `doc` as `me` would: their starter workspace.
@@ -28,8 +55,8 @@ pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &s
 }
 
 /// Post `text` in `channel` as `author`; the new message's id.
-pub(crate) fn say(doc: &mut AutoCommit, author: &str, channel: &str, text: &str) -> String {
-    crate::demo::say(doc, author, channel, text).unwrap()
+pub(crate) fn say(doc: &mut Room, author: &str, channel: &str, text: &str) -> String {
+    doc.say(author, channel, text).unwrap()
 }
 
 /// Write `text` in `app`'s main composer, as its person typing it: the
@@ -42,8 +69,87 @@ pub(crate) fn write_draft(app: &mut crate::app::ChatApp, doc: &mut AutoCommit, t
 }
 
 /// The messages of `channel`, oldest first.
-pub(crate) fn messages(doc: &AutoCommit, channel: &str) -> Vec<Message> {
-    crate::projection::read(doc).message_rows(channel)
+pub(crate) fn messages(doc: &Room, channel: &str) -> Vec<Message> {
+    doc.message_rows(channel)
+}
+
+/// The parts of the chat's messages a mount's store holds.
+pub(crate) fn stored_messages(records: &ui::record::RecordStore) -> crate::messages::Messages {
+    use ui::tilo_resource::Resource as _;
+    crate::messages::Messages::new(
+        records
+            .held_parts(&crate::parts::chain())
+            .into_iter()
+            .filter_map(|index| {
+                let part = records
+                    .read(&crate::parts::part(index), |doc| {
+                        crate::parts::ChatPart::read(doc).ok()
+                    })
+                    .flatten()?;
+                Some((index, std::rc::Rc::new(part)))
+            })
+            .collect(),
+    )
+}
+
+/// The messages of `channel` a mount's store holds, oldest first.
+pub(crate) fn messages_in(records: &ui::record::RecordStore, channel: &str) -> Vec<Message> {
+    let chat = records
+        .read(
+            &ui::record::RecordId::package_primary(),
+            crate::projection::read,
+        )
+        .unwrap_or_default();
+    chat.message_rows(&stored_messages(records), channel)
+}
+
+/// How many top-level messages of `channel` a mount's store holds.
+pub(crate) fn top_level_in(records: &ui::record::RecordStore, channel: &str) -> usize {
+    stored_messages(records).top_level(&Id::from_raw(channel))
+}
+
+/// The parts of the chat's messages a mounted app's window holds.
+pub(crate) fn mounted_messages(
+    app: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+) -> crate::messages::Messages {
+    app.with_surface::<crate::ChatApp, _>(|surface| surface.held_messages())
+        .unwrap_or_default()
+}
+
+/// The messages of `channel` a mounted app's window shows, oldest first.
+pub(crate) fn mounted_rows(
+    app: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    channel: &str,
+) -> Vec<Message> {
+    let held = mounted_messages(app);
+    app.state().message_rows(&held, channel)
+}
+
+/// Post `text` in `channel` through a mounted app's door, as its person.
+pub(crate) fn mounted_post(
+    app: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    channel: &str,
+    text: &str,
+) {
+    app.call_on(
+        &chain(),
+        "post",
+        serde_json::json!({ "channel": channel, "text": text }),
+    )
+    .expect("the post is applied");
+}
+
+/// The address of the chat's messages, as a window publishes them.
+pub(crate) fn chain() -> String {
+    ui::framework::chain_resource_id(&crate::parts::chain())
+}
+
+/// The id of the item the chain publishes for the message `id`.
+pub(crate) fn message_item(id: &str) -> String {
+    ui::tilo_resource::items::item_resource_id::<crate::parts::ChatPart>(
+        "messages",
+        &Id::from_raw(id),
+    )
 }
 
 /// The channels, in sidebar order.
@@ -57,12 +163,12 @@ pub(crate) fn users(doc: &AutoCommit) -> Vec<User> {
 }
 
 /// How many top-level messages `channel` has.
-pub(crate) fn top_level(doc: &AutoCommit, channel: &str) -> usize {
-    crate::projection::read(doc).top_level(&Id::from_raw(channel))
+pub(crate) fn top_level(doc: &Room, channel: &str) -> usize {
+    doc.messages().top_level(&Id::from_raw(channel))
 }
 
 /// `user`'s read mark in `channel`.
-pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> i64 {
+pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> crate::parts::ReadMark {
     crate::projection::read(doc).read_mark(channel, user)
 }
 
@@ -126,8 +232,11 @@ pub(crate) fn agent_reply() -> String {
 }
 
 /// `record-work` of `work` on the message `summons`.
-pub(crate) fn record_work(summons: &str, work: &crate::model::AgentWork) -> Invoke<Chat> {
-    Chat::RECORD_WORK.with(chat::RecordWork {
+pub(crate) fn record_work(
+    summons: &str,
+    work: &crate::model::AgentWork,
+) -> Invoke<crate::parts::ChatPart> {
+    crate::parts::ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
         message: Id::from_raw(summons),
         work: work_update(work),
         say: None,

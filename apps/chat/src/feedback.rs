@@ -1,6 +1,7 @@
-//! Feedback reports are attributed Chat messages with an immutable submission
+//! Feedback reports are attributed reports with an immutable submission
 //! identity, kept with their triage in the chat record
-//! ([`crate::record::Chat::feedback`]). A receipt is only offered after the
+//! ([`crate::record::Chat::feedback`]) and shown among their channel's
+//! messages. A receipt is only offered after the
 //! host confirms the record is durable.
 
 use serde::{Deserialize, Serialize};
@@ -143,17 +144,8 @@ fn receipt_content(
     if report.submission.destination != *actual_destination {
         return Err(refused("feedback destination mismatch"));
     }
+    // The report shows in its channel's timeline under this id.
     let message = Id::from_raw(message_id(id));
-    let posted = crate::projection::read(doc)
-        .messages
-        .get(&message)
-        .is_some_and(|posted| {
-            posted.author.0 == report.author
-                && posted.channel.as_str() == actual_destination.channel
-        });
-    if !posted {
-        return Err(refused("feedback message not found"));
-    }
     Ok(Receipt {
         id: id.into(),
         digest: report
@@ -232,14 +224,21 @@ mod tests {
     use super::*;
     use crate::record::chat;
     use crate::resource::Chat;
-    use crate::testing::{apply_as, demo_doc, messages};
+    use crate::testing::apply_as;
     use automerge::{ROOT, transaction::Transactable as _};
     use tilo_automerge::ApplyIncoming as _;
     use ui::feedback::{ReviewedFeedback, Submission};
     use ui::tilo_resource::Invoke;
 
+    /// What `channel` of the chat in `doc` shows: the reports filed in it
+    /// among its messages.
+    fn messages(doc: &Doc, channel: &str) -> Vec<crate::model::Message> {
+        crate::projection::read(doc).message_rows(&crate::messages::Messages::default(), channel)
+    }
+
     fn seeded() -> (Doc, Submission) {
-        let doc = demo_doc();
+        let mut doc = Doc::new();
+        crate::demo::seed(&mut doc).unwrap();
         let channel = crate::testing::channels(&doc)
             .into_iter()
             .find(|channel| channel.kind != crate::model::ChannelKind::Voice)
@@ -573,24 +572,6 @@ mod tests {
         elsewhere.room = "other-room".into();
         assert!(
             durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
-        );
-        apply_as(
-            &mut doc,
-            "visitor:one",
-            Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
-                message: Id::from_raw(message_id(&submission.id)),
-            }),
-        )
-        .unwrap();
-        assert!(
-            durable_receipt(
-                &doc,
-                &submission.id,
-                &submission.destination,
-                &RecordSaveStatus::Saved
-            )
-            .is_err(),
-            "no receipt once its message is gone"
         );
     }
 }

@@ -36,6 +36,11 @@ fn begun() -> (TestApp<ChatShell>, String, String) {
     (app, workspace.to_string(), channel.to_string())
 }
 
+/// The chat's messages, as the window publishes them.
+fn chain() -> String {
+    ui::framework::chain_resource_id(&chat::parts::chain())
+}
+
 fn on(field: &str, id: &str) -> String {
     item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
@@ -70,17 +75,17 @@ fn a_verb_answers_the_ids_it_created() {
         .unwrap(),
     );
     let message = created(
-        app.call_on_output(&on("channels", &channel), "post", json!({"text": "hello"}))
-            .unwrap(),
+        app.call_on_output(
+            &chain(),
+            "post",
+            json!({"channel": channel, "text": "hello"}),
+        )
+        .unwrap(),
     );
-    assert_eq!(
-        app.state()
-            .messages
-            .get(&Id::from_raw(&message))
-            .unwrap()
-            .text,
-        "hello"
-    );
+    let held = app
+        .with_surface::<chat::ChatApp, _>(|surface| surface.held_messages())
+        .unwrap();
+    assert_eq!(held.get(&Id::from_raw(&message)).unwrap().text, "hello");
 }
 
 #[test]
@@ -88,17 +93,17 @@ fn read_workspace_is_what_the_planners_read() {
     let (mut app, workspace, channel) = begun();
     let root = created(
         app.call_on_output(
-            &on("channels", &channel),
+            &chain(),
             "post",
-            json!({"text": "question?"}),
+            json!({"channel": channel, "text": "question?"}),
         )
         .unwrap(),
     );
     let reply = created(
         app.call_on_output(
-            &on("channels", &channel),
+            &chain(),
             "post",
-            json!({"text": "answer", "parent": root}),
+            json!({"channel": channel, "text": "answer", "parent": root}),
         )
         .unwrap(),
     );

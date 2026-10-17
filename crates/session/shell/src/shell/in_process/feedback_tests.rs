@@ -379,7 +379,9 @@ fn assert_canonical_report(owner: &DestinationOwner, submission: &Submission) {
         .read(&RecordId::package_primary(), |doc| {
             assert_eq!(chat::feedback::reports(doc).unwrap().len(), 1);
             assert_eq!(
-                chat::projection::read(doc).message_rows("feedback").len(),
+                chat::projection::read(doc)
+                    .message_rows(&chat::messages::Messages::default(), "feedback")
+                    .len(),
                 1
             );
             chat::feedback::report(doc, &submission.id)

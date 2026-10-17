@@ -800,6 +800,26 @@ pub struct ChatApp {
     // window's person, recorded in history and replicated. See
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// The chat's messages, kept in parts beside the record
+    /// ([`crate::parts`]): what the window reads them from and posts, edits
+    /// and reacts through. `None` where the window has none (a past
+    /// version).
+    pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatPart>>,
+    /// The chain's revision the window last read its messages at.
+    pub(crate) chain_seen: Option<u64>,
+    /// A screenshot scenario's messages still to stage, each with who
+    /// wrote it: staged once the room's records take a write (a frame's
+    /// read of the record holds them).
+    pub(crate) staged_parts: std::collections::VecDeque<(
+        &'static str,
+        ui::tilo_resource::Invoke<crate::parts::ChatPart>,
+    )>,
+    /// The scenario those messages are of.
+    pub(crate) staged_scenario: Option<String>,
+    /// The chat record as the window last read it: what a test's detached
+    /// chain reads where its actions are invoked.
+    #[cfg(test)]
+    pub(crate) last_read: std::rc::Rc<std::cell::RefCell<std::rc::Rc<crate::record::Chat>>>,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
     /// Ephemeral opt-in to publishing Chat navigation through viewport presence.
@@ -815,6 +835,9 @@ pub struct ChatApp {
     /// the published ones.
     #[cfg(test)]
     pub(crate) dispatched: std::cell::RefCell<Vec<crate::record::ChatAction>>,
+    /// Every verb on the chat's messages an affordance applied, likewise.
+    #[cfg(test)]
+    pub(crate) dispatched_parts: std::cell::RefCell<Vec<crate::messages::ChatPartAction>>,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -921,7 +944,32 @@ impl ChatApp {
             "so.tilo.chat",
             crate::model::ME,
         ));
+        app.attach_detached_chain(crate::model::ME);
         app
+    }
+
+    /// Hold the chat's messages in a chain of this window's own, as `me`,
+    /// its actions reading the record as the window last read it: a test's
+    /// stand-in for the room's.
+    #[cfg(test)]
+    pub(crate) fn attach_detached_chain(&mut self, me: &str) {
+        let last_read = std::rc::Rc::clone(&self.last_read);
+        if let Some(chain) = ui::framework::Chain::detached("so.tilo.chat", me, move || {
+            std::rc::Rc::clone(&last_read.borrow())
+        }) {
+            self.attach_chain(chain);
+        }
+    }
+
+    /// Show `room`, a test's chat, reading and writing its messages through
+    /// its chain and refreshing the record its actions read.
+    #[cfg(test)]
+    pub(crate) fn attach_room(&mut self, room: &crate::demo::Room) {
+        self.last_read = room.base();
+        if let Some(chain) = room.chain() {
+            let me = self.me.id.clone();
+            self.attach_chain(chain.as_reader(&me));
+        }
     }
 
     #[allow(
@@ -1052,6 +1100,12 @@ impl ChatApp {
             host_model: crate::host_model::HostModel::default(),
             expanded_reasoning: std::collections::HashSet::new(),
             dispatch: None,
+            chain: None,
+            chain_seen: None,
+            staged_parts: std::collections::VecDeque::new(),
+            staged_scenario: None,
+            #[cfg(test)]
+            last_read: std::rc::Rc::default(),
             pending_call: None,
             sharing_context: false,
             following_context: false,
@@ -1060,6 +1114,8 @@ impl ChatApp {
             collapsed: std::collections::BTreeSet::new(),
             #[cfg(test)]
             dispatched: std::cell::RefCell::default(),
+            #[cfg(test)]
+            dispatched_parts: std::cell::RefCell::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
             content,
             rect: Rect::ZERO,
@@ -1140,24 +1196,6 @@ impl ChatApp {
         }
     }
 
-    /// [`Self::apply_now`], saying why when the record refused it.
-    pub(crate) fn try_apply_now(
-        &self,
-        doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::resource::Chat>,
-    ) -> Result<(), String> {
-        let invoke = self
-            .dispatched(submit)
-            .ok_or_else(|| "the message could not be put together".to_owned())?;
-        let dispatch = self
-            .dispatch
-            .as_ref()
-            .ok_or_else(|| "this window is not connected to the chat".to_owned())?;
-        dispatch
-            .submit_now(doc, invoke)
-            .map_err(|error| error.to_string())
-    }
-
     /// applied after this pass: from a pass that only reads the document (a
     /// frame's sync, a worker's answer). A refusal is reported by the
     /// dispatcher.
@@ -1200,6 +1238,11 @@ impl ChatApp {
         if let Some(dispatch) = &self.dispatch {
             ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
         }
+        // What was submitted on the messages applies to their parts.
+        if let Some(chain) = &self.chain {
+            ui::framework::testing::resolve(&chain.dispatcher(), doc)
+                .expect("submitted edits apply");
+        }
     }
 
     /// Test-only: apply what this window asked the person to confirm (a
@@ -1217,7 +1260,122 @@ impl ChatApp {
                 .expect("a confirmed change applies");
         }
         *doc = chat.doc().clone();
+        if let Some(chain) = &self.chain {
+            chain
+                .confirm_asked()
+                .expect("a confirmed change of a message applies");
+        }
         self.reload(doc);
+    }
+
+    /// Read and write the chat's messages through `chain` from now on.
+    pub(crate) fn attach_chain(&mut self, chain: ui::framework::Chain<crate::parts::ChatPart>) {
+        self.chain = Some(chain);
+        self.chain_seen = None;
+        self.reselect();
+    }
+
+    /// Stage the messages a screenshot of `scenario` shows in the chat's
+    /// parts, each written by its author, once: a chain that holds messages
+    /// already is left as it is.
+    pub(crate) fn stage_parts(&mut self, scenario: Option<&str>) {
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        if chain.head().is_some() {
+            return;
+        }
+        self.staged_parts = crate::resource::part_scenario(scenario).into();
+        self.staged_scenario = scenario.map(str::to_owned);
+        self.flush_staged_parts();
+    }
+
+    /// Stage what is left of a scenario's messages, until the room's
+    /// records refuse a write for now.
+    pub(crate) fn flush_staged_parts(&mut self) {
+        let Some(chain) = self.chain.clone() else {
+            return;
+        };
+        let mut staged = false;
+        while chain.takes_changes()
+            && let Some((author, invoke)) = self.staged_parts.pop_front()
+        {
+            // A message that does not stage is missing from the picture,
+            // which its comparison shows.
+            let _ = chain.stage_as(&invoke, author);
+            staged = true;
+        }
+        if staged {
+            self.reselect();
+            // The view state the scenario stages names its messages: staged
+            // again over them once they are all there.
+            if self.staged_parts.is_empty()
+                && let Some(scenario) = self.staged_scenario.take()
+            {
+                self.stage_scenario(&scenario);
+            }
+            self.request_relayout();
+        }
+    }
+
+    /// The parts of the chat's messages this window holds.
+    pub fn held_messages(&self) -> crate::messages::Messages {
+        self.chain
+            .as_ref()
+            .map(|chain| crate::messages::Messages::new(chain.parts()))
+            .unwrap_or_default()
+    }
+
+    /// Apply a verb on the chat's messages now, through the chain's door:
+    /// to the part it changes, permission-checked and attributed to this
+    /// window's person. One that needs confirming goes to the door, which
+    /// asks first. The window reads the change on its next sync.
+    pub(crate) fn apply_part(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<crate::parts::ChatPart>,
+    ) {
+        // A refusal changes nothing; the dispatcher reports it.
+        let _ = self.try_apply_part(doc, submit);
+    }
+
+    /// [`Self::apply_part`], saying why when the chat refused it.
+    pub(crate) fn try_apply_part(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<crate::parts::ChatPart>,
+    ) -> Result<(), String> {
+        let chain = self
+            .chain
+            .as_ref()
+            .ok_or_else(|| "this window holds no messages of the chat".to_owned())?;
+        let invoke = submit
+            .into_invoke()
+            .map_err(|_| "the message could not be put together".to_owned())?;
+        #[cfg(test)]
+        if let Ok(action) = invoke.build(0) {
+            self.dispatched_parts.borrow_mut().push(action.operation);
+        }
+        chain
+            .dispatcher()
+            .submit_now(doc, invoke)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Submit a verb on the chat's messages to the door, applied after this
+    /// pass: from a pass that only reads the document.
+    pub(crate) fn submit_part(&self, submit: impl ui::framework::Submit<crate::parts::ChatPart>) {
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        let Ok(invoke) = submit.into_invoke() else {
+            return;
+        };
+        #[cfg(test)]
+        if let Ok(action) = invoke.build(0) {
+            self.dispatched_parts.borrow_mut().push(action.operation);
+        }
+        chain.dispatcher().submit(invoke);
     }
 
     /// Edit through `dispatcher` from now on.
@@ -1284,9 +1442,9 @@ impl ChatApp {
         &self,
         msg: &str,
         emoji: &str,
-    ) -> ui::tilo_resource::Invoke<crate::resource::Chat> {
-        use crate::record::chat;
-        use crate::resource::Chat;
+    ) -> ui::tilo_resource::Invoke<crate::parts::ChatPart> {
+        use crate::messages::chat_part;
+        use crate::parts::ChatPart;
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
@@ -1295,9 +1453,9 @@ impl ChatApp {
         let message = ui::tilo_resource::Id::from_raw(msg);
         let emoji = emoji.to_owned();
         if reacting {
-            Chat::UNREACT.with(chat::Unreact { message, emoji })
+            ChatPart::UNREACT.with(chat_part::Unreact { message, emoji })
         } else {
-            Chat::REACT.with(chat::React { message, emoji })
+            ChatPart::REACT.with(chat_part::React { message, emoji })
         }
     }
 
@@ -1913,6 +2071,9 @@ impl ChatApp {
         view.external_services = parent.external_services;
         if let Some(dispatcher) = parent.dispatch.clone() {
             view.attach_framework(dispatcher);
+        }
+        if let Some(chain) = parent.chain.clone() {
+            view.attach_chain(chain);
         }
         view
     }
@@ -2588,6 +2749,12 @@ impl ChatApp {
     /// after every mutation so `draw` always reflects the latest document.
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         let chat = crate::projection::read(doc);
+        #[cfg(test)]
+        {
+            *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
+        }
+        let held = self.held_messages();
+        self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
         self.workspaces = chat.workspace_rows();
         self.channels = chat.channel_rows();
         self.categories = chat.category_rows();
@@ -2626,7 +2793,7 @@ impl ChatApp {
             c.unread = if c.id == self.active_channel {
                 0
             } else {
-                chat.unread(&c.id, &self.me.id)
+                chat.unread(&held, &c.id, &self.me.id)
             };
         }
         // Read every channel's messages once per reload: the open channel,
@@ -2635,13 +2802,13 @@ impl ChatApp {
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()
-            .map(|channel| (channel.id.clone(), chat.message_rows(&channel.id)))
+            .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
             .collect();
         self.messages = per_channel
             .iter()
             .find(|(id, _)| *id == self.active_channel)
             .map_or_else(
-                || chat.message_rows(&self.active_channel),
+                || chat.message_rows(&held, &self.active_channel),
                 |(_, messages)| messages.clone(),
             );
         self.search_messages = per_channel
@@ -2824,22 +2991,23 @@ impl ChatApp {
             return;
         }
         let chat = crate::projection::read(doc);
-        let count = chat.top_level(&ui::tilo_resource::Id::from_raw(
-            self.active_channel.clone(),
-        ));
-        if i64::try_from(count).unwrap_or(i64::MAX)
-            <= chat.read_mark(&self.active_channel, &self.me.id)
-        {
+        let read = self
+            .held_messages()
+            .read_to_end(&ui::tilo_resource::Id::from_raw(
+                self.active_channel.clone(),
+            ));
+        if read <= chat.read_mark(&self.active_channel, &self.me.id) {
             return;
         }
         // Read state is a durable collaboration fact.  It is authored through
         // the same door as the palette's "Mark as read", not a side write
-        // that peers/history cannot account for.  The carried count keeps a
-        // message that arrives meanwhile unread.
+        // that peers/history cannot account for.  The carried position keeps
+        // a message that arrives meanwhile unread.
         self.submit(
             crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
                 channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
-                seen: Some(u32::try_from(count).unwrap_or(u32::MAX)),
+                part: u64::try_from(read.part).unwrap_or_default(),
+                seen: u32::try_from(read.seen).unwrap_or(u32::MAX),
             }),
         );
         if let Some(channel) = self
@@ -4158,6 +4326,12 @@ impl ui::widget::controls::ActionControls for ChatApp {
 }
 
 impl Widget for ChatApp {
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        // The record is lent to the settle pass: the room's other records
+        // take writes now.
+        self.flush_staged_parts();
+    }
+
     ui::provides!(
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
@@ -4294,12 +4468,19 @@ impl Widget for ChatApp {
             // in the same frame without making idle sync reload continuously.
             let heads = doc.base_heads();
             let pending = doc.pending_ops();
-            let unchanged = self
-                .synced
+            // The messages move on their own, in the parts beside the
+            // record.
+            let parts_moved = self
+                .chain
                 .as_ref()
-                .is_some_and(|(synced_heads, synced_pending)| {
-                    *synced_heads == heads && *synced_pending == 0 && pending == 0
-                });
+                .is_some_and(|chain| Some(chain.revision()) != self.chain_seen);
+            let unchanged = !parts_moved
+                && self
+                    .synced
+                    .as_ref()
+                    .is_some_and(|(synced_heads, synced_pending)| {
+                        *synced_heads == heads && *synced_pending == 0 && pending == 0
+                    });
             if !unchanged {
                 self.canonical_dirty = true;
                 self.reload(doc);
@@ -4832,13 +5013,13 @@ impl Widget for ChatApp {
         }
         let messages_before = matches!(hit, Hit::Send).then(|| {
             crate::projection::read(state)
-                .message_rows(&self.active_channel)
+                .message_rows(&self.held_messages(), &self.active_channel)
                 .len()
         });
         self.on_hit(hit, state);
         messages_before.is_none_or(|before| {
             crate::projection::read(state)
-                .message_rows(&self.active_channel)
+                .message_rows(&self.held_messages(), &self.active_channel)
                 .len()
                 == before.saturating_add(1)
         })
@@ -5303,13 +5484,11 @@ mod identity_on_screen {
         let mut app = ChatApp::new_ephemeral();
         let mut state = ui::State::new();
         let stranger = "peer@9007495404254172154";
-        crate::testing::starter(&mut state.doc, stranger, "You", "Y");
-        crate::testing::say(
-            &mut state.doc,
-            stranger,
-            "c_general",
-            "Retained foreign message",
-        );
+        let mut room = crate::testing::Room::default();
+        crate::testing::starter(&mut room, stranger, "You", "Y");
+        crate::testing::say(&mut room, stranger, "c_general", "Retained foreign message");
+        state.doc = room.chat.clone();
+        app.attach_room(&room);
         app.sync(&state.doc, &state.root);
         assert_eq!(
             app.user(stranger)

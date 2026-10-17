@@ -2438,7 +2438,7 @@ pub(crate) fn control_draft_identity(
 /// that its change stored as keys of a collection, in minting order. Read
 /// from the action's own changes since `before`, never a diff of the whole
 /// document, so an edit costs the same however large the record is.
-fn minted_items(
+pub fn minted_items(
     doc: &mut AutoCommit,
     kind: &str,
     envelope: &tilo_actions::ActionEnvelope,
@@ -2473,7 +2473,7 @@ fn minted_items(
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
 /// Who writes a document change `actor` makes here. An agent principal
 /// names one writer; a person may write from several devices at once.
-fn document_writer(actor: &str, doc: &AutoCommit) -> Vec<u8> {
+pub fn document_writer(actor: &str, doc: &AutoCommit) -> Vec<u8> {
     if crate::history_source::authors::agent_principal_name(actor).is_some() {
         actor.as_bytes().to_vec()
     } else {

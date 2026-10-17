@@ -548,7 +548,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
     Ok(Recovered { docs, checks })
 }
 /// A readable projection accompanies, never replaces, the complete CRDT bytes.
-fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
+fn readable(app: &str, record: &str, doc: &AutoCommit) -> Result<Value> {
     if app == "so.tilo.word-processor" {
         let containers = word_processor::model::open(doc).map_err(anyhow::Error::msg)?;
         let snapshot = tilo_doc::model::materialize(doc, &containers);
@@ -561,10 +561,35 @@ fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
         Ok(
             json!({"app_id":app,"body_text":text,"rich_document":snapshot,"projection_note":"Body text is a convenience projection; rich_document and canonical bytes preserve structure."}),
         )
+    } else if app == "so.tilo.chat"
+        && let Some(part) = ui::record::RecordId::parse(record)
+            .as_ref()
+            .and_then(chat::parts::part_index)
+    {
+        // A part of the chat's messages: each channel's messages it holds.
+        let held = chat::messages::Messages::single(chat::messages::read_part(doc));
+        let mut channels = std::collections::BTreeMap::<String, Vec<Value>>::new();
+        for (id, message) in held.iter() {
+            let message = chat::projection::message_row(id, message);
+            channels
+                .entry(message.channel.clone())
+                .or_default()
+                .push(readable_message(&message));
+        }
+        let channels = channels
+            .into_iter()
+            .map(|(id, messages)| json!({"id":id,"messages":messages}))
+            .collect::<Vec<_>>();
+        Ok(
+            json!({"app_id":app,"part":part,"channels":channels,"projection_note":"One part of the chat's messages; the chat record names the channels. External attachment bytes are not in this archive export."}),
+        )
     } else if app == "so.tilo.chat" {
         let record = chat::projection::read(doc);
+        // The chat record's own: its channels, drafts, and the reports filed
+        // in them; the messages are in its parts' documents.
+        let none = chat::messages::Messages::default();
         let channels=record.channel_rows().into_iter().map(|channel| {
-            let messages=record.message_rows(&channel.id).into_iter().map(|message|json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})).collect::<Vec<_>>();
+            let messages=record.message_rows(&none, &channel.id).iter().map(readable_message).collect::<Vec<_>>();
             json!({"id":channel.id,"name":channel.name,"archived":channel.archived,"draft":chat::projection::draft_text(doc,&channel.id),"messages":messages})
         }).collect::<Vec<_>>();
         Ok(
@@ -574,6 +599,11 @@ fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
         bail!("unsupported readable app")
     }
 }
+/// One message of the chat, as the readable export writes it.
+fn readable_message(message: &chat::model::Message) -> Value {
+    json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})
+}
+
 fn create_private_directory(path: &Path) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let mut builder = std::fs::DirBuilder::new();
@@ -749,7 +779,7 @@ fn run(arguments: Arguments) -> Result<(PathBuf, bool, usize)> {
             let projections = recovered
                 .docs
                 .iter()
-                .map(|((app, _), doc)| readable(app, doc))
+                .map(|((app, record), doc)| readable(app, record, doc))
                 .collect::<Result<Vec<_>>>();
             match projections {
                 Err(error) => {

@@ -90,6 +90,30 @@ impl<R: Resource> RecordEnv<R> {
         self.dispatch.child(id, wrap)
     }
 
+    /// The chain of `P` the app keeps beside its record
+    /// ([`Chain`](super::Chain)): its parts, read as they change, and its
+    /// dispatcher. `None` in a view of a past version, or where `P`'s base
+    /// is not this record's resource.
+    pub fn chain<P: super::Chained<Base = R>>(&self) -> Option<super::Chain<P>> {
+        let live = self.live.clone();
+        let state = self.storage.chain::<P>(move || live.get())?;
+        let applying = Rc::downgrade(&state);
+        let me = self.dispatch.me()?.to_owned();
+        let dispatch = self.dispatch.for_room_record::<P>(
+            state.id(),
+            self.dispatch.is_past(),
+            move |action| {
+                let state = applying.upgrade().ok_or_else(|| {
+                    tilo_actions::ActionError::Refused("the chain is closed".into())
+                })?;
+                state
+                    .apply_as(action, &tilo_actions::ActionInvoker::actor(&me))
+                    .map(drop)
+            },
+        );
+        Some(super::Chain::new(state, dispatch))
+    }
+
     /// Who this view is for: the participant reading and editing through
     /// it, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the

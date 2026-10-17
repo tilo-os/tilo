@@ -623,6 +623,24 @@ impl PortableStorage {
     pub fn namespace(&self) -> &ProfileNamespace {
         &self.cache.namespace
     }
+    /// The `record` component of every cached record of `package` in
+    /// `workspace`, sorted, as [`durable_store::DurableStore::records`]
+    /// lists a store's.
+    pub(crate) fn records(&self, package: &str, workspace: &str) -> Vec<String> {
+        self.cache
+            .borrow()
+            .entries
+            .keys()
+            .filter_map(|key| match key {
+                StorageKey::Record {
+                    package: of,
+                    workspace: in_,
+                    record,
+                } if of == package && in_ == workspace => Some(record.clone()),
+                _ => None,
+            })
+            .collect()
+    }
     pub fn get(&self, key: &StorageKey) -> Option<CachedBytes> {
         self.cache
             .borrow()
