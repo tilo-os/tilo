@@ -90,6 +90,81 @@ mod external_moderation_rpc_tests {
             }
         }
 
+        fn caller(&self) -> (BrokerActor, InvocationCaller) {
+            let scope =
+                self.original
+                    .cert
+                    .capabilities
+                    .can_act_as_host
+                    .then(|| LocalHostWorkerScope {
+                        route: self.route.clone(),
+                        certificate: self.original.cert.clone(),
+                    });
+            let admitted = verify_join_identity_with_host_scope(
+                &self.route,
+                &signed_worker::presentation(
+                    &self.route.cluster_id,
+                    &self.original.cert,
+                    &self.original.key,
+                ),
+                self.state.membership.as_ref(),
+                None,
+                self.state
+                    .certificate_authority
+                    .get()
+                    .map(|authority| authority.as_ref()),
+                scope.as_ref(),
+            )
+            .unwrap();
+            (
+                admitted.broker_actor(),
+                InvocationCaller::Local {
+                    route: self.route.clone(),
+                    admitted: Box::new(admitted),
+                },
+            )
+        }
+
+        fn invoke(&self, peer: u64, resource: &str, action: &str, argument: &str) -> u64 {
+            let offered = self.state.surfaces.lock().unwrap()[&peer]
+                .actions
+                .iter()
+                .find(|offered| offered.resource == resource && offered.action == action)
+                .unwrap()
+                .clone();
+            let (actor, origin) = self.caller();
+            let token = self
+                .state
+                .confirmation_token(
+                    peer,
+                    &offered,
+                    Some(argument),
+                    &actor,
+                    Some(&tilo_actions::remote::Confirmation::Confirmed),
+                )
+                .unwrap();
+            let job = self
+                .state
+                .start_invocation_confirmed_for_origin(
+                    peer,
+                    resource,
+                    action,
+                    InvocationInputs {
+                        original_request: None,
+                        requested: None,
+                        caller: None,
+                        execution: None,
+                        argument: Some(argument),
+                        actor: &actor,
+                        confirmation_token: token.as_deref(),
+                        context: None,
+                    },
+                    Some(origin),
+                )
+                .unwrap();
+            job.id
+        }
+
         async fn worker(&self, peer: u64) -> signed_worker::Connection {
             signed_worker::join_worker(
                 &self.state,
@@ -147,6 +222,7 @@ mod external_moderation_rpc_tests {
             kind: tilo_actions::ActionKind::Outside,
             result: tilo_actions::ResultSpec::Job,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             ..Default::default()
         };
         descriptor
@@ -193,17 +269,8 @@ mod external_moderation_rpc_tests {
                         .unwrap();
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let operation = operation(action == "appeal");
-                    let (wire, _) = target
-                        .handle
-                        .invoke_published_action(
-                            971,
-                            &descriptor.resource,
-                            action,
-                            Some(&argument(&operation)),
-                            "{}",
-                        )
-                        .await
-                        .unwrap();
+                    let wire =
+                        room.invoke(971, &descriptor.resource, action, &argument(&operation));
                     let delivered = stream.read().await.unwrap();
                     assert_eq!(delivered.id, wire);
                     let id = delivered.invocation_uuid;
@@ -280,6 +347,140 @@ mod external_moderation_rpc_tests {
                             .await
                             .is_err()
                     );
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_outside_grant_does_not_replace_exact_confirmation() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for action in ["submit-report", "appeal"] {
+                    let room = Room::new(false);
+                    let target = room.worker(979).await;
+                    let mut descriptor = descriptor(action);
+                    descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+                    target
+                        .handle
+                        .publish_actions(&room.route.app_id, &[descriptor])
+                        .await
+                        .unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let operation = operation(action == "appeal");
+                    // The fixture grants all action kinds. That broad Outside grant
+                    // admits the action, but is not consent to this network request.
+                    target
+                        .handle
+                        .invoke_published_action(
+                            979,
+                            "workspace:atlas",
+                            action,
+                            Some(&argument(&operation)),
+                            "{}",
+                        )
+                        .await
+                        .unwrap();
+                    let id = stream.read().await.unwrap().invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    refused(
+                        &target.handle,
+                        &request,
+                        id,
+                        "external moderation requires exact system confirmation",
+                    )
+                    .await;
+                }
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_confirmation_token_binds_payload_and_destination() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for action in ["submit-report", "appeal"] {
+                    let room = Room::new(false);
+                    let target = room.worker(980).await;
+                    let descriptor = descriptor(action);
+                    target
+                        .handle
+                        .publish_actions(&room.route.app_id, &[descriptor])
+                        .await
+                        .unwrap();
+                    let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                    let offered = room.state.surfaces.lock().unwrap()[&980].actions[0].clone();
+                    let (actor, origin) = room.caller();
+                    let operation = operation(action == "appeal");
+                    let exact = argument(&operation);
+                    assert!(matches!(
+                        room.state
+                            .confirmation_token(980, &offered, Some(&exact), &actor, None),
+                        Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
+                    ));
+                    for altered in ["missing", "payload", "destination"] {
+                        let token = room
+                            .state
+                            .confirmation_token(
+                                980,
+                                &offered,
+                                Some(&exact),
+                                &actor,
+                                Some(&tilo_actions::remote::Confirmation::Confirmed),
+                            )
+                            .unwrap()
+                            .unwrap();
+                        let mut changed = operation.clone();
+                        match altered {
+                            "destination" => {
+                                changed.destination.base_url = "http://other.invalid".into()
+                            }
+                            "payload" => match &mut changed.mutation {
+                                ModerationMutation::FileReport { summary, .. } => summary.push('!'),
+                                ModerationMutation::PublisherAppeal { reason, .. } => {
+                                    reason.push('!')
+                                }
+                                _ => unreachable!(),
+                            },
+                            "missing" => {}
+                            _ => unreachable!(),
+                        }
+                        let changed = argument(&changed);
+                        let result = room.state.start_invocation_confirmed_for_origin(
+                            980,
+                            &offered.resource,
+                            action,
+                            InvocationInputs {
+                                original_request: None,
+                                requested: None,
+                                caller: None,
+                                execution: None,
+                                argument: Some(&changed),
+                                actor: &actor,
+                                confirmation_token: (altered != "missing")
+                                    .then_some(token.as_str()),
+                                context: None,
+                            },
+                            Some(origin.clone()),
+                        );
+                        let error = result
+                            .err()
+                            .expect("unconfirmed or changed operation must be refused");
+                        assert!(error.contains("confirmation"), "{altered}: {error}");
+                    }
+                    // A fresh answer for exactly these bytes reaches the host gate.
+                    room.invoke(980, &offered.resource, action, &exact);
+                    let id = stream.read().await.unwrap().invocation_uuid;
+                    let request = Request {
+                        protocol: PROTOCOL.into(),
+                        invocation: uuid::Uuid::from_bytes(id).to_string(),
+                        operation,
+                    };
+                    refused(&target.handle, &request, id, "HTTPS").await;
                 }
             })
             .await;
@@ -394,17 +595,12 @@ mod external_moderation_rpc_tests {
                             .unwrap()
                         },
                     };
-                    target
-                        .handle
-                        .invoke_published_action(
-                            977,
-                            "workspace:atlas",
-                            "submit-report",
-                            Some(&argument(&operation)),
-                            "{}",
-                        )
-                        .await
-                        .unwrap();
+                    room.invoke(
+                        977,
+                        "workspace:atlas",
+                        "submit-report",
+                        &argument(&operation),
+                    );
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {
                         protocol: PROTOCOL.into(),
@@ -468,17 +664,7 @@ mod external_moderation_rpc_tests {
                         .into(),
                         evidence_digest_hex: (altered == "digest").then(|| "cd".repeat(32)),
                     };
-                    target
-                        .handle
-                        .invoke_published_action(
-                            978,
-                            "workspace:atlas",
-                            "appeal",
-                            Some(&argument(&operation)),
-                            "{}",
-                        )
-                        .await
-                        .unwrap();
+                    room.invoke(978, "workspace:atlas", "appeal", &argument(&operation));
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {
                         protocol: PROTOCOL.into(),
@@ -525,9 +711,7 @@ mod external_moderation_rpc_tests {
                     let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                     let mut operation = operation(false);
                     operation.destination.base_url = "https://custom.example".into();
-                    target.handle.invoke_published_action(
-                        976, "workspace:atlas", "submit-report", Some(&argument(&operation)), "{}",
-                    ).await.unwrap();
+                    room.invoke(976, "workspace:atlas", "submit-report", &argument(&operation));
                     let delivered = stream.read().await.unwrap();
                     let id = delivered.invocation_uuid;
                     let request = Request {
@@ -557,17 +741,12 @@ mod external_moderation_rpc_tests {
                 let mut operation = operation(false);
                 operation.issued_at_unix = 1;
                 operation.expires_at_unix = 100;
-                target
-                    .handle
-                    .invoke_published_action(
-                        975,
-                        "workspace:atlas",
-                        "submit-report",
-                        Some(&argument(&operation)),
-                        "{}",
-                    )
-                    .await
-                    .unwrap();
+                room.invoke(
+                    975,
+                    "workspace:atlas",
+                    "submit-report",
+                    &argument(&operation),
+                );
                 let delivered = stream.read().await.unwrap();
                 let id = delivered.invocation_uuid;
                 let request = Request {
@@ -635,17 +814,12 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let operation = operation(false);
-                let (wire, _) = target
-                    .handle
-                    .invoke_published_action(
-                        973,
-                        &descriptor.resource,
-                        "submit-report",
-                        Some(&argument(&operation)),
-                        "{}",
-                    )
-                    .await
-                    .unwrap();
+                let wire = room.invoke(
+                    973,
+                    &descriptor.resource,
+                    "submit-report",
+                    &argument(&operation),
+                );
                 let delivered = stream.read().await.unwrap();
                 assert_eq!(delivered.id, wire);
                 let id = delivered.invocation_uuid;
@@ -696,17 +870,12 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let operation = operation(false);
-                let (wire, _) = target
-                    .handle
-                    .invoke_published_action(
-                        974,
-                        &descriptor.resource,
-                        "submit-report",
-                        Some(&argument(&operation)),
-                        "{}",
-                    )
-                    .await
-                    .unwrap();
+                let wire = room.invoke(
+                    974,
+                    &descriptor.resource,
+                    "submit-report",
+                    &argument(&operation),
+                );
                 let delivered = stream.read().await.unwrap();
                 assert_eq!(delivered.id, wire);
                 let id = delivered.invocation_uuid;
