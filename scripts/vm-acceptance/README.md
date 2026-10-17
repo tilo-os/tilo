@@ -160,8 +160,9 @@ process start to `first-frame-presented`): `files_first_frame_s` (3 s) in a VM, 
 renders on a CPU rasterizer or through virgl, `files_first_frame_hw_s` (300 ms) when
 frames reach real display hardware. The compositor's request-to-present time is recorded
 too when the session logs `tilo::launch_latency` at info. A frame is not a working
-window, so A14 also walks Files' AT-SPI tree in the guest with the image's external
-client (`/usr/libexec/tilo/atspi-external-client.py`) and requires its folder listing to
+window, so A14 also walks Files' AT-SPI tree in the guest with the external AT-SPI
+client (`tools/atspi_external_client.py`, copied from the checkout into the slot user's
+`~/.cache/acceptance/`; the image does not ship test tooling) and requires its folder listing to
 hold entries; it creates an `acc-files-*` folder in home first, so home is never empty.
 
 R05 runs `tilo system health --gpu --json` in the guest and reads every app's `tilo-gpu:
@@ -201,8 +202,8 @@ changes in its history is part of every judged run. Under TCG it reports without
 The checks `build-image.yml` runs on an installed image, which per-push dev builds skip,
 run here on every full run instead, on the dev disk under KVM:
 
-- R06 runs the image's boot gate (`/usr/libexec/tilo/boot-performance-gate.sh`, from
-  `os/tests/boot_performance_gate.sh`) as root: kernel and userspace to greetd's login
+- R06 runs the boot gate (`os/tests/boot_performance_gate.sh`, sent from the checkout in
+  the command, since the image ships no test tooling) as root: kernel and userspace to greetd's login
   endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
   VM's boot timestamps, so where it runs in the order does not matter. Every run also
   writes where the boot's time went (`R06-boot-analysis.txt`: `systemd-analyze time`,
