@@ -2026,38 +2026,7 @@ impl RootModel for ResourceRoot {
                 ),
             ));
         }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::history::VIEW_TYPE
-        {
-            let output = super::history::answer(doc, request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::record::RECORD_ACTION_TYPE
-        {
-            let output = self
-                .storage
-                .record_action(self.dispatch.me(), request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::chain::CHAIN_ACTION_TYPE
-        {
-            let output = self
-                .storage
-                .chain_action(self.dispatch.me(), request.payload)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
-        }
-        if let Some(request) = op.unscoped()
-            && request.type_id == super::person::HISTORY_TYPE
-        {
-            let output = self.storage.person_history(request.payload)?;
+        if let Some(output) = self.start_record_operation(op, doc)? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -2078,6 +2047,33 @@ impl RootModel for ResourceRoot {
 }
 
 impl ResourceRoot {
+    /// The record-level requests every framework app answers the same way:
+    /// its history at a version, an operation on one of its records or its
+    /// chain of parts, and the person's own record history.
+    fn start_record_operation(
+        &self,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &ui_core::widget::Edits<'_>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        let output = if request.type_id == super::history::VIEW_TYPE {
+            super::history::answer(doc, request.payload)?
+        } else if request.type_id == super::record::RECORD_ACTION_TYPE {
+            self.storage
+                .record_action(self.dispatch.me(), request.payload)?
+        } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
+            self.storage
+                .chain_action(self.dispatch.me(), request.payload)?
+        } else if request.type_id == super::person::HISTORY_TYPE {
+            self.storage.person_history(request.payload)?
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(output))
+    }
+
     /// What the resource's search entries are of now, and the surfaces'
     /// query sinks. What the surfaces show (a page's text, live rows)
     /// changes on its own, beside the resource's revision.
