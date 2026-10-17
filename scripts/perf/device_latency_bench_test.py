@@ -77,5 +77,27 @@ class DeviceBench(unittest.TestCase):
                 device_latency_bench.Switcher(device, "device").run(1)
 
 
+TRANS_STAT = """     From  :   To
+           : 300000000 687000000 1250000000   time(ms)
+* 300000000:         0       146      7282   6000
+  687000000:     44714         0     97051   3000
+ 1250000000:     99066      1634         0   1000
+Total transition : 428934
+"""
+
+
+class GpuClocks(unittest.TestCase):
+    def test_time_in_state_is_read_per_clock(self):
+        self.assertEqual(device_latency_bench.gpu_time_in_state(TRANS_STAT),
+                         {300_000_000: 6000, 687_000_000: 3000, 1_250_000_000: 1000})
+
+    def test_the_run_is_the_difference_of_two_readings(self):
+        before = {300_000_000: 6000, 687_000_000: 3000, 1_250_000_000: 1000}
+        after = {300_000_000: 6600, 687_000_000: 3100, 1_250_000_000: 2300}
+        self.assertEqual(device_latency_bench.gpu_clock_share(before, after),
+                         {"300": 30.0, "687": 5.0, "1250": 65.0})
+        self.assertEqual(device_latency_bench.gpu_clock_share(before, before), {})
+
+
 if __name__ == "__main__":
     unittest.main()

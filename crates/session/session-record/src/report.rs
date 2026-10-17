@@ -69,7 +69,7 @@ pattern!(
 );
 pattern!(
     RENDER_PHASE_FIELD,
-    r"\b(frames|direct_frames|direct_dropped|flip_completions|unprofiled_frames|window_us|bridge_us|scanout_us|readback_bytes|output_bytes|avg_direct_us|max_direct_us|direct_failures)=(\d+)\b"
+    r"\b(frames|direct_frames|direct_dropped|flip_completions|unprofiled_frames|window_us|bridge_us|scanout_us|readback_bytes|output_bytes|avg_direct_us|max_direct_us|direct_failures|direct_sparse_frames|client_scanout_frames)=(\d+)\b"
 );
 pattern!(
     DIRECT_STATUS,
@@ -677,6 +677,13 @@ pub struct RenderBudgets {
     pub render_us: i64,
     /// 95th-percentile microseconds of a painted frame's main-thread work.
     pub frame_work_us: i64,
+    /// Median microseconds from a typed key to the frame showing its answer,
+    /// per app; `None` leaves typing ungated.
+    pub key_to_present_us: Option<i64>,
+    /// Share of direct frames, in percent, that repaired only their damage
+    /// or showed a client's own buffer instead of rendering the whole
+    /// output; `None` leaves it ungated.
+    pub min_damage_limited_percent: Option<i64>,
 }
 
 fn int(value: Option<&Value>) -> i64 {
@@ -760,6 +767,12 @@ pub fn render_gate(report: &Value, budgets: RenderBudgets) -> Vec<String> {
             }
         }
     }
+    if let Some(percent) = budgets.min_damage_limited_percent {
+        failures.extend(damage_limited_failure(&phases, percent));
+    }
+    if let Some(budget) = budgets.key_to_present_us {
+        failures.extend(key_latency_failures(&flight, budget));
+    }
     if frames.get("available").is_some_and(Value::is_true) {
         let work = int(frames.get("frame_work_us").and_then(|work| work.get("p95")));
         if work > budgets.frame_work_us {
@@ -770,6 +783,51 @@ pub fn render_gate(report: &Value, budgets: RenderBudgets) -> Vec<String> {
         }
     }
     failures
+}
+
+/// Why the login's direct frames were not damage-limited often enough: the
+/// frames that repaired only their damage or scanned a client's buffer out,
+/// against every direct frame, below `percent`.
+fn damage_limited_failure(phases: &[&Value], percent: i64) -> Option<String> {
+    let direct: i64 = phases
+        .iter()
+        .map(|phase| int(phase.get("direct_frames")))
+        .sum();
+    if direct == 0 {
+        return None;
+    }
+    let limited: i64 = phases
+        .iter()
+        .map(|phase| {
+            int(phase.get("direct_sparse_frames"))
+                .saturating_add(int(phase.get("client_scanout_frames")))
+        })
+        .sum();
+    (limited.saturating_mul(100) < percent.saturating_mul(direct)).then(|| {
+        format!(
+            "{limited} of {direct} direct frames repaired only their damage or scanned a client out, \
+             under {percent} %"
+        )
+    })
+}
+
+/// Apps whose typed keys took longer than `budget_us` to show, at the median.
+fn key_latency_failures(flight: &Value, budget_us: i64) -> Vec<String> {
+    let Some(Value::Map(apps)) = flight.get("key_latency_us") else {
+        return Vec::new();
+    };
+    apps.iter()
+        .filter_map(|(app, metrics)| {
+            let present = metrics.get("key_to_present_us")?;
+            let median = int(present.get("p50"));
+            (median > budget_us).then(|| {
+                format!(
+                    "keys typed into {app} took {median} us to show at the median over {} keys, budget {budget_us} us",
+                    int(present.get("count"))
+                )
+            })
+        })
+        .collect()
 }
 
 /// The `--key-latency` table: key-to-present latency of typing, per app.
