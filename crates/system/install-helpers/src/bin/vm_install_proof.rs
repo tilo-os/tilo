@@ -12,6 +12,12 @@ fn main() -> ExitCode {
             &tilo_install_helpers::code_refresh::System,
         );
     }
+    if args
+        .first()
+        .is_some_and(|word| word == "code-refresh-probe")
+    {
+        return tilo_install_helpers::code_refresh_probe::main(args.get(1..).unwrap_or_default());
+    }
     if let [command, base] = args.as_slice()
         && command == "code-refresh-check"
     {

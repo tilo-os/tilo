@@ -429,12 +429,10 @@ fn the_installer_scripts_ask_the_compiled_helper() {
     assert!(backend.contains(
         "\"$STAGING_HANDOFF\" write-machine-info \"$DEPLOY_ETC/machine-info\" \"$DEVICE_LABEL\""
     ));
-    // Only the development VM's code-refresh probe, which runs the refresh
-    // loop's Python target probe, is still Python.
-    let probe = backend.find("  python3 - \"$0\" ").unwrap();
-    let probe_end = probe + backend.get(probe..).unwrap().find("\nPY\n").unwrap();
-    assert!(!backend.get(..probe).unwrap().contains("python"));
-    assert!(!backend.get(probe_end..).unwrap().contains("python"));
+    assert!(!backend.contains("python"), "tilo-install");
+    assert!(
+        backend.contains("  exec /usr/libexec/tilo-vm-install-proof code-refresh-probe \"$0\" ")
+    );
     assert!(backend.contains(
         "/usr/libexec/tilo-vm-install-proof code-refresh-check /run/tilo-installer/code-refresh"
     ));
