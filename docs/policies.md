@@ -148,24 +148,31 @@ The product reasoning behind these is in `AGENTS.md` ("Project Scope") and the
 | Input and accessibility parity: keyboard, pointer, touch and assistive technology all reach every function; layouts survive enlarged text, high contrast and small displays; looking good does not need an expensive GPU. | Review; check light, dark and high-contrast shots (`TILO_SHOTS_THEME`) |
 | Durable user state is never lost silently: formats stay readable across versions, and a failed write or migration is reported and recoverable. | Review |
 
-### Motion: Draft, decision needed
+### Motion
 
-Current behaviour is specified in
-[window-management.md § Motion](architecture/window-management.md#motion)
-and the durations in HIG §9.7: rects spring to their new layout, opacity tweens
-on `tokens.motion.durations`, reduced motion collapses every duration to zero.
+**Motion follows the input.** Direct manipulation (drag, swipe, pinch)
+animates continuously and hands its velocity to the settle. A pointer click
+may animate at `fast` or `base`. A keyboard shortcut applies its result on
+the next frame; only spatial context may move, at `fast` at most: Super+→
+shows the focused window at once and slides the viewport only when the
+target was off screen, Ctrl+Tab has no crossfade, and the workspace switch
+keeps a `fast` direction cue. Repeated presses never queue. Agents and
+scripts follow the keyboard rule. Reduced motion stays the global override.
 
-Proposed: **motion follows the input.** A keyboard shortcut applies on the next
-frame; only spatial context (where something went) may move, and at most at
-`fast`. Gestures stay welded to the fingers. This conflicts with parts of the
-current table, and these are open:
+A shortcut is a frequent expert action with a known result, so animating it
+adds latency to every repetition, while pointer and finger motion explains
+where things went. Scope: the shell and every toolkit widget it lays out.
+Transitions carry their source (`ui::tokens::MotionSource`) from where the
+operation runs, and `tokens.motion` picks the duration per source; the
+specification is [window-management.md § Motion](architecture/window-management.md#motion)
+with the durations in HIG §9.7.
 
-- the orientation of the Super+→ transition;
-- whether Ctrl+Tab keeps its crossfade;
-- whether the Ctrl+Super workspace switch keeps its slide.
-
-Until decided, the current specification stands. Not automated: a literal
-`Duration::from_millis` in an animation instead of `tokens::motion` (HIG §9.13).
+Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
+`crates/session/shell/tests/strip_navigation.rs` (the first frame after a
+chord or action shows the final layout, and only the viewport may still move,
+within `fast`). A new transition that ignores its source, and a literal
+`Duration::from_millis` in an animation instead of `tokens::motion`
+(HIG §9.13), are review.
 
 ## Security and sandboxing
 
@@ -199,7 +206,7 @@ weaken it for convenience ([security.md](architecture/security.md)).
 
 | Rule | Enforced by |
 |---|---|
-| Interoperability with proprietary formats and protocols is clean-room: public specifications and black-box observation only. Nobody decompiles or disassembles proprietary binaries for Tilo. | Review |
+| Interoperability with proprietary formats and protocols is clean-room: public specifications and black-box observation only. Nobody working on Tilo decompiles or disassembles proprietary binaries, or reads code derived from them. The same applies to a proprietary design system's unpublished formulas: reproduce what can be observed, not what was extracted. | Review |
 | Ported or vendored code keeps its licence and notices and records its upstream version or commit (`vendor/PATCHES.md`, a `PROVENANCE.md` beside the code). | Partly: [`check_vendor_provenance.py`](../tools/policy/check_vendor_provenance.py) requires a licence file and a `PROVENANCE.md` naming the `Cargo.toml` version in every `vendor/*` directory; that the licence is the upstream text, and code ported outside `vendor/`, are review |
 | No proprietary assets, trademarks or trade dress. | Review |
 | No in-house H.264, HEVC or ProRes codec without a patent decision. | Partly: [`check_media_stack.py`](../tools/policy/check_media_stack.py) bans the codec crates; a hand-written codec is review |
@@ -208,5 +215,5 @@ weaken it for convenience ([security.md](architecture/security.md)).
 
 Review-only rules above that look cheap to check, not yet done:
 
-- Motion: a ratchet for literal animation durations, once the motion section is
-  decided.
+- Motion: a ratchet for literal animation durations (the tab bar, spawn fade
+  and strip indicators still carry their own constants).
