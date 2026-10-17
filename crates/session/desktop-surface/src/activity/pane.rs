@@ -860,6 +860,9 @@ pub struct RoomActivityPane {
     brief_more_advance: usize,
     brief_offset: usize,
     brief_expansion_started: Option<(usize, Instant)>,
+    /// Reduced motion as last drawn (`Theme::motion`): a brief opens at
+    /// once instead of growing.
+    reduce_motion: bool,
     expanded_brief: Option<usize>,
     tasks: Vec<WorkspaceTask>,
     task_source: Option<TaskListSource>,
@@ -1113,6 +1116,7 @@ impl RoomActivityPane {
             brief_offset: 0,
             expanded_brief: None,
             brief_expansion_started: None,
+            reduce_motion: false,
             tasks: Vec::new(),
             task_source: None,
             selected_task: None,
@@ -3340,6 +3344,7 @@ impl RoomActivityPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.motion().reduced();
         // The header is sized from the text scale (`header_h`), and `layout`
         // has no theme: when the scale the last layout assumed is not this
         // frame's, lay the sheet out again before anything is placed.
@@ -6182,7 +6187,8 @@ impl RoomActivityPane {
                 self.open_brief_in_explorer(index);
             } else {
                 self.expanded_brief = Some(index);
-                self.brief_expansion_started = Some((index, Instant::now()));
+                self.brief_expansion_started =
+                    (!self.reduce_motion).then(|| (index, Instant::now()));
             }
             return Some(handled_outcome());
         }
@@ -6746,7 +6752,7 @@ impl RoomActivityPane {
             self.open_brief_in_explorer(index);
         } else {
             self.expanded_brief = Some(index);
-            self.brief_expansion_started = Some((index, Instant::now()));
+            self.brief_expansion_started = (!self.reduce_motion).then(|| (index, Instant::now()));
         }
     }
 

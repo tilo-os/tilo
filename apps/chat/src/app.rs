@@ -755,6 +755,9 @@ pub struct ChatApp {
     pub(crate) agent_tasks: AgentTaskClient,
     /// Retained direct-Agent conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
+    /// The person's reduced-motion setting, applied to every floating
+    /// placement this app owns (`Widget::set_motion_reduced`).
+    pub(crate) motion_reduced: bool,
     pub(crate) agent_surfaces:
         HashMap<Id, crate::agent_conversation_surface::AgentConversationSurface>,
     pub(crate) agent_surface_requests: VecDeque<ui::floating_surface::FloatingSurfaceRequest>,
@@ -1080,6 +1083,7 @@ impl ChatApp {
             person_body_views: HashMap::new(),
             agent_intents: ui::LocalState::new(HashMap::new()),
             agent_tasks: AgentTaskClient::new(),
+            motion_reduced: false,
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
             focused_agent_surface: None,
@@ -4344,6 +4348,17 @@ impl Widget for ChatApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        self.call.placement.set_reduce_motion(reduced);
+        for surface in self.agent_surfaces.values_mut() {
+            surface.placement.set_reduce_motion(reduced);
+        }
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
     }
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {

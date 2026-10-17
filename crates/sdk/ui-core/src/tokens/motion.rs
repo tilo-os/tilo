@@ -223,6 +223,111 @@ impl Motion {
     }
 }
 
+/// The motion a widget may play: the [`Motion`] tokens with the person's
+/// reduced-motion setting applied. Read through [`crate::Theme::motion`];
+/// it is the one place reduced motion is decided, so every widget and the
+/// shell's chrome follow the same rule (HIG §9.7, design-language "Motion"):
+///
+/// - Movement — a slide, a scale, a spring, a snap, an overshoot — lands at
+///   once ([`Self::movement`] is zero, [`Self::moves`] is false).
+/// - A change of what is shown may still cross-fade, at most `fast`
+///   ([`Self::fade`]): opacity carries the change without anything moving.
+/// - A looping indicator (spinner, busy arc, sweeping bar) stands still
+///   ([`Self::loops`] is false); progress and status keep updating.
+///
+/// Reduced motion never stops the frame pump: a widget that settles asks
+/// for no frames, and one that still has a fade or new content to show
+/// gets them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectiveMotion {
+    tokens: Motion,
+    reduced: bool,
+}
+
+impl EffectiveMotion {
+    #[must_use]
+    pub const fn new(tokens: Motion, reduced: bool) -> Self {
+        Self { tokens, reduced }
+    }
+
+    /// Whether the person asked for reduced motion.
+    #[must_use]
+    pub const fn reduced(self) -> bool {
+        self.reduced
+    }
+
+    /// Whether anything may move: false under reduced motion.
+    #[must_use]
+    pub const fn moves(self) -> bool {
+        !self.reduced
+    }
+
+    /// Whether a looping indicator animates; under reduced motion it draws
+    /// its resting mark.
+    #[must_use]
+    pub const fn loops(self) -> bool {
+        !self.reduced
+    }
+
+    /// How long a movement lasts: `nominal`, or nothing under reduced motion.
+    #[must_use]
+    pub fn movement(self, nominal: Duration) -> Duration {
+        if self.reduced {
+            Duration::ZERO
+        } else {
+            nominal
+        }
+    }
+
+    /// How long a cross-fade lasts: `nominal`, or at most `fast` under
+    /// reduced motion, where it stands in for the movement it replaces.
+    #[must_use]
+    pub fn fade(self, nominal: Duration) -> Duration {
+        if self.reduced {
+            nominal.min(self.tokens.durations.fast())
+        } else {
+            nominal
+        }
+    }
+
+    /// The cross-fade that replaces a spatial transition under reduced
+    /// motion: `fast`, or nothing when motion is on (the movement itself
+    /// shows the change).
+    #[must_use]
+    pub fn replacement_fade(self) -> Duration {
+        if self.reduced {
+            self.tokens.durations.fast()
+        } else {
+            Duration::ZERO
+        }
+    }
+
+    /// `fast` as a movement.
+    #[must_use]
+    pub fn fast(self) -> Duration {
+        self.movement(self.tokens.durations.fast())
+    }
+
+    /// `base` as a movement.
+    #[must_use]
+    pub fn base(self) -> Duration {
+        self.movement(self.tokens.durations.base())
+    }
+
+    /// `slow` as a movement.
+    #[must_use]
+    pub fn slow(self) -> Duration {
+        self.movement(self.tokens.durations.slow())
+    }
+
+    /// The tokens themselves, for values reduced motion does not change
+    /// (springs a gesture tracks with, gesture tuning).
+    #[must_use]
+    pub const fn tokens(self) -> Motion {
+        self.tokens
+    }
+}
+
 /// iOS-style overscroll resistance.
 ///
 /// `distance` is how far past the end the input asks to go; the return is
@@ -245,6 +350,30 @@ pub fn rubber_band(distance: f32, limit: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_motion_lands_movement_at_once_and_keeps_a_short_fade() {
+        let tokens = Motion::default();
+        let fast = tokens.durations.fast();
+        let base = tokens.durations.base();
+        let on = EffectiveMotion::new(tokens, false);
+        assert!(on.moves() && on.loops() && !on.reduced());
+        assert_eq!(on.movement(base), base);
+        assert_eq!(on.fade(base), base);
+        assert_eq!(on.base(), base);
+        assert_eq!(on.replacement_fade(), Duration::ZERO);
+
+        let reduced = EffectiveMotion::new(tokens, true);
+        assert!(!reduced.moves() && !reduced.loops() && reduced.reduced());
+        assert_eq!(reduced.movement(base), Duration::ZERO);
+        assert_eq!(reduced.slow(), Duration::ZERO);
+        assert_eq!(reduced.fade(base), fast, "a fade is capped at fast");
+        assert_eq!(
+            reduced.fade(Duration::from_millis(50)),
+            Duration::from_millis(50)
+        );
+        assert_eq!(reduced.replacement_fade(), fast);
+    }
 
     #[test]
     fn motion_springs_have_their_documented_damping() {

@@ -855,6 +855,9 @@ pub struct ShellOverlayHost {
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
     /// Where the hardware-key readout was last painted, `None` while none is.
     osd_painted: std::cell::Cell<Option<Rect>>,
+    /// The motion the chrome may play as last drawn (`Theme::motion`), for
+    /// transitions started outside a draw.
+    motion: std::cell::Cell<ui::tokens::EffectiveMotion>,
     /// Last `chrome.revision` seen by [`Self::resync_strips_from_tree`];
     /// a disagreement means the tree changed shape and live
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
@@ -1782,6 +1785,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Box<ShellSceneSections> {
+        self.motion.set(theme.motion());
         // Boxed so each section keeps its address while the caller draws
         // into it too: a floating surface's backdrop layer is found by the
         // scene it is drawn into.
@@ -2531,6 +2535,10 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
+            motion: std::cell::Cell::new(ui::tokens::EffectiveMotion::new(
+                ui::tokens::Motion::default(),
+                false,
+            )),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
             peer_picture_wake: None,
@@ -8240,11 +8248,17 @@ impl ShellOverlayHost {
         self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_visual = self.followed_roster_row();
-            self.follow_transition
-                .set_open(true, Duration::from_millis(180), ui::Curve::EaseOut);
+            self.follow_transition.set_open(
+                true,
+                self.motion.get().movement(Duration::from_millis(180)),
+                ui::Curve::EaseOut,
+            );
         } else {
-            self.follow_transition
-                .set_open(false, Duration::from_millis(140), ui::Curve::EaseOut);
+            self.follow_transition.set_open(
+                false,
+                self.motion.get().movement(Duration::from_millis(140)),
+                ui::Curve::EaseOut,
+            );
         }
         let active_command = match (self.followed_peer.as_deref(), self.chrome.as_ref()) {
             (Some(id), Some(chrome)) => {

@@ -477,11 +477,13 @@ impl Theme {
             crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
         // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
         // Baking the file's factors here would apply them twice. Reduced motion
-        // follows the host override: the compositor is itself a UI host, so an
-        // explicitly reduced-motion session must not keep full-desktop
-        // transitions running even when settings.json has not been written yet.
-        // A file schema this build rejects does not contribute contrast or
-        // caret. The host override is its own admitted layer.
+        // is either source: the person's switch in Settings (the file), or the
+        // host override — the compositor is itself a UI host, so an explicitly
+        // reduced-motion session must not keep full-desktop transitions running
+        // even when settings.json has not been written yet. Taking only the
+        // override left the Settings switch unable to reach the shell's chrome.
+        // A file schema this build rejects does not contribute contrast,
+        // caret or motion. The host override is its own admitted layer.
         let file = stack.accessibility;
         let admitted = file.validate().is_ok();
         stack.accessibility = crate::theme_layers::AccessibilityLayer {
@@ -493,7 +495,7 @@ impl Theme {
             distinct_letters: file.distinct_letters.filter(|_| admitted),
             text_scale: 1.0,
             ui_scale: 1.0,
-            reduce_motion: reduce_motion_override,
+            reduce_motion: reduce_motion_override || (admitted && file.reduce_motion),
             ..crate::theme_layers::AccessibilityLayer::default()
         };
         resolve_theme_layers(&stack)
@@ -551,6 +553,14 @@ impl Theme {
     /// `--shots` theme override. `None` for an unknown name.
     pub fn named(name: &str) -> Option<Self> {
         Preset::find(name).map(Self::preset)
+    }
+
+    /// The motion widgets may play: the motion tokens with reduced motion
+    /// applied. Every motion decision reads this, never `reduce_motion`
+    /// alongside raw durations, so the rule lives in one place.
+    #[must_use]
+    pub fn motion(&self) -> crate::tokens::EffectiveMotion {
+        crate::tokens::EffectiveMotion::new(self.tokens.motion, self.reduce_motion)
     }
 
     #[must_use]
@@ -1120,6 +1130,23 @@ mod tests {
             assert!(!Theme::configured_from_text("", false).reduce_motion);
         }
 
+        // Case `the_settings_switch_reaches_a_host_without_the_override`.
+        // The shell reads its chrome theme through `configured_from_text`
+        // on every settings change, so the person's switch must be enough.
+        {
+            let on = r#"{"appearance":{"reduce_motion":true}}"#;
+            let off = r#"{"appearance":{"reduce_motion":false}}"#;
+            assert!(Theme::configured_from_text(on, false).reduce_motion);
+            assert!(!Theme::configured_from_text(off, false).reduce_motion);
+            assert!(Theme::configured_from_text(off, true).reduce_motion);
+            let layer =
+                r#"{"appearance":{"accessibility":{"schema_version":1,"reduce_motion":true}}}"#;
+            assert!(Theme::configured_from_text(layer, false).reduce_motion);
+            let rejected =
+                r#"{"appearance":{"accessibility":{"schema_version":99,"reduce_motion":true}}}"#;
+            assert!(!Theme::configured_from_text(rejected, false).reduce_motion);
+        }
+
         // Case `with_a11y_picks_the_high_contrast_of_the_theme_s_polarity`.
         {
             use crate::a11y::A11ySettings;
@@ -1302,6 +1329,20 @@ mod configured_theme {
                 Theme::configured_from(Some(&settings)).name,
                 Theme::light().name
             );
+        }
+
+        // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`:
+        // the shell re-reads its theme through this door on every settings
+        // change, so flipping the switch must flip the chrome's motion.
+        if !crate::host::environment().accessibility.reduce_motion {
+            let dir = tempfile::tempdir().expect("temp config dir");
+            let settings = dir.path().join("settings.json");
+            std::fs::write(&settings, r#"{"appearance":{"reduce_motion":true}}"#)
+                .expect("write settings");
+            assert!(Theme::configured_from(Some(&settings)).reduce_motion);
+            std::fs::write(&settings, r#"{"appearance":{"reduce_motion":false}}"#)
+                .expect("write settings");
+            assert!(!Theme::configured_from(Some(&settings)).reduce_motion);
         }
 
         // Case `the_configured_theme_does_not_read_the_identity`: the

@@ -252,7 +252,11 @@ emoji or Unicode glyphs as icons.
 - Motion answers an action (open, expand, confirm, move) and shows what changed.
 - Springs come from `tokens::motion`, with no literal durations.
 - Nothing animates at idle.
-- Reduced motion replaces movement with a cross-fade.
+- Reduced motion: movement (slides, scales, springs, snaps) lands at once; a
+  change of what is shown may cross-fade, at most `fast`; looping indicators
+  stand still. Progress, status and new content keep updating. Read it
+  through `Theme::motion()` (`tokens::EffectiveMotion`); the same rule is in
+  HIG §9.7.
 
 ## Words and structure
 

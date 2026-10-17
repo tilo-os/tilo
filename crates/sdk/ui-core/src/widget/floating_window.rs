@@ -134,6 +134,10 @@ pub struct FloatingWindow<C: Widget> {
     overlay_chrome_hovered: bool,
     overlay_chrome_changed_at: Option<Instant>,
     overlay_chrome_from_alpha: f64,
+    /// The chrome's presence opacity as last drawn: under reduced motion
+    /// its hide is one step, painted when the hold's deadline finds the
+    /// opacity changed.
+    drawn_chrome_alpha: f64,
     /// The theme from the latest layout build. Floating content is laid out
     /// outside the host's taffy tree, so it must retain the same theme instead
     /// of silently measuring with dark-mode metrics during light/high-contrast
@@ -172,6 +176,7 @@ impl<C: Widget> FloatingWindow<C> {
             overlay_chrome_hovered: false,
             overlay_chrome_changed_at: None,
             overlay_chrome_from_alpha: 1.0,
+            drawn_chrome_alpha: 1.0,
             layout_theme: Theme::dark(),
         }
     }
@@ -591,20 +596,24 @@ impl<C: Widget> FloatingWindow<C> {
         // not a bouncing dialog.
         let u = open_t - 1.0;
         let eased = 1.0 + 1.7 * u * u * u + 0.7 * u * u;
+        // The squish relaxes on time since the last drag sample, from the
+        // amount that sample set: the same curve at any frame rate.
+        let mut squish = self.squish;
         if let Some(last) = self.last_motion_at {
             let settle =
                 now.saturating_duration_since(last).as_secs_f64() / SQUISH_SETTLE.as_secs_f64();
-            self.squish *= (1.0 - settle.clamp(0.0, 1.0)).powi(2);
+            squish *= (1.0 - settle.clamp(0.0, 1.0)).powi(2);
             if settle >= 1.0 {
                 self.squish = 0.0;
+                squish = 0.0;
                 self.last_motion_at = None;
             }
         }
         let horizontal = self.squish_axis.x.abs() >= self.squish_axis.y.abs();
         let (sx, sy) = if horizontal {
-            (1.0 + self.squish * 0.018, 1.0 - self.squish * 0.010)
+            (1.0 + squish * 0.018, 1.0 - squish * 0.010)
         } else {
-            (1.0 - self.squish * 0.008, 1.0 + self.squish * 0.016)
+            (1.0 - squish * 0.008, 1.0 + squish * 0.016)
         };
         let scale = 0.94 + 0.06 * eased;
         let c = self.rect.center();
@@ -927,6 +936,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         } else {
             self.overlay_chrome_alpha_at(crate::time::now(), theme.reduce_motion)
         };
+        self.drawn_chrome_alpha = presence_alpha;
         let chrome_alpha = landing_alpha * presence_alpha;
         if chrome_alpha > 0.001 {
             scene.push_layer(
@@ -1344,26 +1354,59 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // Frames only while something moves or fades. Under reduced motion
+        // the spawn and squish land at once and the chrome's hide is a
+        // single step at the end of its hold (`next_wake_deadline`); while
+        // the chrome only holds, nothing changes, so it waits on a deadline.
+        let now = crate::time::now();
+        let moves = self.layout_theme.motion().moves();
         let open_duration = if self.spawn_from.is_some() {
             SOURCE_HANDOFF_MOTION
         } else {
             OPEN_MOTION
         };
-        let own_motion = self.opened_at.is_some_and(|at| {
-            self.source_handoff_progress_override.is_none() && at.elapsed() < open_duration
-        }) || self
-            .last_motion_at
-            .is_some_and(|at| at.elapsed() < SQUISH_SETTLE);
+        let own_motion = moves
+            && (self.opened_at.is_some_and(|at| {
+                self.source_handoff_progress_override.is_none()
+                    && now.saturating_duration_since(at) < open_duration
+            }) || self
+                .last_motion_at
+                .is_some_and(|at| now.saturating_duration_since(at) < SQUISH_SETTLE));
         let chrome_motion = self.overlay_chrome
+            && moves
             && if let Some(changed_at) = self.overlay_chrome_changed_at {
-                changed_at.elapsed() < OVERLAY_CHROME_FADE
+                now.saturating_duration_since(changed_at) < OVERLAY_CHROME_FADE
             } else {
                 !self.overlay_chrome_hovered
                     && self.opened_at.is_some_and(|opened| {
-                        opened.elapsed() < OVERLAY_CHROME_HOLD + OVERLAY_CHROME_FADE
+                        let open = now.saturating_duration_since(opened);
+                        open >= OVERLAY_CHROME_HOLD
+                            && open < OVERLAY_CHROME_HOLD + OVERLAY_CHROME_FADE
                     })
             };
-        own_motion || chrome_motion || self.content.needs_animation_frame()
+        let chrome_step = self.open
+            && self.overlay_chrome
+            && !moves
+            && (self.overlay_chrome_alpha_at(now, true) - self.drawn_chrome_alpha).abs() > 0.001;
+        own_motion || chrome_motion || chrome_step || self.content.needs_animation_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        // The chrome's discovery hold ends on a deadline, not on frames.
+        let hold_ends = (self.open
+            && self.overlay_chrome
+            && !self.overlay_chrome_hovered
+            && self.overlay_chrome_changed_at.is_none())
+        .then(|| {
+            self.opened_at
+                .and_then(|opened| opened.checked_add(OVERLAY_CHROME_HOLD))
+        })
+        .flatten()
+        .filter(|end| *end > crate::time::now());
+        hold_ends
+            .into_iter()
+            .chain(self.content.next_wake_deadline())
+            .min()
     }
 }
 
