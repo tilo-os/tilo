@@ -61,7 +61,7 @@ pub fn inspect(
     host: Option<&app_host::client::BlockingClient>,
     target: &RuntimeTarget,
 ) -> Result<RuntimeReview, String> {
-    let host = host.ok_or_else(|| ui::i18n!("store-runtime-unavailable"))?;
+    let host = host.ok_or_else(|| ui::i18n!("store-runtime-repair-unavailable"))?;
     let root = host
         .list()?
         .into_iter()
@@ -378,6 +378,34 @@ type = "gui"
         assert_eq!(lists.load(std::sync::atomic::Ordering::SeqCst), 1);
         drop(client);
         service.shutdown().unwrap();
+    }
+
+    #[test]
+    fn runtime_repair_and_repository_failures_have_distinct_localized_copy() {
+        let catalogs = [
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ];
+        let target = RuntimeTarget::new("so.tilo.mail".into(), "engine/mail".into()).unwrap();
+        for (locale, service_error, missing_offer) in [
+            (
+                "en-US",
+                "The app service is unavailable. No download was started.",
+                "No enabled repository offers the required runtime for this device.",
+            ),
+            (
+                "de-DE",
+                "Der App-Dienst ist nicht verfügbar. Kein Download wurde gestartet.",
+                "Keine aktivierte Quelle bietet die benötigte Laufzeit für dieses Gerät an.",
+            ),
+        ] {
+            ui::i18n::I18nManager::install("en-US", locale, &catalogs).unwrap();
+            assert_eq!(inspect(None, &target).unwrap_err(), service_error);
+            assert_eq!(ui::i18n!("store-runtime-unavailable"), missing_offer);
+            let reviewed = ui::i18n!("store-runtime-reviewed", "name" => "Example");
+            assert!(reviewed.contains("Example"));
+            assert_ne!(reviewed, ui::i18n!("store-runtime-repair-reviewed"));
+        }
     }
 
     #[test]
