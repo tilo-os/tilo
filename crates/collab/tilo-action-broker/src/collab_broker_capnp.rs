@@ -6558,6 +6558,19 @@ impl CapnpBrokerState {
     ///
     /// Returns an error when the invocation is unknown, foreign, or non-cancellable.
     pub fn request_cancellation(&self, id: u64, actor: &str) -> Result<(), String> {
+        self.request_cancellation_for_owner(
+            id,
+            &InvocationOwner::Local {
+                actor: actor.into(),
+            },
+        )
+    }
+
+    fn request_cancellation_for_owner(
+        &self,
+        id: u64,
+        owner: &InvocationOwner,
+    ) -> Result<(), String> {
         self.expire_stale_invocations();
         let mut pending = self
             .pending_invocations
@@ -6566,7 +6579,7 @@ impl CapnpBrokerState {
         let job = pending
             .get(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
-        if !matches!(&job.owner, InvocationOwner::Local { actor: owner } if owner == actor) {
+        if &job.owner != owner {
             return Err("only the invocation owner may cancel it".into());
         }
         if !job.cancellable {
@@ -11494,11 +11507,17 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_id(),
             Err(error) => return Promise::err(error),
         };
-        let update = self
-            .state
-            .invocation_statuses(&current.broker_actor().id)
-            .into_iter()
-            .find_map(|(candidate, update)| (candidate == id).then_some(update));
+        let Some(certificate) = current.certificate.as_ref() else {
+            return Promise::err(capnp::Error::failed(
+                "invocation observer certificate missing".into(),
+            ));
+        };
+        let owner = InvocationOwner::AuthenticatedLocal {
+            root: certificate.user_public_key,
+            device: certificate.device_public_key,
+            agent: current.agent_id.clone(),
+        };
+        let update = self.state.invocation_status_for_owner(id, &owner);
         let mut result = results.get();
         result.set_found(update.is_some());
         if let Some(update) = update {
@@ -11526,10 +11545,17 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_id(),
             Err(error) => return Promise::err(error),
         };
-        if let Err(error) = self
-            .state
-            .request_cancellation(id, &current.broker_actor().id)
-        {
+        let Some(certificate) = current.certificate.as_ref() else {
+            return Promise::err(capnp::Error::failed(
+                "invocation caller certificate missing".into(),
+            ));
+        };
+        let owner = InvocationOwner::AuthenticatedLocal {
+            root: certificate.user_public_key,
+            device: certificate.device_public_key,
+            agent: current.agent_id.clone(),
+        };
+        if let Err(error) = self.state.request_cancellation_for_owner(id, &owner) {
             return Promise::err(capnp::Error::failed(error));
         }
         let Some(update) = self.state.invocation_status(id) else {

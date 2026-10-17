@@ -75,13 +75,13 @@ impl SignerCache {
             // An expired certificate must evict the private key too. Never
             // serve a result if trust changed while the signature was made.
             self.entries.remove(&cache_key);
-            return result.and(Err("device trust changed while signing receipt".into()));
+            return result.and_then(|_| Err("device trust changed while signing receipt".into()));
         }
         // Drop stale custody before attempting a reload, including on error.
         self.entries.remove(&cache_key);
         #[cfg(test)]
         {
-            self.loads += 1;
+            self.loads = self.loads.saturating_add(1);
         }
         let (key, certificate) = tilo_identity_host::broker::trusted_current_device(room)
             .map_err(|error| error.to_string())?;
@@ -143,9 +143,9 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let root = tempfile::tempdir().expect("root");
-            let config = root.path().join("config");
-            let system = root.path().join("system");
+            let directory = tempfile::tempdir().expect("root");
+            let config = directory.path().join("config");
+            let system = directory.path().join("system");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", &config)
                 .set("TILO_IDENTITY_ROOT", &system)
@@ -168,7 +168,7 @@ mod tests {
                 profile,
                 room,
                 _env: env,
-                _root: root,
+                _root: directory,
             };
             fixture.settle();
             fixture
@@ -202,7 +202,11 @@ mod tests {
     fn settle_file(path: &Path) {
         std::fs::File::open(path)
             .expect("open")
-            .set_modified(SystemTime::now() - Duration::from_secs(10))
+            .set_modified(
+                SystemTime::now()
+                    .checked_sub(Duration::from_secs(10))
+                    .expect("file timestamp"),
+            )
             .expect("settle");
     }
 

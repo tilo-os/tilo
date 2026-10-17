@@ -129,6 +129,11 @@ mod eager_bridge_tests {
             );
             waiting.push(response);
         }
+        assert!(
+            waiting
+                .iter_mut()
+                .all(|response| response.poll_ready() == PendingPoll::Waiting)
+        );
         let mut refused = fixture.state.action_invoke_with_origin(
             &caller,
             None,

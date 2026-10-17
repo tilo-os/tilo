@@ -507,7 +507,13 @@ impl ActionHost for CertifiedLocalActionHost {
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.check(caller)?;
-        self.state.action_cancel(&self.effective, id)
+        let job = self
+            .state
+            .remote_job(&self.effective, id)
+            .ok_or(ActionHostError::UnknownInvocation)?;
+        self.state
+            .request_cancellation_for_owner(job, &self.admission.owner())
+            .map_err(|reason| ActionHostError::NotCancellable { reason })
     }
 }
 
