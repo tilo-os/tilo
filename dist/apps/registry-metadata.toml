@@ -92,6 +92,9 @@ tagline = "Mail that keeps its place"
 [apps.maps]
 description = "Find places, plan routes, and orient yourself visually."
 tagline = "See where you are going"
+[apps.model-providers]
+description = "Add AI model providers, keep their keys on this device, and choose the models your agents use."
+tagline = "Choose who answers"
 [apps.monitor]
 description = "Watch processes, memory, storage, and system resources."
 tagline = "Know what your system is doing"
