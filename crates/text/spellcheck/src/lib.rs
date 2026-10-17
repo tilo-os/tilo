@@ -189,6 +189,9 @@ fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String>
 /// apostrophe ([`contraction`]) are safe-listed, while the generic path accepts
 /// only an adjacent transposition matching the dictionary's first candidate.
 pub fn probable_correction(language: &str, word: &str) -> Option<String> {
+    if let Some(candidate) = pronoun_correction(language, word) {
+        return Some(candidate);
+    }
     if word.chars().count() < 3 {
         return None;
     }
@@ -254,6 +257,22 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
         return Some(match_word_case(word, candidate));
     }
     (loading::dictionaries()?.correction)(language, word, &lower)
+}
+
+/// The English pronoun typed in lowercase: "i" is "I", "im" is "I'm". Sure
+/// enough to correct even though word lists hold "i" (they are lowercase
+/// throughout), and too short for [`probable_correction`]'s length floor,
+/// which keeps its generic path calm.
+#[must_use]
+pub fn pronoun_correction(language: &str, word: &str) -> Option<String> {
+    if !is_english(language) {
+        return None;
+    }
+    match word {
+        "i" => Some("I".to_owned()),
+        "im" | "Im" => contraction("im").map(str::to_owned),
+        _ => None,
+    }
 }
 
 /// [`probable_correction`] past the curated list: an adjacent
@@ -874,6 +893,11 @@ mod tests {
                 ("doesnt", Some("doesn't")),
                 ("Doesnt", Some("Doesn't")),
                 ("ive", Some("I've")),
+                ("im", Some("I'm")),
+                ("Im", Some("I'm")),
+                ("i", Some("I")),
+                ("I", None),
+                ("IM", None),
                 ("cant", None),
                 ("wont", None),
             ] {
