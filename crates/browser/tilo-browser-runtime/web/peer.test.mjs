@@ -792,7 +792,7 @@ test('httpsPost and the live plane accept a loopback http room for local review'
   assert.doesNotThrow(() => httpsPost('http://127.0.0.1:9764'));
   assert.throws(() => httpsPost('http://10.0.0.2:9764'), TypeError);
   assert.deepEqual(liveEndpoints('http://localhost:9764', {webtransportPort: 9700}), {
-    endpoint: 'https://localhost:9700/moq/live', fallback: 'http://localhost:9764/moq/live',
+    endpoint: 'https://127.0.0.1:9700/moq/live', fallback: 'http://localhost:9764/moq/live',
   });
   assert.deepEqual(liveEndpoints('https://host.example:8443', {webtransportPort: 9700}), {
     endpoint: 'https://host.example:8443/moq/live', fallback: 'https://host.example:8443/moq/live',

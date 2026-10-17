@@ -218,7 +218,10 @@ export function liveEndpoints(origin, host = {}) {
   const fallback = new URL(LIVE_PATH, base).href;
   if (host.webtransportOrigin) return {endpoint: new URL(LIVE_PATH, host.webtransportOrigin).href, fallback};
   if (!isLoopbackHttp(base) || !host.webtransportPort) return {endpoint: fallback, fallback};
-  return {endpoint: new URL(LIVE_PATH, `https://${base.hostname}:${host.webtransportPort}`).href, fallback};
+  // The local relay's TLS port listens on IPv4 loopback, and a browser
+  // resolves `localhost` to `::1` first without falling back for QUIC.
+  const hostname = base.hostname === 'localhost' ? '127.0.0.1' : base.hostname;
+  return {endpoint: new URL(LIVE_PATH, `https://${hostname}:${host.webtransportPort}`).href, fallback};
 }
 
 /**
