@@ -965,7 +965,7 @@ fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if runtime_module(name) || name == "index.html" {
+        if runtime_module(name) || matches!(name, "index.html" | "apple-touch-icon.png") {
             link_or_copy(&entry.path(), &bundle.join(name))?;
         }
     }
