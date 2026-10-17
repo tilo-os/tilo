@@ -2711,6 +2711,11 @@ impl SearchProvider for NativeApplicationsProvider {
                             OpenTarget::Here(group) => {
                                 crate::shell::window_actions::Destination::InGroup(group)
                             }
+                            // Right of the focused window, which is the
+                            // group this target names.
+                            OpenTarget::RightOf(_) => {
+                                crate::shell::window_actions::Destination::Beside
+                            }
                         };
                         crate::shell::window_actions::open_hosted(
                             &mut state,

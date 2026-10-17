@@ -704,6 +704,17 @@ impl SystemSettingsProvider {
 }
 
 impl SearchProvider for SystemSettingsProvider {
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        use ui::icons::Icon;
+        let (spec, _) = parse(&result.id)?;
+        Some(match spec.kind {
+            Kind::LockAfter => Icon::Lock,
+            Kind::BlankAfter | Kind::DisplayScale | Kind::DisplayRefreshRate => Icon::Monitor,
+            Kind::SuspendAfter | Kind::AutoSuspend => Icon::Moon,
+            Kind::KeyboardLayout => Icon::Keyboard,
+            Kind::AppearanceMode => Icon::Palette,
+        })
+    }
     fn id(&self) -> &str {
         PROVIDER_ID
     }
