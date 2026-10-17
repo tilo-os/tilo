@@ -1762,6 +1762,7 @@ onboarding-backup-confirmation = Confirm new backup passphrase
 onboarding-backup-confirmation-placeholder = Confirm passphrase
 onboarding-backup-save = Choose location and save backup…
 onboarding-backup-save-another = Save another copy
+onboarding-backup-save-action = Save an encrypted backup
 onboarding-backup-skip-acknowledgement = I understand that without an encrypted backup, losing this device means losing this identity.
 onboarding-backup-continue-without = Continue without backup
 onboarding-backup-failed = The backup was not saved
