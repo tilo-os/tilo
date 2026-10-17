@@ -3694,15 +3694,13 @@ impl ShellOverlayHost {
 
         // On the display the person is working on: across a 2x panel and a
         // 1x monitor, the desktop's bottom centre is on the monitor, below
-        // the panel's last row.
-        self.osd_painted.set(osd.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.overlay_area(),
-            alpha,
-        ));
+        // the panel's last row. Clear of the caret there.
+        let area = crate::shell::osd::OsdArea {
+            viewport: self.overlay_area(),
+            caret: self.text_caret,
+        };
+        self.osd_painted
+            .set(osd.draw(scene, transform, text_renderer, theme, area, alpha));
     }
 
     /// Paint the passing acknowledgement ("Enrollment token copied"), if one

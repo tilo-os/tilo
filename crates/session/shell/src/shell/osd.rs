@@ -164,6 +164,24 @@ fn level_to_percent(level: f32) -> u32 {
     (level * 100.0).round() as u32
 }
 
+/// Where an OSD may go: the display it shows on, and the focused field's
+/// caret (desktop coordinates), which it must not cover.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OsdArea {
+    pub viewport: Rect,
+    pub caret: Option<Rect>,
+}
+
+impl OsdArea {
+    /// The whole of `viewport`, with no caret to keep clear.
+    pub fn on(viewport: Rect) -> Self {
+        Self {
+            viewport,
+            caret: None,
+        }
+    }
+}
+
 /// One on-screen readout in flight.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Osd {
@@ -423,7 +441,7 @@ impl Osd {
         }
     }
 
-    /// Paint this readout inside `viewport` at the supplied lifecycle alpha,
+    /// Paint this readout inside `area` at the supplied lifecycle alpha,
     /// returning the pill's resting rect (`None` when nothing was painted).
     /// The OSD is intentionally non-interactive, so it owns no hit targets.
     pub fn draw(
@@ -432,9 +450,10 @@ impl Osd {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
+        area: OsdArea,
         alpha: f32,
     ) -> Option<Rect> {
+        let viewport = area.viewport;
         if alpha <= 0.0 {
             return None;
         }
@@ -471,7 +490,7 @@ impl Osd {
             .text(TextRole::Label)
             .with_weight(TextWeight::Medium)
             .with_kind(TextKind::Numeric);
-        let pill = OsdPill::layout(viewport, theme, text_renderer, &self, &text_style);
+        let pill = OsdPill::layout(area, theme, text_renderer, &self, &text_style);
         ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
         draw_glyph(scene, transform, pill.glyph, theme, self.kind);
         if let Some(bar) = pill.bar {
@@ -529,8 +548,11 @@ pub(crate) struct OsdPill {
 }
 
 impl OsdPill {
+    /// Bottom-centred on `area`'s display, or top-centred when that would
+    /// cover the caret the person is typing at: a volume key pressed while
+    /// writing in a terminal must not hide the prompt line.
     pub(crate) fn layout(
-        viewport: Rect,
+        area: OsdArea,
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         osd: &Osd,
@@ -541,6 +563,7 @@ impl OsdPill {
         let (pad, gap) = (f64::from(sp.s4), f64::from(sp.s3));
         let text_value = osd.value_text();
         let (value_w, text_h) = text_renderer.measure_style(&text_value, None, style);
+        let viewport = area.viewport;
         let has_bar = osd.has_level();
         // A level's value slot is as wide as its widest reading, so the bar
         // does not shift as the number gains digits or the sink mutes.
@@ -563,7 +586,15 @@ impl OsdPill {
         let height = height.min(viewport.height());
         let x0 = viewport.center().x - width / 2.0;
         let y1 = (viewport.y1 - f64::from(sp.s16)).max(viewport.y0 + height);
-        let rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let mut rect = Rect::new(x0, y1 - height, x0 + width, y1);
+        let clearance = crate::shell::desk_widgets::CARET_CLEARANCE;
+        if area
+            .caret
+            .is_some_and(|caret| caret.inflate(clearance, clearance).overlaps(rect))
+        {
+            let y0 = (viewport.y0 + f64::from(sp.s16)).min(viewport.y1 - height);
+            rect = Rect::new(x0, y0, x0 + width, y0 + height);
+        }
         let cy = rect.center().y;
         let glyph = Rect::new(
             rect.x0 + pad,
@@ -944,7 +975,41 @@ mod tests {
         let mut text = TextRenderer::new();
         text.set_text_scale(1.0);
         let style = theme.text(TextRole::Label);
-        OsdPill::layout(viewport, theme, &mut text, osd, &style)
+        OsdPill::layout(OsdArea::on(viewport), theme, &mut text, osd, &style)
+    }
+
+    #[test]
+    fn the_readout_moves_to_the_top_rather_than_cover_the_caret() {
+        let theme = Theme::dark();
+        let viewport = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(1.0);
+        let style = theme.text(TextRole::Label);
+        let osd = Osd::volume(0.5, false);
+        let bottom = pill(&osd, &theme, viewport).rect;
+        assert!(bottom.y1 > 800.0, "fixture: bottom-centred by default");
+
+        // Typing on the bottom line, under the pill (a terminal prompt).
+        let caret = Rect::new(790.0, bottom.y0 + 4.0, 792.0, bottom.y0 + 22.0);
+        let area = OsdArea {
+            viewport,
+            caret: Some(caret),
+        };
+        let moved = OsdPill::layout(area, &theme, &mut text, &osd, &style).rect;
+        assert!(
+            moved.y1 < viewport.center().y,
+            "top-centred instead: {moved:?}"
+        );
+        assert!((moved.center().x - viewport.center().x).abs() < 1e-6);
+        assert!(!caret.inflate(24.0, 24.0).overlaps(moved));
+
+        // A caret elsewhere leaves it where it always is.
+        let elsewhere = OsdArea {
+            viewport,
+            caret: Some(Rect::new(100.0, 300.0, 102.0, 318.0)),
+        };
+        let kept = OsdPill::layout(elsewhere, &theme, &mut text, &osd, &style).rect;
+        assert_eq!(kept, bottom);
     }
 
     #[test]
@@ -1018,7 +1083,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut tr,
                 &large,
-                viewport,
+                OsdArea::on(viewport),
                 1.0,
             );
             assert_eq!(
@@ -1095,7 +1160,7 @@ mod tests {
                     Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    viewport,
+                    OsdArea::on(viewport),
                     1.0,
                 );
                 let path = out.join(format!("{name}-{kind}.png"));
