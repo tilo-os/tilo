@@ -168,6 +168,61 @@ pub struct Motion {
     pub gesture: Gesture,
 }
 
+/// What started a transition. Motion follows the input: a shortcut is a
+/// frequent expert action with a known result, so animating it adds latency
+/// to every repetition, while pointer and finger motion explains where
+/// things went.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MotionSource {
+    /// A key chord.
+    Keyboard,
+    /// A click or tap on what is shown.
+    #[default]
+    Pointer,
+    /// Direct manipulation: a drag, swipe or pinch. The surface follows the
+    /// hand and the release hands its velocity to the settle.
+    Gesture,
+    /// An agent, a script or the action door. Nobody watches a hand move,
+    /// and the caller acts on the result at once, so it follows the
+    /// keyboard rule.
+    Action,
+}
+
+impl MotionSource {
+    /// Whether the result shows on the next frame.
+    #[must_use]
+    pub fn lands_at_once(self) -> bool {
+        matches!(self, Self::Keyboard | Self::Action)
+    }
+}
+
+impl Motion {
+    /// How long a transition that changes what is shown (a crossfade, a
+    /// group springing to its new slot) lasts when `source` started it:
+    /// `nominal` for a pointer or gesture, nothing for a shortcut or action.
+    #[must_use]
+    pub fn result(&self, source: MotionSource, nominal: Duration) -> Duration {
+        if source.lands_at_once() {
+            Duration::ZERO
+        } else {
+            nominal
+        }
+    }
+
+    /// How long a transition that only says where something went (an
+    /// off-screen target sliding into view, a direction cue) lasts when
+    /// `source` started it: `nominal` for a pointer or gesture, at most
+    /// `fast` for a shortcut or action.
+    #[must_use]
+    pub fn context(&self, source: MotionSource, nominal: Duration) -> Duration {
+        if source.lands_at_once() {
+            nominal.min(self.durations.fast())
+        } else {
+            nominal
+        }
+    }
+}
+
 /// iOS-style overscroll resistance.
 ///
 /// `distance` is how far past the end the input asks to go; the return is
@@ -261,6 +316,21 @@ mod tests {
                 "tracking must be far stiffer than a settle spring: ω = {}",
                 omega(p.tracking)
             );
+        }
+    }
+
+    #[test]
+    fn shortcuts_land_at_once_and_keep_only_a_fast_context_cue() {
+        let motion = Motion::default();
+        let base = motion.durations.base();
+        let slow = motion.durations.slow();
+        for source in [MotionSource::Keyboard, MotionSource::Action] {
+            assert_eq!(motion.result(source, base), Duration::ZERO, "{source:?}");
+            assert_eq!(motion.context(source, slow), motion.durations.fast());
+        }
+        for source in [MotionSource::Pointer, MotionSource::Gesture] {
+            assert_eq!(motion.result(source, base), base, "{source:?}");
+            assert_eq!(motion.context(source, slow), slow, "{source:?}");
         }
     }
 

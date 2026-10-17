@@ -658,6 +658,8 @@ pub struct ShellOverlayHost {
     /// One-shot driver so a workspace switch requests a run of frames
     /// instead of painting once and idling (W16). Settles with the curve.
     workspace_switch: ui::Transition,
+    /// What started the running workspace switch.
+    workspace_switch_source: ui::tokens::MotionSource,
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
     /// the curve let the close flush both scanouts on every remaining paint.
     workspace_switch_until: Option<Instant>,
@@ -1301,7 +1303,6 @@ fn millis_to_f32_lossy(ms: u128) -> f32 {
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
-const WORKSPACE_SWITCH_MS: u64 = 400;
 /// W16 wants ≥ 8 painted frames per open/close. Host demand still
 /// clears when the crossfade settles; the compositor consumes this
 /// many paints on its own.
@@ -2458,6 +2459,7 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
+            workspace_switch_source: ui::tokens::MotionSource::default(),
             workspace_switch_until: None,
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             qs_was_open: false,
@@ -3750,8 +3752,13 @@ impl ShellOverlayHost {
     /// second slide implementation. Reduced motion still runs the frames:
     /// snapping the curve made the close flush both scanouts.
     /// Call on the chord, not only from `update`: demand is sampled first.
-    pub(crate) fn start_workspace_switch_frames(&mut self) {
-        let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
+    ///
+    /// A switch is whole-view motion (`slow`); one a shortcut or action
+    /// started keeps only a `fast` direction cue.
+    pub(crate) fn start_workspace_switch_frames(&mut self, source: ui::tokens::MotionSource) {
+        let motion = ui::tokens::Motion::default();
+        let duration = motion.context(source, motion.durations.slow());
+        self.workspace_switch_source = source;
         let now = Instant::now();
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch
@@ -4646,7 +4653,14 @@ impl ShellOverlayHost {
         };
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
-            self.start_workspace_switch_frames();
+            // A chord already started this switch's frames, before demand
+            // was sampled; keep its source rather than lengthening them.
+            let source = if self.workspace_switch_holding() {
+                self.workspace_switch_source
+            } else {
+                ui::tokens::MotionSource::Pointer
+            };
+            self.start_workspace_switch_frames(source);
         }
         swapped
     }
@@ -13909,7 +13923,7 @@ impl ShellOverlayHost {
             return true;
         }
         if let Some(action) = configured_action
-            && self.handle_desktop_chord(action, repeat)
+            && self.handle_desktop_chord(action, repeat, ui::tokens::MotionSource::Keyboard)
         {
             *handled = true;
             return true;
@@ -13972,7 +13986,7 @@ impl ShellOverlayHost {
                 // Both directions. Page Down's following frames were already
                 // cheap; Page Up fell through to a full upload of the desktop
                 // just restored.
-                self.start_workspace_switch_frames();
+                self.start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
             }
             *handled = true;
             return true;
@@ -14015,6 +14029,7 @@ impl ShellOverlayHost {
                 _ => None,
             };
             if let Some(action) = action {
+                self.begin_motion(ui::tokens::MotionSource::Keyboard);
                 match action {
                     ShortcutAction::FocusPreviousWindow => {
                         let _ = self.step_focus_along_strip(-1);
@@ -14077,7 +14092,7 @@ impl ShellOverlayHost {
             .into_iter()
             .find(|action| shortcut_pressed(*action))
         {
-            self.run_navigation_shortcut(action, repeat);
+            self.run_navigation_shortcut(action, repeat, ui::tokens::MotionSource::Keyboard);
             *handled = true;
             return true;
         }
@@ -14115,8 +14130,12 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
         repeat: bool,
+        source: ui::tokens::MotionSource,
     ) -> bool {
         use settings_store::hardware::ShortcutAction;
+        if Self::is_navigation_shortcut(action) {
+            self.begin_motion(source);
+        }
         match action {
             ShortcutAction::PreviousTab => {
                 let _ = self.cycle_focused_tab(-1);
@@ -14218,7 +14237,7 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone()
                     && chrome.borrow_mut().switch_workspace(direction)
                 {
-                    self.start_workspace_switch_frames();
+                    self.start_workspace_switch_frames(source);
                 }
             }
             _ => return false,
@@ -14332,7 +14351,46 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
     ) -> bool {
-        self.run_navigation_shortcut(action, false) || self.handle_desktop_chord(action, false)
+        let source = ui::tokens::MotionSource::Action;
+        self.run_navigation_shortcut(action, false, source)
+            || self.handle_desktop_chord(action, false, source)
+    }
+
+    /// Whether [`Self::run_navigation_shortcut`] handles `action`.
+    fn is_navigation_shortcut(action: settings_store::hardware::ShortcutAction) -> bool {
+        use settings_store::hardware::ShortcutAction as A;
+        matches!(
+            action,
+            A::PreviousTab
+                | A::NextTab
+                | A::ToggleMaximize
+                | A::DetachTab
+                | A::AttachTabLeft
+                | A::AttachTabRight
+                | A::ReopenClosedTab
+                | A::ResizeNarrower
+                | A::ResizeWider
+                | A::MoveGroupLeft
+                | A::MoveGroupRight
+                | A::MoveGroupToPreviousStrip
+                | A::MoveGroupToNextStrip
+                | A::MoveGroupToPreviousDisplay
+                | A::MoveGroupToNextDisplay
+                | A::FocusPreviousWindow
+                | A::FocusNextWindow
+                | A::PreviousStrip
+                | A::NextStrip
+                | A::PreviousWorkspace
+                | A::NextWorkspace
+        )
+    }
+
+    /// Tell the desktop what starts the change about to be made, before
+    /// making it, so the springs and fades it starts follow that input.
+    fn begin_motion(&mut self, source: ui::tokens::MotionSource) {
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.begin_transition(source);
+        }
     }
 
     /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
@@ -14343,11 +14401,13 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
         repeat: bool,
+        source: ui::tokens::MotionSource,
     ) -> bool {
         use crate::shell::quick_settings::QsLevel;
         use settings_store::hardware::ShortcutAction as A;
         if let Some(index) = action.focus_group_index() {
             if !repeat {
+                self.begin_motion(source);
                 let _ = self.focus_nth_group_in_strip(index);
             }
             return true;

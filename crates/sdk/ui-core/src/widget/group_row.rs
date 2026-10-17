@@ -7,6 +7,7 @@
 use crate::animation::{Curve, Transition};
 use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
+use crate::tokens::MotionSource;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, VecDeque};
 use taffy::{
@@ -230,12 +231,13 @@ struct SnapAnim {
     from: f64,
     to: f64,
     started: Instant,
+    duration: Duration,
 }
 
 impl SnapAnim {
     /// Position and velocity (px/s) of the cubic-out curve at `now`.
     fn at(self, now: Instant) -> (f64, f64) {
-        let total = f64::from(SNAP_ANIM_MS) / 1000.0;
+        let total = self.duration.as_secs_f64().max(f64::EPSILON);
         let raw =
             (now.saturating_duration_since(self.started).as_secs_f64() / total).clamp(0.0, 1.0);
         let span = self.to - self.from;
@@ -473,6 +475,11 @@ pub struct GroupRow {
     /// `theme.reduce_motion` as last laid out or drawn: the strip's snaps
     /// and make-space slides jump to where they were going.
     reduce_motion: bool,
+    /// What started the transition being laid out; see
+    /// [`Self::set_motion_source`].
+    motion_source: MotionSource,
+    /// `theme.tokens.motion` as last laid out or drawn.
+    motion: crate::tokens::Motion,
     /// Openness of sibling groups while one is maximized or fullscreen.
     /// `1` is the tiled strip; `0` is hidden. A mid-flight Super+M
     /// retargets from the current alpha so the fade is interruptible.
@@ -1185,6 +1192,7 @@ impl Pan {
                             from: self.scroll_x,
                             to: target,
                             started,
+                            duration: Duration::from_millis(u64::from(SNAP_ANIM_MS)),
                         });
                     }
                 } else {
@@ -1194,30 +1202,47 @@ impl Pan {
         }
         if let Some(anim) = self.snap_anim {
             let elapsed = now.saturating_duration_since(anim.started);
-            let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
-            if reduce_motion || elapsed >= total {
+            if reduce_motion || elapsed >= anim.duration {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
             } else {
-                let raw =
-                    (elapsed.as_secs_f64() / (f64::from(SNAP_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
-                let eased = crate::ease_out(raw);
-                self.scroll_x = anim.from + (anim.to - anim.from) * eased;
+                self.scroll_x = anim.at(now).0;
             }
         }
         (self.scroll_x - before).abs() > f64::EPSILON
     }
 
-    /// Ease on the snap curve from `from` to where the pan now is, rather
-    /// than cutting there.
-    fn ease_scroll_from(&mut self, from: f64, now: Instant) {
+    /// Ease on the snap curve from `from` to where the pan now is, over
+    /// `duration`, rather than cutting there.
+    fn ease_scroll_from(&mut self, from: f64, now: Instant, duration: Duration) {
         self.snap_anim = Some(SnapAnim {
             from,
             to: self.scroll_x,
             started: now,
+            duration,
         });
         self.scroll_x = from;
+    }
+
+    /// Slide to `sx` over exactly `duration` from where the pan is drawn at
+    /// `now`: a shortcut's reveal, which may only say where the target went
+    /// and must be over within its budget. A press mid-slide retargets from
+    /// the drawn position, so presses never queue.
+    fn slide_to(&mut self, sx: f64, now: Instant, duration: Duration) {
+        let from = match (self.glide, self.snap_anim) {
+            (Some(glide), _) => glide.at(now).0,
+            (None, Some(anim)) => anim.at(now).0,
+            (None, None) => self.scroll_x,
+        };
+        self.glide = None;
+        self.last_wheel_at = None;
+        if duration.is_zero() || (sx - from).abs() <= SNAP_SETTLED_PX {
+            self.jump_to(sx);
+            return;
+        }
+        self.scroll_x = sx;
+        self.ease_scroll_from(from, now, duration);
     }
 
     /// Re-frame when the run's geometry moved under the pan (resize,
@@ -1385,6 +1410,8 @@ impl GroupRow {
             move_omega: spring_omega(crate::tokens::SpringPresets::default().heavy),
             shift_hold: None,
             reduce_motion: false,
+            motion_source: MotionSource::default(),
+            motion: crate::tokens::Motion::default(),
             sibling_fade: Transition::open(),
             sibling_fade_hold: None,
             fade_hero: None,
@@ -1508,7 +1535,10 @@ impl GroupRow {
         }
         self.sibling_fade.set_open(
             want_open,
-            theme.tokens.motion.durations.fast(),
+            theme
+                .tokens
+                .motion
+                .result(self.motion_source, theme.tokens.motion.durations.fast()),
             Curve::EaseOut,
         );
     }
@@ -2610,19 +2640,52 @@ impl GroupRow {
         true
     }
 
-    /// Same target as [`Self::scroll_group_into_view`], glided on the
-    /// group-move spring instead of teleporting, so a focus jump reads as
-    /// motion rather than a cut, and a run of jumps (a spun wheel) as one
-    /// motion that keeps its speed.
-    pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
+    /// Same target as [`Self::scroll_group_into_view`], moved as `source`
+    /// asks. After a pointer or gesture it glides on the group-move spring
+    /// instead of teleporting, so a focus jump reads as motion rather than a
+    /// cut, and a run of jumps (a spun wheel) as one motion that keeps its
+    /// speed. After a shortcut or action the content is already where it
+    /// belongs and only the viewport slides, within `fast`, to say where it
+    /// went.
+    pub fn scroll_group_into_view_animated(
+        &mut self,
+        group_id: u64,
+        now: Instant,
+        source: MotionSource,
+    ) -> bool {
         self.pan_of_group_mut(group_id).absolute = false;
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
-        let omega = self.move_omega;
-        self.pan_of_group_mut(group_id).ease_to(sx, now, omega);
+        if source.lands_at_once() {
+            let slide = self.motion.context(source, self.motion.durations.fast());
+            self.pan_of_group_mut(group_id).slide_to(sx, now, slide);
+        } else {
+            let omega = self.move_omega;
+            self.pan_of_group_mut(group_id).ease_to(sx, now, omega);
+        }
         self.scroll_dirty = true;
         true
+    }
+
+    /// Say what starts the transitions laid out next: a shortcut or action
+    /// lands its result on the next frame (groups take their new slots,
+    /// widths and maximized rects at once, siblings and tab chips do not
+    /// fade), while a pointer or gesture keeps the full motion. The host
+    /// sets it before acting and returns it to [`MotionSource::Pointer`]
+    /// once the layout that shows the result has run.
+    pub fn set_motion_source(&mut self, source: MotionSource) {
+        if self.motion_source == source {
+            return;
+        }
+        self.motion_source = source;
+        for group in &mut self.groups {
+            group.set_motion_source(source);
+        }
+    }
+
+    pub fn motion_source(&self) -> MotionSource {
+        self.motion_source
     }
 
     /// The pan that brings `group_id` wholly into view, aimed at where the
@@ -3990,6 +4053,7 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
+        self.motion = theme.tokens.motion;
         self.sync_sibling_fade(theme);
         self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
         let usable_per_group = self.usable_per_group();
@@ -4010,6 +4074,7 @@ impl Widget for GroupRow {
             .collect();
         for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
+            group.set_motion_source(self.motion_source);
             let lane = lane_of.get(i).copied().unwrap_or(0);
             // No seam handle sits left of a lane's first group.
             let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
@@ -4351,6 +4416,10 @@ impl Widget for GroupRow {
                 .any(super::resize_handle::ResizeHandle::is_dragging);
         let mut moved = false;
         let ease_reframe = self.shift_armed && !self.reduce_motion;
+        let reframe = self.motion.context(
+            self.motion_source,
+            Duration::from_millis(u64::from(SNAP_ANIM_MS)),
+        );
         let now = crate::time::now();
         let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
@@ -4380,7 +4449,7 @@ impl Widget for GroupRow {
                 && !pan.animating()
                 && (pan.scroll_x - before).abs() > 0.5
             {
-                pan.ease_scroll_from(before, now);
+                pan.ease_scroll_from(before, now, reframe);
             }
         }
         if moved {
@@ -4468,6 +4537,7 @@ impl Widget for GroupRow {
             return;
         }
         self.reduce_motion = theme.reduce_motion;
+        self.motion = theme.tokens.motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
             self.pan_drawings.clear();
@@ -4903,7 +4973,7 @@ impl GroupRow {
             .map(|g| (g.id, g.get_rect().x0))
             .collect();
         let armed = std::mem::take(&mut self.shift_armed);
-        if self.reduce_motion {
+        if self.reduce_motion || self.motion_source.lands_at_once() {
             self.moves.clear();
         } else if armed {
             let moves: Vec<(u64, GroupMove)> = laid_x
@@ -7313,7 +7383,7 @@ mod tests {
 
             let t0 = crate::time::now();
             assert!(
-                anim.scroll_group_into_view_animated(target_id, t0),
+                anim.scroll_group_into_view_animated(target_id, t0, MotionSource::Pointer),
                 "an off-screen group must start an animated pan"
             );
             assert_eq!(
@@ -7340,7 +7410,11 @@ mod tests {
             // Fixture's full 2000px viewport: first group is fully inside.
             let (mut row, _taffy, _root) =
                 make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
-            assert!(!row.scroll_group_into_view_animated(100, crate::time::now()));
+            assert!(!row.scroll_group_into_view_animated(
+                100,
+                crate::time::now(),
+                MotionSource::Pointer
+            ));
             assert_eq!(row.scroll_x(), 0.0);
             assert!(
                 !row.needs_animation_frame(),
