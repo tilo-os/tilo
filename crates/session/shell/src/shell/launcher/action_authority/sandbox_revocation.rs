@@ -57,8 +57,7 @@ impl Sandbox {
             .get(&self.binding.0)
             .ok_or("room_projection_missing")?;
         policy
-            .runtime
-            .authority_status(&policy.authority, self.binding.0)
+            .accepted_status(self.binding.0)
             .map_err(crate::shell::native_workspace_owner::store::AuthorityRejection::reason)?;
         let now = Some(tilo_clock::unix_now_ms() / 1000);
         let app = Subject::app(&self.binding.1);
