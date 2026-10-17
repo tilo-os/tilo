@@ -1480,7 +1480,7 @@ async function join({
     forget();
     if (reply.kind === 'declined') throw new AdmissionError('refused', 'The workspace owner declined your request to join');
     console.warn('join refused:', reply.reason ?? reply.kind);
-    throw new AdmissionError('refused', REFUSED_JOIN);
+    throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: reply.reason ?? reply.kind});
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
