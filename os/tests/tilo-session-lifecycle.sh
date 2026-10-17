@@ -3,6 +3,10 @@
 # identity -> compositor lifecycle. Uses a rewritten temporary copy so the
 # production wrapper keeps absolute, non-overridable trusted command paths.
 set -euo pipefail
+# Most assertions are bare greps: name the one that failed instead of
+# exiting silently. Commands run under `set +e` fail on purpose and are
+# checked by status, so only an errexit failure is reported.
+trap 'if [[ $- == *e* ]]; then echo "tilo-session-lifecycle: line $LINENO failed: $BASH_COMMAND" >&2; fi' ERR
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$repo/tools/desktop-isolation.sh"
@@ -121,12 +125,13 @@ grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   echo 'the image must ship exactly one login session: shell.desktop' >&2
   exit 1
 }
-grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
+# The image build refuses a shell or X11 bridge with an unresolved library.
+grep -Fq 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
 grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
-grep -Fq 'shell has unresolved runtime libraries:' "$repo/os/Containerfile"
+grep -Fq 'shell or xwayland-satellite has unresolved runtime libraries:' "$repo/os/Containerfile"
 engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
+shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$engine_deps_line" -lt "$shell_link_check_line"
 grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
 grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
