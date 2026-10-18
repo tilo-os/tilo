@@ -271,6 +271,15 @@ impl Caller {
         self
     }
 
+    /// Retain a host-issued execution when projecting the same transport into
+    /// another verified action door. A lease conveys ownership and lifetime,
+    /// never certificate custody or additional permissions.
+    #[must_use]
+    pub fn in_execution(mut self, execution: ExecutionLease) -> Self {
+        self.execution = Some(execution);
+        self
+    }
+
     /// Host-issued execution identity. An identifier alone conveys no authority.
     #[must_use]
     pub fn execution_id(&self) -> Option<uuid::Uuid> {
@@ -2050,6 +2059,18 @@ mod tests {
         let reconnected = retained.in_new_execution();
         assert!(reconnected.execution_is_live());
         assert_ne!(reconnected.execution_id(), first.execution_id());
+    }
+
+    #[test]
+    fn projected_execution_retains_transport_retirement_without_changing_authority() {
+        let original = Caller::local_person("projected-person").in_new_execution();
+        let projected = Caller::authenticated([1; 32], [2; 32])
+            .in_execution(original.execution_lease().unwrap());
+        assert_eq!(projected.execution_id(), original.execution_id());
+        assert_eq!(projected.user_public_key(), Some(&[1; 32]));
+        assert_eq!(original.user_public_key(), None);
+        original.retire_execution();
+        assert!(!projected.execution_is_live());
     }
 
     fn alice() -> Caller {

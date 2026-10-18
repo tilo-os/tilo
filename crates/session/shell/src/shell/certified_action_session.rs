@@ -20,6 +20,7 @@ pub(crate) struct CertifiedActionSession {
     caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
     presentation: Vec<u8>,
+    certificate: tilo_user_identity::DeviceCert,
 }
 
 #[derive(Clone)]
@@ -72,7 +73,9 @@ impl ActionSessionSource {
     #[cfg(test)]
     pub(crate) fn fixture(broker: AppActionBroker) -> Self {
         Self {
-            fixture: Some(super::remote_actions::BrokerActionHost::new(broker.clone())),
+            fixture: Some(super::remote_actions::BrokerActionHost::for_fixture(
+                broker.clone(),
+            )),
             mock: None,
             broker,
             opens: Arc::default(),
@@ -310,6 +313,15 @@ impl CertifiedActionSession {
         room: &str,
         expected_person: Option<&str>,
     ) -> Result<Self, String> {
+        Self::open_execution(broker, room, expected_person, None)
+    }
+
+    fn open_execution(
+        broker: AppActionBroker,
+        room: &str,
+        expected_person: Option<&str>,
+        execution: Option<tilo_actions::remote::ExecutionLease>,
+    ) -> Result<Self, String> {
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid action room")?;
         if parsed.is_nil() {
             return Err("invalid action room".into());
@@ -338,13 +350,49 @@ impl CertifiedActionSession {
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                 .in_room(room)
                 .in_new_execution();
+        let caller = match execution {
+            Some(lease) => caller.in_execution(lease),
+            None => caller,
+        };
         let host = broker.certified_local_action_host(&caller, &presentation)?;
         Ok(Self {
             broker,
             caller,
             host,
             presentation,
+            certificate: certificate.clone(),
         })
+    }
+
+    /// Resolve a native projection only through the protected seat service and
+    /// the selected device's signed presentation. The label is a consistency
+    /// fence; it is never used to manufacture signing authority.
+    pub(crate) fn open_native(
+        broker: AppActionBroker,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<Self, String> {
+        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native person required".into());
+        };
+        let session = Self::open_execution(
+            broker,
+            caller.room().ok_or("native person room required")?,
+            Some(person),
+            caller.execution_lease(),
+        )?;
+        if session.certificate != *certificate {
+            return Err("selected identity differs from native seat custody".into());
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn has_certificate(&self, certificate: &tilo_user_identity::DeviceCert) -> bool {
+        self.certificate == *certificate
+    }
+
+    pub(crate) fn host_and_caller(&self) -> (&(dyn ActionHost + Send + Sync), &Caller) {
+        (self.host.as_ref(), &self.caller)
     }
 
     pub(crate) fn query(
