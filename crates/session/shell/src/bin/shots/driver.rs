@@ -250,6 +250,47 @@ impl ShellDriver {
         true
     }
 
+    /// Put the cursor 2 px inside group `group_idx`'s leading or trailing
+    /// edge, at mid-height: on the edge grip a person grabs.
+    pub fn move_cursor_to_group_edge(&mut self, group_idx: usize, leading: bool) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let Some(rect) = self
+            .host_mut()
+            .group_at_for_tests(strip_id, group_idx)
+            .map(|group| group.get_rect())
+        else {
+            return false;
+        };
+        let x = if leading {
+            rect.x0 + 2.0
+        } else {
+            rect.x1 - 2.0
+        };
+        self.move_cursor(Point::new(x, rect.center().y));
+        true
+    }
+
+    /// Where the last dispatched pointer move put the cursor.
+    pub fn cursor(&self) -> Point {
+        self.last_cursor
+    }
+
+    /// Move the cursor `dx` px sideways from where it last was.
+    pub fn move_cursor_by(&mut self, dx: f64) {
+        let p = self.last_cursor;
+        self.move_cursor(Point::new(p.x + dx, p.y));
+    }
+
     /// Carry the active whole-group drag past another group's midpoint.
     /// The small over-travel makes the intended after-slot unambiguous while
     /// retaining the source grab's y coordinate and pointer capture.
