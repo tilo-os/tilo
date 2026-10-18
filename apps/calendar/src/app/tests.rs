@@ -2158,9 +2158,11 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.start_sync(&mut Edits::lend(&mut state));
         assert!(app.syncing, "a live sync is in flight");
         assert!(app.sync_rx.is_some(), "worker result channel is armed");
+        // The worker's reply wakes the app through its waking channel;
+        // waiting on a slow server paints nothing.
         assert!(
-            app.needs_animation_frame(),
-            "the loop must keep ticking so the result drains"
+            !app.needs_animation_frame(),
+            "waiting on the worker must not pump frames"
         );
         // Detach the worker so the test doesn't depend on the network.
         app.sync_rx = None;
