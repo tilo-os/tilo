@@ -63,6 +63,14 @@ pub enum LinkError {
     /// The signer failed.
     #[error("signer: {0}")]
     Sign(String),
+    /// The host speaks peer protocol `theirs`, not this device's: they do
+    /// not sync until the one behind has updated
+    /// (docs/architecture/compatibility.md).
+    #[error("the host speaks peer protocol {theirs}, this device {}", tilo_relay_protocol::auth::PEER_PROTOCOL_VERSION)]
+    PeerVersion {
+        /// The host's version.
+        theirs: u32,
+    },
 }
 
 fn path(route: &str) -> String {
@@ -118,6 +126,11 @@ async fn handshake_raw(
             Err(_) => Err(LinkError::Unavailable(
                 "status 403 with no reason from the host".into(),
             )),
+        },
+        // The host's answer to a hello at another version: its own.
+        409 => match postcard::take_from_bytes::<u32>(&bytes) {
+            Ok((theirs, _)) => Err(LinkError::PeerVersion { theirs }),
+            Err(_) => Err(LinkError::Unavailable("status 409".into())),
         },
         _ => Err(LinkError::Unavailable(format!("status {status}"))),
     }
@@ -417,10 +430,7 @@ impl HttpsLink {
             &handshake_raw(
                 client.as_ref(),
                 "/session",
-                encode(&Hello {
-                    cert: cert.clone(),
-                    client_nonce,
-                })?,
+                encode(&Hello::new(cert.clone(), client_nonce))?,
             )
             .await?,
         )

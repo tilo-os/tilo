@@ -73,6 +73,9 @@ pub enum ComputeSessionError {
     /// The Iroh connection could not be established.
     #[error("compute transport connection: {0}")]
     Connection(String),
+    /// The other device speaks another peer protocol version.
+    #[error("compute transport: {0}")]
+    Version(#[from] crate::auth::HandshakeFrameError),
 }
 
 impl From<HandshakeError> for ComputeSessionError {
@@ -81,6 +84,9 @@ impl From<HandshakeError> for ComputeSessionError {
             HandshakeError::Io { source, .. } => Self::Io(source),
             HandshakeError::Codec { source, .. } => Self::Codec(source),
             HandshakeError::Auth(error) => Self::Auth(error),
+            HandshakeError::Version { theirs } => {
+                Self::Version(crate::auth::HandshakeFrameError::Version { theirs })
+            }
         }
     }
 }
@@ -809,13 +815,11 @@ impl ComputeClient {
         let mut nonce = [0; 32];
         rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
         let own_device = own_cert.device_public_key;
-        let hello = Hello {
-            cert: own_cert,
-            client_nonce: nonce,
-        };
+        let hello = Hello::new(own_cert, nonce);
         write_frame(&mut send, &postcard::to_allocvec(&hello)?).await?;
-        let acknowledgement: HelloAck =
-            postcard::from_bytes(&read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
+        let acknowledgement: HelloAck = auth::decode_handshake(
+            &read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?,
+        )?;
         let relay_peer = auth::verify_hello_ack(
             &acknowledgement,
             &expected_server_user,

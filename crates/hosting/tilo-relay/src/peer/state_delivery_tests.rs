@@ -24,10 +24,7 @@ async fn writer_boundary(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(meta["authority"].clone()).unwrap();
     let source_peer = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [0; 32],
-        },
+        &crate::auth::Hello::new(cert.clone(), [0; 32]),
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
@@ -322,10 +319,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(meta["authority"].clone()).unwrap();
     let source_peer = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [0; 32],
-        },
+        &crate::auth::Hello::new(cert.clone(), [0; 32]),
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),

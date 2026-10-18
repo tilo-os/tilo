@@ -89,6 +89,7 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
         peer.receive_from(
             TransportOrigin::UntrustedPresence(cert.device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(exported),
                 revocations: vec![]
             },
@@ -1638,6 +1639,7 @@ fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
             .receive_from(
                 TransportOrigin::UntrustedPresence(cert.device_public_key),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
                     revocations: vec![]
                 },
@@ -1717,6 +1719,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         .receive_from(
             TransportOrigin::UntrustedPresence(bc.device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bc.clone()),
                 revocations: vec![],
             },
@@ -1751,6 +1754,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         .receive_from(
             TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(native.authority().clone()),
                 revocations: vec![revocation],
             },
@@ -1878,6 +1882,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                 .receive_from(
                     TransportOrigin::UntrustedPresence(author),
                     NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(bc),
                         revocations: vec![],
                     },

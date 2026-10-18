@@ -91,6 +91,7 @@ impl Session {
             .send(NetCmd::Publish {
                 ws: topic,
                 msg: NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(self.cert.clone()),
                     revocations: vec![],
                 },

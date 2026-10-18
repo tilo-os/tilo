@@ -221,12 +221,11 @@ async fn handshake(
         .map_err(|error| EnvironmentClientError::Connection(error.to_string()))?;
     let mut client_nonce = [0u8; 32];
     rand::Rng::fill_bytes(&mut rand::rng(), &mut client_nonce);
-    let hello = Hello {
-        cert: relay.cert.clone(),
-        client_nonce,
-    };
+    let hello = Hello::new(relay.cert.clone(), client_nonce);
     write_frame(&mut send, &encode(&hello)?).await?;
-    let ack: HelloAck = decode(&read_frame(&mut receive, MAX_ENVIRONMENT_FRAME_BYTES).await?)?;
+    let ack: HelloAck =
+        auth::decode_handshake(&read_frame(&mut receive, MAX_ENVIRONMENT_FRAME_BYTES).await?)
+            .map_err(|error| EnvironmentClientError::Protocol(error.to_string()))?;
     let now = tilo_clock::unix_now_ns();
     match relay.relay_user.as_ref() {
         Some(user) => {

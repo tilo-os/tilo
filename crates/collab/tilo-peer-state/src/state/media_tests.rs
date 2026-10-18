@@ -655,6 +655,7 @@ fn room_media_verified_independent_revocation_denies_before_promotion() {
     peer.receive_from(
         TransportOrigin::UntrustedPresence(members[0].1.device_public_key),
         NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(members[0].1.clone()),
             revocations: vec![revoked.clone()],
         },

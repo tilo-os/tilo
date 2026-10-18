@@ -28,6 +28,7 @@ behaviour. The one thing that survives every change is the person's data.
 |---|---|---|---|
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
+| Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (relay sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a room's gossip topic, whose index never moves |
 | Store package format (`.tapp` and its manifest) | `tilo_app_package::TAPP_FORMAT_VERSION` | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read |
 
 - There is no negotiation and no code for an older number. A side at another
@@ -65,6 +66,18 @@ serves; the shell decides first what the person sees
   updated", and the system update starts.
 - An app whose shell-ui hello names another version than its manifest is
   answered with the shell's version and closed, and the side behind updates.
+
+Between devices (`shell::collaborator_versions`), a device at another peer
+version is answered with this one's and admitted to nothing, so nothing it
+sends arrives half-applied; each device keeps its own changes, and sync
+resumes by itself once both speak the same version:
+
+- **A collaborator is behind**: "Ana needs to update to keep working
+  together".
+- **This device is behind**: "Updating Tilo to keep working with Ana"; the
+  system update starts at once and the restart is asked for as soon as it is
+  staged. A browser page behind its host says "This page is out of date.
+  Reload it to keep working together."
 
 ## User data survives
 

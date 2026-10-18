@@ -195,6 +195,7 @@ fn a_revoked_author_cannot_add_sealed_history() {
     host.receive_from(
         TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
         NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(host.authority().clone()),
             revocations: vec![revocation],
         },
@@ -443,6 +444,7 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
         .receive_from(
             TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(revoked.authority().clone()),
                 revocations: vec![revocation],
             },

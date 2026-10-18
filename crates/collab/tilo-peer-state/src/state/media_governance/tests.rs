@@ -84,6 +84,7 @@ fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
         .receive_from(
             TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.core.authority.clone()),
                 revocations: vec![entry],
             },
@@ -261,6 +262,7 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
         .receive_from(
             TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.core.authority.clone()),
                 revocations: vec![entry.clone()],
             },
@@ -273,6 +275,7 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
         .receive_from(
             TransportOrigin::UntrustedPresence(sibling.device_public_key),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(sibling),
                 revocations: vec![entry],
             },
@@ -326,6 +329,7 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
             .receive_from(
                 TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.core.authority.clone()),
                     revocations: vec![foreign],
                 },
@@ -341,6 +345,7 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
             .receive_from(
                 TransportOrigin::UntrustedPresence(peer.core.authority.device_public_key),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.core.authority.clone()),
                     revocations: vec![invalid_signature],
                 },

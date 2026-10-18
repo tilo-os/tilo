@@ -177,13 +177,12 @@ impl Approver {
         rand::Rng::fill_bytes(&mut rand::rng(), &mut client_nonce);
         write(
             &mut send,
-            &CertifyOpen::Approver(Hello {
-                cert: own_cert,
-                client_nonce,
-            }),
+            &CertifyOpen::Approver(Hello::new(own_cert, client_nonce)),
         )
         .await?;
-        let ack: HelloAck = read(&mut recv).await?;
+        let ack: HelloAck =
+            auth::decode_handshake(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
+                .map_err(|error| codec(&error))?;
         auth::verify_hello_ack(
             &ack,
             &user,
