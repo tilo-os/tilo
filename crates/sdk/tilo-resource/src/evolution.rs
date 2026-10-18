@@ -161,6 +161,67 @@ where
     Ok(true)
 }
 
+/// Write the keys of the JSON object `shape` into the map `obj` as an older
+/// version of an app stored them: what a migration's test builds the
+/// document it migrates from. An object is a map, an array a list, a string,
+/// a boolean and a number are scalars (an integer as `Int`), `null` is a
+/// null scalar, and `{"$text": "…"}` is a text object holding the string.
+///
+/// # Errors
+/// Returns the document's write error, or that `shape` is no object.
+pub fn fixture(doc: &mut Doc, obj: &ObjId, shape: &serde_json::Value) -> Result<(), ModelError> {
+    let serde_json::Value::Object(fields) = shape else {
+        return Err(ModelError::shape("an object of fields"));
+    };
+    for (key, value) in fields {
+        fixture_value(doc, crate::Slot::Key(obj, key), value)?;
+    }
+    Ok(())
+}
+
+fn fixture_value(
+    doc: &mut Doc,
+    slot: crate::Slot<'_>,
+    value: &serde_json::Value,
+) -> Result<(), ModelError> {
+    use automerge::ObjType;
+    use serde_json::Value as Json;
+    match value {
+        Json::Object(fields) if fields.len() == 1 && fields.contains_key("$text") => {
+            let Some(Json::String(text)) = fields.get("$text") else {
+                return Err(ModelError::shape("a text's string"));
+            };
+            let obj = slot.object(doc, ObjType::Text)?;
+            crate::TextEdit::ReplaceText { text: text.clone() }
+                .apply_under(doc, &obj)
+                .map_err(|error| ModelError::invalid(error.to_string()))
+        }
+        Json::Object(_) => {
+            let obj = slot.object(doc, ObjType::Map)?;
+            fixture(doc, &obj, value)
+        }
+        Json::Array(items) => {
+            let obj = slot.object(doc, ObjType::List)?;
+            for (index, item) in items.iter().enumerate() {
+                fixture_value(doc, crate::Slot::Insert(&obj, index), item)?;
+            }
+            Ok(())
+        }
+        Json::String(text) => slot.put_scalar(doc, ScalarValue::Str(text.as_str().into())),
+        Json::Bool(flag) => slot.put_scalar(doc, ScalarValue::Boolean(*flag)),
+        Json::Number(number) => slot.put_scalar(
+            doc,
+            match (number.as_i64(), number.as_u64(), number.as_f64()) {
+                (Some(int), _, _) => ScalarValue::Int(int),
+                (None, Some(uint), _) => ScalarValue::Uint(uint),
+                (None, None, Some(float)) => ScalarValue::F64(float),
+                (None, None, None) => return Err(ModelError::shape("a number")),
+            },
+        ),
+        Json::Null => slot.put_scalar(doc, ScalarValue::Null),
+    }
+}
+
 /// The value maps of the items of the [`Collection`](crate::Collection)
 /// stored under `key` of the map `obj`, in no particular order: what a
 /// migration walks to rewrite a field of every item.
