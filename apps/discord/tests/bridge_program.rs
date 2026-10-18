@@ -12,7 +12,7 @@
 //! stale; `BLESS=1` rewrites it.
 //!
 //! The program is a fixed run of loops: `plan-route` names the Chat message
-//! the event is about, then up to six passes each read the workspace, ask
+//! the event is about, then up to six passes each read the room's chat, ask
 //! `plan-event` what to do and loop over its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
@@ -174,10 +174,9 @@ fn pass() -> Vec<Step> {
     vec![
         invoke(
             "read",
-            ActionKey::new(CHAT_APP, CHAT_KIND, "read-workspace"),
+            ActionKey::new(CHAT_APP, CHAT_KIND, "read-room"),
             Selector::FirstOfKind(CHAT_KIND.into()),
             &[
-                ("workspace", plan_step("route", "/workspace")),
                 ("message", plan_step("route", "/message")),
                 ("channel", plan_step("route", "/channel")),
             ],
@@ -453,7 +452,7 @@ fn pass() -> Vec<Step> {
             let mut body = vec![chat(
                 "create-category",
                 "create-category",
-                &[("workspace", item("workspace")), ("name", item("name"))],
+                &[("name", item("name"))],
                 false,
             )];
             body.push(map(
@@ -472,7 +471,6 @@ fn pass() -> Vec<Step> {
                     "create-channel",
                     "create-channel",
                     &[
-                        ("workspace", item("workspace")),
                         ("name", item("name")),
                         ("category", item("category")),
                         ("kind", item("kind")),
@@ -642,7 +640,7 @@ fn catalog() -> tilo_automation::ActionCatalog {
     let mut chat = TestApp::<ChatShell>::new().unwrap();
     chat.call(
         "begin-chat",
-        json!({"workspace_name": "Tilo", "name": "Ada", "initials": "A", "color": 1}),
+        json!({"name": "Ada", "initials": "A", "color": 1}),
     )
     .unwrap();
     let state = chat.state();
@@ -658,7 +656,6 @@ fn catalog() -> tilo_automation::ActionCatalog {
         .invoke(Guild::CONNECT.with(discord::record::guild::Connect {
             guild_id: "1".into(),
             name: "Tilo".into(),
-            workspace: "w1".into(),
             only_channel: None,
             mirror_channels: None,
             map_roles: None,
@@ -735,7 +732,6 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     ada.apply(Guild::CONNECT.with(guild::Connect {
         guild_id: "1".into(),
         name: "Tilo".into(),
-        workspace: "w1".into(),
         only_channel: None,
         mirror_channels: None,
         map_roles: None,

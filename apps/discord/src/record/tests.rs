@@ -18,7 +18,6 @@ fn connected_with(mirror_channels: Option<bool>, map_roles: Option<bool>) -> Rep
     ada.apply(Guild::CONNECT.with(guild::Connect {
         guild_id: "1".into(),
         name: "Tilo".into(),
-        workspace: "w1".into(),
         only_channel: None,
         mirror_channels,
         map_roles,
@@ -84,7 +83,6 @@ fn connect_starts_importing_and_never_rebinds() {
     let again = ada.apply(Guild::CONNECT.with(guild::Connect {
         guild_id: "2".into(),
         name: "x".into(),
-        workspace: "w1".into(),
         only_channel: None,
         mirror_channels: None,
         map_roles: None,
@@ -551,7 +549,6 @@ fn a_bridge_of_one_channel_queues_nothing_elsewhere() {
         Guild::CONNECT.with(guild::Connect {
             guild_id: "1".into(),
             name: "Tilo".into(),
-            workspace: "w1".into(),
             only_channel: Some(only.into()),
             mirror_channels: None,
             map_roles: None,

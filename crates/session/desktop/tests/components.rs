@@ -288,7 +288,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
             11,
             tilo_app::framework::chain_resource_id(&chat::parts::chain()),
             "post",
-            serde_json::json!({ "channel": "c_general", "text": "Shared desktop message" }),
+            serde_json::json!({ "channel": "c_chat", "text": "Shared desktop message" }),
         ),
         (
             12,

@@ -1,5 +1,5 @@
 //! The Discord bridge's link to one server, set up by the room's host: the
-//! guild record connected to that server and the room's Chat workspace, and
+//! guild record connected to that server and mirrored in the room's Chat, and
 //! the settings the connector's worker runs with. The bridge bot keeps both
 //! sides in line from there; nothing here talks to Discord.
 
@@ -94,13 +94,11 @@ impl DiscordLink {
     }
 }
 
-/// Connect the room's guild record to `link`'s server and the room's Chat
-/// workspace, as the room's owner (`host`, the room's governor): connecting
-/// a server is a person's decision, and in a hosted room the operator who
-/// named the server is that person. The workspace is the room's own (the one
-/// its host names after the room), else its first, else a new one named
-/// `workspace_name`. A record already connected the same way is left as it
-/// is.
+/// Connect the room's guild record to `link`'s server, mirrored in the
+/// room's Chat, as the room's owner (`host`, the room's governor):
+/// connecting a server is a person's decision, and in a hosted room the
+/// operator who named the server is that person. A record already connected
+/// the same way is left as it is.
 ///
 /// # Errors
 /// The record is connected to another server or channel, or the room
@@ -110,7 +108,6 @@ pub async fn connect(
     room: &str,
     host: &DeviceCert,
     link: &DiscordLink,
-    workspace_name: &str,
 ) -> Result<(), String> {
     let catalogue = AppCatalogue::native();
     let owner = hex::encode(host.user_public_key);
@@ -146,45 +143,9 @@ pub async fn connect(
         .prepare_application(room, host, &catalogue, CHAT, &chat_record)
         .await
         .map_err(|error| format!("add Chat: {error}"))?;
-    let workspace = rooms
-        .author_application(room, host, &catalogue, CHAT, &chat_record, {
-            let (owner, name, own) = (
-                owner.clone(),
-                workspace_name.to_owned(),
-                tilo_resource::Id::from_raw(room),
-            );
-            move |doc| {
-                let first = |doc: &automerge::AutoCommit| {
-                    chat::Chat::read(doc).ok().and_then(|chat| {
-                        chat.workspaces
-                            .get(&own)
-                            .map(|_| own.as_str().to_owned())
-                            .or_else(|| {
-                                chat.workspaces
-                                    .iter()
-                                    .next()
-                                    .map(|(id, _)| id.as_str().to_owned())
-                            })
-                    })
-                };
-                if let Some(workspace) = first(doc) {
-                    return Ok(workspace);
-                }
-                apply_as_owner::<chat::Chat>(
-                    doc,
-                    &owner,
-                    (CHAT, "Chat"),
-                    chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace { name }),
-                )?;
-                first(doc).ok_or_else(|| "the new workspace does not read".to_owned())
-            }
-        })
-        .await
-        .map_err(|error| format!("find the room's Chat workspace: {error}"))?;
     let connect = discord::Guild::CONNECT.with(discord::record::guild::Connect {
         guild_id: link.guild_id.clone(),
         name: link.name.clone(),
-        workspace,
         only_channel: link.only_channel.clone(),
         mirror_channels: Some(link.mirror_channels),
         map_roles: Some(link.map_roles),
@@ -269,7 +230,7 @@ mod tests {
         let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
             .unwrap()
             .unwrap();
-        connect(&rooms, &room, &cert, &link, "Plaza").await.unwrap();
+        connect(&rooms, &room, &cert, &link).await.unwrap();
         let catalogue = AppCatalogue::native();
         let read = |app: &'static str| {
             let (rooms, room, record) = (rooms.clone(), room.clone(), room_record(&catalogue, app));
@@ -285,24 +246,21 @@ mod tests {
             }
         };
         let guild = discord::Guild::read(&read(APP).await).unwrap();
-        let chat = chat::Chat::read(&read(CHAT).await).unwrap();
+        assert!(
+            chat::Chat::read(&read(CHAT).await).is_ok(),
+            "the room's Chat is added for the bridge to mirror"
+        );
         assert_eq!(
             (guild.guild_id.as_str(), guild.only_channel.as_deref()),
             ("12", Some("34"))
         );
-        let (workspace, _) = chat.workspaces.iter().next().unwrap();
-        assert_eq!(guild.workspace, workspace.as_str());
 
         // A restart finds it connected; another server is refused.
-        connect(&rooms, &room, &cert, &link, "Plaza").await.unwrap();
+        connect(&rooms, &room, &cert, &link).await.unwrap();
         let other = DiscordLink {
             guild_id: "56".into(),
             ..link
         };
-        assert!(
-            connect(&rooms, &room, &cert, &other, "Plaza")
-                .await
-                .is_err()
-        );
+        assert!(connect(&rooms, &room, &cert, &other).await.is_err());
     }
 }

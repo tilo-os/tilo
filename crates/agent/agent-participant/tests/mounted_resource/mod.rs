@@ -166,23 +166,29 @@ pub async fn run() {
     chat::demo::apply_as(
         &mut doc,
         &source_author,
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Mounted shared space".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();
-    let workspace = chat::projection::read(&doc)
-        .workspace_rows()
-        .into_iter()
-        .find(|workspace| workspace.name == "Mounted shared space")
-        .unwrap()
-        .id;
+    chat::demo::apply_as(
+        &mut doc,
+        &source_author,
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "Lounge".into(),
+            category: None,
+            kind: Some(chat::model::ChannelKind::Voice),
+            topic: None,
+        }),
+    )
+    .unwrap();
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()
-        .find(|channel| {
-            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
-        })
+        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .unwrap();
     let message = chat::demo::Room::of(doc.clone())
         .say(&source_author, &channel.id, "Hello é, mounted natively")
@@ -288,9 +294,7 @@ pub async fn run() {
     let voice_channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()
-        .find(|channel| {
-            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Voice
-        })
+        .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
         .unwrap();
     if voice_journey {
         use tilo_browser_peer::{PeerEvent, VoiceEvent};

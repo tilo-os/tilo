@@ -1,6 +1,6 @@
 //! The Tilo side as the planners read it: the Chat record's JSON form (a
-//! collection is `[{"id", "value"}]`) narrowed to one workspace, and the
-//! room's member list. Read from JSON rather than Chat's types so the
+//! collection is `[{"id", "value"}]`) of the room's categories and
+//! channels, and the room's member list. Read from JSON rather than Chat's types so the
 //! connector does not carry Chat's code,.
 
 use serde_json::Value;
@@ -68,9 +68,9 @@ pub struct Person {
     pub avatar: Option<String>,
 }
 
-/// One workspace of a Chat record.
+/// The room's chat: its categories and channels.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Workspace {
+pub struct RoomChat {
     pub categories: Vec<Category>,
     pub channels: Vec<Channel>,
 }
@@ -120,13 +120,12 @@ fn json_field(value: &Value, field: &str) -> Value {
     }
 }
 
-impl Workspace {
-    /// The categories and channels of `workspace` in `chat`, in sidebar order.
+impl RoomChat {
+    /// The categories and channels of the room's `chat`, in sidebar order.
     #[must_use]
-    pub fn from_chat(chat: &Value, workspace: &str) -> Self {
+    pub fn from_chat(chat: &Value) -> Self {
         let categories = entries(chat, "categories")
             .into_iter()
-            .filter(|(_, v)| text(v, "workspace") == workspace)
             .map(|(id, v)| Category {
                 id,
                 name: text(&v, "name"),
@@ -134,7 +133,6 @@ impl Workspace {
             .collect();
         let channels = entries(chat, "channels")
             .into_iter()
-            .filter(|(_, v)| text(v, "workspace") == workspace)
             .map(|(id, v)| Channel {
                 id,
                 name: text(&v, "name"),
@@ -286,13 +284,12 @@ mod tests {
     pub(crate) fn chat() -> Value {
         json!({
             "categories": [
-                {"id": "k_chat", "value": {"workspace": "w1", "name": "chat"}},
-                {"id": "k_other", "value": {"workspace": "w2", "name": "elsewhere"}}
+                {"id": "k_chat", "value": {"name": "chat"}}
             ],
             "channels": [
-                {"id": "c_goal", "value": {"workspace": "w1", "category": null, "name": "goal", "topic": "", "kind": "text", "archived": false}},
-                {"id": "c_general", "value": {"workspace": "w1", "category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
-                {"id": "c_voice", "value": {"workspace": "w1", "category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
+                {"id": "c_goal", "value": {"category": null, "name": "goal", "topic": "", "kind": "text", "archived": false}},
+                {"id": "c_general", "value": {"category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
+                {"id": "c_voice", "value": {"category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
             ],
             "messages": [
                 {"id": "m1", "value": {"channel": "c_general", "author": "u_ada", "text": "hi @Bo", "parent": null,
@@ -305,8 +302,8 @@ mod tests {
     }
 
     #[test]
-    fn reads_one_workspace_in_order() {
-        let ws = Workspace::from_chat(&chat(), "w1");
+    fn reads_the_rooms_chat_in_order() {
+        let ws = RoomChat::from_chat(&chat());
         assert_eq!(
             ws.categories,
             [Category {

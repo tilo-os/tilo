@@ -44,8 +44,8 @@ fn adopted(kind: MappedKind, tilo: &str, discord: &str) -> Mapping {
     }
 }
 
-fn workspace() -> Workspace {
-    Workspace {
+fn room_chat() -> RoomChat {
+    RoomChat {
         categories: vec![Category {
             id: "k_chat".into(),
             name: "chat".into(),
@@ -73,7 +73,7 @@ fn workspace() -> Workspace {
     }
 }
 
-/// A server adopted into [`workspace`], webhooks made.
+/// A server adopted into [`room_chat`], webhooks made.
 fn settled() -> Guild {
     Guild {
         guild_id: "1".into(),
@@ -110,7 +110,7 @@ fn mirroring() -> Guild {
 #[test]
 fn a_settled_server_plans_nothing() {
     for guild in [settled(), mirroring()] {
-        let planned = plan(&guild, &workspace());
+        let planned = plan(&guild, &room_chat());
         assert!(planned.is_empty(), "{planned:?}");
     }
 }
@@ -120,7 +120,7 @@ fn nothing_happens_before_the_server_is_adopted() {
     let mut guild = mirroring();
     guild.ownership = Ownership::Importing;
     guild.map = ui::tilo_resource::Keyed::new();
-    assert!(plan(&guild, &workspace()).is_empty());
+    assert!(plan(&guild, &room_chat()).is_empty());
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn the_servers_own_channels_are_never_renamed_moved_or_deleted() {
     ]
     .into_iter()
     .collect();
-    let mut ws = workspace();
+    let mut ws = room_chat();
     ws.channels.retain(|c| c.id != "c_general");
     let planned = plan(&guild, &ws);
     assert!(planned.apply.is_empty(), "{planned:?}");
@@ -149,7 +149,7 @@ fn a_channel_deleted_in_discord_is_let_go_never_recreated() {
     let mut guild = mirroring();
     guild.channels.take(&Id::from_raw("d_goal"));
     guild.vanished.insert("d_goal".into());
-    let planned = plan(&guild, &workspace());
+    let planned = plan(&guild, &room_chat());
     assert!(planned.apply.is_empty(), "{planned:?}");
     assert_eq!(
         planned.unmap,
@@ -170,7 +170,7 @@ fn a_channel_deleted_in_discord_is_let_go_never_recreated() {
 
 #[test]
 fn a_channel_deleted_in_tilo_leaves_the_servers_own_in_discord() {
-    let mut ws = workspace();
+    let mut ws = room_chat();
     ws.channels.retain(|c| c.id != "c_general");
     let planned = plan(&mirroring(), &ws);
     assert!(planned.delete.is_empty());
@@ -184,7 +184,7 @@ fn text_channels_without_a_webhook_get_one() {
     guild
         .map
         .take(&Id::from_raw(map_key(MappedKind::Webhook, "c_general")));
-    let planned = plan(&guild, &workspace());
+    let planned = plan(&guild, &room_chat());
     assert_eq!(
         planned.webhooks,
         [CreateWebhookOp {
@@ -194,11 +194,11 @@ fn text_channels_without_a_webhook_get_one() {
     );
 }
 
-/// [`workspace`] with what was made in Tilo after the adoption: a channel
+/// [`room_chat`] with what was made in Tilo after the adoption: a channel
 /// in the adopted category, a category with a channel, a channel at the
 /// top; and one Tilo had before, kept Tilo's own.
-fn grown() -> Workspace {
-    let mut ws = workspace();
+fn grown() -> RoomChat {
+    let mut ws = room_chat();
     ws.categories.push(Category {
         id: "k_new".into(),
         name: "Projects".into(),
@@ -279,7 +279,7 @@ fn a_channel_the_bridge_made_follows_tilo_and_goes_with_it() {
     guild
         .map
         .push(mapping(MappedKind::Webhook, "c_ideas", "wh_ideas"));
-    let mut ws = workspace();
+    let mut ws = room_chat();
     ws.channels.push(Channel {
         id: "c_ideas".into(),
         name: "Better ideas".into(),
@@ -326,7 +326,7 @@ fn a_channel_being_made_is_not_made_twice() {
         },
     );
     let _: Option<&DiscordResult> = None;
-    let mut ws = workspace();
+    let mut ws = room_chat();
     ws.channels.push(Channel {
         id: "c_ideas".into(),
         name: "ideas".into(),

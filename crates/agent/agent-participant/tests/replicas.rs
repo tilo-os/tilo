@@ -34,23 +34,23 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+        chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
             name: "Resource view fixture".into(),
         }),
     )
     .unwrap();
-    let workspace = chat::projection::read(&doc)
-        .workspace_rows()
+    let category = chat::projection::read(&doc)
+        .category_rows()
         .into_iter()
-        .find(|workspace| workspace.name == "Resource view fixture")
+        .find(|category| category.name == "Resource view fixture")
         .unwrap()
         .id;
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let resource = chat::projection::item_id("workspaces", &workspace);
+    let resource = chat::projection::item_id("categories", &category);
     let before = body(&page);
     let viewer = PermissionContext::member_of(ROOM, "ada", Role::Viewer);
     let denied = PermissionContext::stranger("ada");
-    let views = page.resource_views(&resource, "chat.workspace.workspaces", &viewer);
+    let views = page.resource_views(&resource, "chat.workspace.categories", &viewer);
     assert!(
         !views.is_empty(),
         "the actual Chat resource declares a viewer navigation door"
@@ -61,11 +61,11 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
             .all(|view| view.kind == tilo_actions::OperationKind::View)
     );
     assert!(
-        page.resource_views(&resource, "chat.workspace.workspaces", &denied)
+        page.resource_views(&resource, "chat.workspace.categories", &denied)
             .is_empty()
     );
     assert!(
-        page.resource_views("missing", "chat.workspace.workspaces", &viewer)
+        page.resource_views("missing", "chat.workspace.categories", &viewer)
             .is_empty()
     );
     assert!(
@@ -463,13 +463,15 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Bridged".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();
     let projection = chat::projection::read(&doc);
-    let workspace = projection.workspace_rows()[0].id.clone();
     let channel = projection.channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     let mut bot = Replica::open(
@@ -531,11 +533,11 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     let read = bot
         .survey()
         .into_iter()
-        .find(|action| action.address.action == "read-workspace")
+        .find(|action| action.address.action == "read-room")
         .expect("a bot is offered Chat's read");
     // A post names its channel, so a bot finds the message among the
     // channel's latest.
-    let arguments = serde_json::json!({ "workspace": workspace, "channel": channel });
+    let arguments = serde_json::json!({ "channel": channel });
     let output = bot
         .invoke_with(
             None,
@@ -569,8 +571,11 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Bridged".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();

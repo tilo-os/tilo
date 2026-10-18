@@ -746,15 +746,16 @@ pub(crate) async fn seed_apps(
     Ok(())
 }
 
-/// Give the room's chat, when it is seeded, the room's name and, while it
-/// has no channels, the operator's starting `channels`. What people wrote
-/// is never touched, and a chat with channels keeps exactly those.
+/// Give the room's chat, when it is seeded and while it has only the
+/// channels every room opens with, the operator's starting `channels`. What
+/// people wrote is never touched, and a chat with channels keeps exactly
+/// those.
 pub(crate) async fn settle_chat(
     rooms: &Rooms,
     room: &str,
     cert: &DeviceCert,
     apps: &[String],
-    (shown, channels): (&str, &[String]),
+    channels: &[String],
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_seed::CHAT_APP) {
         return Ok(());
@@ -768,10 +769,10 @@ pub(crate) async fn settle_chat(
             &catalogue,
             crate::room_seed::CHAT_APP,
             &record,
-            |doc| crate::room_seed::settle_chat(doc, room, shown, channels),
+            |doc| crate::room_seed::settle_chat(doc, channels),
         )
         .await
-        .map_err(|error| anyhow::anyhow!("name the chat and open its channels: {error}"))
+        .map_err(|error| anyhow::anyhow!("open the chat's channels: {error}"))
 }
 
 /// Give the room's shared desktop the operator's `strips` where missing.
@@ -972,7 +973,7 @@ pub(crate) async fn run(
         &room,
         &host_cert,
         &persistent.seed_apps,
-        (&shown, &persistent.chat_channels),
+        &persistent.chat_channels,
     )
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
@@ -1063,11 +1064,7 @@ async fn link_discord(
     use tilo_relay::room_bots::discord;
     let link = discord::DiscordLink::from_inputs(&spec.inputs)?
         .ok_or("a Discord bridge needs guild=<server id>")?;
-    let workspace = persistent
-        .workspace_name
-        .clone()
-        .unwrap_or_else(|| workspace_name(persistent.persistent.as_deref().unwrap_or_default()));
-    discord::connect(rooms, room, host_cert, &link, &workspace).await?;
+    discord::connect(rooms, room, host_cert, &link).await?;
     for key in discord::LINK_INPUTS {
         bot.inputs.remove(key);
     }

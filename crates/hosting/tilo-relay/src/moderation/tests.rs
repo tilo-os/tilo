@@ -75,8 +75,11 @@ fn flooded_room() -> Replica {
     chat::demo::apply_as(
         &mut doc,
         OWNER,
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Plaza".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();

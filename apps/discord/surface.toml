@@ -3,11 +3,10 @@
 [[resources]]
 kind = "discord.guild"
 label = "Discord server"
-version = 1
+version = 2
 fields = [
   { path = "guild_id", type = "String", readonly = true },
   { path = "name", type = "String", label = true },
-  { path = "workspace", type = "String", readonly = true },
   { path = "only_channel", type = "Option<String>", readonly = true },
   { path = "mirror_channels", type = "bool", readonly = true },
   { path = "map_roles", type = "bool", readonly = true },
@@ -63,7 +62,6 @@ kind = "undoable"
 params = [
   { name = "guild_id", required = true, schema = { type = "string" } },
   { name = "name", required = true, schema = { type = "string" } },
-  { name = "workspace", required = true, schema = { type = "string" } },
   { name = "only_channel", required = false, schema = { type = ["string", "null"] } },
   { name = "mirror_channels", required = false, schema = { type = ["boolean", "null"] } },
   { name = "map_roles", required = false, schema = { type = ["boolean", "null"] } },

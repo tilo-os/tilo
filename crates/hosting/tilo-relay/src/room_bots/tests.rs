@@ -216,8 +216,11 @@ fn flood(
     chat::demo::apply_as(
         doc,
         &hex::encode(governor().1.user_public_key),
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Plaza".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )?;
     chat::demo::introduce(doc, ada, "Ada", "AD")?;
@@ -396,8 +399,11 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                    name: "Plaza".into(),
+                chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                    name: "general".into(),
+                    category: None,
+                    kind: None,
+                    topic: None,
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -465,8 +471,11 @@ async fn chat_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
-                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                    name: "Plaza".into(),
+                chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                    name: "general".into(),
+                    category: None,
+                    kind: None,
+                    topic: None,
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -629,14 +638,6 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
     let relay = bot_host(scratch.path(), &key, &cert).await;
     let rooms = relay.rooms().unwrap().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
-    let saved = rooms
-        .record_document(&room, CHAT, "")
-        .await
-        .unwrap()
-        .unwrap();
-    let workspace = chat::projection::read(&AutoCommit::load(&saved).unwrap()).channel_rows()[0]
-        .workspace
-        .clone();
     let trigger = TriggerSpec::RecordChanged {
         kind: "chat.messages".into(),
         actions: vec!["post".into()],
@@ -650,11 +651,9 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         steps: vec![Step::new(
             "digest",
             StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-workspace"),
+                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-room"),
                 resource: Selector::FirstOfKind("chat.workspace".into()),
-                args: [("workspace".to_owned(), Binding::Literal(workspace.into()))]
-                    .into_iter()
-                    .collect(),
+                args: std::collections::BTreeMap::new(),
                 appearance: None,
             },
         )],
