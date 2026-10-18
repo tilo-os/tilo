@@ -619,6 +619,7 @@ impl DurableStore for FsStore {
                 // must not admit two writers to the same bounded slot.
                 let gate = Arc::new(acquire_gate(&path.with_extension("lock"), true)?);
                 state.view_leases.insert(key.clone(), gate.clone());
+                drop(state);
                 Ok(Box::new(FsLease {
                     _view_gate: Some(gate),
                     key: key.clone(),

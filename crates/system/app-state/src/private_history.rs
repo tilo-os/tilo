@@ -27,7 +27,10 @@ pub struct PrivateAction {
 }
 impl PrivateAction {
     fn size(&self) -> usize {
-        32 + self.hashes.len() * 32 + self.intent.len() + self.receipt.as_ref().map_or(0, Vec::len)
+        32_usize
+            .saturating_add(self.hashes.len().saturating_mul(32))
+            .saturating_add(self.intent.len())
+            .saturating_add(self.receipt.as_ref().map_or(0, Vec::len))
     }
     /// A checkpoint can reach disk before the document. Such an orphan is not
     /// recovered as evidence: every referenced head and mutation must exist.
@@ -56,21 +59,26 @@ impl PrivateHistory {
         let identity = blake3::hash(format!("{owner:?}").as_bytes())
             .to_hex()
             .to_string();
-        let first =
-            u64::from_le_bytes(blake3::hash(actor).as_bytes()[..8].try_into().unwrap()) % SLOTS;
+        let first = u64::from(
+            blake3::hash(actor)
+                .as_bytes()
+                .first()
+                .copied()
+                .unwrap_or_default(),
+        ) % SLOTS;
         let mut acquired = None;
         for offset in 0..SLOTS {
             let key = StorageKey::view(
                 "private-action-history",
                 &identity,
-                (first + offset) % SLOTS,
+                first.wrapping_add(offset) % SLOTS,
             );
             match store.lease(&key) {
                 Ok(lease) => {
                     acquired = Some((key, lease));
                     break;
                 }
-                Err(durable_store::StoreError::Busy(_)) => continue,
+                Err(durable_store::StoreError::Busy(_)) => {}
                 Err(error) => return Err(error.to_string()),
             }
         }
@@ -123,7 +131,11 @@ impl PrivateHistory {
             self.entries.push_back(entry);
         }
         while self.entries.len() > LIMIT
-            || self.entries.iter().map(PrivateAction::size).sum::<usize>() > BUDGET
+            || self
+                .entries
+                .iter()
+                .fold(0_usize, |sum, entry| sum.saturating_add(entry.size()))
+                > BUDGET
         {
             self.entries.pop_front();
         }
@@ -135,7 +147,7 @@ impl PrivateHistory {
         if !self.dirty && !failed && self.error.is_none() {
             return Ok(());
         }
-        let bytes = encode(&self.entries);
+        let bytes = encode(&self.entries)?;
         self.revision = Some(
             match self.store.write(&self.key, WriteOp::Replace(bytes), None) {
                 Ok(revision) => revision,
@@ -184,21 +196,23 @@ impl PrivateHistory {
         )
     }
 }
-fn put(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+fn put(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
+    let len = u32::try_from(bytes.len()).map_err(|_| "private action field exceeds capacity")?;
+    out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
+    Ok(())
 }
-fn encode(entries: &VecDeque<PrivateAction>) -> Vec<u8> {
+fn encode(entries: &VecDeque<PrivateAction>) -> Result<Vec<u8>, String> {
     let mut out = MAGIC.to_vec();
     for entry in entries {
         out.extend_from_slice(&entry.id);
         let hashes: Vec<u8> = entry.hashes.iter().flatten().copied().collect();
-        put(&mut out, &hashes);
-        put(&mut out, &entry.intent);
+        put(&mut out, &hashes)?;
+        put(&mut out, &entry.intent)?;
         out.push(u8::from(entry.receipt.is_some()));
-        put(&mut out, entry.receipt.as_deref().unwrap_or_default());
+        put(&mut out, entry.receipt.as_deref().unwrap_or_default())?;
     }
-    out
+    Ok(out)
 }
 fn take<'a>(bytes: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
     if bytes.len() < len {
@@ -208,27 +222,32 @@ fn take<'a>(bytes: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
     *bytes = rest;
     Ok(value)
 }
+fn fixed<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], String> {
+    take(bytes, N)?
+        .try_into()
+        .map_err(|_| "invalid private action field width".into())
+}
 fn field<'a>(bytes: &mut &'a [u8]) -> Result<&'a [u8], String> {
-    let len = u32::from_le_bytes(take(bytes, 4)?.try_into().unwrap()) as usize;
+    let len = u32::from_le_bytes(fixed(bytes)?) as usize;
     take(bytes, len)
 }
 fn decode(mut bytes: &[u8]) -> Result<VecDeque<PrivateAction>, String> {
-    if bytes.len() > BUDGET + MAGIC.len() || take(&mut bytes, MAGIC.len())? != MAGIC {
+    if bytes.len() > BUDGET.saturating_add(MAGIC.len()) || take(&mut bytes, MAGIC.len())? != MAGIC {
         return Err("invalid private action checkpoint".into());
     }
     let mut entries = VecDeque::new();
     while !bytes.is_empty() {
-        let id = take(&mut bytes, 16)?.try_into().unwrap();
+        let id = fixed(&mut bytes)?;
         let raw = field(&mut bytes)?;
         if raw.len() % 32 != 0 {
             return Err("invalid private action hashes".into());
         }
         let hashes = raw
             .chunks_exact(32)
-            .map(|hash| hash.try_into().unwrap())
-            .collect();
+            .map(|mut hash| fixed(&mut hash))
+            .collect::<Result<_, _>>()?;
         let intent = field(&mut bytes)?.to_vec();
-        let flag = take(&mut bytes, 1)?[0];
+        let flag = u8::from_le_bytes(fixed(&mut bytes)?);
         if flag > 1 {
             return Err("invalid private receipt flag".into());
         }
@@ -277,7 +296,7 @@ mod tests {
         live.flush().unwrap();
         let live_bytes = store.read(&live.key).unwrap().unwrap().bytes;
         let mut other_history = PrivateHistory::open(store.clone(), &other, b"other").unwrap();
-        other_history.record(evidence.clone()).unwrap();
+        other_history.record(evidence).unwrap();
         other_history.checkpoint().unwrap();
         other_history.flush().unwrap();
         let other_bytes = store.read(&other_history.key).unwrap().unwrap().bytes;
@@ -290,10 +309,10 @@ mod tests {
             let mut history =
                 PrivateHistory::open(session.clone(), &owner, &actor.to_le_bytes()).unwrap();
             assert_ne!(history.key, live.key);
-            for id in 0..LIMIT + 1 {
+            for id in 0..=LIMIT {
                 history
                     .record(PrivateAction {
-                        id: ((actor as u128 + 1) * 1000 + id as u128).to_le_bytes(),
+                        id: ((u128::from(actor) + 1) * 1000 + id as u128).to_le_bytes(),
                         hashes: vec![],
                         intent: vec![1],
                         receipt: None,
@@ -321,7 +340,7 @@ mod tests {
                 device, workspace, ..
             } = &live.key
             else {
-                unreachable!()
+                panic!("private history must use a view key")
             };
             for slot in 0..SLOTS {
                 if let Some(stored) = store
@@ -332,8 +351,8 @@ mod tests {
                     bytes += stored.bytes.len();
                 }
             }
-            assert!(count <= SLOTS as usize * LIMIT);
-            assert!(bytes <= SLOTS as usize * (BUDGET + MAGIC.len()));
+            assert!(count <= usize::try_from(SLOTS).unwrap() * LIMIT);
+            assert!(bytes <= usize::try_from(SLOTS).unwrap() * (BUDGET + MAGIC.len()));
             assert_eq!(store.read(&live.key).unwrap().unwrap().bytes, live_bytes);
             assert_eq!(
                 store.read(&other_history.key).unwrap().unwrap().bytes,
@@ -347,13 +366,16 @@ mod tests {
             held.push(PrivateHistory::open(session, &owner, &actor.to_le_bytes()).unwrap());
         }
         assert!(PrivateHistory::open(store.clone(), &owner, b"overflow").is_err());
-        let freed = held.pop().unwrap().key.clone();
+        let freed = held.pop().unwrap().key;
         let replacement = PrivateHistory::open(store.clone(), &owner, b"replacement").unwrap();
         assert_eq!(replacement.key, freed);
         assert_eq!(std::fs::read(sentinel).unwrap(), b"legitimate user data");
         // Slot files and their permanent gates are the only owner metadata.
         let path = store.local_path(&replacement.key).unwrap();
-        assert!(std::fs::read_dir(path.parent().unwrap()).unwrap().count() <= 2 * SLOTS as usize);
+        assert!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count()
+                <= 2 * usize::try_from(SLOTS).unwrap()
+        );
     }
 
     #[test]
@@ -405,9 +427,9 @@ mod tests {
         };
         writer.record_private_action(evidence.clone()).unwrap();
         writer.request(&mut doc);
-        let writes = backend.drain();
-        assert_eq!(writes.len(), 2);
-        for write in writes {
+        let submitted = backend.drain();
+        assert_eq!(submitted.len(), 2);
+        for write in submitted {
             backend
                 .acknowledge(
                     write.revision,
@@ -441,8 +463,8 @@ mod tests {
         for write in backend.drain() {
             backend.acknowledge(write.revision, Ok(())).unwrap();
         }
-        let writes = Rc::new(std::cell::Cell::new(0));
-        let observed = writes.clone();
+        let write_count = Rc::new(std::cell::Cell::new(0));
+        let observed = write_count.clone();
         backend.set_write_hook(Some(Rc::new(move || observed.set(observed.get() + 1))));
         // Several full history windows exercise eviction as well as batching.
         for batch in 0..4_u64 {
@@ -450,13 +472,17 @@ mod tests {
                 let id = batch * LIMIT as u64 + offset;
                 writer
                     .record_private_action(PrivateAction {
-                        id: (id as u128).to_le_bytes(),
+                        id: u128::from(id).to_le_bytes(),
                         hashes: vec![],
                         intent: id.to_le_bytes().to_vec(),
                         receipt: Some(b"private admission".to_vec()),
                     })
                     .unwrap();
-                assert_eq!(writes.get(), batch as usize, "no per-gesture storage write");
+                assert_eq!(
+                    write_count.get(),
+                    usize::try_from(batch).unwrap(),
+                    "no per-gesture storage write"
+                );
                 assert!(backend.drain().is_empty());
             }
             assert_eq!(writer.private_action_durability(), Durability::Pending);
@@ -465,7 +491,7 @@ mod tests {
             assert_eq!(pending.len(), 1, "one checkpoint for the entire batch");
             assert_ne!(pending[0].key, key, "shared document is unchanged");
             assert!(pending[0].op.is_replace());
-            assert_eq!(writes.get(), batch as usize + 1);
+            assert_eq!(write_count.get(), usize::try_from(batch).unwrap() + 1);
             assert_eq!(writer.private_action_durability(), Durability::Pending);
             backend.acknowledge(pending[0].revision, Ok(())).unwrap();
             assert_eq!(writer.private_action_durability(), Durability::Durable);
