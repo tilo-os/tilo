@@ -4,11 +4,10 @@ use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
 use fs_protocol::projection::{
-    MAX_RECORD_INDEX_ENTRIES, MAX_RECORD_INDEX_PAGE_BYTES, MAX_RECORD_INDEX_XATTR_BYTES,
-    RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION,
-    RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR, RECORD_INDEX_XATTR,
+    MAX_RECORD_INDEX_PAGE_BYTES, RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES,
+    RECORD_INDEX_V2_VERSION, RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR,
     RecordIndexEntryV1, RecordIndexExactV2, RecordIndexManifestV2, RecordIndexManifestV3,
-    RecordIndexPageV2, RecordIndexPageV3, RecordIndexProjectionV1, valid_record_index_revision,
+    RecordIndexPageV2, RecordIndexPageV3, valid_record_index_revision,
 };
 use fs_protocol::{
     AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
@@ -170,11 +169,6 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
     Some(root.join(path))
 }
 
-fn read_record_index_projection(root: &Path) -> Option<RecordIndexProjectionV1> {
-    let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;
-    parse_record_index_projection(root, &bytes)
-}
-
 fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
     let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
@@ -285,16 +279,7 @@ pub fn resolve_workspace_record(
 }
 
 fn has_record_index(root: &Path) -> bool {
-    if read_record_index_manifest_v3(root).is_some() {
-        return true;
-    }
-    match xattr::get(root, RECORD_INDEX_V2_XATTR).ok().flatten() {
-        Some(bytes) if bytes.len() <= MAX_RECORD_INDEX_PAGE_BYTES => {
-            read_record_index_manifest_v2(root).is_some()
-        }
-        Some(_) => false,
-        None => read_record_index_projection(root).is_some(),
-    }
+    read_record_index_manifest_v3(root).is_some() || read_record_index_manifest_v2(root).is_some()
 }
 
 fn root_generation(root: &Path) -> String {
@@ -325,35 +310,14 @@ fn root_generation(root: &Path) -> String {
         }
         Err(_) => hasher.update(b"missing\\0"),
     }
-    for name in [RECORD_INDEX_V2_XATTR, RECORD_INDEX_XATTR] {
-        hasher.update((name.len() as u64).to_be_bytes());
-        hasher.update(name.as_bytes());
-        if let Some(bytes) = xattr::get(root, name).ok().flatten() {
-            hasher.update((bytes.len() as u64).to_be_bytes());
-            hasher.update(&bytes);
-        }
+    let name = RECORD_INDEX_V2_XATTR;
+    hasher.update((name.len() as u64).to_be_bytes());
+    hasher.update(name.as_bytes());
+    if let Some(bytes) = xattr::get(root, name).ok().flatten() {
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(&bytes);
     }
     hex::encode(hasher.finalize())
-}
-
-fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjectionV1> {
-    if bytes.len() > MAX_RECORD_INDEX_XATTR_BYTES {
-        return None;
-    }
-    let projection = RecordIndexProjectionV1::from_json(bytes).ok()?;
-    if projection.schema_version != 1 || projection.records.len() > MAX_RECORD_INDEX_ENTRIES {
-        return None;
-    }
-    let mut previous = None;
-    for entry in &projection.records {
-        if previous.is_some_and(|value| value >= entry.record_id)
-            || safe_projected_path(root, &entry.path).is_none()
-        {
-            return None;
-        }
-        previous = Some(entry.record_id);
-    }
-    Some(projection)
 }
 
 fn project_record_entries(
@@ -649,13 +613,7 @@ impl WorkspaceRecordIndexPager {
                     truncated,
                 };
             }
-            let manifest = self.v2_manifest(&root);
-            let v2_present = manifest.is_some()
-                || xattr::get(&root, RECORD_INDEX_V2_XATTR)
-                    .ok()
-                    .flatten()
-                    .is_some();
-            match manifest {
+            match self.v2_manifest(&root) {
                 Some(manifest) => {
                     let (offset, prior_record_id) = match &self.cursor {
                         Some(cursor) if cursor.revision == manifest.revision => {
@@ -746,7 +704,9 @@ impl WorkspaceRecordIndexPager {
                         truncated,
                     };
                 }
-                None if v2_present => {
+                None => {
+                    // The mount no longer serves its index: nothing of this
+                    // root is listed.
                     self.root_index += 1;
                     self.cursor = None;
                     return WorkspaceRecordIndexPage {
@@ -754,25 +714,6 @@ impl WorkspaceRecordIndexPager {
                         reset,
                         complete: false,
                         truncated: true,
-                    };
-                }
-                None => {
-                    let Some(projection) = read_record_index_projection(&root) else {
-                        self.root_index += 1;
-                        return WorkspaceRecordIndexPage {
-                            records: Vec::new(),
-                            reset,
-                            complete: false,
-                            truncated: true,
-                        };
-                    };
-                    self.root_index += 1;
-                    let (records, malformed) = project_record_entries(&root, projection.records);
-                    return WorkspaceRecordIndexPage {
-                        records,
-                        reset,
-                        complete: self.root_index == self.roots.len(),
-                        truncated: truncated || projection.truncated || malformed,
                     };
                 }
             }
@@ -1178,8 +1119,39 @@ pub fn user_home() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod sync_state_tests {
+pub(crate) mod sync_state_tests {
     use super::*;
+
+    /// Serve `records` at `root` as a mount without an ACL does: a v2
+    /// manifest and its one page.
+    pub(crate) fn set_record_index(root: &Path, records: &[serde_json::Value]) {
+        let revision = "c".repeat(64);
+        xattr::set(
+            root,
+            RECORD_INDEX_V2_XATTR,
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": RECORD_INDEX_V2_VERSION,
+                "revision": revision,
+                "records": records.len(),
+                "page_entries": RECORD_INDEX_PAGE_ENTRIES,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        xattr::set(
+            root,
+            format!("{RECORD_INDEX_V2_XATTR}.{revision}.0"),
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": RECORD_INDEX_V2_VERSION,
+                "revision": revision,
+                "offset": 0,
+                "next_offset": null,
+                "records": records,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
 
     /// History provenance renders through the shared localized vocabulary.
     #[test]
@@ -1406,21 +1378,14 @@ mod sync_state_tests {
         {
             let root = tempfile::tempdir().unwrap();
             let record_id = uuid::Uuid::from_u128(7);
-            let projection = serde_json::json!({
-                "schema_version": 1,
-                "truncated": false,
-                "records": [{
+            set_record_index(
+                root.path(),
+                &[serde_json::json!({
                     "record_id": record_id,
                     "path": "/deep/report.pdf",
                     "is_dir": false
-                }]
-            });
-            xattr::set(
-                root.path(),
-                RECORD_INDEX_XATTR,
-                &serde_json::to_vec(&projection).unwrap(),
-            )
-            .unwrap();
+                })],
+            );
 
             let index = read_workspace_record_index(&[root.path().to_path_buf()]);
             assert!(!index.truncated);
@@ -1451,43 +1416,13 @@ mod sync_state_tests {
                     }
                 ]),
             ] {
-                let projection = serde_json::json!({
-                    "schema_version": 1,
-                    "truncated": false,
-                    "records": records
-                });
-                xattr::set(
-                    root.path(),
-                    RECORD_INDEX_XATTR,
-                    &serde_json::to_vec(&projection).unwrap(),
-                )
-                .unwrap();
+                set_record_index(root.path(), records.as_array().unwrap());
                 assert!(
                     read_workspace_record_index(&[root.path().to_path_buf()])
                         .records
                         .is_empty()
                 );
             }
-
-            let records = (1..=(MAX_RECORD_INDEX_ENTRIES + 1))
-                .map(|value| {
-                    serde_json::json!({
-                        "record_id": uuid::Uuid::from_u128(value as u128),
-                        "path": format!("/record-{value}"),
-                        "is_dir": false
-                    })
-                })
-                .collect::<Vec<_>>();
-            let projection = serde_json::json!({
-                "schema_version": 1,
-                "truncated": true,
-                "records": records
-            });
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert!(
-                parse_record_index_projection(root.path(), &bytes).is_none(),
-                "an oversized catalog is rejected wholesale"
-            );
         }
     }
 
@@ -1592,24 +1527,17 @@ mod sync_state_tests {
         // --- phase: completed_pager_withdraws_rows_after_mount_disappears ---
         {
             let root = tempfile::tempdir().unwrap();
-            let projection = serde_json::json!({
-                "schema_version": 1,
-                "truncated": false,
-                "records": [{
+            set_record_index(
+                root.path(),
+                &[serde_json::json!({
                     "record_id": uuid::Uuid::from_u128(9),
                     "path": "/visible.txt",
                     "is_dir": false,
-                }],
-            });
-            xattr::set(
-                root.path(),
-                RECORD_INDEX_XATTR,
-                &serde_json::to_vec(&projection).unwrap(),
-            )
-            .unwrap();
+                })],
+            );
             let mut pager = WorkspaceRecordIndexPager::new(&[root.path().to_path_buf()]);
             assert_eq!(pager.next_page().records.len(), 1);
-            xattr::remove(root.path(), RECORD_INDEX_XATTR).unwrap();
+            xattr::remove(root.path(), RECORD_INDEX_V2_XATTR).unwrap();
             assert!(
                 pager.poll_generation(),
                 "lost mount authority withdraws stale rows"
@@ -1625,21 +1553,14 @@ mod sync_state_tests {
             let parent = tempfile::tempdir().unwrap();
             let share = parent.path().join("received-share");
             std::fs::create_dir(&share).unwrap();
-            let projection = serde_json::json!({
-                "schema_version": 1,
-                "truncated": false,
-                "records": [{
+            set_record_index(
+                &share,
+                &[serde_json::json!({
                     "record_id": uuid::Uuid::from_u128(1),
                     "path": "/not-an-authority-record",
                     "is_dir": false,
-                }],
-            });
-            xattr::set(
-                &share,
-                RECORD_INDEX_XATTR,
-                &serde_json::to_vec(&projection).unwrap(),
-            )
-            .unwrap();
+                })],
+            );
             let mut pager = WorkspaceRecordIndexPager::new(&[parent.path().to_path_buf()]);
             let page = pager.next_page();
             assert!(page.records.is_empty());

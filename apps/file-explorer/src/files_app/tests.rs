@@ -4267,21 +4267,14 @@ mod command_path_tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
         xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
-        let projection = serde_json::json!({
-            "schema_version": 1,
-            "truncated": false,
-            "records": [{
+        crate::model::sync_state_tests::set_record_index(
+            dir.path(),
+            &[serde_json::json!({
                 "record_id": record_id,
                 "path": "/nested/renamed.txt",
                 "is_dir": false
-            }]
-        });
-        xattr::set(
-            dir.path(),
-            fs_protocol::projection::RECORD_INDEX_XATTR,
-            &serde_json::to_vec(&projection).unwrap(),
-        )
-        .unwrap();
+            })],
+        );
         let mut widget = FileExplorerWidget::new();
         widget.current_path = dir.path().to_path_buf();
         widget.entries.clear();

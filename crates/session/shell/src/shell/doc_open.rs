@@ -1132,19 +1132,37 @@ mod tests {
             std::fs::create_dir_all(document.parent().unwrap()).unwrap();
             std::fs::write(&document, b"report").unwrap();
             let record_id = uuid::Uuid::from_u128(0x5151);
-            let projection = serde_json::json!({
-                "schema_version": 1,
-                "truncated": false,
-                "records": [{
-                    "record_id": record_id,
-                    "path": "/deep/report.pdf",
-                    "is_dir": false
-                }]
-            });
+            // The workspace root serves its record index as a mount without
+            // an ACL does: a v2 manifest and its one page.
+            let revision = "c".repeat(64);
+            let v2 = fs_protocol::projection::RECORD_INDEX_V2_XATTR;
             xattr::set(
                 root.path(),
-                fs_protocol::projection::RECORD_INDEX_XATTR,
-                &serde_json::to_vec(&projection).unwrap(),
+                v2,
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": fs_protocol::projection::RECORD_INDEX_V2_VERSION,
+                    "revision": revision,
+                    "records": 1,
+                    "page_entries": fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            xattr::set(
+                root.path(),
+                format!("{v2}.{revision}.0"),
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": fs_protocol::projection::RECORD_INDEX_V2_VERSION,
+                    "revision": revision,
+                    "offset": 0,
+                    "next_offset": null,
+                    "records": [{
+                        "record_id": record_id,
+                        "path": "/deep/report.pdf",
+                        "is_dir": false
+                    }],
+                }))
+                .unwrap(),
             )
             .unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
