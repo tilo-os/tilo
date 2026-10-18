@@ -116,6 +116,76 @@ pub(super) fn registration() -> HistoryRegistration {
 }
 
 #[test]
+fn history_status_and_recovery_keep_the_existing_bar_geometry() {
+    for width in [360.0, 900.0] {
+        let state = State::new();
+        let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
+        let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+        history.set_width(width);
+        let theme = Theme::dark();
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut baseline = None;
+        for key in [
+            None,
+            Some("history-local-action-unsigned"),
+            Some("history-local-action-pending"),
+            None,
+        ] {
+            let status = key.map(crate::i18n::I18nManager::lookup_plain);
+            history.set_sync_status(status.clone());
+            let mut tree = taffy::TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let root = history.build_composition(&mut live, &mut tree, &theme, &mut nodes);
+            tree.compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(width)),
+                    height: taffy::AvailableSpace::Definite(650.0),
+                },
+            )
+            .unwrap();
+            history.apply_composition(&mut live, &tree, root, vello::kurbo::Point::ZERO);
+            history.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            let geometry = (live.get_rect(), tree.total_node_count());
+            assert_eq!(
+                *baseline.get_or_insert(geometry),
+                geometry,
+                "status must not add a row or layout nodes"
+            );
+            let published = history
+                .children()
+                .into_iter()
+                .filter_map(Widget::accessibility)
+                .any(|node| node.name.as_deref() == status.as_deref() && status.is_some());
+            assert_eq!(
+                published,
+                status.is_some(),
+                "status and recovery must reach accessibility"
+            );
+            if status.is_some() {
+                let bounds = history
+                    .children()
+                    .into_iter()
+                    .find(|child| child.name() == "HeaderStatus")
+                    .unwrap()
+                    .get_rect();
+                assert!(
+                    bounds.width() > 0.0,
+                    "status must be painted, not only announced"
+                );
+                assert!(bounds.y1 <= live.get_rect().y0);
+            }
+        }
+    }
+}
+
+#[test]
 fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     fn addresses(widget: &dyn Widget, output: &mut Vec<*const ()>) {
         output.push(std::ptr::from_ref(widget).cast());

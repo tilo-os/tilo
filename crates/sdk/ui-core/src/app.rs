@@ -3960,6 +3960,37 @@ pub(crate) mod ordinary_confirmation_tests {
         );
     }
 
+    #[test]
+    fn ordinary_confirmation_unsigned_history_stays_visible_without_moving_content() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut host = Host::new(true, root);
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let original = app.root_widget.get_rect();
+        host.activate("Emit request");
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let status = app
+            .document_sync_status()
+            .expect("unmanaged input stays unsigned")
+            .into_owned();
+        assert_eq!(
+            status,
+            crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned")
+        );
+        let tree = app.build_a11y_tree_update(1.0);
+        let (_, node) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(status.as_str()))
+            .expect("unsigned history is published in the existing History bar");
+        assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
+        assert_eq!(app.root_widget.get_rect(), original);
+        assert!(ledger.borrow().is_empty());
+    }
+
     fn published_confirmation_instruction(host: &mut Host) -> String {
         match host {
             Host::Native(app) => app
