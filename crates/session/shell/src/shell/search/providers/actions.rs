@@ -5374,11 +5374,21 @@ mod tests {
                     .unwrap();
             transaction.state = DisplayTransactionState::AwaitingConfirmation;
             transaction.save().unwrap();
-            std::fs::remove_file(&paths.copy).unwrap();
-            std::fs::create_dir(&paths.copy).unwrap();
+            // The copy stays readable (an unreadable copy may hold another
+            // process's edit and blocks the write), but its directory takes
+            // no new file, so only the copy's replacement fails.
+            use std::os::unix::fs::PermissionsExt as _;
+            let copy_dir = paths.copy.parent().unwrap().to_path_buf();
+            assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
+            let writable = std::fs::metadata(&copy_dir).unwrap().permissions();
+            std::fs::set_permissions(&copy_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let stale_copy = std::fs::read(&paths.copy).unwrap();
             let ticket = begin_display_answer(&chrome_with_room(), id);
             crate::shell::durable_writer::global().flush();
-            assert!(ticket().unwrap().is_some());
+            let accepted = ticket();
+            std::fs::set_permissions(&copy_dir, writable).unwrap();
+            assert!(accepted.unwrap().is_some());
+            assert_eq!(std::fs::read(&paths.copy).unwrap(), stale_copy);
             let state = if id == DISPLAY_KEEP_ID {
                 "confirm_requested"
             } else {
@@ -5390,7 +5400,6 @@ mod tests {
             assert_eq!(record["display_transaction"]["id"], transaction.id);
             assert_eq!(record["display_transaction"]["state"], state);
             let accepted_revision = session.revision();
-            std::fs::remove_dir(&paths.copy).unwrap();
             session.refresh();
             assert_eq!(
                 session.revision(),
