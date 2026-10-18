@@ -1,5 +1,44 @@
 // Real signed caller, actual private worker RPC publication and original SDK
 // authorizer, with only the host launcher replaced by a bounded recording gate.
+struct CertifiedLaunchCatalog;
+
+impl crate::services::LauncherServices for CertifiedLaunchCatalog {
+    fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+        false
+    }
+
+    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+        vec![crate::services::LaunchableApplication {
+            package_id: "so.tilo.word-processor".into(),
+            display_name: "Word Processor".into(),
+            unconfined: false,
+            offers: Vec::new(),
+        }]
+    }
+
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &crate::services::LaunchPlace,
+    ) -> Result<(), String> {
+        panic!("the recording launch gate replaces process creation")
+    }
+}
+
+async fn certified_launch_rig(env: &Environment) -> Rig {
+    // Signed launch children resolve the installed app before the process gate.
+    Rig::with_services(
+        env,
+        HostServices {
+            launcher: Some(Arc::new(CertifiedLaunchCatalog)),
+            ..env.membership.services()
+        },
+    )
+    .await
+}
+
 fn certified_launch_action() -> runtime_collab::ExportedAction {
     let mut action = directory_state("original-r1")
         .borrow()
@@ -108,7 +147,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
             for retained in [false, true] {
                 for waiting in [false, true] {
                     let env = Environment::new();
-                    let rig = Rig::new(&env).await;
+                    let rig = certified_launch_rig(&env).await;
                     let provider = certified_launch_target(&rig, &env, retained, waiting).await;
                     let (started, release, launches) = certified_launch_gate(&rig);
                     let (caller, evidence) = local_host_evidence(&env);
@@ -184,7 +223,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
             for retained in [false, true] {
                 for refusal in 0..4 {
                     let env = Environment::new();
-                    let rig = Rig::new(&env).await;
+                    let rig = certified_launch_rig(&env).await;
                     let provider = certified_launch_target(&rig, &env, retained, true).await;
                     let (started, release, launches) = certified_launch_gate(&rig);
                     let (caller, evidence) = local_host_evidence(&env);
