@@ -114,6 +114,10 @@ fn library_replans_after_custody_instead_of_applying_a_stale_delete() {
     ));
     request.target.address =
         tilo_actions::ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "delete");
+    request.confirmation = Some(Confirmation::Confirmed);
+    request.argument =
+        InvokeArgument::Json(serde_json::from_value(serde_json::json!({"id": "saved"})).unwrap());
+    let argument = request.argument.to_slot();
     let current = tree.clone();
     EFFECT_BARRIER.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
@@ -128,12 +132,14 @@ fn library_replans_after_custody_instead_of_applying_a_stale_delete() {
                 None,
                 (&workspace, &actor, 0),
                 &request,
-                Some(r#"{"id":"saved"}"#)
+                argument.as_deref()
             )
             .unwrap()
             .is_err()
     );
     assert!(library.0.lock().unwrap().is_empty());
+    assert!(tree.read().workspaces[0].shortcuts.is_empty());
+    assert!(EFFECT_BARRIER.with(|hook| hook.borrow().is_none()));
 }
 
 #[test]
@@ -238,7 +244,23 @@ fn lost_governance_answer_has_signed_uncertain_terminal() {
     let directory = tempfile::tempdir().unwrap();
     let (_, _, _, _, mut request) = fixture(directory.path());
     request.target.provider = tilo_actions::remote::workspace_provider(&f.room);
-    f.invoke(&request).unwrap();
+    let (workspace, actor, now) = f
+        .state
+        .decide_for(&f.caller, &f.room, |workspace, actor, now| {
+            (workspace.clone(), actor.clone(), now)
+        })
+        .unwrap();
+    // Exercise the registered service, not a published app's action directory.
+    f.state
+        .start_remaining_workspace_action(
+            &f.caller,
+            Some(&f.origin),
+            (&workspace, &actor, now),
+            &request,
+            None,
+        )
+        .expect("registered governance is handled")
+        .unwrap();
     let record = f.assert_signed(&request, true);
     assert!(record.uncertain);
     assert!(
@@ -531,16 +553,20 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             let mut journal = InvocationJournal::open(&root.path().join("effects")).unwrap();
             journal.fail_at = failure;
             *state.journal.lock().unwrap() = Ok(Some(journal));
-            let (resource, action, argument) = if keyboard {
-                ("keyboard-shortcuts", "rebind", None)
+            let (resource, action) = if keyboard {
+                ("keyboard-shortcuts", "rebind")
             } else {
-                (
-                    crate::automation::LIBRARY_RESOURCE,
-                    "delete",
-                    Some(r#"{"id":"saved"}"#),
-                )
+                request.argument = InvokeArgument::Json(
+                    serde_json::from_value(serde_json::json!({"id": "saved"})).unwrap(),
+                );
+                (crate::automation::LIBRARY_RESOURCE, "delete")
             };
+            let argument = request.argument.to_slot();
             request.target.address = tilo_actions::ActionAddress::new(resource, action);
+            if !keyboard {
+                // Deleting a saved shortcut retains its destructive-action floor.
+                request.confirmation = Some(Confirmation::Confirmed);
+            }
             let actor = BrokerActor::for_caller(&caller);
             let result = state
                 .start_remaining_workspace_action(
@@ -548,10 +574,14 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
                     None,
                     (&workspace, &actor, 0),
                     &request,
-                    argument,
+                    argument.as_deref(),
                 )
                 .unwrap();
-            assert_eq!(result.is_ok(), failure.is_none());
+            assert_eq!(
+                result.is_ok(),
+                failure.is_none(),
+                "keyboard={keyboard}: {result:?}"
+            );
             assert_eq!(
                 keys.0.load(std::sync::atomic::Ordering::Relaxed),
                 usize::from(keyboard && failure.is_none())
