@@ -1064,16 +1064,19 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
             > 0.0,
         "the focused display must actually lay out the tab bar under test"
     );
-    assert_eq!(
-        h.host
-            .group_at_for_tests(h.strip, 0)
-            .unwrap()
-            .tab_rects()
-            .last()
-            .unwrap()
-            .area(),
-        0.0,
-        "this journey opens before the newly-focused compact pill is expanded by layout"
+    // The tab strip lays out every pill at once since the frosted strip
+    // (0739d76adc), so the focused pill is on the focused display already;
+    // the menu must anchor there, not under the pointer on the other one.
+    let pill = *h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .unwrap()
+        .tab_rects()
+        .last()
+        .unwrap();
+    assert!(
+        pill.area() > 0.0 && pill.x0 >= 0.0 && pill.x1 <= 360.0,
+        "the focused pill lies on the focused display: {pill:?}"
     );
     assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
     let menu = h.host.tab_context_menu_rect().unwrap();
@@ -1191,9 +1194,11 @@ fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
         &h.chrome,
         &crate::shell::search::action_api::ActionArgs::none(),
     );
+    // A locked session refuses it in the person's words (388757ea57).
     assert!(matches!(
         result,
-        Err(crate::shell::search::action_api::ActionError::Refused(_))
+        Err(crate::shell::search::action_api::ActionError::Explained(ref why))
+            if *why == crate::shell::i18n::t("search-action-tab-drag-cancel-unavailable")
     ));
     assert!(!h.chrome.borrow_mut().take_tab_drag_cancel_request());
 }

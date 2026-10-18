@@ -2791,7 +2791,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "palette_typing",
-            description: "Open the command palette, type 'h', then close with Esc.",
+            description: "Open the command palette, type 'h', clear it with Esc, then close it with Esc.",
             actions: vec![
                 Action::Snapshot("01-desktop"),
                 Action::OpenPalette,
@@ -2799,9 +2799,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-palette-open"),
                 Action::Type("h"),
                 Action::Snapshot("03-palette-typed-h"),
+                // Esc clears a query first and closes only an empty field.
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(2),
-                Action::Snapshot("04-palette-closed"),
+                Action::Snapshot("04-palette-cleared"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Snapshot("05-palette-closed"),
             ],
         },
         // Apps of the manifest registry this host cannot run: on a Mac
@@ -4448,7 +4452,13 @@ mod tests {
                 typed.1, "h",
                 "after Type(\"h\") with palette open, the query should be 'h'"
             );
-            // Final state: palette closed.
+            let cleared = sink
+                .seen
+                .iter()
+                .find(|(n, _)| n == "04-palette-cleared")
+                .expect("scenario should snapshot 04-palette-cleared");
+            assert_eq!(cleared.1, "", "the first Esc clears the query");
+            // Final state: the second Esc closed the empty palette.
             assert!(
                 !d.host().palette_visible(),
                 "Esc should close the palette by the end of the scenario"

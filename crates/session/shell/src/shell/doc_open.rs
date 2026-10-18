@@ -1860,10 +1860,11 @@ mod tests {
             let mut runner = file_explorer::files_app::SystemRunner;
             explorer.open_entry(idx, &mut runner).unwrap();
 
+            // Files says what failed in its notice card (ef59750fad), not
+            // the fading status bubble.
             let status = explorer
-                .status_line()
-                .unwrap_or_else(|| panic!("the refusal must reach the user"))
-                .to_string();
+                .notice_line()
+                .unwrap_or_else(|| panic!("the refusal must reach the user"));
             assert!(
                 status.contains("archive.zzz") && status.contains(".zzz"),
                 "the message must name the file and its type: {status}"

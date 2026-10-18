@@ -1019,14 +1019,14 @@ mod tests {
             state.wifi_scan_error = Some("NetworkManager unavailable".into());
             assert_eq!(
                 QuickSettingsWifiPane::status_message(&state).as_deref(),
-                Some("Couldn’t scan · Refresh to try again")
+                Some(t("qs-wifi-scan-failed").as_str())
             );
             assert_eq!(
                 QuickSettingsWifiPane::default()
                     .accessibility_snapshot(&state)
                     .description
                     .as_deref(),
-                Some("Couldn’t scan · Refresh to try again")
+                Some(t("qs-wifi-scan-failed").as_str())
             );
         }
     }
