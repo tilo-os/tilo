@@ -3975,9 +3975,22 @@ pub(crate) mod ordinary_confirmation_tests {
         let Host::Native(app) = &mut host else {
             unreachable!()
         };
+        // Opening a confirmation records no edit: history has nothing to say,
+        // so neither the History bar nor the window changes.
+        assert_eq!(app.document_sync_status(), None);
+        assert_eq!(app.root_widget.get_rect(), original);
+        // An edit actually recorded without an authenticated publication is
+        // unsigned history, and that is shown in the existing History bar.
+        let input = app.begin_local_input_capture();
+        crate::action_host::ActionHost::new()
+            .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
+            .unwrap();
+        drop(input);
+        app.drain_local_input_capture();
+        layout(app);
         let status = app
             .document_sync_status()
-            .expect("unmanaged input stays unsigned")
+            .expect("an unmanaged edit is unsigned history")
             .into_owned();
         assert_eq!(
             status,

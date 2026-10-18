@@ -17,6 +17,9 @@ pub(super) struct LocalInputCapture {
     // One bounded, inert copy of the last authenticated pre-input surface.
     offline_routes: Vec<InputRoute>,
     recovered_routes: std::collections::HashSet<crate::collaboration::RouteSpec>,
+    // Edits made under input no authenticated publication observed. Only a
+    // recorded edit sets it; scrolling, selecting or hovering never does.
+    unsigned_edits: crate::local_document_action::UnsignedEdits,
     pub(super) failure: Option<String>,
 }
 
@@ -112,9 +115,9 @@ impl App {
         }
     }
 
-    /// Record that input has no authenticated publication. Editing continues;
-    /// the status is the same every time, so only its first appearance asks
-    /// for a frame (a scroll or keystroke must not repaint the window whole).
+    /// Record that an edit went into history no authenticated publication
+    /// observed. Editing continues. The status is idempotent, so only its
+    /// first appearance asks for a frame.
     fn note_local_input_unsigned(&mut self) {
         if self.local_input_capture.failure.is_none() {
             self.local_input_capture.failure = Some(crate::i18n::I18nManager::lookup_plain(
@@ -129,10 +132,12 @@ impl App {
             let routes = self.local_input_capture.offline_routes.clone();
             if routes.is_empty() && self.actions.action_directory_snapshot.is_none() {
                 // No authenticated publication: preserve editing, but do not
-                // invent a caller, route, revision or admission. The status is
-                // idempotent; only its first appearance needs a frame.
-                self.note_local_input_unsigned();
-                return crate::local_document_action::suspend();
+                // invent a caller, route, revision or admission. Input is not
+                // history: only an edit it records makes history unsigned,
+                // learnt when the input drains.
+                return crate::local_document_action::enter_unsigned_input(
+                    self.local_input_capture.unsigned_edits.clone(),
+                );
             }
             for route in &routes {
                 if let Some(pin) = route.pin.as_ref().and_then(|pin| {
@@ -168,8 +173,9 @@ impl App {
         self.publish_action_surface();
         if self.actions.action_directory_snapshot.is_none() {
             drop(background);
-            self.note_local_input_unsigned();
-            return crate::local_document_action::suspend();
+            return crate::local_document_action::enter_unsigned_input(
+                self.local_input_capture.unsigned_edits.clone(),
+            );
         }
         let mut routes: Vec<InputRoute> = Vec::new();
         let revision = self
@@ -269,6 +275,9 @@ impl App {
     }
 
     pub(super) fn drain_local_input_capture(&mut self) {
+        if self.local_input_capture.unsigned_edits.take() {
+            self.note_local_input_unsigned();
+        }
         let mut failures = Vec::new();
         let mut recovery_routes: Vec<_> = self
             .document_routes
@@ -718,6 +727,50 @@ mod tests {
         fn locus(&self) -> tilo_actions::ExecutionLocus {
             tilo_actions::ExecutionLocus::ClientLocal
         }
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct Put(i64);
+    impl tilo_actions::Action for Put {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, "edited", self.0)?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_a_recorded_edit_makes_unmanaged_history_unsigned() {
+        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+        let mut doc = automerge::AutoCommit::new();
+        let mut host = crate::action_host::ActionHost::new();
+        // Input that edits nothing, even one running a no-op action.
+        for _ in 0..3 {
+            let input = app.begin_local_input_capture();
+            host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+            drop(input);
+            app.needs_sync = false;
+            app.drain_local_input_capture();
+            assert!(app.local_input_capture.failure.is_none());
+            assert!(app.document_sync_status().is_none());
+            assert!(
+                !app.needs_sync,
+                "input that edits nothing asks for no frame"
+            );
+        }
+        // An edit outside input is not this person's unsigned history.
+        host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
+        app.drain_local_input_capture();
+        assert!(app.local_input_capture.failure.is_none());
+        let input = app.begin_local_input_capture();
+        host.try_dispatch(&mut doc, "put", &Put(2)).unwrap();
+        drop(input);
+        app.drain_local_input_capture();
+        let unsigned = crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned");
+        assert_eq!(
+            app.document_sync_status().as_deref(),
+            Some(unsigned.as_str())
+        );
     }
 
     #[test]
