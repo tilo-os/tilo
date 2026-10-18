@@ -90,6 +90,7 @@ pub struct HistoryHost {
     assets: media::AssetSession,
     active_scope: usize,
     sync_status: Option<String>,
+    bar_status: crate::widget::HeaderStatus,
     restored_source: Option<HistorySourceRegistration>,
     review: Option<review::ReviewPanel>,
     review_request: Option<review::ReviewCommand>,
@@ -318,6 +319,7 @@ impl HistoryHost {
             assets: media::AssetSession::new(),
             active_scope: 0,
             sync_status: None,
+            bar_status: crate::widget::HeaderStatus::default(),
             restored_source: None,
             review: None,
             review_request: None,
@@ -1544,6 +1546,7 @@ impl HistoryHost {
             .with_no_padding()
             .with_gap(4.0)
             .with_intrinsic_height();
+        self.bar_status.set(None);
         if self.invalid_owner {
             self.toolbar = toolbar.push(Box::new(Text::new("history-mode-unavailable")));
             self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
@@ -1553,6 +1556,12 @@ impl HistoryHost {
             if (self.fallback_bar && self.open_button && !self.app_presents_button)
                 || (self.open && !self.window_presents)
             {
+                // This bar already reserves the History control's height. Status
+                // belongs beside it, not in a new row that moves the live app
+                // when an ordinary input first discovers unsigned history.
+                if !self.app_presents_status {
+                    self.bar_status.set(self.sync_status.as_deref());
+                }
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     Row::new()
@@ -1798,7 +1807,7 @@ impl HistoryHost {
         if let Some(status) = self
             .sync_status
             .as_ref()
-            .filter(|_| !self.app_presents_status)
+            .filter(|_| !self.app_presents_status && self.bar_status.text().is_none())
         {
             toolbar = toolbar.push(Box::new(
                 Text::new(status).with_live(crate::a11y::Politeness::Polite),
