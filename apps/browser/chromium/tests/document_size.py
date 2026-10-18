@@ -3,7 +3,8 @@
 
 Loads a local page 3000 CSS pixels tall into a 800x200 view. Nothing is reported
 before the tab asks; once it asks, the host sends the document's height, and a
-scroll to an anchor far down moves the reported scroll position.
+scroll to an anchor far down moves the reported scroll position, and so does
+the wheel once the page is painted there.
 """
 import argparse
 import base64
@@ -69,29 +70,34 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
             raise event
         return event
 
+    def wheel():
+        """Wheel up three notches over the page, as the pointer does."""
+        send({'op': 'mouse_move', 'x': 400.0, 'y': 100.0})
+        for _ in range(3):
+            send({'op': 'scroll', 'x': 400.0, 'y': 100.0, 'dx': 0.0, 'dy': 120.0})
+
     try:
-        deadline = time.monotonic() + 60
-        asked = scrolled = False
+        deadline = time.monotonic() + 90
+        asked = False
         sizes = []
         frames = 0
-        scrolled_at = None
-        asked_again = False
+        phase = 'load'
+        frames_before_anchor = 0
         while time.monotonic() < deadline:
-            wait = deadline if scrolled_at is None or asked_again else scrolled_at + 5
             try:
-                event = next_event(wait)
+                event = next_event(deadline)
             except queue.Empty:
-                if scrolled_at is not None and not asked_again:
-                    # No paint since the scroll (none at all in a headless
-                    # sandbox without a compositor): asking again reads now.
-                    print(f'no report after the scroll; frames so far: {frames}', flush=True)
-                    send({'op': 'document_size', 'tab': 1, 'enabled': True})
-                    asked_again = True
-                    continue
-                raise
+                raise AssertionError(f'{phase}: nothing reported; {frames} frames, {sizes}') from None
             name = event['event']
             if name == 'frame':
                 frames += 1
+                if phase == 'painted':
+                    # The scrolled page is on screen, so the renderer can
+                    # tell what is under the pointer: a wheel event that
+                    # comes before the page's first frame finds nothing to
+                    # scroll and is dropped, in any Chromium.
+                    phase = 'wheel'
+                    wheel()
                 continue
             print(json.dumps(event)[:300], flush=True)
             if name == 'ready':
@@ -106,23 +112,31 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
             elif name == 'document_size':
                 assert asked, 'reported before it was asked for'
                 sizes.append(event)
-                if len(sizes) == 1:
+                if phase == 'load':
                     assert event['height'] >= 3000, event
                     assert 700 <= event['width'] <= 900, event
                     assert event['scroll_y'] == 0, event
                     # The page scrolls to an anchor far down it.
+                    phase = 'anchor'
+                    frames_before_anchor = frames
                     send({'op': 'navigate', 'url': URL + '#far'})
-                    scrolled_at = time.monotonic()
-                elif event['scroll_y'] > 0:
-                    scrolled = True
+                elif phase == 'anchor' and event['scroll_y'] >= 1900:
+                    # Then, once it is painted there, the wheel scrolls it
+                    # back up. The report follows the paint that showed it.
+                    if frames > frames_before_anchor:
+                        phase = 'wheel'
+                        wheel()
+                    else:
+                        phase = 'painted'
+                elif phase == 'wheel' and event['scroll_y'] < sizes[-2]['scroll_y']:
+                    phase = 'done'
                     break
-        assert sizes, 'no document size reported'
-        assert scrolled, f'a scroll was not reported: {sizes}'
+        assert phase == 'done', f'{phase}: {sizes}'
         send({'op': 'shutdown'})
         while next_event(time.monotonic() + 10)['event'] != 'closed':
             pass
         assert host.wait(timeout=10) == 0
-        print(f'PASS: off until asked, height of the document, scroll reported ({frames} frames)')
+        print(f'PASS: off until asked, height, anchor and wheel scroll reported ({frames} frames)')
     finally:
         if host.poll() is None:
             host.kill()
