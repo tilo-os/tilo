@@ -11,6 +11,18 @@ use super::desktop_services::PortalSetting;
 pub const APPEARANCE: &str = "org.freedesktop.appearance";
 pub const GNOME_INTERFACE: &str = "org.gnome.desktop.interface";
 pub const GNOME_A11Y_INTERFACE: &str = "org.gnome.desktop.a11y.interface";
+pub const GNOME_WM_PREFERENCES: &str = "org.gnome.desktop.wm.preferences";
+
+/// The window controls a client-drawn frame shows, in GTK's `leading:trailing` form: none.
+///
+/// The desktop draws every window's controls (AGENTS.md: the OS owns window chrome), and
+/// `xdg-decoration` cannot stop a client that draws its own frame anyway. Chromium does:
+/// it records the compositor's `ServerSide` answer and keeps its custom frame, whose
+/// minimize/maximize/close row stacked a second title bar under the desktop's. GTK
+/// headerbars, Firefox and Chromium all take their buttons from this one GNOME key
+/// (GTK's `gtk-decoration-layout`), so an empty layout leaves their own row (tabs, the
+/// headerbar's actions) and drops the duplicate controls.
+const CLIENT_FRAME_BUTTONS: &str = ":";
 
 /// Point size GNOME uses for its interface fonts; text scaling is published separately as
 /// `text-scaling-factor`, so the base stays fixed.
@@ -188,6 +200,11 @@ impl LegacyAppearance {
                 GNOME_A11Y_INTERFACE,
                 "high-contrast",
                 PortalSetting::Bool(self.high_contrast),
+            ),
+            (
+                GNOME_WM_PREFERENCES,
+                "button-layout",
+                PortalSetting::Text(CLIENT_FRAME_BUTTONS.into()),
             ),
         ]
     }
@@ -434,6 +451,26 @@ mod tests {
         assert_eq!(appearance.gnome_accent(), "red");
         appearance.accent = [0x30, 0x80, 0xe0];
         assert_eq!(appearance.gnome_accent(), "blue");
+    }
+
+    #[test]
+    fn client_drawn_frames_are_told_to_show_no_window_controls() {
+        let appearance = LegacyAppearance::from_settings_text("", false);
+        assert_eq!(
+            lookup(
+                &appearance.portal_settings(),
+                GNOME_WM_PREFERENCES,
+                "button-layout"
+            ),
+            &PortalSetting::Text(":".into()),
+            "no leading and no trailing buttons: the desktop draws the controls"
+        );
+        assert!(
+            appearance
+                .dconf_keyfile()
+                .contains("\n[org/gnome/desktop/wm/preferences]\nbutton-layout=':'\n"),
+            "unsandboxed host apps read the same layout from dconf"
+        );
     }
 
     #[test]
