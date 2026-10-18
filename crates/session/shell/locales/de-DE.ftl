@@ -715,6 +715,7 @@ capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jede
 capability-system-info = Sehen, wie ausgelastet dieses Gerät ist
 capability-processes = Die laufenden Programme dieses Geräts sehen und eigene beenden
 capability-process-commands = Die Befehlszeilen laufender Programme sehen
+capability-io-uring = Die schnelle asynchrone Ein- und Ausgabe des Kernels nutzen (io_uring)
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 

@@ -6,15 +6,16 @@ instruction per line, in the original little-endian byte order. The tests
 independently decode these fixed bytes and compare them against the production
 compiler; no policy is generated from the implementation under test.
 
-The bytes are unchanged from the original fixtures at `2a26be496c` and retain
-the repository's license. No network, asset cache or extra generation tool is
+The programs extend the original fixtures at `2a26be496c` only by the rules
+refusing `io_uring_setup`, `io_uring_enter` and `io_uring_register` (x86_64
+syscalls 425 to 427) with `EPERM`, and retain the repository's license. No network, asset cache or extra generation tool is
 needed to compile or run these tests. Malformed hex fails the test.
 
-Original byte pins:
+Byte pins:
 
-- `tilo-default.x86_64.bpf`: 2,120 bytes, SHA-256 `030f7b61d28ae7732cd5cefa29e0f94d8c3888aa8effdb6f39b874f654a306e0`.
-- `tilo-jit.x86_64.bpf`: 1,928 bytes, SHA-256 `12620bc3f7e60cde14bb1a9518022783c7e95ce1f2fb7073e45cb581a6e7a3b7`.
-- `tilo-web-engine.x86_64.bpf`: 2,008 bytes, SHA-256 `6abc4e7b8d0bb8ea17e234af28f06e1c0a508e8f57d86474e11af79bf176b488`.
+- `tilo-default.x86_64.bpf`: 2,240 bytes, SHA-256 `78f3b1535287612c4764f8fdf002702e7685005da48f6fb5a75f4a2b3ce549b3`.
+- `tilo-jit.x86_64.bpf`: 2,048 bytes, SHA-256 `cc93621454ef900eba338a2e03e3026ede6279db973a1b3fe3ef8e967338e0ce`.
+- `tilo-web-engine.x86_64.bpf`: 2,128 bytes, SHA-256 `b8e2c508a37db3a89beaddc378e262659664b758ccfac748af382004cad57f58`.
 
 A deliberate policy change still requires review of the regenerated program
 and its expected text bytes. Never replace the golden with a call to the

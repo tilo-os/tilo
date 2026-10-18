@@ -198,6 +198,30 @@ pub const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_acct,
 ];
 
+/// The `io_uring` interface: I/O submitted through rings shared with the
+/// kernel. One of the largest recent sources of kernel vulnerabilities, and
+/// nothing an ordinary app needs: every runtime that uses it (tokio's
+/// `io-uring` driver, libuv, liburing users) falls back to `epoll` and
+/// threads when `io_uring_setup` fails. Refused by the application baseline
+/// unless the app holds the `io-uring` permission ([`SyscallGrants`]).
+#[cfg(target_os = "linux")]
+pub const IO_URING_SYSCALLS: &[libc::c_long] = &[
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+];
+
+/// Syscalls the application baseline refuses unless the app was granted
+/// them. Orthogonal to [`SeccompProfile`]: the profile is the image's
+/// per-package decision about generated code, these are permissions a
+/// manifest declares and the person (or the image, for an app it ships)
+/// grants. The default grants nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyscallGrants {
+    /// [`IO_URING_SYSCALLS`] are allowed.
+    pub io_uring: bool,
+}
+
 #[cfg(target_os = "linux")]
 const CLONE_NAMESPACE_FLAGS: &[u64] = &[
     libc::CLONE_NEWCGROUP as u64,
@@ -297,11 +321,17 @@ fn write_exec_bits() -> u64 {
 #[cfg(target_os = "linux")]
 fn baseline_rules(
     profile: SeccompProfile,
+    grants: SyscallGrants,
 ) -> Result<BTreeMap<i64, Vec<SeccompRule>>, SeccompError> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
     for nr in BLANKET_DENIES {
         rules.insert(*nr, Vec::new());
+    }
+    if !grants.io_uring {
+        for nr in IO_URING_SYSCALLS {
+            rules.insert(*nr, Vec::new());
+        }
     }
 
     // pthreads still need clone(), but an app may not use it to manufacture
@@ -385,7 +415,20 @@ fn baseline_rules(
 /// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn baseline_program(profile: SeccompProfile) -> Result<BpfProgram, SeccompError> {
-    deny_list_program(baseline_rules(profile)?)
+    baseline_program_with(profile, SyscallGrants::default())
+}
+
+/// The baseline policy for `profile`, minus the syscalls `grants` allows.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn baseline_program_with(
+    profile: SeccompProfile,
+    grants: SyscallGrants,
+) -> Result<BpfProgram, SeccompError> {
+    deny_list_program(baseline_rules(profile, grants)?)
 }
 
 /// Compatibility filter for modern glibc thread creation. Returning `ENOSYS`
@@ -443,7 +486,7 @@ pub const PARSER_DENIES: &[libc::c_long] = &[
 /// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn parser_program() -> Result<BpfProgram, SeccompError> {
-    let mut rules = baseline_rules(SeccompProfile::TiloDefault)?;
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
     for nr in PARSER_DENIES {
         // Unconditional: replaces the baseline's AF_PACKET-only socket rule.
         rules.insert(*nr, Vec::new());
@@ -477,7 +520,7 @@ const SIGNAL_TARGET_SYSCALLS: &[libc::c_long] = &[
 /// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn driver_program(own_pid: u32) -> Result<BpfProgram, SeccompError> {
-    let mut rules = baseline_rules(SeccompProfile::TiloDefault)?;
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
     for nr in PARSER_DENIES {
         if !matches!(*nr, libc::SYS_execve | libc::SYS_execveat) {
             rules.insert(*nr, Vec::new());
@@ -787,6 +830,19 @@ pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError
     Ok(program_bytes(&baseline_program(profile)?))
 }
 
+/// [`compile_baseline`] for an app holding `grants`.
+///
+/// # Errors
+///
+/// As [`compile_baseline`].
+#[cfg(target_os = "linux")]
+pub fn compile_app_baseline(
+    profile: SeccompProfile,
+    grants: SyscallGrants,
+) -> Result<Vec<u8>, SeccompError> {
+    Ok(program_bytes(&baseline_program_with(profile, grants)?))
+}
+
 /// Write the compiled blob to a path inside `dir`, returning that path.
 /// Caller is responsible for opening it and handing the fd to bwrap.
 ///
@@ -1048,6 +1104,90 @@ mod tests {
             let program = deny_list_program(rules.clone()).unwrap();
             assert_eq!(compile_deny_list(rules).unwrap(), program_bytes(&program));
             assert_eq!(program_bytes(&program).len(), program.len() * 8);
+        }
+    }
+
+    /// `io_uring` is a permission: the baseline refuses it, an app holding
+    /// the grant reaches the kernel. EPERM is what tokio's driver and libuv
+    /// treat as "no `io_uring` here" and fall back to `epoll` from.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn io_uring_is_refused_unless_the_app_holds_the_grant() {
+        // `io_uring_setup(0, NULL)`: the kernel itself answers EINVAL (no
+        // entries) or, where the host disabled io_uring, EPERM or ENOSYS.
+        fn setup_errno() -> i32 {
+            // SAFETY: zero entries and a null parameter block; the kernel
+            // rejects the call before touching memory.
+            let rc = unsafe { libc::syscall(libc::SYS_io_uring_setup, 0_i64, 0_i64) };
+            if rc >= 0 {
+                // SAFETY: closing the descriptor the kernel just returned.
+                unsafe { libc::close(i32::try_from(rc).unwrap_or(-1)) };
+                0
+            } else {
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+            }
+        }
+        fn under(grants: SyscallGrants) -> i32 {
+            let program = baseline_program_with(SeccompProfile::TiloDefault, grants).unwrap();
+            // SAFETY: the child installs a filter, makes one raw syscall and
+            // exits without returning into the test harness.
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0, "fork failed");
+            if pid == 0 {
+                let code = if seccompiler::apply_filter(&program).is_err() {
+                    255
+                } else {
+                    setup_errno()
+                };
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(code) };
+            }
+            let mut status = 0;
+            // SAFETY: waiting on our own child.
+            unsafe { libc::waitpid(pid, &raw mut status, 0) };
+            assert!(libc::WIFEXITED(status), "status {status:#x}");
+            libc::WEXITSTATUS(status)
+        }
+
+        let rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default()).unwrap();
+        let granted = baseline_rules(
+            SeccompProfile::TiloDefault,
+            SyscallGrants { io_uring: true },
+        )
+        .unwrap();
+        for nr in IO_URING_SYSCALLS {
+            assert_eq!(rules.get(nr), Some(&Vec::new()), "syscall {nr} not refused");
+            assert!(
+                !granted.contains_key(nr),
+                "syscall {nr} refused despite the grant"
+            );
+        }
+        // Every profile refuses it by default; the grant changes nothing else.
+        for profile in [
+            SeccompProfile::TiloDefault,
+            SeccompProfile::TiloJit,
+            SeccompProfile::TiloWebEngine,
+        ] {
+            let mut denied = baseline_rules(profile, SyscallGrants::default()).unwrap();
+            let allowed = baseline_rules(profile, SyscallGrants { io_uring: true }).unwrap();
+            for nr in IO_URING_SYSCALLS {
+                assert!(denied.remove(nr).is_some());
+            }
+            assert_eq!(denied, allowed, "{}", profile.as_str());
+        }
+
+        assert_eq!(
+            under(SyscallGrants::default()),
+            libc::EPERM,
+            "the baseline must refuse io_uring_setup with EPERM"
+        );
+        let host = setup_errno();
+        if host != libc::EPERM {
+            assert_eq!(
+                under(SyscallGrants { io_uring: true }),
+                host,
+                "with the grant the kernel answers, as it does unconfined"
+            );
         }
     }
 

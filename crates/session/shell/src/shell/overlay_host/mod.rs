@@ -22944,6 +22944,7 @@ pub(crate) fn capability_label(cap: &Capability) -> String {
         Capability::SystemInfo { .. } => t("capability-system-info"),
         Capability::Processes { .. } => t("capability-processes"),
         Capability::ProcessCommands { .. } => t("capability-process-commands"),
+        Capability::IoUring { .. } => t("capability-io-uring"),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => t_args(
                 "capability-network-hosts",

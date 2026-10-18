@@ -1636,6 +1636,23 @@ pub fn capabilities_for_app(app_id: &str) -> LaunchGrants {
     lock(&WORKSPACE_CAPABILITIES).for_app(app_id)
 }
 
+/// Asks the person, on a launch worker, for permissions the sandbox applies
+/// at launch (`crate::compositor::launch_permissions`), and returns what to
+/// add to that launch's capabilities.
+pub(crate) type LaunchPermissionAsk = dyn Fn(&InstalledApp, RoomId, &LaunchGrants) -> Vec<collab_types::caps::CapOverride>
+    + Send
+    + Sync;
+
+/// Registered once by the compositor. Absent (tests, headless tools) nobody
+/// is asked and nothing beyond the room's grants is added.
+static LAUNCH_PERMISSIONS: std::sync::OnceLock<Box<LaunchPermissionAsk>> =
+    std::sync::OnceLock::new();
+
+/// Install the session's launch-time permission prompt.
+pub(crate) fn set_launch_permissions(ask: Box<LaunchPermissionAsk>) {
+    let _ = LAUNCH_PERMISSIONS.set(ask);
+}
+
 /// Where a launch's capability file lives: `<runtime>/tilo/capabilities/`,
 /// under the per-user `0700` runtime tmpfs. Deliberately *not* bound into
 /// the sandbox: the app never sees its own permission record.
@@ -3502,6 +3519,10 @@ fn execute_installed_inner(
         || capabilities_for_app(&app.package_id),
         |grants| grants.for_app(&app.package_id),
     );
+    if let Some(ask) = LAUNCH_PERMISSIONS.get() {
+        let added = ask(&app, room, &capabilities);
+        capabilities.sandbox.extend(added);
+    }
     let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {

@@ -16,11 +16,44 @@
 
 use std::path::PathBuf;
 
-pub use sandbox_core::seccomp::SeccompProfile;
 #[cfg(target_os = "linux")]
 pub use sandbox_core::seccomp::{
-    SeccompError, compile_baseline, compile_clone3_compat, write_baseline_to,
+    SeccompError, compile_app_baseline, compile_baseline, compile_clone3_compat, write_baseline_to,
 };
+pub use sandbox_core::seccomp::{SeccompProfile, SyscallGrants};
+
+/// The manifest capability that lets an app use `io_uring`
+/// (`sandbox_core::seccomp::IO_URING_SYSCALLS`).
+pub const IO_URING: &str = "io-uring";
+
+/// The syscalls one launch of `manifest` may make beyond the baseline.
+///
+/// `io_uring` is a permission, decided like the system information grants
+/// (`crate::system_stats`): the manifest is the ceiling (an app that does
+/// not declare `io-uring` never gets it); an app the image ships
+/// (`image_shipped`) is granted what it declares; any other app only what
+/// the room's capabilities name (`Scope::Device("io-uring")`), which the
+/// person gives through the permission prompt. Without it the calls fail
+/// with `EPERM` and the app's runtime falls back to `epoll`.
+#[must_use]
+pub fn syscall_grants(
+    manifest: &crate::manifest::ManifestView,
+    plan: &crate::capabilities::CapabilityPlan,
+    image_shipped: bool,
+) -> SyscallGrants {
+    let declared = manifest.declares_capability(IO_URING);
+    let granted = image_shipped || plan.devices.iter().any(|device| device == IO_URING);
+    if declared && !granted {
+        eprintln!(
+            "tilo-launcher: {} declares {IO_URING} but holds no grant for it in this room; \
+             io_uring is refused (EPERM) and the app falls back to epoll",
+            manifest.package_id
+        );
+    }
+    SyscallGrants {
+        io_uring: declared && granted,
+    }
+}
 
 /// Image-owned list of package ids that may run without
 /// write-xor-execute.
@@ -186,6 +219,36 @@ mod tests {
                 golden.len()
             );
         }
+    }
+
+    /// `io_uring` reaches an app only when its manifest declares it and the
+    /// image ships the app or the room granted it.
+    #[test]
+    fn io_uring_needs_the_declaration_and_a_grant() {
+        use crate::capabilities::CapabilityPlan;
+        let mut manifest = crate::manifest::test_manifest(
+            "id = \"com.example.storage\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/app\"\n",
+        );
+        let granted = CapabilityPlan {
+            devices: vec![IO_URING.to_string()],
+            ..CapabilityPlan::empty()
+        };
+        let none = CapabilityPlan::empty();
+
+        // Undeclared: never, whatever the room or the image says.
+        assert!(!syscall_grants(&manifest, &granted, true).io_uring);
+
+        manifest.capabilities = vec![IO_URING.to_string()];
+        assert!(
+            !syscall_grants(&manifest, &none, false).io_uring,
+            "a user-installed app without the room's grant is refused"
+        );
+        assert!(syscall_grants(&manifest, &granted, false).io_uring);
+        assert!(
+            syscall_grants(&manifest, &none, true).io_uring,
+            "an app the image ships gets what it declares"
+        );
     }
 
     /// Points the entitlement lookup at a fixture for the duration of a test.
