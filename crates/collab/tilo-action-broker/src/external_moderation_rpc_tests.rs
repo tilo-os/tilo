@@ -1,6 +1,6 @@
-// Exercise the production RPC and retained target custody without opening an
-// identity key or making a network request. HTTP passes structural validation,
-// but the host worker must reject it at its HTTPS gate before signing.
+// Exercise production RPC and retained target custody. Refusal cases stop before
+// disclosure; the included HTTPS regression enrolls an identity and reaches the
+// real registry verifier and durable case store.
 mod external_moderation_rpc_tests {
     use super::*;
     use registry_types::{ExternalModerationOperation, ModerationDestination, ModerationMutation};
@@ -52,7 +52,27 @@ mod external_moderation_rpc_tests {
                 None,
                 None,
             );
+            Self::with_original(native, document, original)
+        }
+
+        fn with_original(
+            native: bool,
+            document: Option<Arc<dyn NativeDocumentReads>>,
+            original: signed_worker::OriginalRoom,
+        ) -> Self {
             let route = CrdtRoute::record("so.tilo.store", &original.route.cluster_id, "store");
+            // This fixture replaces OriginalRoom's broker, not its journal.
+            // Release that unused writer before opening the Store broker.
+            drop(
+                original
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .take(),
+            );
             let fanout = Arc::new(FanoutState::new());
             let mut services = original.membership.services();
             services.committed_documents = document;
@@ -133,11 +153,15 @@ mod external_moderation_rpc_tests {
                 .unwrap()
                 .clone();
             let (actor, origin) = self.caller();
+            let surface = self.state.surfaces.lock().unwrap()[&peer].clone();
+            let binding = self.state.native_witness_binding(
+                actor.id(),
+                &(surface, offered.clone()),
+                Some(argument),
+                tilo_actions::InvocationId::new(),
+            );
             // Simulate the trusted host sheet answering these exact bytes.
-            let witness = self
-                .state
-                .witness_confirmation(actor.id(), (resource, action), Some(argument))
-                .unwrap();
+            let witness = self.state.witness_confirmation(&binding).unwrap();
             let token = self
                 .state
                 .confirmation_token(
@@ -147,6 +171,7 @@ mod external_moderation_rpc_tests {
                     Some(argument),
                     &actor,
                     Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
+                    &binding,
                 )
                 .unwrap();
             let job = self
@@ -157,7 +182,7 @@ mod external_moderation_rpc_tests {
                     action,
                     InvocationInputs {
                         original_request: None,
-                        requested: None,
+                        requested: Some(binding.invocation),
                         caller: None,
                         execution: None,
                         argument: Some(argument),
@@ -411,6 +436,13 @@ mod external_moderation_rpc_tests {
                     let (actor, origin) = room.caller();
                     let operation = operation(action == "appeal");
                     let exact = argument(&operation);
+                    let surface = room.state.surfaces.lock().unwrap()[&980].clone();
+                    let binding = room.state.native_witness_binding(
+                        actor.id(),
+                        &(surface, offered.clone()),
+                        Some(&exact),
+                        tilo_actions::InvocationId::new(),
+                    );
                     assert!(matches!(
                         room.state.confirmation_token(
                             980,
@@ -418,7 +450,8 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            None
+                            None,
+                            &binding,
                         ),
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
@@ -431,18 +464,12 @@ mod external_moderation_rpc_tests {
                             Some(&exact),
                             &actor,
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
+                            &binding,
                         ),
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
                     for altered in ["missing", "payload", "destination"] {
-                        let witness = room
-                            .state
-                            .witness_confirmation(
-                                actor.id(),
-                                (&offered.resource, action),
-                                Some(&exact),
-                            )
-                            .unwrap();
+                        let witness = room.state.witness_confirmation(&binding).unwrap();
                         let token = room
                             .state
                             .confirmation_token(
@@ -452,6 +479,7 @@ mod external_moderation_rpc_tests {
                                 Some(&exact),
                                 &actor,
                                 Some(&tilo_actions::remote::Confirmation::Witnessed(witness)),
+                                &binding,
                             )
                             .unwrap()
                             .unwrap();
@@ -477,7 +505,7 @@ mod external_moderation_rpc_tests {
                             action,
                             InvocationInputs {
                                 original_request: None,
-                                requested: None,
+                                requested: Some(binding.invocation),
                                 caller: None,
                                 execution: None,
                                 argument: Some(&changed),
@@ -526,6 +554,13 @@ mod external_moderation_rpc_tests {
                     let (actor, _) = room.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
+                    let surface = room.state.surfaces.lock().unwrap()[&980].clone();
+                    let binding = room.state.native_witness_binding(
+                        actor.id(),
+                        &(surface, offered.clone()),
+                        Some(&exact),
+                        tilo_actions::InvocationId::new(),
+                    );
                     assert!(matches!(
                         room.state.confirmation_token(
                             980,
@@ -534,6 +569,7 @@ mod external_moderation_rpc_tests {
                             Some(&exact),
                             &actor,
                             Some(&tilo_actions::remote::Confirmation::Confirmed),
+                            &binding,
                         ),
                         Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
                     ));
@@ -990,4 +1026,6 @@ mod external_moderation_rpc_tests {
             })
             .await;
     }
+
+    include!("external_moderation_https_tests.rs");
 }

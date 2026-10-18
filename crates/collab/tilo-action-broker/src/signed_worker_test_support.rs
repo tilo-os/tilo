@@ -349,7 +349,12 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+        Self::hosting(capabilities, expires_at_ns, persist_path, None, false)
+    }
+
+    /// Native caller using the enrolled identity, rather than a synthetic certificate.
+    pub fn current_native() -> Self {
+        Self::hosting(DeviceCapabilities::primary(), None, None, None, true)
     }
 
     /// The room on a host that keeps record content through `content`:
@@ -363,6 +368,7 @@ impl OriginalRoom {
             None,
             None,
             Some((content, room)),
+            false,
         )
     }
 
@@ -374,6 +380,7 @@ impl OriginalRoom {
             Arc<crate::record_content::RouteContent>,
             Option<tilo_desktop_model::RoomId>,
         )>,
+        current_native: bool,
     ) -> Self {
         let fixture_root =
             tempfile::tempdir().expect("private host identity and journal directory");
@@ -393,8 +400,21 @@ impl OriginalRoom {
         let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
-        let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(50_000_000_000);
+        let (key, cert, start) = if current_native {
+            let (key, cert) = tilo_identity_host::broker::trusted_current_device(
+                &tilo_desktop_model::RoomId::new().to_string(),
+            )
+            .expect("enrolled native device");
+            let start = tilo_clock::unix_now_ns();
+            (key, cert, start)
+        } else {
+            (
+                key.clone(),
+                signed_device(&root, &key, "original worker", capabilities, expires_at_ns),
+                50_000_000_000,
+            )
+        };
+        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(83),
@@ -413,7 +433,9 @@ impl OriginalRoom {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Subject::Person(principal),
         )
-        .with_lifetime(tilo_action_policy::Lifetime::Until(100_000));
+        .with_lifetime(tilo_action_policy::Lifetime::Until(
+            start / 1_000_000 + 50_000,
+        ));
         workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",

@@ -195,9 +195,10 @@ impl CapnpBrokerState {
         let witness = self
             .native_store_witness(
                 (&run, reask.lease, confirmation.is_some()),
-                (&offered.0.app_id, &offered.1),
+                &offered,
                 target.argument,
                 reask.caller,
+                reask.invocation,
             )
             .await
             .map_err(capnp::Error::failed)?;
@@ -486,6 +487,7 @@ impl CapnpBrokerState {
                 witness
                     .map(|token| tilo_actions::remote::Confirmation::Witnessed(token.into()))
                     .as_ref(),
+                &self.native_witness_binding(actor.id(), &offered, target.argument, invocation),
             )
             .map_err(|error| error.to_string())?
         } else {

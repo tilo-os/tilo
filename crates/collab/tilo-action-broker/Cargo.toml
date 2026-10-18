@@ -73,6 +73,13 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+# The disclosure regression reaches the real verifier and durable registry store over HTTPS.
+registry-server = { path = "../../packaging/registry-server" }
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 # Paused time: the process-binding tests prove no clock decides a launch.
 tokio = { workspace = true, features = ["test-util"] }
 # Integration tests start a real relay.

@@ -7,6 +7,12 @@ use std::io::Read as _;
 use std::sync::Weak;
 use std::time::Duration;
 
+// Tests may add a CA for an exact ephemeral loopback destination. No URL,
+// signature, identity, custody or server verification is replaced.
+#[cfg(test)]
+pub(super) static TEST_ROOTS: std::sync::Mutex<Vec<(String, Vec<u8>)>> =
+    std::sync::Mutex::new(Vec::new());
+
 type Reply = Result<ModerationCase, String>;
 pub(super) enum Entry {
     Running,
@@ -99,7 +105,23 @@ impl Context {
         self.recheck()?;
         // Parse, but never normalize the approved destination used in the signature.
         let url = destination_url(&self.request.operation.destination.base_url)?;
-        let client = tilo_net::http::blocking_client()
+        let client = tilo_net::http::blocking_client();
+        #[cfg(test)]
+        let client = {
+            let root = TEST_ROOTS
+                .lock()
+                .map_err(|_| "test CA registry poisoned")?
+                .iter()
+                .find(|(base, _)| base == &self.request.operation.destination.base_url)
+                .map(|(_, root)| root.clone());
+            match root {
+                Some(root) => client.add_root_certificate(
+                    reqwest::Certificate::from_der(&root).map_err(|error| error.to_string())?,
+                ),
+                None => client,
+            }
+        };
+        let client = client
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
