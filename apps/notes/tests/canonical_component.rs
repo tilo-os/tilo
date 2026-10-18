@@ -98,10 +98,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         let mut live = driver(&f, 11, &checkout);
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: tilo_actions::ActionAddress::new(
-                notes::actions::page_resource_id(f.root),
-                "delete",
-            ),
+            address: notes::Notebook::DELETE.on(notes::actions::page_resource_id(f.root)),
         };
         let untouched = f
             .records

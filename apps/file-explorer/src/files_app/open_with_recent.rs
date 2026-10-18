@@ -151,7 +151,7 @@ impl FileExplorerWidget {
             // invocation. Both pointer and keyboard submenu activation use this
             // same current published OpenWith action as the full chooser.
             self.selected_open.control = Some(ui::tilo_actions::ControlInvocation {
-                address: ui::tilo_actions::ActionAddress::new(&resource, OPEN_WITH_ACTION),
+                address: crate::effects::FilesEffect::OPEN_WITH.on(&*resource),
                 arguments: serde_json::Map::from_iter([
                     ("app".into(), app_id.into()),
                     ("always".into(), false.into()),

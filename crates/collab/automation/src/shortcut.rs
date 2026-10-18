@@ -15,14 +15,14 @@ use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
     AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
-    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, shortcut_resource_id,
+    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
 };
 
 /// One saved shortcut.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Shortcut {
     /// Stable id; also the tail of the resource id the shortcut is published
-    /// under ([`shortcut_resource_id`]).
+    /// under ([`crate::shortcut_resource_id`]).
     pub id: String,
     /// The person's name for it. Carried into history as the purpose of every
     /// action the shortcut takes.
@@ -56,7 +56,7 @@ impl Shortcut {
     /// The address that runs this shortcut through the action door.
     #[must_use]
     pub fn action_address(&self) -> ActionAddress {
-        ActionAddress::new(shortcut_resource_id(&self.id), SHORTCUT_RUN_ACTION)
+        crate::shortcut_run_address(&self.id)
     }
 }
 

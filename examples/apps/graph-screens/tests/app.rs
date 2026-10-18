@@ -123,11 +123,10 @@ fn the_about_link_navigates_through_a_published_action() {
         .expect("Back returns to the main screen");
 
     harness
-        .invoke_action(
-            &ui::prelude::tilo_actions::ActionAddress::new("tilo.control:open-about", "invoke"),
+        .invoke_published(
+            "tilo.control:open-about",
+            "invoke",
             &ui::serde_json::Map::new(),
-            false,
-            None,
         )
         .expect("the About link is published as an action");
     harness

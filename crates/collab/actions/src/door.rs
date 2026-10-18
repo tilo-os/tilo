@@ -412,6 +412,33 @@ pub fn locate<'a>(
     resources.iter().find_map(|r| walk(r, address))
 }
 
+/// The address of the action `action` that the resource `resource` in the
+/// tree `resources` publishes, or `None` when the tree publishes no such
+/// action: a caller holding a published tree takes its addresses from it
+/// (see [`Resource::action_address`]).
+pub fn published(resources: &[Resource], resource: &str, action: &str) -> Option<ActionAddress> {
+    fn walk(r: &Resource, resource: &str, action: &str) -> Option<ActionAddress> {
+        if r.id.as_str() == resource
+            && let Some(address) = r.action_address(action)
+        {
+            return Some(address);
+        }
+        r.children.iter().find_map(|c| walk(c, resource, action))
+    }
+    resources.iter().find_map(|r| walk(r, resource, action))
+}
+
+/// The action `action` that the resource `resource` in the tree `resources`
+/// publishes, or `None`: [`resolve`] of the address the tree publishes it at
+/// ([`published`]).
+pub fn spec_of<'a>(
+    resources: &'a [Resource],
+    resource: &str,
+    action: &str,
+) -> Option<&'a ActionSpec> {
+    published(resources, resource, action).and_then(|address| resolve(resources, &address))
+}
+
 /// Turn an address plus its argument into the replayable action it
 /// names. Split out from [`invoke`] so a host can build/inspect/route
 /// the encoded action itself, and so argument rules are checked in one

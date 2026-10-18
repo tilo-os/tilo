@@ -766,10 +766,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: tilo_actions::ActionAddress::new(
-                        actions::page_resource_id(f.child),
-                        "rename"
-                    )
+                    address: notes::Notebook::RENAME.on(actions::page_resource_id(f.child))
                 },
                 serde_json::json!({"title":"denied"}).as_object().unwrap()
             )
@@ -779,10 +776,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
             b.invoke_bound_action_confirmed(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: 12,
-                    address: tilo_actions::ActionAddress::new(
-                        actions::page_resource_id(f.child),
-                        "delete"
-                    )
+                    address: notes::Notebook::DELETE.on(actions::page_resource_id(f.child))
                 },
                 &serde_json::Map::new()
             )
@@ -845,7 +839,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
         let denied = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.child), "rename"),
+            address: notes::Notebook::RENAME.on(actions::page_resource_id(f.child)),
         };
         assert!(
             a.invoke_bound_action(
@@ -865,7 +859,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         close_driver(&mut a);
         let stale = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.root), "rename"),
+            address: notes::Notebook::RENAME.on(actions::page_resource_id(f.root)),
         };
         let mut reopened = driver(&f, 11, &checkout);
         assert!(
@@ -1309,7 +1303,7 @@ fn assert_open_tag_view(
     a.invoke_bound_action(
         &ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: tilo_actions::ActionAddress::new(NOTEBOOK, "open-tag"),
+            address: notes::NotesEffect::OPEN_TAG.on(NOTEBOOK),
         },
         serde_json::json!({ "tag": tag }).as_object().unwrap(),
     )
@@ -1373,10 +1367,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         a.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 11,
-                address: tilo_actions::ActionAddress::new(
-                    actions::page_resource_id(f.child),
-                    "outdent"
-                ),
+                address: notes::Notebook::OUTDENT.on(actions::page_resource_id(f.child)),
             },
             &serde_json::Map::new()
         )
@@ -1396,15 +1387,16 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
     let mut app = driver(&f, 11, &checkout);
-    let address = |resource: String, action: &str| ui::bound_dispatch::BoundActionAddress {
+    let address = |address: tilo_actions::ActionAddress| ui::bound_dispatch::BoundActionAddress {
         instance_id: 11,
-        address: tilo_actions::ActionAddress::new(resource, action),
+        address,
     };
     let arguments = serde_json::json!({"title": "Immediate canonical open"})
         .as_object()
         .unwrap()
         .clone();
-    let create = app.invoke_bound_action(&address("notes.notebook".into(), "new-note"), &arguments);
+    let create =
+        app.invoke_bound_action(&address(notes::Notebook::NEW_NOTE.on(NOTEBOOK)), &arguments);
     assert!(create.is_ok(), "normal declared creation: {create:?}");
     let page = f
         .records
@@ -1424,13 +1416,13 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
         .read(&checkout.id, |doc| read::page_stored_blocks(doc, f.child))
         .unwrap();
     let opened = app.invoke_bound_action(
-        &address("notes.notebook".into(), "open-note"),
+        &address(notes::NotesEffect::OPEN_NOTE.on(NOTEBOOK)),
         serde_json::json!({ "page": page }).as_object().unwrap(),
     );
     let observed = opened.as_ref().ok().map(|_| {
         app.relayout();
         app.invoke_bound_action(
-            &address("notes.notebook".into(), "inspect-editor"),
+            &address(notes::NotesEffect::INSPECT_EDITOR.on(NOTEBOOK)),
             &serde_json::Map::new(),
         )
         .unwrap()

@@ -587,17 +587,14 @@ fn item_id(app: &App, collection: &str, name: &str) -> String {
     ids[0].clone()
 }
 
-/// Invoke `action` on `resource` with `arguments`, as the app's person does
-/// from the palette.
-fn invoke_with(app: &mut App, resource: &str, action: &str, arguments: serde_json::Value) {
+/// Invoke the action at `address` with `arguments`, as the app's person
+/// does from the palette.
+fn invoke_with(app: &mut App, address: &tilo_actions::ActionAddress, arguments: serde_json::Value) {
     let serde_json::Value::Object(arguments) = arguments else {
-        panic!("{resource} {action}: arguments are an object");
+        panic!("{address:?}: arguments are an object");
     };
-    app.invoke_local_resource_action(
-        &tilo_actions::ActionAddress::new(resource, action),
-        &arguments,
-    )
-    .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+    app.invoke_local_resource_action(address, &arguments)
+        .unwrap_or_else(|error| panic!("{address:?}: {error:?}"));
 }
 
 #[test]
@@ -843,8 +840,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
                 move |app: &mut App, host: &mut Host| {
                     invoke_with(
                         app,
-                        &format!("notes.notebook/pages/{page}"),
-                        "tag",
+                        &notes::Notebook::TAG.on(format!("notes.notebook/pages/{page}")),
                         serde_json::json!({ "name": name }),
                     );
                     host.frames(app, 6);
@@ -874,8 +870,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
                 );
                 invoke_with(
                     app,
-                    "notes.notebook",
-                    untag.id,
+                    &untag.address(),
                     serde_json::Value::Object(untag.arguments),
                 );
                 host.frames(app, 6);

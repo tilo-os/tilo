@@ -1538,9 +1538,22 @@ impl<R> Invoke<R> {
     pub fn is_effect(&self) -> bool {
         self.effect
     }
+
+    /// This invocation's action as the published resource `resource` (an
+    /// item of the record, a child, a live row) offers it.
+    #[must_use]
+    pub fn address_on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(resource, self.id)
+    }
 }
 
 impl<R: Resource> Invoke<R> {
+    /// This invocation's action as the record's own resource publishes it.
+    #[must_use]
+    pub fn address(&self) -> tilo_actions::ActionAddress {
+        self.address_on(R::KIND)
+    }
+
     /// An invocation of the generic [`APPLY`](crate::APPLY) action for one
     /// typed action value — the path for edits without a named declaration.
     ///

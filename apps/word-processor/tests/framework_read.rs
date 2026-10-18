@@ -13,7 +13,7 @@ fn read_text_address(resources: &[tilo_actions::Resource]) -> Option<tilo_action
             .actions
             .iter()
             .find(|action| action.id == "read-text")
-            .map(|action| tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id))
+            .and_then(|action| resource.action_address(&action.id))
             .or_else(|| read_text_address(&resource.children))
     })
 }
@@ -102,7 +102,7 @@ fn invoke(
                 .actions
                 .iter()
                 .find(|action| action.id == id)
-                .map(|action| tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id))
+                .and_then(|action| resource.action_address(&action.id))
                 .or_else(|| address(&resource.children, id))
         })
     }

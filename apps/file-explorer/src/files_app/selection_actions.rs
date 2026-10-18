@@ -57,7 +57,7 @@ impl FileExplorerWidget {
 mod tests {
     use super::*;
     use crate::effects::FilesEffect;
-    use ui::tilo_actions::{ActionAddress, ActionKind, door};
+    use ui::tilo_actions::{ActionKind, door};
     use ui::tilo_resource::{Effect as _, Resource as _};
 
     fn invoke(
@@ -67,12 +67,10 @@ mod tests {
     ) -> Result<(), String> {
         let mut doc = automerge::AutoCommit::new();
         let tree = super::super::published::tree(files, &doc);
-        let encoded = door::encode_json(
-            &tree,
-            &ActionAddress::new(crate::resource::FileExplorer::KIND, action),
-            args.as_object().unwrap(),
-        )
-        .map_err(|error| error.to_string())?;
+        let address = door::published(&tree, crate::resource::FileExplorer::KIND, action)
+            .ok_or_else(|| format!("the explorer offers no {action}"))?;
+        let encoded = door::encode_json(&tree, &address, args.as_object().unwrap())
+            .map_err(|error| error.to_string())?;
         super::super::published::start(
             files,
             ui::tilo_actions::OperationKind::Effect,

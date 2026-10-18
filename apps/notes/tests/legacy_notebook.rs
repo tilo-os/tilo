@@ -5,12 +5,12 @@
 //! note was untitled and had no body, so an agent's `read` said "has no
 //! body" and every edit of a note found no rich text to edit.
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ScalarValue};
 use notes::{NotesShell, PageId};
 use serde_json::json;
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::testing::TestApp;
+use ui::tilo_resource::{Slot, write_key};
 
 use crate::framework_support::{body, shown};
 
@@ -22,14 +22,23 @@ struct Legacy {
     tag: PageId,
 }
 
+/// The map under `key` of `obj`, made empty.
+fn map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
+    Slot::Key(obj, key).object(doc, ObjType::Map).unwrap()
+}
+
+/// A scalar `value` under `key` of `obj`, as the old notebook wrote it.
+fn scalar(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: ScalarValue) {
+    Slot::Key(obj, key).put_scalar(doc, value).unwrap();
+}
+
 fn page(doc: &mut AutoCommit, pages: &ObjId, id: PageId, fields: (&str, &str, &str), text: &str) {
     let (title, parent, order) = fields;
-    let page = doc.put_object(pages, id.to_string(), ObjType::Map).unwrap();
-    let title_text = doc.put_object(&page, "title", ObjType::Text).unwrap();
-    doc.splice_text(&title_text, 0, 0, title).unwrap();
-    doc.put(&page, "parent", parent).unwrap();
-    doc.put(&page, "order", order).unwrap();
-    let body = doc.put_object(&page, "body", ObjType::Map).unwrap();
+    let page = map(doc, pages, &id.to_string());
+    write_key(doc, &page, "title", &title.to_owned()).unwrap();
+    scalar(doc, &page, "parent", ScalarValue::Str(parent.into()));
+    scalar(doc, &page, "order", ScalarValue::Str(order.into()));
+    let body = map(doc, &page, "body");
     RichText::initialize_under(doc, &body).unwrap();
     RichTextAction::AppendParagraph { text: text.into() }
         .apply_under(doc, &body)
@@ -47,8 +56,13 @@ fn legacy() -> Legacy {
         PageId::new_v4(),
     );
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "notes_schema_version", 3_u64).unwrap();
-    let pages = doc.put_object(ROOT, "pages", ObjType::Map).unwrap();
+    scalar(
+        &mut doc,
+        &ROOT,
+        "notes_schema_version",
+        ScalarValue::Uint(3),
+    );
+    let pages = map(&mut doc, &ROOT, "pages");
     page(
         &mut doc,
         &pages,
@@ -70,23 +84,25 @@ fn legacy() -> Legacy {
         ("Bugs", "", "j"),
         "tab does not indent",
     );
-    let tags = doc.put_object(ROOT, "tags", ObjType::Map).unwrap();
-    let entry = doc
-        .put_object(&tags, tag.to_string(), ObjType::Map)
-        .unwrap();
-    let name = doc.put_object(&entry, "name", ObjType::Text).unwrap();
-    doc.splice_text(&name, 0, 0, "later").unwrap();
-    let assignments = doc
-        .put_object(ROOT, "tag_assignments", ObjType::Map)
-        .unwrap();
-    doc.put(&assignments, format!("{child}:{tag}"), true)
-        .unwrap();
-    let assets = doc.put_object(ROOT, "assets", ObjType::Map).unwrap();
-    let picture = doc
-        .put_object(&assets, "ab".repeat(32), ObjType::Map)
-        .unwrap();
-    doc.put(&picture, "len", 817_544_u64).unwrap();
-    doc.put(&picture, "mime", "image/png").unwrap();
+    let tags = map(&mut doc, &ROOT, "tags");
+    let entry = map(&mut doc, &tags, &tag.to_string());
+    write_key(&mut doc, &entry, "name", &"later".to_owned()).unwrap();
+    let assignments = map(&mut doc, &ROOT, "tag_assignments");
+    scalar(
+        &mut doc,
+        &assignments,
+        &format!("{child}:{tag}"),
+        ScalarValue::Boolean(true),
+    );
+    let assets = map(&mut doc, &ROOT, "assets");
+    let picture = map(&mut doc, &assets, &"ab".repeat(32));
+    scalar(&mut doc, &picture, "len", ScalarValue::Uint(817_544));
+    scalar(
+        &mut doc,
+        &picture,
+        "mime",
+        ScalarValue::Str("image/png".into()),
+    );
     doc.commit();
     Legacy {
         doc,
