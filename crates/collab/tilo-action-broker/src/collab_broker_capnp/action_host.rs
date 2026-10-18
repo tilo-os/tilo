@@ -2022,7 +2022,12 @@ impl CapnpBrokerState {
                 }
                 Some(current.admitted.delegated_to(original.delegated.as_deref()))
             }
-            Some(super::published_invocation::InvocationCaller::Local { route, admitted }) => {
+            Some(super::published_invocation::InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            }) => {
+                self.checked_policy_time(time.as_ref()).map_err(refusal)?;
                 if route.cluster_id != room {
                     return Err(ActionHostError::NotPermitted);
                 }
@@ -2041,10 +2046,11 @@ impl CapnpBrokerState {
                         return Err(ActionHostError::NotPermitted);
                     }
                 }
-                Some(
-                    self.revalidate_admission(route, admitted)
-                        .map_err(|error| refusal(error.to_string()))?,
-                )
+                let current = self
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| refusal(error.to_string()))?;
+                self.checked_policy_time(time.as_ref()).map_err(refusal)?;
+                Some(current)
             }
             Some(super::published_invocation::InvocationCaller::NativePerson {
                 room: original_room,

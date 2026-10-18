@@ -385,6 +385,47 @@ fn revoked_original_after_admission_never_launches_or_closes() {
     }
 }
 
+/// Re-enrolling a request under a new origin during admission must not turn
+/// its original local custody into fresh authority.
+#[test]
+fn local_origin_replacement_during_admission_is_refused() {
+    let fixture = Fixture::new(HostServices::default());
+    let replacement = fixture.new_policy_origin();
+    fixture
+        .authority
+        .replace_time_on_authorize(replacement.capture().unwrap());
+    let descriptor = app_open_descriptor(&app());
+    let request = child_request(
+        InvocationId::new(),
+        &fixture.room,
+        &descriptor,
+        &app().package_id,
+    );
+    let result = fixture.state.admit_host_action(
+        &fixture.caller,
+        Some(&fixture.origin),
+        HostActionAdmission {
+            room: &fixture.room,
+            app_id: &app().package_id,
+            descriptor: &descriptor,
+            request: &request,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(ActionHostError::Unavailable { reason })
+            if reason.contains("original policy clock or origin")
+    ));
+    assert!(
+        fixture
+            .state
+            .completed_invocations
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// A valid certificate cannot keep a retired private connection alive across
 /// the durable barrier, even when another worker replaces it on the same route.
 #[test]
@@ -399,7 +440,10 @@ fn retired_worker_after_admission_never_launches_or_closes() {
                 launcher: Some(launcher.clone()),
                 ..Default::default()
             });
-            let InvocationCaller::Local { route, admitted } = &mut fixture.origin else {
+            let InvocationCaller::Local {
+                route, admitted, ..
+            } = &mut fixture.origin
+            else {
                 panic!("local fixture")
             };
             let registration = crate::collab_broker_capnp::PrivateWorkerRegistration {

@@ -216,6 +216,7 @@ impl LocalCaller {
         InvocationCaller::Local {
             route: self.route.clone(),
             admitted: Box::new(self.admitted.clone()),
+            time: Some(self.time.clone()),
         }
     }
 }

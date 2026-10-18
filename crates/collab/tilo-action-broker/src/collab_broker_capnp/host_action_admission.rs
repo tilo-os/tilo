@@ -119,10 +119,18 @@ impl CapnpBrokerState {
                 }
                 original.owner()
             }
-            Some(InvocationCaller::Local { route, admitted }) => {
+            Some(InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            }) => {
+                self.checked_policy_time(time.as_ref())
+                    .map_err(unavailable)?;
                 let current = self
                     .revalidate_admission(route, admitted)
                     .map_err(|error| unavailable(error.to_string()))?;
+                self.checked_policy_time(time.as_ref())
+                    .map_err(unavailable)?;
                 let Some(certificate) = current.certificate.as_ref() else {
                     if self.services.local_person.is_some() {
                         return Err(unavailable(
@@ -442,10 +450,17 @@ impl CapnpBrokerState {
                 );
                 admitted
             }
-            InvocationCaller::Local { route, admitted } => self
-                .revalidate_admission(route, admitted)
-                .map_err(|error| unavailable(error.to_string()))?
-                .broker_actor(),
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                self.checked_policy_time(time.as_ref())
+                    .map_err(unavailable)?;
+                self.revalidate_admission(route, admitted)
+                    .map_err(|error| unavailable(error.to_string()))?
+                    .broker_actor()
+            }
             InvocationCaller::NativePerson { certificate, .. } => {
                 self.certified_person(room, certificate)
             }

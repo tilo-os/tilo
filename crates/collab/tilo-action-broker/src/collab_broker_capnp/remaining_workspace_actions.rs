@@ -150,7 +150,13 @@ impl CapnpBrokerState {
                 );
                 Some(actor)
             }
-            Some(InvocationCaller::Local { route, admitted }) => {
+            Some(InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            }) => {
+                self.checked_policy_time(time.as_ref())
+                    .map_err(unavailable)?;
                 if route.cluster_id != room {
                     return Err(ActionHostError::NotPermitted);
                 }
@@ -166,11 +172,12 @@ impl CapnpBrokerState {
                         return Err(ActionHostError::NotPermitted);
                     }
                 }
-                Some(
-                    self.revalidate_admission(route, admitted)
-                        .map_err(|error| unavailable(error.to_string()))?
-                        .broker_actor(),
-                )
+                let current = self
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| unavailable(error.to_string()))?;
+                self.checked_policy_time(time.as_ref())
+                    .map_err(unavailable)?;
+                Some(current.broker_actor())
             }
             Some(InvocationCaller::NativePerson {
                 room: original,
