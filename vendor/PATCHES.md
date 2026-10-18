@@ -71,6 +71,13 @@ process before `main`. Same entities, same order, same lookup; see its
 `TILO-PATCH.md` and `PROVENANCE.md`. Remove the copy once upstream generates
 the same layout.
 
+`regex-syntax` 0.8.11 is the checksum-verified MIT/Apache-2.0 registry
+release with its Unicode name tables (`BY_NAME`, `PROPERTY_NAMES`,
+`PROPERTY_VALUES`) and simple case folding table rewritten as string
+literals and integer offsets by `tools/regex-syntax-tables.py`: about 121 KB
+the shared runtime no longer relocates in every app process. Every set,
+name and fold is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
