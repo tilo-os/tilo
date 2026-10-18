@@ -556,6 +556,9 @@ impl Contact {
             hay.push(' ');
             hay.push_str(&birthday.pretty());
             hay.push(' ');
+            // The month's whole name too, so "december" finds the birthday.
+            hay.push_str(&ui::format::month_name(birthday.month()));
+            hay.push(' ');
         }
         hay.push_str(&self.notes);
         for p in &self.phones {
@@ -1029,11 +1032,11 @@ mod tests {
                     day: 10
                 }
                 .pretty(),
-                "December 10, 1815"
+                "Dec 10, 1815"
             );
             assert_eq!(
                 Birthday::MonthDay { month: 12, day: 10 }.pretty(),
-                "December 10"
+                "Dec 10"
             );
         }
     }

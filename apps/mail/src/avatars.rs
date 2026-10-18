@@ -77,7 +77,7 @@ impl Avatars {
         let mut by_address: HashMap<String, String> = HashMap::new();
         let mut shared: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some((directory, _)) = directory {
-            for (_, person) in directory.people.iter() {
+            for person in directory.people.values() {
                 if person.removed || person.photo.is_empty() {
                     continue;
                 }

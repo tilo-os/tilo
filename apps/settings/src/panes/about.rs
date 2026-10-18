@@ -374,7 +374,7 @@ mod tests {
         );
         assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
         assert_eq!(format_memory(16_330_124), "15.6 GiB");
-        assert_eq!(format_memory(512 * 1024), "512.0 MiB");
+        assert_eq!(format_memory(512 * 1024), "512 MiB");
     }
 
     /// Missing system files fall back to honest placeholders; the device

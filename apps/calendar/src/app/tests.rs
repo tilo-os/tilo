@@ -596,8 +596,8 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
             NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
             NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
         );
-        assert!(s.contains("29 Jun"), "start kept: {s}");
-        assert!(s.contains("5 Jul"), "end kept: {s}");
+        assert!(s.contains("Jun 29"), "start kept: {s}");
+        assert!(s.contains("Jul 5"), "end kept: {s}");
     }
     // Case `elide_to_width_ellipsizes_and_actually_fits`.
     {

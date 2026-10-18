@@ -30,9 +30,8 @@ impl Month {
     #[must_use]
     pub fn around(today: NaiveDate, week_start: Weekday) -> Self {
         let first = today.with_day(1).unwrap_or(today);
-        let lead = (first.weekday().num_days_from_monday() + 7
-            - week_start.num_days_from_monday())
-            % 7;
+        let lead =
+            (first.weekday().num_days_from_monday() + 7 - week_start.num_days_from_monday()) % 7;
         let mut column = week_start;
         let columns = std::array::from_fn(|_| {
             let this = column;

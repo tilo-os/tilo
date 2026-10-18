@@ -1904,8 +1904,13 @@ pub(crate) fn dimensions_label(width: u32, height: u32) -> String {
     format!("{width} × {height}")
 }
 
-/// A capture time as people read it: "Jul 12, 2026 at 18:16".
+/// A capture time as people read it: the toolkit's timestamp style
+/// (`2026-07-12 18:16`, in the person's formats) when the library stored an
+/// ISO time, else the date and the time it holds.
 fn captured_label(captured_at: &str) -> String {
+    if let Ok(at) = ui::format::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%dT%H:%M") {
+        return ui::format::timestamp(&at);
+    }
     let date = timeline_date_label(captured_at);
     match captured_at.split_whitespace().nth(1) {
         Some(time) if !time.is_empty() => tr_args(
@@ -2035,24 +2040,16 @@ fn timeline_date_label(captured_at: &str) -> String {
     let known_month = month.len() == 2
         && month.bytes().all(|byte| byte.is_ascii_digit())
         && ("01"..="12").contains(&month);
-    if known_month
-        && day_of_month.len() == 2
-        && day_of_month.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        tr_args(
-            "photos-day-label",
-            &[
-                (
-                    "month",
-                    ArgValue::Text(tr(&format!("photos-month-{month}"))),
-                ),
-                ("day", ArgValue::Text(day_of_month.to_owned())),
-                ("year", ArgValue::Text(year.to_owned())),
-            ],
-        )
-    } else {
-        day
-    }
+    let date = known_month
+        .then(|| {
+            ui::format::NaiveDate::from_ymd_opt(
+                year.parse().ok()?,
+                month.parse().ok()?,
+                day_of_month.parse().ok()?,
+            )
+        })
+        .flatten();
+    date.map_or(day, ui::format::month_day_year)
 }
 
 /// Preserve a capture day as the timeline's chronological identity. Display
