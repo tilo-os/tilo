@@ -2671,10 +2671,21 @@ trait HostAsyncIo: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> HostAsyncIo for T {}
 type HostAsyncStream = Pin<Box<dyn HostAsyncIo>>;
 
+/// The descriptor lane of a host session's collaboration stream, when it
+/// has one: what the app hands the broker (Files' selected objects) rides
+/// that stream as SCM_RIGHTS ([`runtime_portal::descriptor_lane`]).
+#[cfg(unix)]
+type HostDescriptorLane = Option<runtime_portal::descriptor_lane::DescriptorSender>;
+#[cfg(not(unix))]
+type HostDescriptorLane = Option<std::convert::Infallible>;
+
 type HostSessionFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<(HostAsyncStream, HostAsyncStream), runtime_portal::NotAvailable>,
+                Output = Result<
+                    (HostAsyncStream, HostAsyncStream, HostDescriptorLane),
+                    runtime_portal::NotAvailable,
+                >,
             >,
     >,
 >;
@@ -2705,6 +2716,38 @@ impl HostSessionConnector {
                     Ok((
                         Box::pin(collaboration) as HostAsyncStream,
                         Box::pin(identity) as HostAsyncStream,
+                        None,
+                    ))
+                })
+            }),
+            identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
+        }
+    }
+
+    /// [`Self::new`] for a collaboration stream that is a local socket: its
+    /// writes also carry the descriptors the app hands the broker, as the
+    /// launcher's inherited service connection does, so an in-process app
+    /// can hand Files' selected objects over exactly as a launched one.
+    #[cfg(unix)]
+    pub fn with_descriptor_lane<F, Fut, I>(connect: F) -> Self
+    where
+        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
+        Fut: std::future::Future<
+                Output = Result<(tokio::net::UnixStream, I), runtime_portal::NotAvailable>,
+            > + 'static,
+        I: AsyncRead + AsyncWrite + 'static,
+    {
+        use runtime_portal::descriptor_lane::{DescriptorSender, DescriptorStream};
+        Self {
+            connect: Box::new(move |route| {
+                Box::pin(async move {
+                    let (collaboration, identity) = connect(route).await?;
+                    let lane = DescriptorSender::new();
+                    Ok((
+                        Box::pin(DescriptorStream::sending(collaboration, lane.clone()))
+                            as HostAsyncStream,
+                        Box::pin(identity) as HostAsyncStream,
+                        Some(lane),
                     ))
                 })
             }),
@@ -4012,7 +4055,7 @@ fn run_shovel(
                 let cluster_id = route.cluster_id;
                 let identity_timeout = connector.identity_exchange_timeout;
                 match tokio::time::timeout(SHOVEL_INIT_TIMEOUT, (connector.connect)(route)).await {
-                    Ok(Ok((collaboration_stream, identity_stream))) => {
+                    Ok(Ok((collaboration_stream, identity_stream, lane))) => {
                         let identity =
                             runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
                                 identity_stream,
@@ -4029,7 +4072,15 @@ fn run_shovel(
                                         );
                                         let raw: runtime_collab::CollabServiceClient =
                                             rpc.bootstrap();
-                                        Ok((runtime_collab::CollabClient::from_raw(raw), identity))
+                                        let client = runtime_collab::CollabClient::from_raw(raw);
+                                        #[cfg(unix)]
+                                        let client = match lane {
+                                            Some(lane) => client.with_descriptors(lane),
+                                            None => client,
+                                        };
+                                        #[cfg(not(unix))]
+                                        let _ = lane;
+                                        Ok((client, identity))
                                     }
                                     Err(error) => Err(error),
                                 }
