@@ -183,13 +183,16 @@ def measure(args: argparse.Namespace) -> dict:
     args.out.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="tilo-key-latency-"))
     (root / "run").mkdir(mode=0o700)
+    # The session trusts settings only below an existing login home.
+    (root / "home").mkdir(mode=0o700)
     ctl_path = root / "run" / "control.sock"
     env = session_env(root, args, ctl_path)
+    # The session's settings directory, as an installed session has it.
+    settings = root / "config" / "tilo" / "session" / "settings.json"
+    settings.parent.mkdir(parents=True)
     if args.hide_top_bar:
-        # The desktop's bar over the windows instead of above them, so a
-        # maximized window fills the display (Settings, Appearance, Desktop).
-        settings = root / "config" / "tilo" / "session" / "settings.json"
-        settings.parent.mkdir(parents=True)
+        # The desktop's bar over the windows everywhere (Settings,
+        # Appearance, Desktop), not only over a maximized window.
         settings.write_text(json.dumps({"desktop_controls": {"hide_top_bar": True}}))
     log = args.out / f"{args.label}.log"
     proc = client_proc = control = None

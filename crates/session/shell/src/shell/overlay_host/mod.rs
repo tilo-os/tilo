@@ -3040,9 +3040,28 @@ impl ShellOverlayHost {
         Some((display, bar))
     }
 
+    /// Whether a maximized window stands on the display the top bar stands
+    /// on: a window there fills that display, so the bar hides on it.
+    fn maximized_on_top_bar_display(&self) -> bool {
+        let Some((display, _)) = self.top_bar_reveal_geometry() else {
+            return false;
+        };
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; this is a read-only query.
+            let row: &GroupRow = unsafe { &*ptr };
+            // Only a strip on screen: one the person moved away from keeps
+            // its windows' last places.
+            row.get_rect().intersect(display).area() > 0.0
+                && row
+                    .groups
+                    .iter()
+                    .any(|group| group.maximized && display.contains(group.get_rect().center()))
+        })
+    }
+
     /// Whether something the bar opened holds it shown: one of its menus,
-    /// the workspace name being edited, or the bar's own editor or keyboard
-    /// focus.
+    /// the workspace name being edited, or the bar's own keyboard focus.
     fn top_bar_held_open(&self) -> bool {
         let chrome_holds = self.chrome.as_ref().is_some_and(|chrome| {
             let state = chrome.borrow();
@@ -3066,11 +3085,28 @@ impl ShellOverlayHost {
     /// Bring the bar's presence up to date at `now`: the person's choice,
     /// the pointer's requests, and what holds it open.
     pub fn sync_top_bar_presence(&mut self, now: Instant) {
-        self.top_bar_reveal
-            .set_hide(self.desktop_controls.config().hide_top_bar);
+        // The person's choice hides it everywhere; a maximized window hides
+        // it on the display the window fills, so the window is all app (and
+        // its client can be scanned out) until the bar is reached for.
+        let chosen = self.desktop_controls.config().hide_top_bar;
+        let maximized = self.maximized_on_top_bar_display();
+        self.top_bar_reveal.set_hide(chosen || maximized);
         self.top_bar_reveal.settle(now);
-        let presence = self.top_bar_reveal.presence(self.top_bar_held_open());
+        let held_open = self.top_bar_held_open();
+        let presence = self.top_bar_reveal.presence(held_open);
         if let Some(chrome) = self.chrome.as_ref() {
+            let changed = chrome.borrow().top_bar_presence() != presence;
+            if changed {
+                tracing::debug!(
+                    target: "tilo::top_bar",
+                    ?presence,
+                    chosen,
+                    maximized,
+                    held_open,
+                    reveal = ?self.top_bar_reveal,
+                    "top bar presence changed"
+                );
+            }
             chrome.borrow_mut().set_top_bar_presence(presence);
         }
         // While the bar shows over the windows' top edge, a maximized

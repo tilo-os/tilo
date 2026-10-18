@@ -7237,6 +7237,62 @@ mod tests {
         store.forget(POPUP);
     }
 
+    /// A maximized window hides the top bar on the display it fills, as
+    /// the person's "hide the top bar" setting does everywhere, so the
+    /// window is all app until the bar is reached for; restored, the bar
+    /// docks again.
+    #[test]
+    fn a_maximized_window_hides_the_top_bar_on_its_display() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        let tree = |maximized: bool| {
+            let ws_id = WorkspaceId(81);
+            let strip = StripId(82);
+            let mut ws = Workspace::new(ws_id, "Typing");
+            ws.strips = vec![Strip {
+                id: strip,
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: 83,
+                    tabs: vec![Tab {
+                        id: 84,
+                        title: "Notes".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "Notes".into(),
+                        },
+                    }],
+                    active_tab: 84,
+                    width: WindowWidth::Fraction(667),
+                    maximized,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces = vec![ws];
+            tree.desktop.active = ws_id;
+            tree.desktop.active_strip.insert(ws_id, strip);
+            tree
+        };
+        let presence = |maximized: bool| {
+            let mut fb = FrameBuilder::with_tree(tree(maximized), (1600, 900));
+            fb.relayout();
+            let _ = fb.paint();
+            fb.relayout();
+            let _ = fb.paint();
+            fb.chrome().top_bar_presence()
+        };
+        assert_eq!(presence(false), TopBarPresence::Docked);
+        assert_eq!(
+            presence(true),
+            TopBarPresence::Hidden,
+            "the maximized window fills the display the bar stands on"
+        );
+    }
+
     /// A window that was a tile before it went fullscreen keeps drawing over
     /// the whole output: the tile's last configure must not leave it a
     /// centred, tile-sized box floating above the desktop.
