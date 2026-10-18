@@ -1,0 +1,31 @@
+[package]
+name = "browser-continuity-core"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Browser service-session vocabulary and the engine helper's launch boundary, without profile capture"
+
+# What the UI toolkit and the runtime share with the browser apps. It has no
+# `native` feature and no SQLite: libruntime_dylib.so links this crate, and
+# feature unification would carry any optional capture code (and its bundled
+# C library) into every app process. Profile capture lives in
+# browser-continuity, which only the apps that capture link.
+[dependencies]
+serde.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

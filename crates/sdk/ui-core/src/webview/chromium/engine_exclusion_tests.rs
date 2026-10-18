@@ -1,5 +1,5 @@
 use super::*;
-use browser_continuity::engine_host::exclude_migration_from_engine;
+use browser_continuity_core::engine_host::exclude_migration_from_engine;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::symlink;
 

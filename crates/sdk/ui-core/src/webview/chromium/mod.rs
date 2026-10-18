@@ -753,7 +753,7 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
 /// it. Nor does the hardened allocator the launcher preloads into the app:
 /// Chromium brings its own (PartitionAlloc) and frees through glibc's
 /// internals, so a preloaded allocator aborts the host at start.
-use browser_continuity::engine_host::command as host_command;
+use browser_continuity_core::engine_host::command as host_command;
 
 #[cfg(all(test, target_os = "linux"))]
 mod engine_exclusion_tests;
@@ -987,7 +987,7 @@ impl ChromiumEngine {
     /// The caller owns a private, identity-bound profile directory; this never
     /// changes the normal Browser profile or accepts an unbound import.
     pub fn with_service_session(profile: &Path, session_id: &str) -> Result<Arc<Self>, String> {
-        if !browser_continuity::sessions::valid_id(session_id) {
+        if !browser_continuity_core::sessions::valid_id(session_id) {
             return Err("Selected website session is unavailable".into());
         }
         Self::with_host_extensions(&host_path()?, profile, &[], None, Some(session_id))

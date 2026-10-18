@@ -1453,6 +1453,7 @@ name = "browser-continuity"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "browser-continuity-core",
  "cap-fs-ext",
  "cap-primitives",
  "ed25519-dalek 3.0.0",
@@ -1464,9 +1465,19 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge-fork",
  "tilo-files",
- "tilo-sandbox-core",
  "url",
  "uuid",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "browser-continuity-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-sandbox-core",
  "workspace-hack",
  "zeroize",
 ]
@@ -13270,7 +13281,7 @@ name = "runtime-collab"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "browser-continuity",
+ "browser-continuity-core",
  "capnp",
  "capnp-rpc",
  "collab-types",
@@ -19408,7 +19419,7 @@ dependencies = [
  "ash",
  "base64",
  "blake3",
- "browser-continuity",
+ "browser-continuity-core",
  "capnp",
  "capnp-rpc",
  "channel-crypto",

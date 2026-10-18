@@ -1,5 +1,5 @@
 //! Private, selected website credentials sent only to an isolated engine profile.
-use browser_continuity::sessions::{Service, SessionCookies};
+use browser_continuity_core::sessions::{Service, SessionCookies};
 use serde_json::{Value, json};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -89,8 +89,8 @@ impl ServiceSessionReply {
             .and_then(|count| usize::try_from(count).ok())?;
         (request_id > 0
             && i32::try_from(request_id).is_ok()
-            && browser_continuity::sessions::valid_id(&session_id)
-            && cookie_count <= browser_continuity::sessions::MAX_COOKIES
+            && browser_continuity_core::sessions::valid_id(&session_id)
+            && cookie_count <= browser_continuity_core::sessions::MAX_COOKIES
             && origin_storage_count <= 1
             && (origin_storage_count == 0 || service == Service::Discord)
             && (!imported || cookie_count > 0 || origin_storage_count > 0))

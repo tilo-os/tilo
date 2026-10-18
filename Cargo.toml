@@ -49,6 +49,7 @@ default-members = [
 ]
 members = [
     "crates/browser/browser-continuity",
+    "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
     "crates/dev/registry-review",
     "apps/canvas",
@@ -508,6 +509,7 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 browser-continuity = { path = "crates/browser/browser-continuity", version = "0.1.0" }
+browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack

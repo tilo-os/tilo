@@ -2619,7 +2619,7 @@ fn document_size_reports_reach_only_a_host_that_measures() {
 }
 
 pub(super) fn selected_service_request() -> super::super::ServiceSessionRequest {
-    use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
+    use browser_continuity_core::sessions::{Cookie, SameSite, Service, SessionCookies};
     super::super::ServiceSessionRequest {
         request_id: 7,
         verify_only: false,
@@ -2727,7 +2727,7 @@ fn selected_service_completion_is_correlated_storage_evidence_and_test_engine_re
 
 #[test]
 fn selected_discord_origin_wire_preserves_raw_value_refuses_other_origins_and_redacts_receipts() {
-    use browser_continuity::sessions::{OriginStorage, Service};
+    use browser_continuity_core::sessions::{OriginStorage, Service};
     let mut request = selected_service_request();
     request.session.schema = 2;
     request.session.service = Service::Discord;
