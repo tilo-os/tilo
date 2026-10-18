@@ -407,6 +407,13 @@ pub enum OpenTarget {
     RightOf(u64),
 }
 
+/// A number no other chrome of this process has: what a cache keyed on a
+/// chrome tells two of them apart by.
+fn next_chrome_instance() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// State search reads that the overlay host owns, published by it as it
 /// changes so a keystroke never asks a subsystem.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1071,10 +1078,7 @@ impl ChromeState {
             bar_popover_request: None,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
-            instance: {
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            },
+            instance: next_chrome_instance(),
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
