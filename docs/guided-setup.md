@@ -1,5 +1,12 @@
 # Guided Tilo setup and migration
 
+For the current product specification, including source-oriented **Your data**,
+first-boot password setup, removal of Purpose, and the distinct Desktop route,
+see [Installation experience](installer-experience.md). That document supersedes
+conflicting screen-order and interaction requirements below. This page retains
+the detailed folder/synchronization and safety contracts. Current outstanding
+work is recorded in [Installer delivery gaps](installer-delivery-gaps.md).
+
 The product contract for the Imager's guided setup on Windows and Linux.
 Platform feasibility and release validation gate each advertised configuration;
 the USB-free installation path is specified in

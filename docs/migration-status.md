@@ -2,6 +2,13 @@
 
 Status reviewed: 2026-09-22 UTC.
 
+**Historical assessment:** the table below predates subsequent implementation
+and must not be read as current capability status, particularly for the existing
+Windows USB-free staging path. See [Installer delivery gaps](installer-delivery-gaps.md)
+for the current readiness assessment and [Installation experience](installer-experience.md)
+for the intended product contract. Historical evidence below does not qualify
+later source changes.
+
 **The complete Windows/Linux migration experience is not ready.** The guided
 setup screens and several underlying services exist, but USB-free Full Tilo
 installation and Connected folders remain disabled. A download, source test,
