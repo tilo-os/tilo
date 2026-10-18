@@ -166,7 +166,7 @@ impl ActionHost {
         } else {
             crate::local_document_action::reserve(&encoded, context.as_ref(), doc, &before)?
         };
-        let captured_context = context.clone();
+        let captured_context = observation.as_ref().and_then(|_| context.clone());
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
