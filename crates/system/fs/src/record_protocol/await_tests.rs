@@ -1,6 +1,6 @@
 //! Change awaits: a share recipient holds one authenticated
 //! stream, the host answers it when the record changes, a revocation ends
-//! it at once, and a host that predates the operation is polled.
+//! it at once, and a host holding all the awaits it may is polled.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -41,62 +41,6 @@ impl<H: ProtocolHandler + Clone> ProtocolHandler for Counted<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.accepted.fetch_add(1, Ordering::SeqCst);
         self.inner.accept(connection).await
-    }
-}
-
-/// The operations of protocol version 6 as they shipped before
-/// `AwaitChange`: what a host that predates it decodes. Boxing does not
-/// change the canonical encoding.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-enum ShippedOperationV1 {
-    Read,
-    Write(Box<RecordEnvelopeV1>),
-    AcknowledgeReplica(Box<ReplicaAckV1>),
-    RequestReplicaAcknowledgement(Box<ReplicaAckRequestV1>),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ShippedRequestV1 {
-    protocol_version: u16,
-    credential: RecordProtocolCredentialV1,
-    operation: ShippedOperationV1,
-}
-
-/// A host that predates `AwaitChange`: one request per connection, decoded
-/// as the shipped operations, and `InvalidRequest` for anything else.
-#[derive(Clone, Debug)]
-struct ShippedHost {
-    inner: RecordProtocol,
-}
-
-impl ProtocolHandler for ShippedHost {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let peer = self
-            .inner
-            .authenticate(&connection, &mut recv, &mut send)
-            .await
-            .map_err(|error| AcceptError::from_err(io::Error::other(error.to_string())))?;
-        let shipped: Result<ShippedRequestV1, _> =
-            canonical_frame::read_required(RECORD_PROTOCOL_FRAMING, &mut recv).await;
-        let response = match shipped {
-            Ok(shipped) => {
-                let request =
-                    collab_types::canonical_bytes(&shipped).expect("a decoded request encodes");
-                let request = collab_types::canonical::from_canonical_bytes(&request)
-                    .expect("every shipped operation is a current one");
-                self.inner.handle_request(peer, request).await
-            }
-            Err(_) => RecordProtocolResponseV1::InvalidRequest,
-        };
-        write_response(&mut send, &response)
-            .await
-            .map_err(|error| AcceptError::from_err(io::Error::other(error.to_string())))?;
-        let _ = send.finish();
-        connection.closed().await;
-        Ok(())
     }
 }
 
@@ -378,28 +322,17 @@ async fn a_revoked_grant_ends_a_held_await_at_once() {
     ));
 }
 
-/// A host that predates `AwaitChange` answers it `InvalidRequest`; the
-/// recipient then polls it with `Read` and still sees its writes.
+/// A host holding all the awaits it may answers another `InvalidRequest`;
+/// the recipient then polls it with `Read` and still sees its writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_host_without_awaits_is_polled() {
+async fn a_host_at_its_await_limit_is_polled() {
     let mut fixture = Fixture::new().await;
-    let await_request = RecordProtocolRequestV1 {
-        protocol_version: RECORD_PROTOCOL_VERSION,
-        credential: RecordProtocolCredentialV1::Named(fixture.link.invite.clone()),
-        operation: RecordProtocolOperationV1::AwaitChange { known: [0; 32] },
-    };
-    assert!(
-        collab_types::canonical::from_canonical_bytes::<ShippedRequestV1>(
-            &collab_types::canonical_bytes(&await_request).unwrap()
-        )
-        .is_err(),
-        "a host that predates the await must not decode it"
-    );
-
-    let shipped = ShippedHost {
-        inner: fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT),
-    };
-    let (_router, accepted) = fixture.serve(shipped);
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let _every_await = Arc::clone(&protocol.awaits)
+        .acquire_many_owned(u32::try_from(MAX_RECORD_CHANGE_AWAITS).unwrap())
+        .await
+        .unwrap();
+    let (_router, accepted) = fixture.serve(protocol);
     let poll = Duration::from_millis(50);
     let mut refresher = fixture.refresher().await.with_poll_interval(poll);
     assert!(matches!(

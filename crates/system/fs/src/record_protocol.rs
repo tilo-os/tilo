@@ -102,10 +102,10 @@ pub enum RecordProtocolOperationV1 {
     /// [`RecordProtocolResponseV1::Unchanged`] after
     /// [`RECORD_AWAIT_CHANGE_LIMIT`].
     ///
-    /// Appended after the protocol shipped: a host that predates it fails
-    /// to decode the request and answers `InvalidRequest`, and the
-    /// recipient falls back to polling with `Read`. A host that answers
-    /// anything else keeps the stream open for the client's next request.
+    /// A host holding all the awaits it may ([`MAX_RECORD_CHANGE_AWAITS`])
+    /// answers `InvalidRequest`, and the recipient polls with `Read`. A host
+    /// that answers anything else keeps the stream open for the client's
+    /// next request.
     AwaitChange {
         known: [u8; 32],
     },
@@ -1100,8 +1100,8 @@ fn verified_replica_ack(
 /// awaits, replica requests and receipts on it: no further connection and
 /// no further peer handshake while the record is idle. Every request still
 /// carries its credential, and the host authorizes each one from scratch.
-/// A host that predates the operation answers `InvalidRequest` and ends
-/// the stream; [`Self::is_held`] then stays false.
+/// A host that declines the await answers `InvalidRequest` and ends the
+/// stream; [`Self::is_held`] then stays false.
 pub struct RecordProtocolStream {
     connection: Connection,
     send: SendStream,
