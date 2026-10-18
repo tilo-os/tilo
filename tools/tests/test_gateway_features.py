@@ -1,6 +1,7 @@
 """Native verification must compile gateway server tests, not only its clients."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -75,8 +76,12 @@ class GatewayFeaturesTests(unittest.TestCase):
 
     def test_os_release_builds_full_gateway_and_stages_http_binary(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
-        self.assertIn("--features tilo-model-gateway/local-models,"
-                      "tilo-model-gateway/host-backend", containerfile)
+        # The release build names every feature in one list (the relay's
+        # web feature rides in it too); the gateway's two must both be there.
+        enabled = {feature for listed in re.findall(r"--features (\S+)", containerfile)
+                   for feature in listed.split(",")}
+        self.assertLessEqual({"tilo-model-gateway/local-models",
+                              "tilo-model-gateway/host-backend"}, enabled)
         self.assertIn("--bin tilo-model-gateway --bin tilo-model-http", containerfile)
         self.assertIn("target/release/tilo-model-http", containerfile)
 

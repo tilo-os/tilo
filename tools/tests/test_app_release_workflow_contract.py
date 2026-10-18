@@ -157,7 +157,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotIn('SOURCE_TOKEN', history_helper)
             self.assertNotIn('extraheader', history_helper)
             publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
-            self.assertIn('needs: [plan, authorize-publish, build]', publish)
+            # The collection waits for the engine it depends on, when it has one.
+            self.assertIn('needs: [plan, authorize-publish, build, publish-engine-runtime]', publish)
+            self.assertIn("needs.plan.outputs.engine_runtime_required != 'true'", publish)
             self.assertIn('persist-credentials: false', publish)
             self.assertNotIn('TAG_AUDIENCE', publish)
             self.assertIn('audience=$MAIN_AUDIENCE', publish)

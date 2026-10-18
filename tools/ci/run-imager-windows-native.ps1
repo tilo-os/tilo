@@ -115,13 +115,13 @@ $Tests = @(
     'windows_inventory::tests::bounded_native_metadata_and_steam_parser_preserve_redirected_paths',
     'account_transfer::windows_source::tests::registry_profiles_are_private_suggestions_only_for_exact_grants',
     'profile::windows_tests::production_writer_and_reader_bind_exact_private_hints_and_recovery',
-    'model::tests::media_profile_serializes_migrates_and_validates_the_installer_contract',
-    'model::prepared_setup_binding_tests::media_profile_carries_only_valid_ciphertext_binding_and_public_device_name'
+    'imager_model::tests::media_profile_serializes_migrates_and_validates_the_installer_contract',
+    'imager_model::prepared_setup_binding_tests::media_profile_carries_only_valid_ciphertext_binding_and_public_device_name'
 )
 for ($Index = 0; $Index -lt $Tests.Count; $Index++) {
     $Test = $Tests[$Index]
-    # Inventory, account suggestions and attribute checks use their production backend modules.
-    $Package = if (($Test.StartsWith('folders::') -or $Test.StartsWith('nofollow::') -or $Test.StartsWith('windows_inventory::') -or $Test.StartsWith('account_transfer::'))) { 'imager-backend' } else { 'imager' }
+    # Inventory, account suggestions, attribute checks, the media profile and its model use their production backend modules.
+    $Package = if (($Test.StartsWith('folders::') -or $Test.StartsWith('nofollow::') -or $Test.StartsWith('windows_inventory::') -or $Test.StartsWith('account_transfer::') -or $Test.StartsWith('profile::') -or $Test.StartsWith('imager_model::'))) { 'imager-backend' } else { 'imager' }
     $CargoArgs = @('run', $Toolchain, 'cargo', 'test', '--locked', '-p', $Package, '--lib', '--target', $Target)
     $ListLog = Invoke-Bounded "list-$Index" 'rustup' ($CargoArgs + @($Test, '--', '--exact', '--list'))
     $Selected = @(Get-Content -LiteralPath $ListLog | Where-Object { $_ -ceq "${Test}: test" })
