@@ -4338,7 +4338,7 @@ default = false
 name = "os-dev-image-x86_64"
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev x86_64 /target/os/x86_64/image /target/publish/os-dev/x86_64 /target/os/x86_64/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh", "tools/ci/os/oci_layers.py"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["os-image-x86_64", "os-compile-dev-x86_64"]
 outputs = ["/target/publish/os-dev/x86_64/**"]
 git = true
@@ -4381,7 +4381,7 @@ default = false
 name = "os-dev-image-aarch64"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev aarch64 /target/os/aarch64/image /target/publish/os-dev/aarch64 /target/os/aarch64/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh", "tools/ci/os/oci_layers.py"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["os-image-aarch64", "os-compile-dev-aarch64"]
 outputs = ["/target/publish/os-dev/aarch64/**"]
 git = true
