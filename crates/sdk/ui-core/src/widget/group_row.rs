@@ -3295,9 +3295,19 @@ impl GroupRow {
     }
 
     /// Whether a drag that can drop into this row is in flight over it: one
-    /// of its own tabs, a tab from another strip, or compositor content.
+    /// of its own tabs, a whole window of it being moved, a tab from another
+    /// strip, or compositor content.
     fn drag_over_row(&self) -> bool {
-        self.external_drag_over || self.cross_strip_drop_target.is_some() || self.tab_drag_active()
+        self.external_drag_over
+            || self.cross_strip_drop_target.is_some()
+            || self.tab_drag_active()
+            || self.group_drag_moving()
+    }
+
+    /// A whole window of this row is being moved (not one someone else holds,
+    /// which only resists the pull and never moves).
+    fn group_drag_moving(&self) -> bool {
+        self.group_drag.is_some_and(|drag| drag.moved && !drag.held)
     }
 
     /// How fast, in px/s, the lane under `p` pans for a drag at `p`:
@@ -3320,12 +3330,16 @@ impl GroupRow {
     }
 
     /// The background tab of another window under `p`: its group and tab.
-    /// The tab a window already shows, and the bar a drag started from (it
-    /// is reordering its own tabs), are never spring-loaded.
+    /// The tab a window already shows, the bar a drag started from (it is
+    /// reordering its own tabs) and the window being moved are never
+    /// spring-loaded.
     fn background_tab_at(&self, p: Point) -> Option<(u64, u64)> {
+        let moving = self.group_drag.map(|drag| drag.group_id);
         self.groups
             .iter()
-            .filter(|group| !group.is_closing() && !group.drag_in_flight())
+            .filter(|group| {
+                !group.is_closing() && !group.drag_in_flight() && Some(group.id) != moving
+            })
             .find_map(|group| {
                 let index = group.tab_rects().iter().position(|r| r.contains(p))?;
                 let tab = group.tabs().get(index)?.id;
@@ -3357,11 +3371,27 @@ impl GroupRow {
             let pan = self.pan_of_lane_mut(lane);
             let next =
                 (pan.scroll_x + velocity * step.as_secs_f64()).clamp(0.0, pan.max_scroll_x());
-            if (next - pan.scroll_x).abs() > f64::EPSILON {
+            let travel = next - pan.scroll_x;
+            if travel.abs() > f64::EPSILON {
                 pan.absolute = false;
                 pan.jump_to(next);
                 self.scroll_dirty = true;
                 moved = true;
+                // A window being moved is drawn at its slot plus the pointer's
+                // travel since the grab. Its slot scrolls with the strip, so
+                // the travel grows by what the strip panned and the window
+                // stays under the pointer.
+                let in_lane = self.lanes.is_empty()
+                    || self
+                        .group_drag
+                        .and_then(|drag| self.lane_of_group(drag.group_id))
+                        == Some(lane);
+                if in_lane
+                    && self.group_drag_moving()
+                    && let Some(drag) = self.group_drag.as_mut()
+                {
+                    drag.start.x -= travel;
+                }
             }
         }
         match (self.background_tab_at(p), self.drag_reach.tab) {
@@ -3378,6 +3408,8 @@ impl GroupRow {
             // What is under the resting pointer changed: re-aim the preview.
             if self.external_drag_over {
                 self.set_external_content_drag_hover(Some(p));
+            } else if self.group_drag_moving() {
+                let _ = self.move_group_drag();
             } else if self.cross_strip_drop_target.is_some() {
                 self.set_cross_strip_tab_drag_hover(Some(p));
             } else {
@@ -10833,6 +10865,46 @@ mod tests {
         assert!(!row.advance_drag_reach_for_test(now));
         assert!((row.scroll_x() - at).abs() < f64::EPSILON);
         assert!(!row.drag_reach_pending());
+    }
+
+    #[test]
+    fn moving_a_whole_window_to_an_edge_pans_the_strip_and_keeps_it_under_the_pointer() {
+        let (mut row, taffy, root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        row.set_content_w_for_test(row.content_width());
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        let edge = Point::new(698.0, grab.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(edge.x, edge.y),
+            },
+        );
+        assert!(
+            row.group_drag_active(),
+            "fixture: the window is being moved"
+        );
+        assert!(
+            row.drag_reach_pending(),
+            "resting at the edge asks for frames"
+        );
+        let start_before = row.group_drag.map(|d| d.start.x).unwrap();
+        let t0 = crate::time::now();
+        row.advance_drag_reach_for_test(t0);
+        assert!(row.advance_drag_reach_for_test(t0 + Duration::from_millis(100)));
+        let panned = row.scroll_x();
+        assert!(panned > 0.0, "the strip panned under the moved window");
+        let start_after = row.group_drag.map(|d| d.start.x).unwrap();
+        assert!(
+            (start_before - start_after - panned).abs() < 1e-6,
+            "the moved window's travel grew by the pan, so it stays under the pointer"
+        );
+        assert!(row.group_reorder_target().is_some(), "the gap is re-aimed");
     }
 
     #[test]
