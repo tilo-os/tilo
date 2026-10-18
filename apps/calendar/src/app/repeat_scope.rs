@@ -9,6 +9,7 @@
 //! the old one (its end, its remaining count, its later exceptions).
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
+use ui::tilo_resource::{Keyed, Set};
 use uuid::Uuid;
 use vello::kurbo::Rect;
 
@@ -198,7 +199,7 @@ impl CalendarApp {
         )) {
             Ok(insert) => insert,
             Err(error) => {
-                self.status = Some(failed(&error.to_string()));
+                self.status = Some(failed(&error));
                 return;
             }
         };
@@ -276,8 +277,8 @@ pub(super) fn split_series(
     // count: the new one takes the rest.
     let kept = before.recurrence_count.map(|_| {
         let bare = Event {
-            occurrence_overrides: Default::default(),
-            recurrence_exdates: Default::default(),
+            occurrence_overrides: Keyed::default(),
+            recurrence_exdates: Set::default(),
             recurrence_count: None,
             recurrence_until: Some(original - Duration::days(1)),
             ..before.clone()
