@@ -39,7 +39,6 @@ package-store = { path = "../../crates/packaging/package-store" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 blake3.workspace = true
 getrandom.workspace = true
-rand_core.workspace = true
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
