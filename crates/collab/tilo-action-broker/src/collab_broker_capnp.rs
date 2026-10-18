@@ -6164,7 +6164,7 @@ impl CapnpBrokerState {
                 self.local_report_receipts
                     .lock()
                     .map_err(|_| "local receipt cache unavailable")?
-                    .admit(key.clone(), intent, id)?;
+                    .admit(key.clone(), intent, id, peer_id)?;
                 Some(key)
             } else {
                 let admission = if owner.verified_actor().is_some() {

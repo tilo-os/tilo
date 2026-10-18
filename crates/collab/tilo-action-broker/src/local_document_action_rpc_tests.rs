@@ -1,4 +1,8 @@
-struct LocalDocumentDirectory(tilo_actions::OperationKind);
+struct LocalDocumentDirectory {
+    kind: tilo_actions::OperationKind,
+    pin_dropped: Rc<std::cell::Cell<bool>>,
+    resolutions: Rc<std::cell::Cell<usize>>,
+}
 impl action_directory::Server for LocalDocumentDirectory {
     fn resolve(
         self: Rc<Self>,
@@ -21,16 +25,19 @@ impl action_directory::Server for LocalDocumentDirectory {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
         };
-        if request.get_revision().unwrap().to_str().unwrap() != "original-r1" {
+        self.resolutions.set(self.resolutions.get() + 1);
+        if self.pin_dropped.get()
+            || request.get_revision().unwrap().to_str().unwrap() != "original-r1"
+        {
             results.get().init_resolution().set_stale_revision(());
             return Promise::ok(());
         }
         let mut row = directory_state("original-r1").borrow().row();
         let descriptor = row.descriptor.as_mut().unwrap();
-        descriptor.operation_kind = self.0;
+        descriptor.operation_kind = self.kind;
         descriptor.contract = tilo_actions::ActionContract::default();
         let visibility = row.visibility.as_mut().unwrap();
-        visibility.governing_kind = Some(self.0);
+        visibility.governing_kind = Some(self.kind);
         visibility.contract = descriptor.contract.clone();
         let mut resolution = results.get().init_resolution();
         resolution.set_resolved_revision("original-r1");
@@ -44,11 +51,17 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
         .run_until(async {
             let env = Environment::new();
             let rig = Rig::new(&env).await;
+            let pin_dropped = Rc::new(std::cell::Cell::new(false));
+            let resolutions = Rc::new(std::cell::Cell::new(0));
             rig.worker
                 .handle
                 .publish_action_directory(
                     &env.route.app_id,
-                    capnp_rpc::new_client(LocalDocumentDirectory(kind)),
+                    capnp_rpc::new_client(LocalDocumentDirectory {
+                        kind,
+                        pin_dropped: pin_dropped.clone(),
+                        resolutions: resolutions.clone(),
+                    }),
                 )
                 .await
                 .unwrap();
@@ -138,6 +151,24 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                 "local admission also requires the exact retained revision"
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
+            let once_grant = |id: &str| {
+                let principal = tilo_action_policy::Subject::Person(principal_id_for_root(
+                    env.cert.user_public_key,
+                ));
+                tilo_action_policy::Grant::new(
+                    id,
+                    principal.clone(),
+                    env.membership.read().workspaces[0]
+                        .node()
+                        .app(env.route.app_id.clone()),
+                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_policy::Answer::Allow,
+                    principal,
+                )
+                .with_lifetime(tilo_action_policy::Lifetime::Once)
+            };
+            let first_grant = once_grant("first-report");
+            let first_grant = env.membership.write().workspaces[0].grant(first_grant);
             let bytes = serde_json::to_vec(&request).unwrap();
             let before = receipt_barriers(&rig);
             let mut rpc = raw.admit_local_document_action_request();
@@ -261,9 +292,24 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
             assert!(rig.state.pending_invocations.lock().unwrap().is_empty());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
             no_delivery(&rig).await;
+            assert!(
+                !env.membership.write().workspaces[0].revoke_grant(&first_grant),
+                "first admission spends its one-use grant"
+            );
+            let next_grant = once_grant("next-report");
+            let next_grant = env.membership.write().workspaces[0].grant(next_grant);
+            // The SDK drops its pre-event pin after storing the first receipt.
+            // Transport retries must observe the cache before consulting it.
+            pin_dropped.set(true);
+            let resolved_before_retry = resolutions.get();
             let mut retry = raw.admit_local_document_action_request();
             retry.get().set_request(&bytes);
             let replay = retry.send().promise.await.unwrap();
+            assert_eq!(resolutions.get(), resolved_before_retry);
+            assert!(
+                env.membership.write().workspaces[0].revoke_grant(&next_grant),
+                "exact retry must not spend another one-use grant"
+            );
             assert_eq!(
                 replay.get().unwrap().get_observation().unwrap().get_id(),
                 observation.get_id()
@@ -287,6 +333,15 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                 .set_request(&serde_json::to_vec(&substituted).unwrap());
             assert!(retry.send().promise.await.is_err());
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
+            // New content-bound captures still need a retained directory pin.
+            substituted.invocation = substituted.bound_invocation().unwrap();
+            let mut unpinned = raw.admit_local_document_action_request();
+            unpinned
+                .get()
+                .set_request(&serde_json::to_vec(&substituted).unwrap());
+            assert!(unpinned.send().promise.await.is_err());
+            substituted.invocation = request.invocation;
+            pin_dropped.set(false);
             if kind == tilo_actions::OperationKind::Document && !request.mutation_hashes.is_empty()
             {
                 // Sustained typing crosses the bounded host-cache horizon.
@@ -342,8 +397,22 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                 assert_eq!(receipt_barriers(&rig), before_burst);
                 no_delivery(&rig).await;
             }
+            // Cached observations still consult current host custody, even if
+            // the original connection and receipt are both retained.
+            let original_host = env.authority.certificate.lock().unwrap().take();
+            let mut revoked_retry = raw.admit_local_document_action_request();
+            revoked_retry.get().set_request(&bytes);
+            assert!(revoked_retry.send().promise.await.is_err());
+            *env.authority.certificate.lock().unwrap() = original_host;
             // An old endpoint must not silently inherit a missing/replaced host.
             rig.state.host_workers.lock().unwrap().remove(&903);
+            pin_dropped.set(true);
+            let mut stale_retry = raw.admit_local_document_action_request();
+            stale_retry.get().set_request(&bytes);
+            assert!(
+                stale_retry.send().promise.await.is_err(),
+                "cached receipt requires live host custody"
+            );
             substituted.capture_id = uuid::Uuid::new_v4();
             substituted.invocation = substituted.bound_invocation().unwrap();
             let mut stale = raw.admit_local_document_action_request();
