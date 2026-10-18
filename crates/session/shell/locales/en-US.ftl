@@ -999,6 +999,9 @@ codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
 codec-app-name = Video and audio formats
+system-update-app-name = Updates
+system-update-restart-title = Restart to finish updating
+system-update-restart-body = Your windows come back after the restart.
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }

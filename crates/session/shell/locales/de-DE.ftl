@@ -1002,6 +1002,9 @@ codec-failed = Mehr Video- und Audioformate konnten nicht eingeschaltet werden
 codec-failed-retry = Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-failed-with-error = { $error } Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-app-name = Video- und Audioformate
+system-update-app-name = Updates
+system-update-restart-title = Neu starten, um die Updates abzuschließen
+system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
 
 # Screen capture surfaces
 capture-live-alt = Live-Aufnahme: { $title }
