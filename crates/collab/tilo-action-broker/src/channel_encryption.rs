@@ -2375,10 +2375,11 @@ mod tests {
         let (owner_endpoint, laptop_endpoint) = (owner.endpoint, laptop.endpoint);
         let owner = ChannelKeyAccess::new(owner.service);
         let laptop = ChannelKeyAccess::new(laptop.service);
-        let (woke, wakes) = std::sync::mpsc::channel();
-        let woke = Mutex::new(woke);
+        // Match the drainer's Notify: concurrent announcements leave one
+        // pending wake, not a queue of already-reconciled epochs to pump again.
+        let (woke, wakes) = std::sync::mpsc::sync_channel(1);
         let watch = tilo_identity_host::policy_change::Watch::new(move || {
-            let _ = woke.lock().unwrap().send(());
+            let _ = woke.try_send(());
         });
         assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
         let joined = Instant::now();
@@ -2416,16 +2417,19 @@ mod tests {
 
         // Idle until the grant runs out, pumping only when woken.
         let mut owner_passes = 0_u32;
+        let mut due = None;
         loop {
-            let due = owner.pump_until_due(&owner_endpoint);
+            // The registration pass already parked the steward. As in the
+            // drainer, run the next pass only for a wake or an actual deadline.
+            if owner.arm_policy_watch(&watch) {
+                let wait = due.unwrap_or_else(tilo_test_env::hang_bound);
+                let _ = wakes.recv_timeout(wait);
+            }
+            due = owner.pump_until_due(&owner_endpoint);
             owner_passes = owner_passes.saturating_add(1);
             let _ = laptop.pump_until_due(&laptop_endpoint);
             if matches!(laptop.access(room_id, channel).0, ChannelAccess::Removed) {
                 break;
-            }
-            if owner.arm_policy_watch(&watch) {
-                let wait = due.unwrap_or_else(tilo_test_env::hang_bound);
-                let _ = wakes.recv_timeout(wait);
             }
             assert!(
                 tilo_clock::unix_now() <= expiry.saturating_add(5),
@@ -2440,8 +2444,8 @@ mod tests {
             late <= RECONCILE_INTERVAL.saturating_add(SCHEDULING),
             "enforced {late:?} after the grant ended"
         );
-        // The pass that joined, the expiry, and an announcement another test
-        // of this process may have made: never one a second.
+        // The expiry and announcements another test of this process may
+        // have made: never an unconditional once-a-second pump.
         assert!(
             owner_passes <= 4,
             "the steward ran {owner_passes} passes in an idle wait of about 2 s"
