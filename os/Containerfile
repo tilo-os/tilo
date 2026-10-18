@@ -2690,6 +2690,9 @@ ARG TILO_PUBLIC_TRUST_MODE=production
 ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
 ARG TILO_TARGET_IMGREF
 ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
+# Buildah leaves the public-trust-tools mount out of the layer cache key (an alias of
+# the pulled base); this ARG keys the trust RUN on BASE_REF.
+ARG BASE_REF
 COPY --from=public-trust / /run/tilo-public-trust/
 # One temporary directory avoids four full-OS snapshots for tiny static inputs.
 # Install individual files below so existing parent-directory modes stay intact.
