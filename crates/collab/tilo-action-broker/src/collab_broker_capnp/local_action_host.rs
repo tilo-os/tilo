@@ -568,7 +568,11 @@ impl ActionHost for CertifiedLocalActionHost {
         }) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let mut answer = self.state.action_query(&self.effective, &query);
+        let mut answer = self.state.action_query_with_origin(
+            &self.effective,
+            Some(&self.invocation_origin()),
+            &query,
+        );
         // An answer this call produced is covered by the check above; one
         // that arrives later is checked again when it does.
         if let PendingPoll::Ready(page) = answer.poll_ready() {

@@ -357,6 +357,28 @@ fn legacy_governance_retains_service_owned_admission() {
     let (state, service, owner, mut request) = broker(false);
     request.target.address.resource = "legacy-service-validates-this".into();
     request.confirmation = Some(witness(&state, "owner", &request));
+    let Some(Confirmation::Witnessed(token)) = request.confirmation.as_ref() else {
+        unreachable!()
+    };
     invoke(&state, &owner, &request).unwrap();
     assert_eq!(*service.calls.lock().unwrap(), vec![serde_json::json!({})]);
+    assert!(
+        state
+            .witnessed_confirmations
+            .lock()
+            .unwrap()
+            .contains_key(token),
+        "service-owned admission does not consume a broker owner witness"
+    );
+}
+
+#[test]
+fn legacy_governance_preserves_service_confirmation_phrases() {
+    let (state, service, owner, mut request) = broker(false);
+    request.confirmation = Some(Confirmation::Phrase("import the selected media".into()));
+    invoke(&state, &owner, &request).unwrap();
+    assert_eq!(
+        *service.calls.lock().unwrap(),
+        vec![serde_json::json!({"confirmation_phrase": "import the selected media"})]
+    );
 }

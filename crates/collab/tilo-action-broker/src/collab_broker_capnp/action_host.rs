@@ -820,6 +820,15 @@ impl CapnpBrokerState {
         caller: &Caller,
         scope: RowScope<'_>,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
+        self.eager_catalogue_with_origin(caller, None, scope)
+    }
+
+    fn eager_catalogue_with_origin(
+        &self,
+        caller: &Caller,
+        origin: Option<&super::InvocationCaller>,
+        scope: RowScope<'_>,
+    ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
         // Retained surfaces of closed apps are the launchable catalogue's,
         // and only the providers whose rows are built need their actions.
         let surfaces = self.live_surfaces(scope);
@@ -836,10 +845,13 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
-        // Host steps are offered only in the caller's admitted room and under
-        // its current policy. A certified device key is not an exclusion:
-        // dispatch retains and revalidates the original admission before I/O.
-        let host_steps = super::host_steps::HostSteps::installed(&self.services);
+        // Listing must retain the same local custody as dispatch. A device key
+        // alone does not establish that this is a local rather than remote door.
+        let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
+            super::host_steps::HostSteps::installed(&self.services)
+        } else {
+            Vec::new()
+        };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
             let room = workspace.room.to_string();
@@ -1298,6 +1310,15 @@ impl CapnpBrokerState {
         caller: &Caller,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.action_query_with_origin(caller, None, query)
+    }
+
+    pub(super) fn action_query_with_origin(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::InvocationCaller>,
+        query: &CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1348,7 +1369,7 @@ impl CapnpBrokerState {
             None if query.max_results == 0 => RowScope::None,
             None => RowScope::All,
         };
-        let (rows, providers) = self.eager_catalogue(caller, scope);
+        let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
         let revision = format!(
             "{}.{}",
             self.published_surfaces_generation(),
@@ -3401,7 +3422,8 @@ mod app_close_tests {
         let (state, caller, room) = broker(Arc::clone(&launcher), true);
         let root = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(root.path()).unwrap(),
+            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
+                .unwrap(),
         ));
         let request = close_request(&room);
         let job = invoke_close(&state, &caller, &request).unwrap();
@@ -3447,7 +3469,8 @@ mod app_close_tests {
         let (state, caller, room) = broker(Arc::clone(&launcher), true);
         let root = tempfile::tempdir().unwrap();
         let mut journal =
-            super::super::invocation_journal::InvocationJournal::open(root.path()).unwrap();
+            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
+                .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
         assert!(invoke_close(&state, &caller, &close_request(&room)).is_err());
@@ -3572,10 +3595,9 @@ mod argument_size_tests {
 
 #[cfg(test)]
 mod device_pairing_tests {
-    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use super::super::CapnpBrokerState;
     use super::RowScope;
     use crate::services::{DevicePairingOutcome, DevicePairingRequest, DevicePairingServices};
-    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -3640,28 +3662,6 @@ mod device_pairing_tests {
         }
     }
 
-    fn broker(host: Arc<Host>) -> (Arc<CapnpBrokerState>, String, String) {
-        let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceId(9), "Pairing");
-        workspace.set_owner(owner.clone());
-        let room = workspace.room.to_string();
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            Some(tree.shared().authority()),
-            None,
-            None,
-            crate::services::HostServices {
-                device_pairing: Some(host),
-                ..Default::default()
-            },
-        );
-        (state, owner, room)
-    }
-
     fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
@@ -3693,8 +3693,19 @@ mod device_pairing_tests {
     #[test]
     fn settings_pairs_as_its_person_and_the_outcome_follows_the_host() {
         let host = Arc::new(Host::default());
-        let (state, owner, room) = broker(Arc::clone(&host));
-        let person = Caller::local_person(owner.clone()).in_room(room.clone());
+        let fixture = super::super::host_steps::signed_test_support::Fixture::new(
+            crate::services::HostServices {
+                device_pairing: Some(host.clone()),
+                ..Default::default()
+            },
+        );
+        let state = fixture.state.clone();
+        let person = fixture.caller.clone();
+        let room = fixture.room.clone();
+        let owner = match person.principal() {
+            tilo_actions::remote::CallerPrincipal::Person(owner) => owner.clone(),
+            _ => unreachable!("the settings caller is a person"),
+        };
 
         let rows = state
             .eager_catalogue(&person, RowScope::Provider(device_pairing::PROVIDER))
@@ -3714,7 +3725,7 @@ mod device_pairing_tests {
         );
         assert!(state.app_door(&person, "so.tilo.notes", &discover).is_err());
 
-        let unconfirmed = invoked(&state, &person, &request(device_pairing::APPROVE, None));
+        let unconfirmed = fixture.invoke(&request(device_pairing::APPROVE, None));
         assert_eq!(
             unconfirmed,
             Err(tilo_actions::remote::ActionHostError::ConfirmationRequired),
@@ -3722,12 +3733,9 @@ mod device_pairing_tests {
         );
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");
 
-        let receipt = invoked(
-            &state,
-            &person,
-            &request(device_pairing::APPROVE, Some(Confirmation::Confirmed)),
-        )
-        .expect("admitted");
+        let approved = request(device_pairing::APPROVE, Some(Confirmation::Confirmed));
+        let receipt = fixture.invoke(&approved).expect("admitted");
+        fixture.assert_signed(&approved, false);
         assert_eq!(
             *host.started.lock().unwrap(),
             [(
@@ -3753,9 +3761,17 @@ mod device_pairing_tests {
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
 
+        fixture.assert_signed(&approved, true);
+
         // A remote device, or a caller confined to no room, is never offered
         // pairing on this machine.
-        let remote = Caller::authenticated([41; 32], [42; 32]).in_room(room);
+        let super::super::InvocationCaller::Local { admitted, .. } = &fixture.origin else {
+            unreachable!("the settings fixture retains local custody")
+        };
+        let certificate = admitted.certificate.as_ref().unwrap();
+        let remote =
+            Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
+                .in_room(room);
         assert!(
             state
                 .eager_catalogue(&remote, RowScope::Provider(device_pairing::PROVIDER))

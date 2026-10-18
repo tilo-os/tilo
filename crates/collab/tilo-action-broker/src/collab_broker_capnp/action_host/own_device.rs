@@ -387,7 +387,11 @@ mod tests {
             );
             assert_eq!(
                 completed.terminal.unwrap().category,
-                crate::action_evidence::TerminalCategory::Failed
+                if dropped {
+                    crate::action_evidence::TerminalCategory::Uncertain
+                } else {
+                    crate::action_evidence::TerminalCategory::Failed
+                }
             );
             f.invoke(&asked).unwrap();
             assert_eq!(network.sent.lock().unwrap().len(), 1);
