@@ -2435,8 +2435,8 @@ impl Default for ShortcutConfig {
             // the focused app's and reopens a tab only where the app left it
             // unhandled (`ui::shell_tabs`).
             (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
-            // Super+number goes to a strip (the shared Lounge strip, at the
-            // top, is 1); Ctrl+Super+number to a window of the strip.
+            // Super+number goes to a strip (the top one is 1);
+            // Ctrl+Super+number to a window of the strip.
             (ShortcutAction::FocusStrip1, super_chord("1")),
             (ShortcutAction::FocusStrip2, super_chord("2")),
             (ShortcutAction::FocusStrip3, super_chord("3")),

@@ -1158,11 +1158,7 @@ pub fn merge_strip(
                 let order = if is_local(gid) { i as u64 } else { rep.order };
                 out.push((order, gid, merge_group(group, rep, is_local, changed)));
             }
-            // Ours, or everyone's (the Lounge's first windows, which nobody
-            // publishes): the document has no say over it.
-            None if is_local(gid) || crate::ids::is_shared(gid) => {
-                out.push((i as u64, gid, group));
-            }
+            None if is_local(gid) => out.push((i as u64, gid, group)),
             None => *changed = true,
         }
     }
@@ -1218,7 +1214,7 @@ pub fn merge_group(
                 }
                 out.push((order, tid, tab));
             }
-            None if is_local(tid) || crate::ids::is_shared(tid) => out.push((i as u64, tid, tab)),
+            None if is_local(tid) => out.push((i as u64, tid, tab)),
             None => *changed = true,
         }
     }
@@ -1479,16 +1475,14 @@ pub fn merge_room_contents(
         replicated.into_iter().map(|s| (s.id, s)).collect();
 
     // The order is canonical: every member computes the same one from the
-    // same document, and merging a document again changes nothing. The
-    // Lounge comes first; every strip the document carries follows at the
-    // position it was published at, `(order, id)`, ours included (it is
-    // where our last projection put it, and no command reorders strips);
-    // and a strip the document does not carry (ours, not published yet)
+    // same document, and merging a document again changes nothing. Every
+    // strip the document carries stands at the position it was published
+    // at, `(order, id)`, ours included (it is where our last projection put
+    // it, and no command reorders strips); and a strip the document does not carry (ours, not published yet)
     // goes back to the index it stood at. Mixing our cache's indices with
     // published positions instead re-sorted the strips on every merge of
     // an unchanged document, and each re-sort re-projected our positions
     // for the others to re-sort again.
-    let mut shared: Vec<Strip> = Vec::new();
     let mut published: Vec<(u64, u64, Strip)> = Vec::new();
     let mut kept: Vec<(usize, Strip)> = Vec::new();
     // Old strip ids that don't make it into the result below — collected
@@ -1499,11 +1493,8 @@ pub fn merge_room_contents(
     for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
         let sid = strip.id.raw();
         match by_strip.remove(&sid) {
-            // The Lounge, which nobody publishes as a strip: the document
-            // has no say over it.
-            None if crate::ids::is_shared(sid) => shared.push(strip),
             // Ours and simply not published: the document has no say over
-            // it either.
+            // it.
             None if is_local(sid) => kept.push((i, strip)),
             // A foreign strip no longer being merged in — drop it.
             None => {
@@ -1513,29 +1504,17 @@ pub fn merge_room_contents(
             Some(rep) => {
                 let order = rep.order;
                 let merged = merge_strip(strip, rep, &is_local, &mut changed);
-                if crate::ids::is_shared(sid) {
-                    shared.push(merged);
-                } else {
-                    published.push((order, sid, merged));
-                }
+                published.push((order, sid, merged));
             }
         }
     }
     for (sid, rep) in by_strip {
         let order = rep.order;
-        let strip = hydrate_strip(rep);
-        if crate::ids::is_shared(sid) {
-            shared.push(strip);
-        } else {
-            published.push((order, sid, strip));
-        }
+        published.push((order, sid, hydrate_strip(rep)));
         changed = true;
     }
     published.sort_by_key(|(order, id, _)| (*order, *id));
-    let mut strips: Vec<Strip> = shared
-        .into_iter()
-        .chain(published.into_iter().map(|(_, _, strip)| strip))
-        .collect();
+    let mut strips: Vec<Strip> = published.into_iter().map(|(_, _, strip)| strip).collect();
     // In ascending index order, so each lands where it stood (or at the
     // end, when fewer strips precede it now) without moving one before it.
     for (index, strip) in kept {
@@ -1677,6 +1656,7 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::compose_id;
     use tilo_automerge::ApplyIncoming;
 
     #[test]
@@ -1779,5 +1759,142 @@ mod tests {
             let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
         }
+    }
+
+    /// A test window group under `salt`, with one tab named `name`.
+    fn canvas_group(salt: u16, counter: u64, name: &str) -> WindowGroup {
+        let id = compose_id(salt, counter);
+        WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id,
+                title: name.into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Canvas".into()),
+                    label: name.into(),
+                },
+            }],
+            active_tab: id,
+            width: crate::width::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }
+    }
+
+    /// A desktop with one workspace in `room` holding `strips`.
+    fn room_desktop(room: RoomId, workspace: u64, strips: Vec<Strip>) -> crate::tree::DesktopTree {
+        let mut w = crate::workspace::Workspace::new(crate::ids::WorkspaceId(workspace), "Team");
+        w.room = room;
+        w.strips = strips;
+        crate::tree::DesktopTree {
+            active: w.id,
+            workspaces: vec![w],
+            ..crate::tree::DesktopTree::default()
+        }
+    }
+
+    /// Every member orders the strips the same from the same document, and
+    /// merging it again changes nothing: a sync of a tree that is already
+    /// right leaves it alone instead of re-sorting it for the others to
+    /// re-sort back.
+    #[test]
+    fn the_strip_order_is_canonical_and_settles() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let strip = |salt: u16, n: u64, name: &str| {
+            let mut strip = Strip::new(StripId(compose_id(salt, n)), name);
+            strip.window_groups.push(canvas_group(salt, n + 1, name));
+            strip
+        };
+        let mut a = room_desktop(room, 1, vec![strip(A, 10, "a1"), strip(A, 20, "a2")]);
+        let mut b = room_desktop(room, 2, vec![strip(B, 10, "b1")]);
+        let mut doc = AutoCommit::new();
+        for (tree, salt) in [(&a, A), (&b, B)] {
+            project_owned_contents(
+                &mut doc,
+                &tree.workspaces[0].strips,
+                salt,
+                None,
+                EmptyStrips::Skip,
+            )
+            .expect("projected");
+        }
+        let names = |tree: &crate::tree::DesktopTree| -> Vec<String> {
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        assert!(merge_room_contents(
+            &mut a,
+            room,
+            contents_of(&doc),
+            Reader::Owner(A)
+        ));
+        assert!(merge_room_contents(
+            &mut b,
+            room,
+            contents_of(&doc),
+            Reader::Owner(B)
+        ));
+        assert_eq!(names(&a), names(&b), "one order for every member");
+        assert_eq!(names(&a).len(), 3);
+        for (tree, salt) in [(&mut a, A), (&mut b, B)] {
+            assert!(
+                !merge_room_contents(tree, room, contents_of(&doc), Reader::Owner(salt)),
+                "merging the same document again changes nothing"
+            );
+        }
+    }
+
+    /// A strip a person made reaches the others while still empty, and a
+    /// window they put in another strip reaches them in that strip.
+    #[test]
+    fn a_made_strip_arrives_empty_and_windows_arrive_in_their_strip() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let mut first = Strip::new(StripId(compose_id(A, 1)), "Main");
+        first.window_groups.push(canvas_group(A, 10, "Sketch"));
+        let made = Strip::new(StripId(compose_id(A, 12)), "Research");
+        let a = room_desktop(room, 1, vec![first.clone(), made.clone()]);
+        let mut b = room_desktop(room, 2, vec![Strip::new(StripId(compose_id(B, 1)), "Mine")]);
+        let mut doc = AutoCommit::new();
+        assert!(retain_owned_strip(&mut doc, &made, 1, A).expect("retained"));
+        project_owned_contents(
+            &mut doc,
+            &a.workspaces[0].strips,
+            A,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
+
+        assert!(merge_room_contents(
+            &mut b,
+            room,
+            contents_of(&doc),
+            Reader::Owner(B)
+        ));
+        let strips = &b.workspaces[0].strips;
+        assert!(
+            strips
+                .iter()
+                .any(|s| s.id == made.id && s.window_groups.is_empty()),
+            "a made strip arrives empty"
+        );
+        assert!(
+            strips
+                .iter()
+                .any(|s| s.id == first.id
+                    && s.window_groups.iter().any(|g| g.id == compose_id(A, 10))),
+            "a window arrives in its strip"
+        );
+        assert!(
+            strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
+            "B's own strip stays"
+        );
     }
 }

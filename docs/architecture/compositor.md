@@ -753,7 +753,7 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Super+Up / Down           | Maximize / restore the focused window group    |
 | Ctrl+Super+Up / Down      | Strip above / below                            |
 | Shift+Ctrl+Super+Up / Down | Carry the focused group to the strip above / below |
-| Super+1..9                | Go to the Nth strip from the top (Lounge is 1) |
+| Super+1..9                | Go to the Nth strip from the top               |
 | Super+Left / Right        | Previous / next window in the strip            |
 | Ctrl+Super+1..9           | Focus the Nth window group of the strip        |
 | Alt+Tab                   | Most recently used window of the workspace     |

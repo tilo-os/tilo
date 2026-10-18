@@ -2584,9 +2584,6 @@ impl ChromeState {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
-            // Every workspace has its Lounge; the person's own strip keeps
-            // focus, so what they open goes there.
-            tree.desktop.ensure_lounges();
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
@@ -2809,11 +2806,7 @@ impl ChromeState {
             let free = ws
                 .strips
                 .iter()
-                .find(|s| {
-                    s.window_groups.is_empty()
-                        && !claimed(s.id)
-                        && s.kind() == tilo_desktop_model::StripKind::Regular
-                })
+                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
                 .map(|s| s.id);
             if let Some(free) = free {
                 return Some(free);
@@ -2840,15 +2833,14 @@ impl ChromeState {
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return false;
             };
-            let Some(index) = ws.strips.iter().position(|s| {
-                s.id == strip
-                    && s.window_groups.is_empty()
-                    && s.kind() == tilo_desktop_model::StripKind::Regular
-            }) else {
+            let Some(index) = ws
+                .strips
+                .iter()
+                .position(|s| s.id == strip && s.window_groups.is_empty())
+            else {
                 return false;
             };
-            // The Lounge aside, a workspace keeps a strip of its own.
-            if ws.regular_strip_count() < 2 {
+            if ws.strips.len() < 2 {
                 return false;
             }
             let ws_id = ws.id;
@@ -4725,5 +4717,34 @@ mod task_confirmation_toast_tests {
             Some("task:rename")
         );
         assert_eq!(state.take_task_draft_request(), None);
+    }
+}
+
+#[cfg(test)]
+mod new_workspace_tests {
+    use super::*;
+
+    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
+    /// A workspace the person makes holds nothing but its first empty strip,
+    /// so it shows the empty-workspace launchpad.
+    #[test]
+    fn a_new_workspace_is_empty_and_shows_its_launchpad() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let id = chrome.borrow_mut().add_workspace("Fresh");
+        let state = chrome.borrow();
+        let tree = state.tree();
+        assert_eq!(tree.desktop.active, id);
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .expect("the workspace was added");
+        assert_eq!(workspace.strips.len(), 1, "only its first strip");
+        assert!(
+            workspace.strips[0].window_groups.is_empty(),
+            "and nothing in it"
+        );
+        assert!(!workspace.has_windows(), "so the launchpad shows");
     }
 }

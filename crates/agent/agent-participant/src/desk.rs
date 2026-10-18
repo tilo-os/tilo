@@ -102,7 +102,7 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
 }
 
 /// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
-/// `0` or the shared namespace.
+/// `0` or the reserved namespace.
 fn salt_of(author: &str) -> u16 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in author.bytes() {

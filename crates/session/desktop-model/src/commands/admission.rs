@@ -51,34 +51,16 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         }
     };
     let own_all = |ids: &[Option<u64>]| ids.iter().flatten().try_for_each(|id| own(*id));
-    // A place everyone shares (the Lounge, and its first windows as anchors
-    // to place beside) can hold anyone's window; it is still nobody's to
-    // rename, remove or close.
-    let place = |id: u64| {
-        if crate::ids::is_shared(id) {
-            Ok(())
-        } else {
-            own(id)
-        }
-    };
-    let place_all = |ids: &[Option<u64>]| ids.iter().flatten().try_for_each(|id| place(*id));
     let placement = |p: &TabPlacement| match p {
         TabPlacement::EmptyWorkspace => Ok(()),
         TabPlacement::InGroup {
             strip,
             group,
             after,
-        } => {
-            place(*strip)?;
-            own(*group)?;
-            place_all(&[*after])
-        }
-        TabPlacement::NewGroup { strip, after } => place_all(&[Some(*strip), *after]),
+        } => own_all(&[Some(*strip), Some(*group), *after]),
+        TabPlacement::NewGroup { strip, after } => own_all(&[Some(*strip), *after]),
     };
-    let location = |l: &TabLocation| {
-        place(l.strip)?;
-        own_all(&[Some(l.group), Some(l.tab)])
-    };
+    let location = |l: &TabLocation| own_all(&[Some(l.strip), Some(l.group), Some(l.tab)]);
     match command {
         DesktopCommand::OpenApp { .. } => Err("open-app must be resolved to a placement".into()),
         DesktopCommand::OpenTab { placement: p, .. } => placement(p),
@@ -94,7 +76,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
             before,
         } => {
             location(l)?;
-            place_all(&[*before])
+            own_all(&[*before])
         }
         DesktopCommand::ReorderGroup {
             strip,
@@ -105,10 +87,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
             strip,
             group,
             before,
-        } => {
-            own(*group)?;
-            place_all(&[Some(*strip), *before])
-        }
+        } => own_all(&[Some(*strip), Some(*group), *before]),
         DesktopCommand::MoveTab {
             location: l,
             placement: p,

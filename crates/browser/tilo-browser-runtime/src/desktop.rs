@@ -984,8 +984,8 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
 
 /// This device's share of the desktop id space, so ids it mints never
 /// collide with another device's once trees merge, and never fall in the
-/// namespace every member shares (the Lounge's,
-/// [`tilo_desktop_model::ids::SHARED_SALT`]) or in salt `0`, which has none.
+/// reserved namespace ([`tilo_desktop_model::ids::RESERVED_SALT`]) or in
+/// salt `0`, which has none.
 fn peer_salt(device: &str) -> u16 {
     // FNV-1a folded to 16 bits: stable across builds and platforms.
     let mut hash: u32 = 0x811c_9dc5;

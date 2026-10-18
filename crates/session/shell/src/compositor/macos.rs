@@ -55,9 +55,6 @@ pub fn prepare(options: &Options) -> Result<Session, Error> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceTree::bootstrap_default(),
         Err(e) => return Err(format!("cannot open {}: {e}", path.display()).into()),
     };
-    // Every workspace has its Lounge, the shared strip its people meet in,
-    // as on every other host, including ones saved before Lounges existed.
-    tree.desktop.ensure_lounges();
     tree.persist_path = Some(path.clone());
     inputs.restore_documents(&mut tree);
     tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
