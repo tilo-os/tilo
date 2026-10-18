@@ -397,6 +397,19 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
                     assert!(receipts.bytes <= 4 * 1024 * 1024);
                 }
                 assert_eq!(receipt_barriers(&rig), before_burst);
+                // A failed fresh lookup cannot prove that this evicted
+                // report was never admitted; SDK custody must remain pending.
+                pin_dropped.set(true);
+                let mut unresolved = raw.admit_local_document_action_request();
+                unresolved.get().set_request(&bytes);
+                let error = unresolved.send().promise.await.err().unwrap();
+                assert!(
+                    !error
+                        .to_string()
+                        .contains(runtime_collab::LOCAL_DOCUMENT_REJECTED),
+                    "replay lookup failure must not release an admitted capture"
+                );
+                pin_dropped.set(false);
                 // An evicted exact retry reconstructs the same content-bound
                 // evidence; it still cannot redeliver or produce a terminal.
                 let mut retry = raw.admit_local_document_action_request();

@@ -210,16 +210,11 @@ pub(super) fn admit(
         if admitted.certificate.is_none() {
             return Err(rejected("original SDK caller certificate missing".into()));
         }
-        let time = channel
-            .state
-            .registered_policy_time()
-            .map_err(rejected)?
-            .ok_or_else(|| rejected("original policy time unavailable".into()))?;
-        Ok((request, route, admitted, time))
+        Ok((request, route, admitted))
     })();
-    let (request, route, admitted, time) = match parsed {
+    let (request, route, admitted) = match parsed {
         Ok(value) => value,
-        Err(error) => return Promise::err(rejected(error.to_string())),
+        Err(error) => return Promise::err(error),
     };
     Promise::from_future(async move {
         let state = &channel.state;
@@ -233,6 +228,12 @@ pub(super) fn admit(
                 return write_observation(results.get().init_observation(), &record);
             }
         }
+        // A fresh policy failure cannot prove an earlier admission never
+        // happened. Exact cached retries return before consulting policy time.
+        let time = state
+            .registered_policy_time()
+            .map_err(capnp::Error::failed)?
+            .ok_or_else(|| capnp::Error::failed("original policy time unavailable".into()))?;
         let offer = state
             .resolve_local_document_offer(
                 &channel.directories,
