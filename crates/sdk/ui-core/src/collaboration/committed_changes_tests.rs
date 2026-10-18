@@ -33,14 +33,11 @@ impl ReadyReader {
     fn start_with_changes() -> Self {
         // Answers OpenChanges from the start, so the first read's
         // confirmation already uses it; no change is offered yet.
-        Self::start_configured(
-            true,
-            Some(FixtureChanges {
-                from: [0; 32],
-                base: Vec::new(),
-                bytes: Vec::new(),
-            }),
-        )
+        Self::start_configured(Some(FixtureChanges {
+            from: [0; 32],
+            base: Vec::new(),
+            bytes: Vec::new(),
+        }))
     }
 
     /// Another collaborator's edit: the committed document moves to the
@@ -150,24 +147,6 @@ fn changes_the_owner_cannot_apply_are_read_whole() {
     assert!(ready, "and is ready once that whole read is merged");
 }
 
-/// A shell older than its app refuses `OpenChanges`: the reader reads whole
-/// from then on, exactly as before.
-#[test]
-fn a_broker_that_refuses_changes_is_read_whole() {
-    let mut reader = ReadyReader::start(true);
-    for (body, revision) in [("first edit", 8), ("second edit", 9)] {
-        reader.commit(body);
-        reader.captures.lock().unwrap().committed_revision = Some([revision; 32]);
-        reader.wake_waits();
-        assert_eq!(reader.apply_next_read("a whole read of the edit"), 1);
-    }
-    let asked = changes_reads(&reader.captures.lock().unwrap());
-    let connected = reader.manager.is_connected();
-    reader.finish();
-    assert!(connected, "a refused OpenChanges is not a refused read");
-    assert_eq!(asked, 1, "the reader asks once, then reads whole");
-}
-
 /// A revocation while a collaborator keeps editing: the reader's first read
 /// after it is refused, and the reader closes with nothing delivered.
 #[test]
@@ -203,7 +182,7 @@ fn a_revocation_while_a_collaborator_edits_closes_on_the_first_read() {
     assert_eq!(
         (refused_changes, refused_opens),
         (1, 1),
-        "one read after the revocation: its OpenChanges and the Open it stands for, both refused"
+        "one read after the revocation, its OpenChanges, refused"
     );
 }
 

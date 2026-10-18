@@ -7950,18 +7950,18 @@ mod tests {
         committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
         /// Refuse every committed Open, as a broker does for a revoked peer.
         committed_open_failure: Option<String>,
-        /// Hold committed-read `Await`s until this is notified, as a current
-        /// broker does until the read changes. Without it `Await` is refused,
-        /// as an older broker refuses a request it does not know.
+        /// Hold committed-read `Await`s until this is notified, as the broker
+        /// does until the read changes. Without it every `Await` fails, as a
+        /// call to a broker can, and the reader re-Opens at its own pace.
         committed_awaits: Option<Arc<tokio::sync::Notify>>,
         /// End the next held `Await` though the read did not change, as a
         /// broker does when an announced change leaves the reader's Open to
         /// decide.
         committed_await_stale: bool,
-        /// Answer `OpenChanges` as a current broker does: these changes for
-        /// a reader holding their `from` revision, the whole document for
-        /// any other. Without it `OpenChanges` is refused, as an older
-        /// broker refuses a request it does not know.
+        /// The changes `OpenChanges` answers a reader holding their `from`
+        /// revision with. `OpenChanges` is answered as the broker does: with
+        /// these changes when they fit, otherwise exactly as the `Open` it
+        /// stands for.
         committed_changes: Option<FixtureChanges>,
         /// Hold each next `join_channel` reply until its gate opens, as a
         /// starved broker does.
@@ -8639,8 +8639,7 @@ mod tests {
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
                 let changes = captures.committed_changes.clone();
-                if (matches!(request, Request::Open { .. })
-                    || (changes.is_some() && matches!(request, Request::OpenChanges { .. })))
+                if matches!(request, Request::Open { .. } | Request::OpenChanges { .. })
                     && let Some(error) = captures.committed_open_failure.clone()
                 {
                     return Err(capnp::Error::failed(error));
@@ -8655,29 +8654,27 @@ mod tests {
                         Request::Open {
                             known_revision: Some(revision),
                         } if revision == current_revision => Reply::Unchanged { revision },
-                        Request::OpenChanges { known_revision } if changes.is_some() => {
-                            match changes {
-                                _ if known_revision == current_revision => Reply::Unchanged {
-                                    revision: known_revision,
-                                },
-                                Some(changes) if changes.from == known_revision => Reply::Changes {
-                                    capture: 1,
-                                    revision: current_revision,
-                                    base: changes.base,
-                                    total: changes.bytes.len() as u32,
-                                    bytes: changes.bytes,
-                                    token: [3; 16],
-                                },
-                                _ => Reply::Chunk {
-                                    capture: 1,
-                                    revision: current_revision,
-                                    total: bytes.len() as u32,
-                                    offset: 0,
-                                    bytes: bytes.clone(),
-                                    token: [3; 16],
-                                },
-                            }
-                        }
+                        Request::OpenChanges { known_revision } => match changes {
+                            _ if known_revision == current_revision => Reply::Unchanged {
+                                revision: known_revision,
+                            },
+                            Some(changes) if changes.from == known_revision => Reply::Changes {
+                                capture: 1,
+                                revision: current_revision,
+                                base: changes.base,
+                                total: changes.bytes.len() as u32,
+                                bytes: changes.bytes,
+                                token: [3; 16],
+                            },
+                            _ => Reply::Chunk {
+                                capture: 1,
+                                revision: current_revision,
+                                total: bytes.len() as u32,
+                                offset: 0,
+                                bytes: bytes.clone(),
+                                token: [3; 16],
+                            },
+                        },
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
                             revision: current_revision,
@@ -11551,7 +11548,7 @@ mod tests {
                             request,
                             runtime_collab::committed_document::Request::Open {
                                 known_revision: Some(_)
-                            }
+                            } | runtime_collab::committed_document::Request::OpenChanges { .. }
                         )
                     })
                     .count()

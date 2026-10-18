@@ -146,7 +146,7 @@ pub enum Request {
     /// changes since: [`Reply::Changes`] when this channel last handed out
     /// `known_revision` (a capture whose last piece it acknowledged), and
     /// otherwise exactly what that `Open` answers. Same checks, same
-    /// acknowledgement. An older broker refuses it, and the caller Opens.
+    /// acknowledgement.
     OpenChanges {
         known_revision: [u8; 32],
     },
