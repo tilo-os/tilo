@@ -185,6 +185,31 @@ pub fn wall_frozen() -> bool {
     frozen_ms() != 0
 }
 
+/// The IANA name of the local time zone, when the system names one: `$TZ`
+/// (without a leading `:`), else the zone `/etc/localtime` links to below
+/// `zoneinfo/`. `None` where the system names none, and on the web; local
+/// times still follow the system's offsets there. Callers check the name
+/// against their zone database.
+#[must_use]
+pub fn local_zone_name() -> Option<String> {
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    {
+        if let Ok(tz) = std::env::var("TZ") {
+            let tz = tz.trim_start_matches(':');
+            if !tz.is_empty() && !tz.starts_with('/') {
+                return Some(tz.to_owned());
+            }
+        }
+        let link = std::fs::read_link("/etc/localtime").ok()?;
+        let (_, zone) = link.to_str()?.split_once("zoneinfo/")?;
+        (!zone.is_empty()).then(|| zone.to_owned())
+    }
+    #[cfg(not(all(unix, not(target_family = "wasm"))))]
+    {
+        None
+    }
+}
+
 /// A wall-clock time as `std::time`'s, for crates and APIs that name
 /// `std::time::SystemTime` directly. The identity where the clock is native.
 #[must_use]

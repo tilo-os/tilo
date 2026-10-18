@@ -81,18 +81,11 @@ impl Viewer {
     }
 }
 
-/// The IANA name of the device's zone, if the system names one.
+/// The IANA name of the device's zone, if the system names one this
+/// calendar's zone database knows.
 fn device_zone_name() -> Option<String> {
-    if let Ok(tz) = std::env::var("TZ") {
-        let tz = tz.trim_start_matches(':');
-        if let Some(zone) = crate::timezone::canonical_zone(tz).filter(|zone| zone != "floating") {
-            return Some(zone);
-        }
-    }
-    let link = std::fs::read_link("/etc/localtime").ok()?;
-    let link = link.to_str()?;
-    let (_, name) = link.rsplit_once("zoneinfo/")?;
-    crate::timezone::canonical_zone(name).filter(|zone| zone != "floating")
+    let name = ui::time::local_zone_name()?;
+    crate::timezone::canonical_zone(&name).filter(|zone| zone != "floating")
 }
 
 /// One occurrence of an event as the viewer sees it.
