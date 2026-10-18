@@ -16,11 +16,18 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the PDF engine through its engine library in the runtime bundle
+# (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
+# The release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links tilo-pdf statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 
 [dependencies]
 fnv.workspace = true
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true

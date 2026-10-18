@@ -53,9 +53,26 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches tilo-fs", found[0])
 
     def test_an_engine_with_its_own_library_back_in_the_runtime_fails(self) -> None:
-        # Typst lives in libtilo_typst_engine.so; the workspace-hack
-        # carrying its font table into the runtime is a regression even
-        # though Typst Editor reaches the crate itself.
+        # Typst lives in libtilo_typst_engine.so; a runtime crate depending on
+        # its font table again carries it into every app process, even though
+        # Typst Editor reaches the crate itself.
+        tree = CLEAN.replace(
+            "4serde v1.0.228\n",
+            "4serde v1.0.228\n4typst-assets v0.15.1\n",
+        ).replace(
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1typst-assets v0.15.1 (*)\n0store",
+        )
+        found = checker.violations(tree, ["notes", "store"], TARGET)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("reaches typst-assets", found[0])
+        self.assertIn("libtilo_typst_engine.so", found[0])
+
+    def test_the_workspace_hack_alone_puts_no_engine_in_the_runtime(self) -> None:
+        # The hack's library names none of its dependencies, so rustc links
+        # none of them: an engine crate only the hack lists is on no link line
+        # of the runtime (the release's link of libruntime_dylib.so names no
+        # crate only the hack reaches).
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2workspace-hack v0.1.0 (/repo)\n3typst-assets v0.15.1\n",
@@ -64,10 +81,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1typst-assets v0.15.1 (*)\n"
             "1workspace-hack v0.1.0 (/repo) (*)\n0store",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("reaches typst-assets", found[0])
-        self.assertIn("libtilo_typst_engine.so", found[0])
+        self.assertEqual(checker.violations(tree, ["notes", "store"], TARGET), [])
 
     def test_the_youtube_client_back_in_the_runtime_fails(self) -> None:
         # Music and Tube load rustypipe from libtilo_youtube_engine.so; the

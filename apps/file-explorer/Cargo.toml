@@ -17,10 +17,17 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Reach the PDF engine through its engine library in the runtime bundle
+# (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
+# The release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links tilo-pdf statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 
 [dependencies]
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-automation = { path = "../../crates/collab/automation" }
@@ -44,9 +51,9 @@ wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"] }
 uuid.workspace = true
 hex.workspace = true
 sha2.workspace = true
-# Shared thumbnail generator and cache. PDF previews use dynamically loaded
-# pdfium and fall back to a badge; video remains a badge in this crate.
-tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
+# Shared thumbnail generator and cache. PDF previews come from the PDF engine
+# (tilo-pdf), which Files hands to it; video remains a badge in this crate.
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 mime_guess.workspace = true
 chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:

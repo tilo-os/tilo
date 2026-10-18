@@ -194,6 +194,7 @@ fn fit(area: Rect, width: f64, height: f64) -> Rect {
 }
 
 fn decode_picture(path: PathBuf, category: FileCategory) -> Art {
+    super::enable_pdf_previews();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let thumb = thumbnail::generate::generate(

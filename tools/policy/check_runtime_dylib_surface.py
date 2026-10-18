@@ -15,8 +15,9 @@ downloads it. Two rules hold for its dependency graph:
   app of the default collection without going through the runtime.
 - **No moved engine.** An engine that has a library of its own beside the
   runtime (crates/runtime/engines/) is loaded by its one app; its
-  crates never re-enter the runtime, through the workspace-hack or any app's
-  feature.
+  crates never re-enter the runtime, through any dependency or app's feature.
+  The workspace-hack's own edges do not count: its library names no crate,
+  so they put nothing on the runtime's link line.
 
 The graph is resolved the way the release builds it
 (os/scripts/build-thin-apps.sh through dist/apps/package-apps.sh): the
@@ -83,7 +84,7 @@ ENGINES = {
     "rquickjs-core": "rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "rquickjs-sys": "QuickJS, rustypipe's JavaScript engine, in libtilo_youtube_engine.so",
     "tilo-accounts-engine": "the online-account engine library (libtilo_accounts_engine.so)",
-    "account-custody": "online-account custody, which Mail and Settings load from "
+    "account-custody": "online-account custody, which Mail, Settings and Calendar load from "
                        "libtilo_accounts_engine.so",
     "tilo-oauth": "the OAuth client under account-custody, in libtilo_accounts_engine.so",
     "cloud-source-dropbox": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
@@ -92,6 +93,8 @@ ENGINES = {
     "cloud-source-onedrive": "a cloud-storage provider custody signs in to, in libtilo_accounts_engine.so",
     "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
     "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
+    "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account custody, which "
+                "Calendar and Settings load from libtilo_accounts_engine.so",
     "tilo-timezone-engine": "the time-zone database's engine library (libtilo_timezone_engine.so)",
     "chrono-tz": "the time-zone database, which Calendar and Clocks load from "
                  "libtilo_timezone_engine.so",
@@ -99,6 +102,13 @@ ENGINES = {
                                      "(libtilo_contact_directory_engine.so)",
     "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
                               "libtilo_contact_directory_engine.so",
+    "tilo-pdf-engine": "the PDF engine's library (libtilo_pdf_engine.so)",
+    "tilo-pdf": "the PDF engine, which PDF Viewer, Files, Writer and Print Centre load from "
+                "libtilo_pdf_engine.so",
+    "hayro": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
+    "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
+    "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder, in libtilo_pdf_engine.so",
+    "pdfium-render": "the pdfium helper's bindings, in libtilo_pdf_engine.so",
 }
 
 
@@ -156,6 +166,14 @@ def parse(tree: str) -> tuple[list[str], dict[str, set[str]]]:
     return roots, edges
 
 
+# The workspace-hack's library names none of its dependencies, and rustc
+# links only the crates a crate names (an `--extern` nothing names is never
+# loaded), so the hack's edges add no crate to a link: crates only it reaches
+# are on no link line of the runtime. What the hack does change is features,
+# and a feature that adds a dependency shows up as that crate's own edge.
+HACK = "workspace-hack"
+
+
 def reached(edges: dict[str, set[str]], start: str, through_runtime: bool = True) -> set[str]:
     seen: set[str] = set()
     pending = [start]
@@ -165,6 +183,8 @@ def reached(edges: dict[str, set[str]], start: str, through_runtime: bool = True
             continue
         seen.add(name)
         for dependency in edges.get(name, ()):
+            if dependency == HACK:
+                continue
             if through_runtime or dependency != RUNTIME:
                 pending.append(dependency)
     return seen
@@ -188,8 +208,7 @@ def violations(tree: str, apps: list[str], target: str) -> list[str]:
         found.append(
             f"{RUNTIME} reaches {name}, {ENGINES[name]}, for {target}: an engine with a library "
             "of its own stays out of the runtime every app maps; keep it out of the runtime's "
-            "dependencies, and out of the workspace-hack by building it with one feature set "
-            "across the workspace (docs/measurements/runtime-size.md)"
+            "dependencies and of the features apps enable on them (docs/measurements/runtime-size.md)"
         )
     absent = sorted(set(apps) - set(roots))
     if absent:
