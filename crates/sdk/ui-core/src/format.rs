@@ -74,7 +74,7 @@ impl Formats {
 
     /// The group separator and decimal mark: the person's number style, or
     /// their language's convention until they choose one.
-    fn separators(&self) -> (&'static str, char) {
+    fn separators(self) -> (&'static str, char) {
         match self.region.number {
             Some(NumberStyle::DecimalPoint) => (",", '.'),
             Some(NumberStyle::DecimalComma) => (".", ','),
@@ -259,7 +259,7 @@ fn group_digits(digits: &str, separator: &str) -> String {
 }
 
 /// A moment the formatters can show: a `chrono` date and time in any zone,
-/// a local [`NaiveDateTime`], a [`std::time::SystemTime`] or [`UnixSecs`].
+/// a local [`NaiveDateTime`] or [`UnixSecs`].
 pub trait Moment {
     /// The moment on the local wall clock, or `None` outside the calendar's
     /// range.
@@ -276,13 +276,6 @@ impl<Tz: chrono::TimeZone> Moment for chrono::DateTime<Tz> {
 impl Moment for NaiveDateTime {
     fn local(&self) -> Option<NaiveDateTime> {
         Some(*self)
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-impl Moment for std::time::SystemTime {
-    fn local(&self) -> Option<NaiveDateTime> {
-        Some(chrono::DateTime::<chrono::Local>::from(*self).naive_local())
     }
 }
 

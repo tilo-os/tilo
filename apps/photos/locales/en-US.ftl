@@ -436,19 +436,6 @@ photos-edit-count = { $count ->
    *[other] Edit { $count } photos
 }
 photos-date-at-time = { $date } at { $time }
-photos-day-label = { $month } { $day }, { $year }
-photos-month-01 = Jan
-photos-month-02 = Feb
-photos-month-03 = Mar
-photos-month-04 = Apr
-photos-month-05 = May
-photos-month-06 = Jun
-photos-month-07 = Jul
-photos-month-08 = Aug
-photos-month-09 = Sep
-photos-month-10 = Oct
-photos-month-11 = Nov
-photos-month-12 = Dec
 photos-people-local-suggestion = Suggestion from this device
 photos-people-imported-suggestion = Imported suggestion
 photos-analysis-error-language = Choose a language for reading text in photos

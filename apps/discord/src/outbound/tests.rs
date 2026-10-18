@@ -156,7 +156,7 @@ fn a_large_file_becomes_a_line() {
     assert!(two.attachments.is_empty());
     assert_eq!(
         two.content,
-        "watch\n📎 film.mkv (20.0 MiB) – open in Tilo https://app.example/#m"
+        "watch\n📎 film.mkv (21 MB) – open in Tilo https://app.example/#m"
     );
 }
 

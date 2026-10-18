@@ -4816,7 +4816,7 @@ mod tests {
             h: 0,
             size: 1024,
         };
-        assert_eq!(media_meta(&unknown_video), vec!["1.0 KiB".to_owned()]);
+        assert_eq!(media_meta(&unknown_video), vec!["1 kB".to_owned()]);
         let (vw, _) = media_face(&unknown_video, MediaArt::Placeholder, &[], 1000.0, &theme);
         assert!(
             (vw - max_h * 16.0 / 9.0).abs() < 1e-6,

@@ -46,8 +46,8 @@ impl HeldImages {
     /// is held.
     pub fn hold(&self, encoded: &[u8]) -> String {
         let address = address("held", encoded);
-        let mut bytes = self.bytes.write_recover();
-        bytes
+        self.bytes
+            .write_recover()
             .entry(address.clone())
             .or_insert_with(|| Held::Bytes(Arc::from(encoded)));
         address
@@ -61,8 +61,8 @@ impl HeldImages {
             return String::new();
         }
         let address = address("held-text", text.as_bytes());
-        let mut bytes = self.bytes.write_recover();
-        bytes
+        self.bytes
+            .write_recover()
             .entry(address.clone())
             .or_insert_with(|| Held::Text(Arc::from(text)));
         address

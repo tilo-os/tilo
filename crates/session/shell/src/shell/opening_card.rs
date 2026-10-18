@@ -497,7 +497,7 @@ mod tests {
                 &[
                     ("app", "Slides".into()),
                     ("received", "4.2 MB".into()),
-                    ("total", "18.0 MB".into()),
+                    ("total", "18 MB".into()),
                 ]
             )
         );

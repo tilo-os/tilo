@@ -20397,6 +20397,9 @@ impl Widget for ShellOverlayHost {
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        // Read the person's region formats here, on the tick, so painting
+        // the dates and numbers it formats never reads the settings file.
+        let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
         let person_activation = self.pump_person_cursor_activation();
         let person_context_dirty = self.validate_person_composer();

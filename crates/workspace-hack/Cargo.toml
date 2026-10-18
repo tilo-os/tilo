@@ -240,7 +240,7 @@ wasmparser = { version = "0.239", default-features = false, features = ["feature
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
-writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
+writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
@@ -482,7 +482,7 @@ wasmparser = { version = "0.239", default-features = false, features = ["feature
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
-writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
+writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
