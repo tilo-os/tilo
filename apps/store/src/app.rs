@@ -2516,10 +2516,8 @@ impl StoreApp {
                 if let Some(effect) = self.moderation_effect(&app, true) {
                     row = row.effect(&effect);
                 }
-            } else {
-                if let Some(effect) = self.moderation_effect(&app, false) {
-                    row = row.effect(&effect);
-                }
+            } else if let Some(effect) = self.moderation_effect(&app, false) {
+                row = row.effect(&effect);
             }
         }
         row
