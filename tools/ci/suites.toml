@@ -606,6 +606,10 @@ suites = [
 ]
 
 [[unrequired]]
+suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
+reason = "its country names come from Intl.DisplayNames, which the ci-fast image's node lacks (it answers the region code); browsers ship it. Gate it once the suite's node carries full ICU"
+
+[[unrequired]]
 suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
 reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
 
@@ -638,6 +642,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/qr.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs",

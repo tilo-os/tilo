@@ -10,7 +10,6 @@ de-DE search-continuity-call-move-subtitle implementation
 de-DE search-continuity-certified-device implementation
 de-DE search-continuity-media-handoff-subtitle implementation
 de-DE search-continuity-place-subtitle implementation
-de-DE search-host-app-subtitle chain
 en-US search-action-quick-settings-devices-subtitle implementation
 en-US search-action-shared-display-include-subtitle implementation
 en-US search-action-shared-display-inspect-subtitle implementation
@@ -24,4 +23,3 @@ en-US search-continuity-call-move-subtitle implementation
 en-US search-continuity-certified-device implementation
 en-US search-continuity-media-handoff-subtitle implementation
 en-US search-continuity-place-subtitle implementation
-en-US search-host-app-subtitle chain
