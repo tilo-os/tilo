@@ -440,6 +440,7 @@ pub(super) mod signed_test_support {
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
         _directory: tempfile::TempDir,
+        _clock: crate::peer_actions::OwnerPolicyClock,
     }
 
     impl Fixture {
@@ -480,14 +481,11 @@ pub(super) mod signed_test_support {
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
+            let clock = crate::peer_actions::OwnerPolicyClock::new().unwrap();
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
                 revoked: AtomicBool::new(false),
-                time: crate::peer_actions::OwnerPolicyClock::new()
-                    .unwrap()
-                    .new_origin()
-                    .capture()
-                    .unwrap(),
+                time: clock.new_origin().capture().unwrap(),
             });
             let config = crate::peer_actions::NativePeerBrokerConfig {
                 journal_root: directory.path().join("journal"),
@@ -528,6 +526,7 @@ pub(super) mod signed_test_support {
                 _fanout: fanout,
                 _environment: environment,
                 _directory: directory,
+                _clock: clock,
             }
         }
 

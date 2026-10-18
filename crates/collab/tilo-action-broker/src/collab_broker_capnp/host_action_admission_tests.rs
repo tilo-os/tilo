@@ -17,7 +17,7 @@ fn state(root: &std::path::Path) -> Arc<CapnpBrokerState> {
         crate::services::HostServices::default(),
     );
     *state.journal.lock().unwrap() = Ok(Some(
-        invocation_journal::InvocationJournal::open(root).unwrap(),
+        invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
     state
 }
