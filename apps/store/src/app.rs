@@ -3120,9 +3120,9 @@ mod tests {
             app.harness().set_theme(theme);
             let current = app.harness().scene().encoding().draw_data.clone();
             assert_ne!(current, previous, "the Store must paint the new theme");
-            assert_eq!(
-                app.harness().targets()["store.remote.name"].height(),
-                input_height,
+            let height = app.harness().targets()["store.remote.name"].height();
+            assert!(
+                (height - input_height).abs() < f64::EPSILON,
                 "changing colours alone must not enlarge the form"
             );
             previous = current;
@@ -3155,9 +3155,9 @@ mod tests {
             "reapplying the same resolved text setting must not accumulate scaling"
         );
         app.harness().set_theme(Theme::light());
-        assert_eq!(
-            app.harness().targets()["store.remote.name"].height(),
-            input_height,
+        let height = app.harness().targets()["store.remote.name"].height();
+        assert!(
+            (height - input_height).abs() < f64::EPSILON,
             "returning to normal text must restore the form's original height"
         );
         assert_eq!(
