@@ -1440,11 +1440,14 @@ impl RecordSet {
         doc: &AutoCommit,
     ) -> Result<Vec<app_state::PrivateAction>, String> {
         let id = self.active.as_ref().ok_or("no active record")?;
-        self.open
-            .get(id)
-            .and_then(|slot| slot.autosave.as_ref())
-            .ok_or("record has no private durable writer")?
-            .private_actions(doc)
+        let slot = self.open.get(id).ok_or("active record is not open")?;
+        // A session-owned record may have no process-local checkpoint store.
+        // There is then nothing to recover; writing new evidence still requires
+        // a durable writer through record_active_private_action.
+        match slot.autosave.as_ref() {
+            Some(writer) => writer.private_actions(doc),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Every record this process has open, checked-out one included.
@@ -3438,10 +3441,13 @@ impl RecordStore {
         let set = self.0.try_borrow().map_err(|_| "record store is busy")?;
         let slot = set.open.get(id).ok_or("record is not open")?;
         let doc = slot.doc.as_ref().ok_or("record document is lent")?;
-        slot.autosave
-            .as_ref()
-            .ok_or("record has no private durable writer")?
-            .private_actions(doc)
+        // Absence of a local checkpoint store is not failed recovery. In
+        // particular, session-owned records need not have a local writer.
+        // record_private_action continues to refuse writes without one.
+        match slot.autosave.as_ref() {
+            Some(writer) => writer.private_actions(doc),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Offer one serviced canonical record without awaiting host ACK or
@@ -5360,6 +5366,29 @@ mod tests {
                 assert_eq!(std::fs::read(&path).unwrap(), payload);
             }
         }
+    }
+
+    #[test]
+    fn absent_private_checkpoint_store_is_empty_but_never_accepts_evidence() {
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
+        store.create_record(&checkout).unwrap();
+        assert!(store.private_actions(&checkout.id).unwrap().is_empty());
+        let evidence = app_state::PrivateAction {
+            id: [1; 16],
+            hashes: Vec::new(),
+            intent: b"{}".to_vec(),
+            receipt: None,
+        };
+        assert_eq!(
+            store.record_private_action(&checkout.id, evidence),
+            Err("record has no private durable writer".into())
+        );
+        let _loan = store.0.borrow_mut();
+        assert_eq!(
+            store.private_actions(&checkout.id).unwrap_err(),
+            "record store is busy"
+        );
     }
 
     #[test]
