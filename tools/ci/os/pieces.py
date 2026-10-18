@@ -170,7 +170,14 @@ def logical_lines(text):
 
 def whole():
     p = plan()
-    parts = [GENERATED + read(os.path.join(IMAGE, "args.Containerfile"))]
+    args = read(os.path.join(IMAGE, "args.Containerfile"))
+    # A parser directive (`# syntax=`) is one only on the file's first lines, before any
+    # other comment: the note that the file is written goes after it.
+    directives = ""
+    while args.startswith("# syntax=") or args.startswith("# escape="):
+        line, _, args = args.partition("\n")
+        directives += line + "\n"
+    parts = [directives + GENERATED + args]
     parts += [helpers()[h] for h in p["helpers"]]
     parts += [read(os.path.join(IMAGE, f"{l['piece']}.Containerfile")) for l in p["layer"]]
     return "\n".join(t.rstrip("\n") + "\n" for t in parts)

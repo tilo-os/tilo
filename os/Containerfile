@@ -1,5 +1,5 @@
-# Written by `python3 tools/ci/os/pieces.py write` from os/image/: edit the pieces, not this file.
 # syntax=docker/dockerfile:1.7
+# Written by `python3 tools/ci/os/pieces.py write` from os/image/: edit the pieces, not this file.
 # ============================================================================
 # Tilo bootc image: the build arguments every piece of it reads
 # ----------------------------------------------------------------------------
