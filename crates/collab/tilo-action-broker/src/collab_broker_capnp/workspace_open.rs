@@ -419,7 +419,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let launcher = Arc::new(Ticketed::default());
-        let (state, _bridge) = CapnpBrokerState::new_configured(
+        let (state, bridge) = CapnpBrokerState::new_configured(
             &Arc::new(FanoutState::new()),
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
@@ -458,12 +458,35 @@ mod tests {
             if step == 3 {
                 request.target.address.action = "close".into();
             }
-            state
-                .action_invoke_local_person(&caller, &request)
+            let pending = state.action_invoke_local_person(&caller, &request);
+            // Native custody is inert until the broker services its admission
+            // turn. Drive the same eager dispatch as the live accept loop,
+            // rather than waiting for a worker this fixture never started.
+            let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("native invoke reaches the broker turn")
+            else {
+                panic!("native open must enqueue eager admission");
+            };
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        invoke.reply.complete(state.invoke_eager(
+                            &invoke.caller,
+                            invoke.own_peer,
+                            invoke.launch.as_ref(),
+                            Some(&invoke.origin),
+                            &invoke.request,
+                        ));
+                    })
+                    .join()
+                    .unwrap();
+            });
+            pending
                 .wait_timeout(std::time::Duration::from_secs(5))
                 .ok()
                 .flatten()
-                .expect("native admission answers immediately")
+                .expect("serviced native admission answers")
                 .unwrap();
             let job = state.remote_job(&caller, &request.invocation).unwrap();
             match step {
@@ -529,7 +552,8 @@ mod tests {
         let (state, room) = broker();
         let root = tempfile::tempdir().unwrap();
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(root.path()).unwrap(),
+            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
+                .unwrap(),
         ));
         let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);
         let request = request(&room);
@@ -578,7 +602,8 @@ mod tests {
         let (state, room) = broker();
         let root = tempfile::tempdir().unwrap();
         let mut journal =
-            super::super::invocation_journal::InvocationJournal::open(root.path()).unwrap();
+            super::super::invocation_journal::InvocationJournal::open(&root.path().join("journal"))
+                .unwrap();
         journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
         *state.journal.lock().unwrap() = Ok(Some(journal));
         let caller = Caller::local_person(hex::encode([41; 32])).in_room(&room);

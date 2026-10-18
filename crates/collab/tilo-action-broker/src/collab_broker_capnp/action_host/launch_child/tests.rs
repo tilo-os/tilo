@@ -530,16 +530,22 @@ fn retired_worker_after_admission_never_launches_or_closes() {
 }
 
 #[test]
-fn keyless_continuation_retains_original_device_cap_at_effect() {
+fn keyless_continuation_retains_original_device_cap_without_forbidding_content_effects() {
     for close in [false, true] {
         let launcher = Arc::new(Launcher {
             calls: AtomicUsize::new(0),
             fail: false,
         });
-        let fixture = Fixture::new(HostServices {
+        let mut fixture = Fixture::new_certified_foreign(HostServices {
             launcher: Some(launcher.clone()),
+            local_person: Some(Arc::new(NativePerson)),
             ..Default::default()
         });
+        // Retain the original foreign restriction even when the native
+        // continuation presents only the person's keyless projection.
+        fixture.caller =
+            tilo_actions::remote::Caller::local_person(BrokerActor::for_caller(&fixture.caller).id)
+                .in_room(&fixture.room);
         assert!(fixture.caller.device_public_key().is_none());
         let descriptor = if close {
             app_close_descriptor(&app().package_id, "Notes")
@@ -576,6 +582,54 @@ fn keyless_continuation_retains_original_device_cap_at_effect() {
             Some(&fixture.origin),
             fixture.room.as_str(),
         );
+        let (_, original, now) = fixture
+            .state
+            .current_framework_authority(custody.0, custody.1, custody.2)
+            .unwrap();
+        let outside = tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            ..Default::default()
+        }
+        .need();
+        let permission = (
+            app().package_id,
+            descriptor.resource_kind.clone(),
+            descriptor.address.resource.clone(),
+            descriptor.address.action.clone(),
+        );
+        let permission = (
+            permission.0.as_str(),
+            permission.1.as_str(),
+            permission.2.as_str(),
+            permission.3.as_str(),
+        );
+        // The keyless projection alone would regain the owner's Outside
+        // permission. Production authorization under the retained custody must
+        // refuse it: a foreign device needs the person's confirmation.
+        assert!(
+            fixture
+                .state
+                .authorize_invocation_permission(
+                    &fixture.room,
+                    permission,
+                    &outside,
+                    &BrokerActor::for_caller(&fixture.caller),
+                    now
+                )
+                .is_ok()
+        );
+        assert!(
+            fixture
+                .state
+                .authorize_invocation_permission(
+                    &fixture.room,
+                    permission,
+                    &outside,
+                    &original,
+                    now
+                )
+                .is_err()
+        );
         let result = if close {
             fixture
                 .state
@@ -593,8 +647,10 @@ fn keyless_continuation_retains_original_device_cap_at_effect() {
                 &LaunchPlace::Focus,
             )
         };
-        assert!(result.is_err());
-        assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
+        // Open and close are content effects, which the foreign-device bound
+        // explicitly allows; neither is an Outside permission probe.
+        result.unwrap();
+        assert_eq!(launcher.calls.load(Ordering::SeqCst), 1);
         fixture.assert_signed(&request, true);
     }
 }
@@ -661,7 +717,23 @@ fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
                 .as_mut()
                 .unwrap()
                 .after_admission = Some(gate);
-            let result = fixture.invoke(&request);
+            // The live broker services the queued eager invoke on its admission
+            // turn. Run that production dispatch off the invoking thread here;
+            // this transport-free fixture has no accept loop to drain the queue.
+            let result = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        fixture.state.invoke_eager(
+                            &fixture.caller,
+                            None,
+                            None,
+                            Some(&fixture.origin),
+                            &request,
+                        )
+                    })
+                    .join()
+                    .unwrap()
+            });
             revoker.join().unwrap();
             assert!(result.is_err());
             assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
