@@ -486,12 +486,12 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
         );
     }
 
-    // Phase `resize_handle_drag_clamps_at_max_width_without_squeezing_neighbour`.
-    // A normal drag far past the resized group's maximum clamps that group
-    // without changing its neighbour, and the clamped width persists.
+    // Phase `a_drag_far_past_the_display_has_no_ceiling`.
+    // A normal drag hundreds of displays wide widens the resized group that
+    // far, without changing its neighbour, and the width persists: there is
+    // no widest window anyone can feel.
     {
         let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-        // Start both at Narrow so the resized group has visible room to grow.
         for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
             g.width = WindowWidth::Narrow;
         }
@@ -500,18 +500,15 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
 
         let usable = usable_strip_px(&mut host, strip_id);
         let start = WindowWidth::Narrow.resolve(usable);
-        let max = ui::widget::max_group_px(usable);
         let handle_rect = host
             .group_row_mut_for_tests(strip_id)
             .expect("strip GroupRow")
             .handle_at(0)
-            .expect("one inter-group resize handle for a 2-group strip")
+            .expect("one seam for a 2-group strip")
             .get_rect();
         let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
         let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-        // Far past the resized group's maximum: it clamps there while the right
-        // neighbour keeps its own width in the unbounded strip.
         cursor(&mut host, &layout, Point::new(cx, cy));
         press(&mut host, &layout);
         cursor(&mut host, &layout, Point::new(cx + 200_000.0, cy));
@@ -529,15 +526,10 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
             start,
             "ordinary resizing must not squeeze the right neighbour",
         );
-        assert_approx_eq!(
+        assert!(
+            (left.width.resolve(usable) - (start + 200_000.0)).abs() <= 1.0,
+            "the window follows the drag all the way: {} for {start} + 200000",
             left.width.resolve(usable),
-            max,
-            "the growing group clamps at the display-relative maximum",
-        );
-        assert_approx_eq!(
-            left.width.resolve(usable) + right.width.resolve(usable),
-            max + start,
-            "the infinite strip grows only to the resized group's clamp",
         );
     }
 

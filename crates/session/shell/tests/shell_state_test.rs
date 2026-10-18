@@ -46,7 +46,8 @@ fn window_widths_clamp_migrate_and_round_trip_as_fractions() {
         // A width is a fraction of the strip, so out-of-range fractions clamp
         // into the storable band rather than into a pixel band.
         assert_eq!(WindowWidth::Fraction(0).permille(), 1);
-        assert_eq!(WindowWidth::Fraction(65_000).permille(), 10_000);
+        // Wide is not capped: sixty-five strips stay sixty-five strips.
+        assert_eq!(WindowWidth::Fraction(65_000).permille(), 65_000);
         // And the resolved pixels track the display, which is the point: a
         // group may be wider than the strip, which then scrolls.
         assert!((WindowWidth::Fraction(1500).resolve(1600.0) - 2400.0).abs() < 1e-9);

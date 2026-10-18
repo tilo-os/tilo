@@ -303,7 +303,7 @@ pub struct WindowGroup {
     built_active: Option<u64>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
-    pending_width_change: Option<u16>,
+    pending_width_change: Option<u32>,
     pending_search_open: Option<u64>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
@@ -1211,7 +1211,7 @@ impl WindowGroup {
     pub fn has_pending_width_change(&self) -> bool {
         self.pending_width_change.is_some()
     }
-    pub fn take_pending_width_change(&mut self) -> Option<u16> {
+    pub fn take_pending_width_change(&mut self) -> Option<u32> {
         self.pending_width_change.take()
     }
 

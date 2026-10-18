@@ -7,7 +7,7 @@ use ui::widget::{HistoryEntry, HistoryEntryId};
 pub(super) struct ReplayGroup {
     pub(super) tabs: Vec<String>,
     pub(super) active: usize,
-    pub(super) width_permille: u16,
+    pub(super) width_permille: u32,
 }
 
 #[derive(Clone, Debug)]

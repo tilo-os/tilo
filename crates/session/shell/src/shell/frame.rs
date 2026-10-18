@@ -7548,7 +7548,7 @@ mod tests {
             WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
         };
         const GROUPS: usize = 5;
-        const GROUP_WIDTH_PERMILLE: u16 = 515;
+        const GROUP_WIDTH_PERMILLE: u32 = 515;
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let groups: Vec<GroupId> = (0..GROUPS)

@@ -151,7 +151,7 @@ pub struct OverviewGroup {
     pub id: GroupId,
     /// Persisted share of the strip's usable width. Rendering may compress
     /// all groups to fit, but retains these proportions.
-    pub width_permille: u16,
+    pub width_permille: u32,
     pub is_current: bool,
     pub tabs: Vec<OverviewTab>,
 }

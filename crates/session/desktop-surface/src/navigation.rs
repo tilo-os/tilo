@@ -149,7 +149,7 @@ pub enum Command {
     Width {
         generation: String,
         route: Route,
-        permille: u16,
+        permille: u32,
     },
     Maximize {
         generation: String,
@@ -238,7 +238,7 @@ impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
 pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
-    Width(RouteIds, u16),
+    Width(RouteIds, u32),
     Maximize(RouteIds, bool),
     Strip(WorkspaceId, StripId),
     Workspace(WorkspaceId),
@@ -762,7 +762,7 @@ pub struct Snapshot {
     pub active_workspace: String,
     pub active_strip: Option<String>,
     pub active: Option<Route>,
-    pub width_permille: Option<u16>,
+    pub width_permille: Option<u32>,
     pub maximized: bool,
     pub capabilities: Capabilities,
     pub desktop_pan: Option<DesktopPan>,

@@ -47,7 +47,7 @@ const H: f32 = 800.0;
 /// remain clickable while the group itself still crosses the viewport edge
 /// and the third is entirely off screen — content that fits cannot
 /// demonstrate anything about panning.
-const GROUP_WIDTH_PERMILLE: u16 = 515;
+const GROUP_WIDTH_PERMILLE: u32 = 515;
 
 /// Enough groups that travelling to the far end pushes the near end
 /// entirely off screen; with fewer, the first would still poke in at

@@ -4,17 +4,21 @@ use serde::{Deserialize, Serialize};
 
 /// Per-mille (not px) so a tier means the same fraction on every monitor.
 /// Thirds tile the strip cleanly; `Wide` is the full usable width.
-pub const WIDTH_NARROW_PERMILLE: u16 = 333;
-pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
-pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
+pub const WIDTH_NARROW_PERMILLE: u32 = 333;
+pub const WIDTH_NORMAL_PERMILLE: u32 = 667;
+pub const WIDTH_WIDE_PERMILLE: u32 = 1000;
 
 /// Bounds of what a width can *store*, not of what a person may choose: a
-/// group may be a sliver of a share up to several strips wide, the strip
-/// scrolls. Windows' own minimum and maximum sizes are the client's to
-/// state (`xdg_toplevel` hints are honoured when it is configured); the
-/// only limit of ours is [`WIDTH_FLOOR_PX`].
-pub const WIDTH_MIN_PERMILLE: u16 = 1;
-pub const WIDTH_MAX_PERMILLE: u16 = 10_000;
+/// group may be a sliver of a share up to any number of strips wide, the
+/// strip scrolls. Windows' own minimum and maximum sizes are the apps' to
+/// state (`xdg_toplevel` hints, a Tilo app's compact layout); the only limit
+/// of ours is [`WIDTH_FLOOR_PX`].
+pub const WIDTH_MIN_PERMILLE: u32 = 1;
+/// The storage's own end, over four million strips: a drag cannot reach it,
+/// even resting at the display's edge while the strip scrolls under it, so
+/// there is no widest window anyone can feel. (Ten strips used to be the
+/// limit, which an edge drag that scrolls the strip reaches in seconds.)
+pub const WIDTH_MAX_PERMILLE: u32 = u32::MAX;
 
 /// The one sane minimum: enough for a tab pill, its controls and a
 /// scrollbar. A fraction below it resolves up to it.
@@ -29,24 +33,25 @@ pub fn min_group_px(strip_usable_px: f64) -> f64 {
 }
 
 /// Widest a group may resolve to on a strip of `strip_usable_px`: the
-/// widest width that can be stored. Far past the display; the strip scrolls.
+/// widest width that can be stored, millions of displays. The strip
+/// scrolls.
 pub fn max_group_px(strip_usable_px: f64) -> f64 {
     strip_usable_px.max(1.0) * f64::from(WIDTH_MAX_PERMILLE) / 1000.0
 }
 
 /// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
 /// becomes a stored resolution-independent width.
-pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
+pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u32 {
     let usable = strip_usable_px.max(1.0);
     let raw = (px.max(0.0) / usable * 1000.0).round();
     let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "clamped to [150.0, 1000.0] above, which fits losslessly in u16"
+        reason = "clamped to the storable per-mille range above, which fits losslessly in u32"
     )]
     {
-        clamped as u16
+        clamped as u32
     }
 }
 
@@ -90,16 +95,16 @@ pub fn share_beside(
 }
 
 /// The largest per-mille of `usable` that resolves to no more than `px`.
-fn floor_permille(px: f64, usable: f64) -> u16 {
+fn floor_permille(px: f64, usable: f64) -> u32 {
     let raw = (px.max(0.0) / usable * 1000.0).floor();
     let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "clamped to the storable per-mille range above, which fits losslessly in u16"
+        reason = "clamped to the storable per-mille range above, which fits losslessly in u32"
     )]
     {
-        clamped as u16
+        clamped as u32
     }
 }
 
@@ -113,13 +118,13 @@ pub enum WindowWidth {
     Wide,
     /// An arbitrary fraction of the strip's usable width, in per-mille.
     /// What a manual resize persists.
-    Fraction(u16),
+    Fraction(u32),
 }
 
 impl WindowWidth {
     /// The fraction this width represents, in per-mille of the strip's
     /// usable width.
-    pub fn permille(&self) -> u16 {
+    pub fn permille(&self) -> u32 {
         match self {
             WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
             WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
@@ -128,7 +133,7 @@ impl WindowWidth {
         }
     }
 
-    /// [`Self::permille`] as a fraction in `[0.15, 1.0]`.
+    /// [`Self::permille`] as a fraction of the strip's usable width.
     pub fn fraction(&self) -> f64 {
         f64::from(self.permille()) / 1000.0
     }
@@ -162,7 +167,7 @@ impl<'de> Deserialize<'de> for WindowWidth {
             Narrow,
             Normal,
             Wide,
-            Fraction(u16),
+            Fraction(u32),
         }
         Ok(match Raw::deserialize(d)? {
             Raw::Narrow => WindowWidth::Narrow,
@@ -272,8 +277,23 @@ mod tests {
         {
             let width: WindowWidth = serde_json::from_str(r#"{"Fraction":0}"#).unwrap();
             assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+        }
+        // Phase `there_is_no_widest_window_anyone_can_feel`: sixty-five strips
+        // (the old storage's end) and far more load as they were stored.
+        {
             let width: WindowWidth = serde_json::from_str(r#"{"Fraction":65000}"#).unwrap();
-            assert_eq!(width, WindowWidth::Fraction(WIDTH_MAX_PERMILLE));
+            assert_eq!(width, WindowWidth::Fraction(65_000));
+            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":2000000}"#).unwrap();
+            assert!((width.resolve(1000.0) - 2_000_000.0).abs() < 1e-6);
+            // An hour of a drag resting at the display's edge, where the strip
+            // scrolls fastest, is far short of the storable end.
+            let hour_of_scroll = 1600.0 * 3600.0;
+            assert!(max_group_px(1000.0) > 100.0 * hour_of_scroll);
+            assert_eq!(
+                permille_for_px(hour_of_scroll, 1000.0),
+                5_760_000,
+                "stored as it landed"
+            );
         }
         // Phase `no_artificial_limits_beyond_the_floor_and_the_storable_range`.
         {

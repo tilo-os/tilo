@@ -407,7 +407,7 @@ pub enum Action {
     ///
     /// A capture of windows moving needs more than one of them on
     /// screen, and the default width is the whole display.
-    SetWindowWidths(u16),
+    SetWindowWidths(u32),
     SwitchWorkspace(usize),
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
@@ -1666,13 +1666,13 @@ const PAN_SETTLE_FRAMES: u32 = 16;
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
 /// third clipped at the edge.
-const HALF_WIDTH_PERMILLE: u16 = 500;
+const HALF_WIDTH_PERMILLE: u32 = 500;
 
 /// Window width, per-mille of the display's usable width, that puts three
 /// windows on screen at once. A third of the strip each is the shape a
 /// demo takes when it wants several apps visible together, and it is the
 /// shape a group's tab strip has the least room in.
-const THIRD_WIDTH_PERMILLE: u16 = 333;
+const THIRD_WIDTH_PERMILLE: u32 = 333;
 
 /// Points along the pill's 180 ms reveal curve worth looking at. Dense
 /// at the start, where the ease-out does most of its travelling.

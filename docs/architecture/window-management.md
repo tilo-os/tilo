@@ -209,9 +209,7 @@ and every frame of the drag ask the same two functions.
   `xdg_toplevel` min-size hint, and for an app that states nothing the
   strip's floor (`WIDTH_FLOOR_PX`, 160 px, which also bounds the others from
   below, since the window's own chrome needs it). A client's max-size hint
-  stops it the other way. Ours is only the storable maximum, ten strips
-  (`WIDTH_MAX_PERMILLE`), which an edge drag that auto-scrolls can reach;
-  removing it (wider storage) is pending.
+  stops it the other way; there is no maximum of ours that can be felt.
 - **The pointer stays on the edge**: the drag is anchored where it was
   pressed (no jump), and a pointer resting at a display edge auto-scrolls the
   strip, so a window can grow past the screen while its edge stays under the

@@ -6176,7 +6176,7 @@ impl ShellOverlayHost {
     /// mirror it to the persisted tree the way a width drag does. Setting
     /// the tree alone wouldn't move anything — the laid-out width lives
     /// on the widget. Returns the ids touched.
-    pub fn set_group_widths(&mut self, permille: u16) -> Vec<u64> {
+    pub fn set_group_widths(&mut self, permille: u32) -> Vec<u64> {
         let mut touched: Vec<u64> = Vec::new();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
@@ -7973,12 +7973,12 @@ impl ShellOverlayHost {
             else {
                 return false;
             };
-            let next = u16::try_from(
-                i32::from(group.width.permille())
-                    .saturating_add(i32::from(delta_permille))
+            let next = u32::try_from(
+                i64::from(group.width.permille())
+                    .saturating_add(i64::from(delta_permille))
                     .clamp(
-                        i32::from(ui::widget::WIDTH_MIN_PERMILLE),
-                        i32::from(ui::widget::WIDTH_MAX_PERMILLE),
+                        i64::from(ui::widget::WIDTH_MIN_PERMILLE),
+                        i64::from(ui::widget::WIDTH_MAX_PERMILLE),
                     ),
             )
             .unwrap_or(ui::widget::WIDTH_MAX_PERMILLE);
