@@ -228,6 +228,10 @@ pub struct CommandEntry {
     /// end when it doesn't fit: the root and the item's own folder carry
     /// more than what lies between them. Prose loses its end.
     pub description_is_path: bool,
+    /// Its value steps with ←/→ while the row is selected and the query's
+    /// caret is at its end ([`CommandPalette::take_adjustment`]): a volume,
+    /// a timeout, a mode.
+    pub adjustable: bool,
     action_address: Option<ActionAddress>,
     action_argument: Option<String>,
 }
@@ -249,6 +253,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("alternates", &self.alternates)
             .field("description_is_path", &self.description_is_path)
+            .field("adjustable", &self.adjustable)
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
             .finish()
@@ -272,9 +277,17 @@ impl CommandEntry {
             on_select: None,
             alternates: Vec::new(),
             description_is_path: false,
+            adjustable: false,
             action_address: None,
             action_argument: None,
         }
+    }
+
+    /// Let ←/→ step the row's value ([`Self::adjustable`]).
+    #[must_use]
+    pub fn adjustable(mut self) -> Self {
+        self.adjustable = true;
+        self
     }
 
     /// Offer another activation behind `modifier` ([`Alternate`]).
@@ -646,6 +659,8 @@ pub struct CommandPalette {
     /// closes such a dedicated prompt instead of revealing an unrelated list.
     direct_argument: bool,
     outcome: Option<CommandOutcome>,
+    /// A ←/→ step asked of the selected adjustable row: its id and -1 or 1.
+    adjustment: Option<(String, i8)>,
     /// Native palette rows enqueue an inert address+arguments request here.
     /// The application host re-resolves it against the fresh resource tree,
     /// exactly like a bound Button; the palette never executes app code.
@@ -741,6 +756,7 @@ impl CommandPalette {
             arg_state: None,
             direct_argument: false,
             outcome: None,
+            adjustment: None,
             action_invocation: crate::control_custody::ControlHolder::new(
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
@@ -969,6 +985,40 @@ impl CommandPalette {
     /// Returns `Some` at most once per selection.
     pub fn take_outcome(&mut self) -> Option<CommandOutcome> {
         self.outcome.take()
+    }
+
+    /// The step ←/→ asked of the selected adjustable row since the last
+    /// call: its id and the direction (-1 or 1). The host changes the value
+    /// and refreshes the row.
+    pub fn take_adjustment(&mut self) -> Option<(String, i8)> {
+        self.adjustment.take()
+    }
+
+    /// ←/→ on a selected adjustable row with the caret at the query's end
+    /// steps its value instead of moving the caret, which has nowhere to go
+    /// on the right and is not what a person with a value row selected
+    /// means on the left.
+    fn step_selected(&mut self, key: &Key) -> bool {
+        let delta = match key {
+            Key::Named(NamedKey::ArrowRight) => 1,
+            Key::Named(NamedKey::ArrowLeft) => -1,
+            _ => return false,
+        };
+        let at_end =
+            self.query_selection == crate::text_selection::Selection::collapsed(self.query.len());
+        let Some(entry) = self
+            .visible
+            .get(self.cursor)
+            .and_then(|&at| self.entries.get(at))
+            .filter(|entry| entry.adjustable)
+        else {
+            return false;
+        };
+        if !at_end {
+            return false;
+        }
+        self.adjustment = Some((entry.id.clone(), delta));
+        true
     }
 
     /// Bypasses taffy, for apps that hand-position their overlays.
@@ -2900,6 +2950,10 @@ impl Widget for CommandPalette {
                 return;
             }
             if self.handle_list_key(logical_key, shift, ctrl) {
+                *ctx.handled = true;
+                return;
+            }
+            if !shift && !ctrl && self.step_selected(logical_key) {
                 *ctx.handled = true;
                 return;
             }
@@ -4887,6 +4941,32 @@ mod keyboard_flow_tests {
             ActivationModifier::of(ModifiersState::CONTROL | ModifiersState::SHIFT),
             None,
             "a chord of two is no alternative"
+        );
+    }
+
+    #[test]
+    fn arrows_step_an_adjustable_row_only_with_the_caret_at_the_end() {
+        let mut p = CommandPalette::new();
+        p.set_entries(vec![
+            CommandEntry::new("volume", "Volume").adjustable(),
+            CommandEntry::new("files", "Files"),
+        ]);
+        p.open();
+        assert!(p.step_selected(&Key::Named(NamedKey::ArrowRight)));
+        assert_eq!(p.take_adjustment(), Some(("volume".into(), 1)));
+        assert!(p.step_selected(&Key::Named(NamedKey::ArrowLeft)));
+        assert_eq!(p.take_adjustment(), Some(("volume".into(), -1)));
+        p.set_cursor(1);
+        assert!(
+            !p.step_selected(&Key::Named(NamedKey::ArrowLeft)),
+            "a row with no value leaves the arrows to the caret"
+        );
+        p.set_cursor(0);
+        p.query = "vol".into();
+        p.query_selection = crate::text_selection::Selection::collapsed(1);
+        assert!(
+            !p.step_selected(&Key::Named(NamedKey::ArrowRight)),
+            "inside the query the arrows move the caret"
         );
     }
 

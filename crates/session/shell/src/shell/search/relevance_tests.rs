@@ -449,8 +449,12 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("rechner neu starten", session("restart")),
         ("bildschirm", Expect::Not(SESSION, "lock")),
         // Everyday German for the sound.
-        ("lauter", action("quick-settings.volume.set")),
-        ("leiser", action("quick-settings.volume.set")),
+        ("lauter", action("quick-settings.volume.up")),
+        ("leiser", action("quick-settings.volume.down")),
+        ("louder", action("quick-settings.volume.up")),
+        ("mute", action("quick-settings.volume.mute")),
+        ("stumm", action("quick-settings.volume.mute")),
+        ("dimmer", action("quick-settings.brightness.down")),
     ]
 }
 

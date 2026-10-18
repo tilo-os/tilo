@@ -636,6 +636,75 @@ pub trait SearchProvider {
     fn is_fallback(&self, _result: &SearchResult) -> bool {
         false
     }
+
+    /// The word `result` matched `needle` through when neither its title nor
+    /// its subtitle shows it: a keyword, a name in another language. The
+    /// palette says so ("Matches “darker”"), or the row looks unrelated.
+    fn match_reason(&self, _result: &SearchResult, _needle: &str) -> Option<String> {
+        None
+    }
+
+    /// Whether ←/→ step `result`'s value in place ([`Self::adjust`]).
+    fn adjustable(&self, _result: &SearchResult) -> bool {
+        false
+    }
+
+    /// Step `result`'s value one notch up (`delta` 1) or down (-1), as its
+    /// own action would set it.
+    ///
+    /// # Errors
+    ///
+    /// The row has no value to step, or its action refused the new one.
+    fn adjust(
+        &self,
+        _result: &SearchResult,
+        _delta: i8,
+        _doc: &mut ui::widget::Edits<'_>,
+        _root: &ObjId,
+        _chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::Refused("this row has no value to step".into()))
+    }
+}
+
+/// Longest hidden word a row is said to match through; a longer field is
+/// prose, which says nothing as a reason.
+const MATCH_REASON_MAX_SCALARS: usize = 40;
+
+/// [`SearchProvider::match_reason`] over a row's searchable `fields`: the
+/// first name or keyword holding a word of `needle`, when the row's title and
+/// subtitle hold none. Identities (ids, paths) are never a reason.
+pub(crate) fn match_reason_in(
+    needle: &str,
+    result: &SearchResult,
+    fields: &[(String, ui::search::FieldWeight)],
+) -> Option<String> {
+    use ui::search::FieldWeight;
+    let words: Vec<&str> = needle.split_whitespace().collect();
+    let shows = |text: &str| {
+        words
+            .iter()
+            .any(|word| tilo_search::locate(word, text).is_some())
+    };
+    if words.is_empty() || shows(&result.title) || result.subtitle.as_deref().is_some_and(shows) {
+        return None;
+    }
+    fields
+        .iter()
+        .filter(|(_, weight)| {
+            [
+                FieldWeight::TITLE,
+                FieldWeight::KEYWORD,
+                FieldWeight::SUBTITLE,
+                FieldWeight::METADATA,
+            ]
+            .contains(weight)
+        })
+        .map(|(text, _)| text.trim())
+        // An address ("quick-settings.volume.set") is no reason a person reads.
+        .filter(|text| !text.contains(['.', ':', '/']))
+        .find(|text| text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text))
+        .map(str::to_owned)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1350,6 +1419,7 @@ impl SearchRegistry {
         let interactive = !exhaustive && !include_programmatic;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut fallbacks: Vec<(SearchResult, f32)> = Vec::new();
+        let mut loose: HashSet<(String, String)> = HashSet::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         let mut incomplete = Vec::new();
         for source in self.query_rounds(args, exhaustive, include_programmatic) {
@@ -1388,6 +1458,9 @@ impl SearchRegistry {
                     0.0
                 };
                 let key = (r.provider_id.clone(), r.id.clone());
+                if interactive && only_loosely_matched(needle, &r, top) {
+                    loose.insert(key.clone());
+                }
                 #[expect(
                     clippy::indexing_slicing,
                     reason = "canonical_rows only stores merged.len() right before the matching push, so every stored index is in bounds"
@@ -1403,6 +1476,7 @@ impl SearchRegistry {
             }
         }
         if interactive && !needle.trim().is_empty() {
+            loose_matches_give_way(&mut merged, &loose);
             self.one_row_per_open_app(&mut merged, chrome);
             files_follow_what_was_named(&mut merged, needle);
             if merged.is_empty() {
@@ -1439,6 +1513,7 @@ impl SearchRegistry {
                     let tab: crate::shell::state::TabId =
                         row.id.rsplit(':').next()?.parse().ok()?;
                     let recency = chrome
+                        .search_context
                         .recent_windows
                         .iter()
                         .position(|recent| *recent == tab)
@@ -1499,6 +1574,40 @@ impl SearchRegistry {
         for at in absorbed.into_iter().rev() {
             merged.remove(at);
         }
+    }
+
+    /// Whether ←/→ step `result`'s value; see [`SearchProvider::adjustable`].
+    pub fn adjustable(&self, result: &SearchResult) -> bool {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .is_some_and(|provider| provider.adjustable(result))
+    }
+
+    /// Step `result`'s value; see [`SearchProvider::adjust`].
+    ///
+    /// # Errors
+    ///
+    /// The provider's refusal, or that no enabled provider owns the row.
+    pub fn adjust(
+        &self,
+        result: &SearchResult,
+        delta: i8,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &ObjId,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .ok_or_else(|| ActionError::Refused("no provider owns this row".into()))?
+            .adjust(result, delta, doc, root, chrome)
+    }
+
+    /// Why `result` matched `needle`, when its title and subtitle don't show
+    /// it; see [`SearchProvider::match_reason`].
+    pub fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)?
+            .match_reason(result, needle)
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
@@ -1586,6 +1695,41 @@ fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
         return 0.0;
     }
     system::application_intent_boost(row.score, top)
+}
+
+/// The most a row matched only by a typo, or by words spread over its
+/// fields, scores on its provider's scale, as a share of the top.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "provider scores are small integers"
+)]
+fn loose_share() -> f32 {
+    provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
+}
+
+/// Whether `row` matched `needle` only loosely: by a typo or by words spread
+/// over its fields, with nothing of the query in its title.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "provider scores are small integers"
+)]
+fn only_loosely_matched(needle: &str, row: &SearchResult, top: i32) -> bool {
+    row.score as f32 / top.max(1) as f32 <= loose_share()
+        && system::lexical_strength(needle, &row.kind, &row.title, None) < 1.0
+}
+
+/// A typo is how a misspelt name is still found, not a reason to list
+/// everything one letter away from a word that matched: once anything
+/// matches the query as typed, the rows that only match it loosely go
+/// ("move" lists the move actions, not "Mobile broadband").
+fn loose_matches_give_way(
+    merged: &mut Vec<(SearchResult, f32)>,
+    loose: &HashSet<(String, String)>,
+) {
+    let key = |row: &SearchResult| (row.provider_id.clone(), row.id.clone());
+    if merged.iter().any(|(row, _)| !loose.contains(&key(row))) {
+        merged.retain(|(row, _)| !loose.contains(&key(row)));
+    }
 }
 
 /// Whether typed text asks for a file by its shape: a path, a home-relative
@@ -2162,7 +2306,9 @@ mod tests {
                 id: "notes".into(),
                 kinds: vec![ResourceKind::Note],
                 results: vec![
-                    mk_result(ResourceKind::Note, "notes", "n1", "note b", 10),
+                    // Above the loose-match share: these are real matches
+                    // whose titles merely don't spell the query.
+                    mk_result(ResourceKind::Note, "notes", "n1", "note b", 20),
                     mk_result(ResourceKind::Note, "notes", "n2", "note a", 50),
                 ],
                 max_score: None,
@@ -3279,6 +3425,90 @@ mod tests {
     }
 
     #[test]
+    fn a_row_found_through_a_hidden_word_names_it() {
+        use ui::search::FieldWeight;
+        let row = mk_result(
+            ResourceKind::Action,
+            "actions",
+            "theme.dark",
+            "Dark theme",
+            50,
+        );
+        let fields = vec![
+            ("Dark theme".to_owned(), FieldWeight::TITLE),
+            ("appearance.theme.dark".to_owned(), FieldWeight::new(90)),
+            ("dunkelmodus".to_owned(), FieldWeight::KEYWORD),
+            ("night".to_owned(), FieldWeight::KEYWORD),
+        ];
+        assert_eq!(
+            match_reason_in("night", &row, &fields).as_deref(),
+            Some("night"),
+            "the keyword it came through"
+        );
+        assert_eq!(
+            match_reason_in("dark", &row, &fields),
+            None,
+            "the title shows it"
+        );
+        assert_eq!(
+            match_reason_in("appearance", &row, &fields),
+            None,
+            "an address is no reason a person reads"
+        );
+    }
+
+    #[test]
+    fn typo_matches_give_way_once_anything_matches_as_typed() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "loose-actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![
+                mk_result(
+                    ResourceKind::Action,
+                    "loose-actions",
+                    "m",
+                    "Move window group left",
+                    100,
+                ),
+                mk_result(
+                    ResourceKind::Action,
+                    "loose-actions",
+                    "b",
+                    "Mobile broadband",
+                    10,
+                ),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let rows = ask(&reg, &chrome, "move");
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["m"],
+            "a typo match never crowds a real one"
+        );
+        let mut alone = SearchRegistry::new();
+        alone.register(Rc::new(FakeProvider {
+            id: "loose-alone".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "loose-alone",
+                "t",
+                "Terminal",
+                10,
+            )],
+            max_score: None,
+        }));
+        assert_eq!(
+            ask(&alone, &chrome, "terminl").len(),
+            1,
+            "with nothing else, the misspelt name is still found"
+        );
+    }
+
+    #[test]
     fn a_short_query_leads_with_what_is_chosen_most() {
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(FakeProvider {
@@ -3376,7 +3606,7 @@ mod tests {
             vec![window(1, "Downloads"), window(2, "Documents")];
         tree.seed_doc_from_cache();
         let chrome = ChromeState::new(tree);
-        chrome.borrow_mut().recent_windows = vec![2, 1];
+        chrome.borrow_mut().search_context.recent_windows = vec![2, 1];
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(Apps));
         reg.register(Rc::new(providers::DesktopWindowsProvider::new()));

@@ -351,6 +351,13 @@ impl SearchProvider for SessionActionsProvider {
         &[ResourceKind::Action]
     }
 
+    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
+        let built = self.built.borrow();
+        let built = built.as_ref()?;
+        let at = built.rows.iter().position(|row| row.id == result.id)?;
+        crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
