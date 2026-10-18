@@ -2900,7 +2900,7 @@ impl App {
             crate::local_document_action::reserve(
                 &encoded,
                 Some(&context),
-                &mut self.state.doc,
+                &self.state.doc,
                 &before,
             )
             .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?

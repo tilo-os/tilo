@@ -1,5 +1,5 @@
 //! Private local action checkpoints follow the exact document owner, not UI aliases.
-use super::*;
+use super::App;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct LocalActionCheckpoint {
@@ -27,12 +27,16 @@ struct CheckpointRow {
 }
 
 mod checkpoint_row {
-    use super::*;
+    use super::CheckpointRow;
     use serde::{Deserialize, Serialize};
     #[derive(Serialize)]
     struct Borrowed<'a>(#[serde(with = "CheckpointRow")] &'a runtime_collab::ActionDirectoryRow);
     #[derive(Deserialize)]
     struct Owned(#[serde(with = "CheckpointRow")] runtime_collab::ActionDirectoryRow);
+    #[allow(
+        clippy::ref_option,
+        reason = "serde's `with` adapters receive a reference to the field"
+    )]
     pub fn serialize<S: serde::Serializer>(
         row: &Option<runtime_collab::ActionDirectoryRow>,
         serializer: S,

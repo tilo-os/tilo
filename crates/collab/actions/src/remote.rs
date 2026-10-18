@@ -2866,10 +2866,11 @@ mod tests {
                 }
             }
             for (n, request) in pending.iter().enumerate() {
-                ledger.complete(&request.invocation, n as u32);
+                let n = u32::try_from(n).unwrap();
+                ledger.complete(&request.invocation, n);
                 assert_eq!(
                     ledger.admit(&caller, request, || panic!("duplicate dispatch")),
-                    Ok((&(n as u32), Admission::Retried))
+                    Ok((&n, Admission::Retried))
                 );
             }
             // Capacity refusals are not remembered and can be retried later.

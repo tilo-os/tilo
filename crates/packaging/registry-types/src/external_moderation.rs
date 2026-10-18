@@ -292,7 +292,7 @@ mod tests {
             match field {
                 "actor" => {
                     changed.actor_pubkey_hex =
-                        hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes())
+                        hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
                 }
                 "role" => changed.actor_role = ModerationActorRole::Reviewer,
                 "url" => changed.destination.as_mut().unwrap().base_url.push('/'),
@@ -306,18 +306,18 @@ mod tests {
                     }
                 }
                 "binding" => {
-                    changed.credential.as_mut().unwrap().binding_signature_hex = "00".repeat(64)
+                    changed.credential.as_mut().unwrap().binding_signature_hex = "00".repeat(64);
                 }
                 "credential" => {
                     changed.credential.as_mut().unwrap().public_key_hex =
-                        changed.actor_pubkey_hex.clone()
+                        changed.actor_pubkey_hex.clone();
                 }
                 "protocol" => changed.protocol = 1,
                 _ => unreachable!(),
             }
             assert!(verify_moderation_mutation(&changed).is_err(), "{field}");
         }
-        let mut wrong_key = signed.clone();
+        let mut wrong_key = signed;
         wrong_key.signature_hex = hex::encode(
             identity
                 .sign(&crate::moderation_signing_message(&wrong_key).unwrap())
@@ -384,7 +384,7 @@ mod tests {
             crate::moderation_signing_message(&decoded)
         );
         verify_moderation_mutation(&decoded).unwrap();
-        let mut event = report_event(decoded);
+        let mut event = report_event(&decoded);
         event.record_hash_hex = crate::transparency_event_hash(&event).unwrap();
         let head = event.record_hash_hex.clone();
         let owner = event
@@ -472,7 +472,7 @@ mod tests {
             .unwrap();
         // Postcard structs are positional: omitted v2 fields must leave the
         // historic event preimage byte-for-byte unchanged.
-        let mut event = report_event(signed.clone());
+        let mut event = report_event(&signed);
         let legacy_request = (
             signed.protocol,
             &signed.request_id,
@@ -516,7 +516,7 @@ mod tests {
         assert!(verify_moderation_mutation(&unknown).is_err());
     }
 
-    fn report_event(signed: SignedModerationMutation) -> crate::ModerationEvent {
+    fn report_event(signed: &SignedModerationMutation) -> crate::ModerationEvent {
         crate::ModerationEvent {
             sequence: 1,
             case_id: crate::moderation_case_id("so.tilo.notes", &signed.request_id),

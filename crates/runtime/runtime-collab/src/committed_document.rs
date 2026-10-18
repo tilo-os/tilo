@@ -365,7 +365,7 @@ mod tests {
                 1 => invalid.device = [0; 32],
                 2 => invalid.agent = Some(String::new()),
                 3 => invalid.document = "x".repeat(4097),
-                _ => invalid.room = "bad\\nroom".into(),
+                _ => invalid.room = "bad\nroom".into(),
             }
             assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
         }
