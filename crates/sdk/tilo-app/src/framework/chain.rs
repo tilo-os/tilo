@@ -57,7 +57,8 @@ use super::record::RecordDoor;
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
 /// How often a window looks for parts that arrived on this device without
-/// being opened (a new head synced in): listing the store reads its index.
+/// being opened (a new head synced in) when nothing told its store one did
+/// ([`RecordStore::note_kept`]): listing the store reads its index.
 const LOOK_EVERY: ui_core::time::Duration = ui_core::time::Duration::from_secs(1);
 
 /// A resource whose records are the parts of a chain kept beside the app's
@@ -127,7 +128,9 @@ pub(crate) struct ChainState<P: Chained> {
     /// publishes before it has a head.
     empty: Rc<P::State>,
     revision: Cell<u64>,
-    looked: Cell<Option<ui_core::time::Instant>>,
+    /// When the window last looked for a newer head, with the store's
+    /// [`RecordStore::kept_revision`] then.
+    looked: Cell<Option<(ui_core::time::Instant, u64)>>,
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
 }
 
@@ -208,11 +211,7 @@ impl<P: Chained> ChainState<P> {
             }
             let _ = live.take_change();
         }
-        let due = self
-            .looked
-            .get()
-            .is_none_or(|at| at.elapsed() >= LOOK_EVERY);
-        if due {
+        if self.due() {
             moved |= self.look();
         }
         if moved {
@@ -221,10 +220,28 @@ impl<P: Chained> ChainState<P> {
         moved
     }
 
+    /// Whether to look for a newer head now: the store was told a record
+    /// arrived, or the last look is a while ago. Not while a frame reads the
+    /// store (a view's sync): opening a part takes the store's writer, so
+    /// the look waits for the frame's settle, where the window takes up what
+    /// it was sent, and the view's sync reads the part it opened.
+    fn due(&self) -> bool {
+        if !self.room.store.takes_writes() {
+            return false;
+        }
+        self.looked.get().is_none_or(|(at, kept)| {
+            kept != self.room.store.kept_revision()
+                || ui_core::time::now().saturating_duration_since(at) >= LOOK_EVERY
+        })
+    }
+
     /// Open every part newer than the head that this device holds. Whether
     /// one was.
     fn look(&self) -> bool {
-        self.looked.set(Some(ui_core::time::now()));
+        self.looked.set(Some((
+            ui_core::time::now(),
+            self.room.store.kept_revision(),
+        )));
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
@@ -234,7 +251,11 @@ impl<P: Chained> ChainState<P> {
         if head.is_some_and(|head| newest <= head) {
             return false;
         }
-        self.hold(newest).is_ok()
+        self.hold(newest)
+            .map_err(|error| {
+                tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
+            })
+            .is_ok()
     }
 
     /// Hold part `index`, which this device has or asks its room for.
@@ -627,8 +648,21 @@ impl<P: Chained> Chain<P> {
         me: &str,
         base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
     ) -> Option<Self> {
+        Self::detached_in(RecordStore::in_memory(), app_id, me, base)
+    }
+
+    /// [`Self::detached`], held in `store`: one device's records of the
+    /// app in a room, for a test of what reaches that device's store from
+    /// another one.
+    #[must_use]
+    pub fn detached_in(
+        store: RecordStore,
+        app_id: &'static str,
+        me: &str,
+        base: impl Fn() -> Rc<<P::Base as Resource>::State> + 'static,
+    ) -> Option<Self> {
         let room = RoomRecords {
-            store: RecordStore::in_memory(),
+            store,
             me: me.to_owned(),
             permissions: None,
             app_id,

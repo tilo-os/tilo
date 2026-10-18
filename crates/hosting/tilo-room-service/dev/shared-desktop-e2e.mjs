@@ -12,7 +12,9 @@
 //          [--allow-dev] [--expect-revision SHA] [--timeout S]
 //
 // It checks, and photographs into --out:
-//   own-window       Ada's own window under her pointer offers its close
+//   first-post       Ada's first post in the fresh room's Chat shows on Ben's
+//                    and Mo's pages, open before it, with no input of theirs
+//   own-window      Ada's own window under her pointer offers its close
 //   others-window    Ben's window under Ada's pointer offers none and names
 //                    him, in his colour
 //   refused-drag     Ada drags Ben's window: it follows a little and springs
@@ -30,7 +32,7 @@ import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Invalid, chromeFlags, verifyBundle} from '../../../../scripts/perf/browser_qualification.mjs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {freePort, open, page, parseArgs, reload, startStack} from './auth-e2e.mjs';
+import {CHAT_CHANNEL, freePort, open, page, parseArgs, reload, startStack} from './auth-e2e.mjs';
 
 const DISPLAY_NAMES = 'tilo-display-names';
 const MEMBERSHIPS = 'tilo-host-memberships';
@@ -53,6 +55,37 @@ const TAB_BARS = `(() => {
   walk(root);
   return bars;
 })()`;
+
+/** In the page: every name and text the desktop last described, as one
+ * string: what a person sees on it, as its accessibility tree reads it. */
+const SEMANTIC_TEXT = `JSON.stringify(tiloMount.state()?.semantics?.root ?? null)`;
+/** In the page: post `text` in the first text channel of the Chat window
+ * `window`, through the channel's published `post` (or the messages' own,
+ * naming the room's first channel); `{posted}` or `{error}` with what the
+ * window offers to post with. */
+const POST = (window, text) => `(async () => {
+  const offered = tiloMount.actions(undefined, {window: ${JSON.stringify(window)}})
+    .filter(action => action.address.action === 'post');
+  const attempts = [
+    ...offered.filter(action => !action.address.resource.startsWith('chain:'))
+      .map(action => [action.address.resource, {text: ${JSON.stringify(text)}}]),
+    ...offered.filter(action => action.address.resource.startsWith('chain:'))
+      .map(action => [action.address.resource, {channel: 'c_general', text: ${JSON.stringify(text)}}]),
+  ];
+  const errors = [];
+  for (const [resource, args] of attempts) {
+    try {
+      const result = await tiloMount.invokeAction(resource, 'post', args, {window: ${JSON.stringify(window)}});
+      if (result?.state === 'completed') return {posted: resource};
+      errors.push(resource + ': ' + JSON.stringify(result));
+    } catch (error) {
+      errors.push(resource + ': ' + String(error?.message ?? error));
+    }
+  }
+  return {error: errors.length ? errors : 'nothing to post with', offered: offered.map(action => action.address.resource)};
+})()`;
+/** In the page: whether the desktop shows a Chat window. */
+const HAS_CHAT = `tiloMount.navigation.getSnapshot().entries.some(entry => entry.app === 'so.tilo.chat')`;
 
 const snapshot = tab => tab.evaluate('tiloMount.navigation.getSnapshot()');
 /** Dispatch a navigation command without waiting on it: a close settles
@@ -173,6 +206,29 @@ async function main() {
     const {Ada: {tab: ada}, Ben: {tab: ben}, Mo: {tab: mo}} = people;
 
     await sleep(5_000);
+    // first-post: the room is fresh, so Ada's first post in Chat starts its
+    // messages. Ben and Mo have Chat open before she posts, and see the post
+    // with no input of their own.
+    step('first-post');
+    const chatWindow = await until('Chat is open for everyone', async () => {
+      const channel = await ada.evaluate(CHAT_CHANNEL);
+      if (!channel) return null;
+      for (const tab of [ben, mo]) {
+        if (!(await tab.evaluate(HAS_CHAT))) return null;
+      }
+      return channel.window;
+    });
+    await sleep(3_000);
+    const first = 'The first post of this room';
+    const posted = await ada.evaluate(POST(chatWindow, first)).catch(error => ({error: error.message}));
+    const shows = async tab => (await tab.evaluate(SEMANTIC_TEXT)).includes(first);
+    const missed = [];
+    for (const [name, tab] of [['Ada', ada], ['Ben', ben], ['Mo', mo]]) {
+      if (!(await until(`${name} sees the first post`, () => shows(tab), 20_000).catch(() => false))) missed.push(name);
+    }
+    await shoot('first-post', ben);
+    check('first-post', !posted.error && missed.length === 0, {window: chatWindow, posted, missed});
+
     // Ada opens Notes, Ben a Calculator; everyone sees both. A window lost
     // to such a race is opened again, and counted.
     const opens = [];

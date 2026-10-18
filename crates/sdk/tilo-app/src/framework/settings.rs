@@ -402,6 +402,15 @@ impl ViewStorage {
         setting
     }
 
+    /// Take up a newer head of each chain that arrived on this device: in
+    /// a frame's settle, where the store takes the writer opening it needs,
+    /// so the views' next sync reads it.
+    pub(crate) fn settle(&self) {
+        for chain in self.chains.doors() {
+            let _ = chain.revision();
+        }
+    }
+
     /// Read every followed setting whose document changed, dropping those
     /// of views that are gone.
     pub(crate) fn refresh(&self) {
