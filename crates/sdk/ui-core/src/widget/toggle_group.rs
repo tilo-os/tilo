@@ -398,6 +398,16 @@ pub struct ToggleGroup {
     /// Where the chosen segment's value lives, when bound with
     /// [`Self::from_state`].
     choice: Option<Choice>,
+    /// Where the thumb is drawn: when the person chooses another segment it
+    /// slides there from the one it left (`motion::ListChange`'s move); a
+    /// key's choice, a layout change and reduced motion put it there at
+    /// once.
+    thumb: crate::motion::MotionValue<Rect>,
+    /// The segment the thumb was last sent to; [`NONE_CHOSEN`] before any.
+    thumb_for: usize,
+    /// Where the cached scene drew a sliding thumb (`None`: in place), so
+    /// each step of the slide, and its landing, repaints it.
+    last_thumb: Option<Rect>,
 }
 
 impl ToggleGroup {
@@ -460,6 +470,9 @@ impl ToggleGroup {
             orientation: Orientation::Horizontal,
             stacked: (0.0, 0.0),
             choice: None,
+            thumb: crate::motion::MotionValue::new(Rect::ZERO),
+            thumb_for: NONE_CHOSEN,
+            last_thumb: None,
         }
     }
 
@@ -1278,6 +1291,8 @@ pub struct SegmentedFace<'a> {
     disabled: bool,
     style: SegmentedStyle,
     control_size: ControlSize,
+    /// Where the chosen segment's thumb is drawn while it slides to it.
+    thumb: Option<Rect>,
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -1301,7 +1316,16 @@ impl<'a> SegmentedFace<'a> {
             disabled: false,
             style: SegmentedStyle::Segmented,
             control_size: ControlSize::Regular,
+            thumb: None,
         }
+    }
+
+    /// Draw the chosen segment's thumb at `rect` instead of on the segment:
+    /// a thumb sliding to a newly chosen segment. `None` draws it in place.
+    #[must_use]
+    pub fn thumb_at(mut self, rect: Option<Rect>) -> Self {
+        self.thumb = rect;
+        self
     }
 
     /// A strip of [`Segment`]s: a segment whose label does not fit its rect
@@ -1547,6 +1571,11 @@ impl ToggleGroup {
                 face.style,
                 SelectionState::new(selected, hovered, false),
             );
+            // A single choice's thumb may be on its way to its segment.
+            let seg = match face.thumb {
+                Some(thumb) if selected && face.chosen.is_none() => thumb,
+                _ => *seg,
+            };
             let body = RoundedRect::from_rect(seg.inset(-metrics.inset), metrics.thumb_radius);
             crate::chrome::paint_selector(
                 scene,
@@ -1932,6 +1961,43 @@ impl ToggleGroup {
     }
 }
 
+impl ToggleGroup {
+    /// Send the thumb to the chosen segment and return where to draw it
+    /// while it is on its way (`None`: on its segment). Choosing another
+    /// segment by pointer slides it from the one it left on the list move
+    /// (`motion::ListChange::MOVE`); a key's choice and reduced motion put
+    /// it there at once, and a segment that only moved with the layout
+    /// takes the thumb with it.
+    fn follow_thumb(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
+        use crate::motion::{Direction, ListChange};
+        let now = crate::time::now();
+        let target = self
+            .chosen
+            .is_none()
+            .then(|| self.segment_rects.get(self.selected).copied())
+            .flatten();
+        let Some(target) = target else {
+            self.thumb_for = NONE_CHOSEN;
+            return None;
+        };
+        let chose_another = self.thumb_for != self.selected
+            && self.thumb_for != NONE_CHOSEN
+            && self.thumb_for < self.segment_rects.len();
+        if chose_another {
+            let timing =
+                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            self.thumb.set(target, timing, now);
+            if let Some(until) = self.thumb.settles_at() {
+                crate::motion::want_frames_until(until);
+            }
+        } else if self.thumb.target() != target {
+            self.thumb.snap(target);
+        }
+        self.thumb_for = self.selected;
+        self.thumb.is_moving(now).then(|| self.thumb.get(now))
+    }
+}
+
 impl Widget for ToggleGroup {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
@@ -2124,6 +2190,11 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_selected = self.selected;
         }
+        let thumb = self.follow_thumb(theme.motion());
+        if thumb != self.last_thumb {
+            self.cache_dirty = true;
+            self.last_thumb = thumb;
+        }
         if self.focus_visible() != self.last_focused {
             self.cache_dirty = true;
             self.last_focused = self.focus_visible();
@@ -2196,7 +2267,8 @@ impl Widget for ToggleGroup {
             .control_size(self.control_size)
             .hovered(self.hovered)
             .focused(self.focus_visible() && self.chosen.is_none())
-            .disabled(!self.is_enabled());
+            .disabled(!self.is_enabled())
+            .thumb_at(thumb);
         if let Some(chosen) = &self.chosen {
             face = face.chosen(chosen);
         }
@@ -2227,8 +2299,13 @@ impl Widget for ToggleGroup {
         out_scene.append(&self.cached, Some(out_transform));
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        self.thumb.is_moving(crate::time::now())
+    }
+
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
+            || self.thumb.is_moving(crate::time::now())
             || self.selected != self.last_selected
             || self.focus_visible() != self.last_focused
             || self.hovered != self.last_hovered
@@ -2485,6 +2562,8 @@ mod tests {
     #[test]
     fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
         use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let selected = crate::LocalState::new(0_usize);
         let next = selected.clone();
         let commits = Rc::new(RefCell::new(Vec::new()));
@@ -2541,6 +2620,8 @@ mod tests {
     #[test]
     fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
         use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let rects = [
             Rect::new(0.0, 0.0, 100.0, 48.0),
             Rect::new(100.0, 0.0, 200.0, 48.0),
@@ -2631,6 +2712,8 @@ mod tests {
 
     #[test]
     fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let state = crate::LocalState::new('b');
         let mut rail = ToggleGroup::from_state(
             vec![
@@ -2687,6 +2770,8 @@ mod tests {
 
     #[test]
     fn a_press_focuses_without_a_ring_until_the_keys_are_used() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut g = group_at(
             vec![Segment::new("A"), Segment::new("B")],
             0,
@@ -2705,6 +2790,8 @@ mod tests {
 
     #[test]
     fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `retained_labels_apply_resolved_text_scale_exactly_once`.
         {
             for scale in [1.0, 2.0] {
@@ -2935,6 +3022,8 @@ mod tests {
 
     #[test]
     fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut g = group_at(
             vec![
                 Segment::new("Whole"),
@@ -2962,6 +3051,8 @@ mod tests {
 
     #[test]
     fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `toggle_group_initial_selection_zero`.
         {
             let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
@@ -3080,6 +3171,65 @@ mod tests {
         }
     }
 
+    /// Choosing another segment by pointer slides the thumb there from the
+    /// segment it left; a key's choice puts it there at once.
+    #[test]
+    fn the_thumb_slides_to_a_clicked_segment_and_lands_on_a_key() {
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let theme = Theme::dark();
+        let mut g = ToggleGroup::new(
+            vec![
+                Segment::new("Day"),
+                Segment::new("Week"),
+                Segment::new("Month"),
+            ],
+            0,
+        );
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.parent_node(Style::default(), &[node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut paint = |g: &mut ToggleGroup| {
+            let mut scene = Scene::new();
+            g.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        };
+        let t0 = crate::time::now();
+        let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        with_monotonic_time(t0, || paint(&mut g));
+        assert!(!g.needs_animation_frame(), "the first paint rests");
+        let (first, last) = (g.segment_rects[0], g.segment_rects[2]);
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(MotionSource::Pointer);
+            g.set_selected(2);
+            paint(&mut g);
+            assert!(g.needs_animation_frame(), "the thumb slides");
+        });
+        with_monotonic_time(at(60), || {
+            paint(&mut g);
+            let drawn = g.last_thumb.expect("on its way");
+            assert!(
+                drawn.x0 > first.x0 && drawn.x0 < last.x0,
+                "between the segments: {drawn:?}"
+            );
+        });
+        with_monotonic_time(at(600), || {
+            paint(&mut g);
+            assert!(!g.needs_animation_frame());
+            assert_eq!(g.last_thumb, None, "landed on its segment");
+            crate::motion::note_source(MotionSource::Keyboard);
+            g.set_selected(0);
+            paint(&mut g);
+            assert!(!g.needs_animation_frame(), "a key's choice lands at once");
+        });
+    }
+
     /// A focus change swaps the outer border colour, so the encoded stream
     /// differs between focused and unfocused renders.
     fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
@@ -3103,6 +3253,8 @@ mod tests {
 
     #[test]
     fn segment_colours_follow_selection_focus_and_style() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `focused_toggle_group_uses_the_focus_colour`.
         // Uses high contrast (yellow focus vs white border) so the two colours
         // are unambiguously different.
@@ -3175,6 +3327,8 @@ mod tests {
 
     #[test]
     fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `accessibility_reports_group_role_and_selected_segment_label`.
         {
             use crate::a11y::Role;
@@ -3439,6 +3593,8 @@ mod tests {
             );
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         nothing_chosen_until_the_person_picks();
         a_bound_selection_follows_its_state_both_ways();
         many_toggle_on_their_own_and_wrap();
