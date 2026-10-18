@@ -134,6 +134,7 @@ impl CapnpBrokerState {
         Ok(VerifiedActionCaller {
             room,
             presentation: Vec::new(),
+            native_projection_verified: false,
             network: Some(evidence.clone()),
             policy_time,
             admitted,
