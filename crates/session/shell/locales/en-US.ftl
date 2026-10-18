@@ -3119,3 +3119,4 @@ directory-role-moderator = a moderator
 directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
+directory-moved = { $name } moved to your host, so anyone can find and join it.
