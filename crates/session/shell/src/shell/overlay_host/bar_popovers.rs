@@ -247,6 +247,10 @@ impl ShellOverlayHost {
             name,
             identity,
             colour,
+            // The native shell does not ask the room's host for linked
+            // accounts yet; none hides the section rather than showing a
+            // service the person cannot link from here.
+            linked: Vec::new(),
 
             // The name is the identity's own; no rename of it is reachable
             // from the shell, so the card shows it and Settings' identities
