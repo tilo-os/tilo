@@ -1,0 +1,31 @@
+[package]
+name = "tilo-render-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Scene transport between Tilo apps and the room's render service: frame records, vello encodings by resource id, the validator every scene passes before a GPU sees it, and the sealed-memfd ring and control channel they travel on."
+
+[dependencies]
+peniko = "0.6.1"
+postcard = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+thiserror.workspace = true
+vello_encoding = { workspace = true, features = ["bump_estimate"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs", "mm", "net", "std"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true
+vello.workspace = true
+vello_encoding.workspace = true
+tilo-font-catalog = { version = "0.1.0", path = "../../sdk/font-catalog" }
+
+[lints]
+workspace = true
