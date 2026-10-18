@@ -249,6 +249,8 @@ fn labels() -> [&'static str; 4] {
 
 #[test]
 fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `context_menu_pointer_hover_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
@@ -357,6 +359,8 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 )]
 #[test]
 fn list_menu_cursor_rows_are_visible_in_both_themes() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `dropdown_open_list_highlight_is_visible_in_both_themes`.
     {
         for (name, theme) in themes() {
@@ -465,6 +469,8 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
 
 #[test]
 fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `window_ground_is_opaque_so_samples_are_meaningful`.
     {
         // Guards the sampling method itself: every case composites over the

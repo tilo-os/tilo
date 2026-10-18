@@ -375,6 +375,8 @@ pub struct Tooltip {
     /// API (the test path).
     anchor: Rect,
     hover_since: Option<Instant>,
+    /// Its arrival from the anchor (`motion::Appear`); it goes at once.
+    appear: crate::motion::Appearing,
 }
 
 impl std::fmt::Debug for Tooltip {
@@ -401,6 +403,7 @@ impl Tooltip {
             rect: Rect::ZERO,
             anchor: Rect::ZERO,
             hover_since: None,
+            appear: crate::motion::Appearing::closed(),
         }
     }
 
@@ -494,9 +497,14 @@ impl Widget for Tooltip {
         {
             self.is_visible = true;
         }
+        // It arrives from its anchor as the pointer's dwell asked; it goes at
+        // once.
         if !self.is_visible {
+            self.appear.snap(false);
             return;
         }
+        self.appear
+            .follow_from(true, theme.motion(), crate::tokens::MotionSource::Pointer);
 
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
@@ -508,13 +516,18 @@ impl Widget for Tooltip {
         if self.anchor != Rect::ZERO {
             self.rect = chip_rect(theme, self.anchor, size, viewport);
         }
-        draw_chip(
+        let anchor = if self.anchor == Rect::ZERO {
+            self.rect.center()
+        } else {
+            self.anchor.center()
+        };
+        let pose = self.appear.pose(self.rect, anchor);
+        let (rect, label) = (self.rect, &self.label);
+        pose.paint(
             scene,
             transform,
-            text_renderer,
-            theme,
-            self.rect,
-            &self.label,
+            chip_paint_bounds(rect, theme),
+            |scene, transform| draw_chip(scene, transform, text_renderer, theme, rect, label),
         );
     }
 
@@ -573,7 +586,7 @@ impl Widget for Tooltip {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        false
+        self.appear.is_moving()
     }
 
     fn name(&self) -> &'static str {
@@ -611,6 +624,9 @@ pub struct TooltipHost {
     dwell: Duration,
     target: Option<HoverTarget>,
     visible: bool,
+    /// The chip's arrival from its control (`motion::Appear`). It goes at
+    /// once: it hides because the pointer moved on or the person acted.
+    appear: crate::motion::Appearing,
 }
 
 impl Default for TooltipHost {
@@ -635,6 +651,7 @@ impl TooltipHost {
             dwell: HOVER_DWELL,
             target: None,
             visible: false,
+            appear: crate::motion::Appearing::closed(),
         }
     }
 
@@ -672,7 +689,7 @@ impl TooltipHost {
                     anchor,
                     since: now,
                 });
-                self.visible = false;
+                self.hide();
                 self.recompute_visible(now);
                 // A new target always warrants a redraw: it may clear a
                 // previously-shown chip.
@@ -681,7 +698,7 @@ impl TooltipHost {
         } else {
             let had = self.target.is_some() || self.visible;
             self.target = None;
-            self.visible = false;
+            self.hide();
             had
         }
     }
@@ -697,7 +714,7 @@ impl TooltipHost {
             Some((anchor, label)) if anchor == current.anchor => current.label = label,
             _ => {
                 self.target = None;
-                self.visible = false;
+                self.hide();
             }
         }
     }
@@ -707,8 +724,37 @@ impl TooltipHost {
     pub fn dismiss(&mut self) -> bool {
         let had = self.target.is_some() || self.visible;
         self.target = None;
-        self.visible = false;
+        self.hide();
         had
+    }
+
+    /// Hidden at once: a tooltip leaves because the pointer moved on or the
+    /// person acted, and a fading chip would only be in the way.
+    fn hide(&mut self) {
+        self.visible = false;
+        self.appear.snap(false);
+    }
+
+    /// How the shown chip at `chip` is drawn now: it arrives from its
+    /// control (`motion::Appear`) as the pointer's dwell asked, whatever was
+    /// pressed before.
+    pub fn pose(
+        &mut self,
+        chip: Rect,
+        motion: crate::tokens::EffectiveMotion,
+    ) -> crate::motion::Pose {
+        self.appear
+            .follow_from(self.visible, motion, crate::tokens::MotionSource::Pointer);
+        let anchor = self
+            .target
+            .as_ref()
+            .map_or_else(|| chip.center(), |target| target.anchor.center());
+        self.appear.pose(chip, anchor)
+    }
+
+    /// Whether the shown chip is still arriving (its host asks for frames).
+    pub fn is_moving(&self) -> bool {
+        self.appear.is_moving()
     }
 
     /// Returns `true` on the tick it *becomes* visible.
@@ -752,6 +798,8 @@ mod host_tests {
 
     #[test]
     fn a_shown_tooltip_reads_its_region_again() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
         let now = crate::time::now();
         host.on_pointer(Some(tip("Hide layer")), now);
@@ -764,6 +812,8 @@ mod host_tests {
 
     #[test]
     fn tooltip_host_dwell_reveals_restarts_and_dismisses() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `hovering_past_dwell_reveals_then_leaving_hides`.
         {
             let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
@@ -849,6 +899,8 @@ mod host_tests {
 
     #[test]
     fn a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let theme = Theme::dark();
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = (120.0, 24.0);
@@ -875,6 +927,8 @@ mod host_tests {
 
     #[test]
     fn chip_rect_flips_above_and_clamps_horizontally() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // A 800x600 viewport with a chip anchored near the bottom-right.
         let theme = Theme::dark();
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -931,6 +985,8 @@ mod tests {
 
     #[test]
     fn anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `hovering_anchor_enters_and_leaving_dismisses`.
         {
             // Zero delay → reveal is immediate on enter (on_hover_enter flips it).
@@ -999,6 +1055,8 @@ mod tests {
     }
     #[test]
     fn tooltip_long_hint_wraps_inside_the_scaled_viewport() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let label = "Close applications and end this session, then return to the login screen.";
         for (theme, width) in [
             (Theme::dark(), 800.0),

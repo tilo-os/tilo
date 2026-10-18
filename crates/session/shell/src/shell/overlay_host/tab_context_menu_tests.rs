@@ -297,6 +297,8 @@ fn tab_count(chrome: &crate::shell::chrome_state::Chrome) -> usize {
 
 #[test]
 fn stale_files_document_open_is_cancelled_before_record_or_tab_publication() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
@@ -361,6 +363,8 @@ fn stale_files_document_open_is_cancelled_before_record_or_tab_publication() {
 
 #[test]
 fn non_files_source_cannot_use_the_hosted_files_capability() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
@@ -409,6 +413,8 @@ fn non_files_source_cannot_use_the_hosted_files_capability() {
 
 #[test]
 fn wrong_document_open_capability_cannot_use_the_current_files_source() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
@@ -851,6 +857,8 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
 #[test]
 fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
     use crate::shell::chrome_state::SearchScope;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     let workspace = h.chrome.borrow().tree().desktop.active;
     h.chrome
@@ -907,6 +915,8 @@ fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
 #[test]
 fn tab_menu_keyboard_journey_opens_at_focus_cancels_and_splits() {
     use winit::keyboard::ModifiersState;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     let workspace = h.chrome.borrow().tree().desktop.active;
     h.chrome
@@ -969,6 +979,8 @@ fn tab_menu_keyboard_journey_opens_at_focus_cancels_and_splits() {
 #[test]
 fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
     use crate::shell::search::{SearchContext, SearchProvider as _};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     let provider = crate::shell::search::providers::actions::ActionsProvider::new();
     let rows = provider.query(SearchContext {
@@ -1036,6 +1048,8 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
 fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
     use crate::shell::output_scene::OutputGeometry;
     use winit::keyboard::ModifiersState;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     h.host.set_output_geometry(&[
         OutputGeometry::unscaled(0.0, 0.0, 360.0, VH),
@@ -1096,6 +1110,8 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
 
 #[test]
 fn tab_drag_escape_cancels_before_release_without_moving_windows() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     let at = h.pill_centre(1);
     h.move_to(at);
@@ -1133,6 +1149,8 @@ fn tab_drag_escape_cancels_before_release_without_moving_windows() {
 #[test]
 fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
     use crate::shell::search::{SearchContext, SearchProvider as _};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut h = harness(2);
     let at = h.pill_centre(1);
     h.move_to(at);
@@ -1248,6 +1266,8 @@ fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
 #[test]
 fn tab_menu_current_output_resize_keeps_the_armed_action_visible() {
     use super::layers::{LayerGeometry, ShellLayer as _};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let mut menu = menu_opened_near_the_output_edge();
     assert!(menu.focus_accessibility(&[1]));
     let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -1283,6 +1303,8 @@ fn tab_menu_current_output_resize_keeps_the_armed_action_visible() {
 #[test]
 fn tab_menu_current_output_removal_reanchors_without_reopening() {
     use super::layers::{LayerGeometry, LayerPaint, ShellLayer as _};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let old_output = Rect::new(640.0, 0.0, 1280.0, 800.0);
     let mut menu = menu_opened_near_the_output_edge();
     menu.open(
@@ -1330,6 +1352,8 @@ fn tab_menu_current_output_removal_reanchors_without_reopening() {
 #[test]
 fn tab_menu_current_output_capture_matrix_is_written() {
     use super::layers::ShellLayer as _;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let out = std::env::var_os("TILO_TAB_MENU_SHOTS").map_or_else(
         || std::path::PathBuf::from("target/tab-menu-current-output"),
         std::path::PathBuf::from,
@@ -1385,6 +1409,8 @@ fn tab_menu_current_output_capture_matrix_is_written() {
 #[test]
 fn tab_menu_rows_lead_with_icons_and_read_in_sentence_case() {
     use ui::widget::context_menu::MenuItem;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = ui::motion::testing::settled();
     let (menu, actions) = crate::shell::build_tab_context_menu(3);
     let mut rows = 0;
     for (item, action) in menu.items().iter().zip(&actions) {

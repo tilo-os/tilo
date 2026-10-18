@@ -2,6 +2,8 @@ use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 
 #[test]
 fn context_menu_shows_and_invokes_action() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     let mut m = ContextMenu::new();
     let invoked = std::sync::Arc::new(std::sync::Mutex::new(false));
     let i = invoked.clone();

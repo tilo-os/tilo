@@ -142,6 +142,8 @@ fn laid_out_counting(open: bool) -> (ModalDialog<CountingContent>, Rc<Cell<usize
 
 #[test]
 fn sheet_sizes_to_its_body_within_the_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `the_sheet_centres_on_the_window`.
     {
         let spec = ModalSpec::new("Workspace invite").body_height(120.0);
@@ -246,6 +248,8 @@ fn sheet_sizes_to_its_body_within_the_window() {
 
 #[test]
 fn the_sheet_is_a_floating_panel_with_a_title() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let spec = ModalSpec::new("Rename").body_height(60.0);
     let l = lay(&spec, &theme);
@@ -272,6 +276,8 @@ fn the_sheet_is_a_floating_panel_with_a_title() {
 
 #[test]
 fn a_modal_scrim_does_not_dim_the_foreground_materials_recorded_backdrop() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let window = Rect::new(0.0, 0.0, 1000.0, 700.0);
     for (name, theme) in themes() {
         let mut text = TextRenderer::new();
@@ -328,6 +334,8 @@ fn a_modal_scrim_does_not_dim_the_foreground_materials_recorded_backdrop() {
 
 #[test]
 fn compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (name, theme) in themes() {
         for window in [
             Rect::new(0.0, 0.0, 360.0, 800.0),
@@ -393,6 +401,8 @@ fn compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page
 
 #[test]
 fn modal_controls_are_hittable_and_show_their_states() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `a_closable_sheet_has_a_close_control_you_can_hit`.
     {
         let spec = ModalSpec::new("Workspace invite").body_height(120.0);
@@ -460,6 +470,8 @@ fn modal_controls_are_hittable_and_show_their_states() {
 #[test]
 fn narrow_large_text_footer_stacks_full_actions_without_covering_the_body() {
     use crate::platform::{Platform, PlatformConventions};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let window = Rect::new(0.0, 0.0, 360.0, 640.0);
     let actions = [
         ModalAction::alternate("Keep separate"),
@@ -503,6 +515,8 @@ fn narrow_large_text_footer_stacks_full_actions_without_covering_the_body() {
 
 #[test]
 fn retained_narrow_dialog_footer_targets_follow_the_stacked_geometry() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let window = Rect::new(0.0, 0.0, 360.0, 640.0);
     let theme = Theme::dark().with_text_scale(2.0);
     let confirmed = Rc::new(Cell::new(false));
@@ -541,6 +555,8 @@ fn retained_narrow_dialog_footer_targets_follow_the_stacked_geometry() {
 fn actions_follow_platform_order_inside_the_sheet() {
     use crate::platform::{Platform, PlatformConventions};
 
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `linux_puts_the_primary_action_at_the_trailing_edge`.
     {
         let actions = [
@@ -621,6 +637,8 @@ fn actions_follow_platform_order_inside_the_sheet() {
 
 #[test]
 fn scrim_and_sheet_route_clicks_that_hit_no_control() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let corner = Point::new(4.0, 4.0);
     let l = lay(
         &ModalSpec::new("Workspace invite").body_height(100.0),
@@ -644,6 +662,8 @@ fn scrim_and_sheet_route_clicks_that_hit_no_control() {
 
 #[test]
 fn modal_ink_and_action_labels_are_legible_on_every_theme() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     for (name, theme) in themes() {
         let ground = crate::chrome::panel_ground(&theme);
         let (primary, dim) = ink(&theme);
@@ -672,6 +692,8 @@ fn modal_ink_and_action_labels_are_legible_on_every_theme() {
 
 #[test]
 fn the_dialog_is_presented_in_the_top_layer_over_the_whole_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `draw_paints_nothing_and_the_top_layer_paints_the_sheet`.
     {
         let mut d = ModalDialog::new("Title", TestContent).open(true);
@@ -758,6 +780,8 @@ fn the_dialog_is_presented_in_the_top_layer_over_the_whole_window() {
 
 #[test]
 fn dialog_accessibility_exposes_open_content_and_real_actions() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `semantic_footer_uses_current_visibility_and_existing_actions`.
     {
         let fired = Rc::new(Cell::new(0));
@@ -857,6 +881,8 @@ fn dialog_accessibility_exposes_open_content_and_real_actions() {
 
 #[test]
 fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `escape_and_scrim_dismiss`.
     {
         let dismissed = Rc::new(Cell::new(0));
@@ -943,6 +969,8 @@ fn dialog_paints_destructive_and_hover_faces() {
             .draw_data
             .clone()
     }
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let rest = draw_data(false, false, false);
     assert_ne!(draw_data(true, false, false), rest, "destructive differs");
     assert_ne!(draw_data(false, true, false), rest, "hover shows");
@@ -951,6 +979,8 @@ fn dialog_paints_destructive_and_hover_faces() {
 
 #[test]
 fn open_dialog_captures_input_and_closed_dialog_is_inert() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `modal_capture_reflects_open_state`.
     {
         let (d, _) = laid_out_counting(true);
@@ -1006,6 +1036,8 @@ fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
 fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (cancelled, cancel) = counter();
     let (connected, connect) = counter();
     let content = Column::new()
@@ -1069,6 +1101,8 @@ fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
 
 #[test]
 fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let mut d = ModalDialog::new(
         "Shortcuts",
@@ -1114,6 +1148,8 @@ fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
 #[test]
 fn a_three_way_question_stands_in_the_platform_order() {
     use crate::platform::{Platform, PlatformConventions};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (saved, save) = counter();
     let (discarded, discard) = counter();
     let (cancelled, cancel) = counter();
@@ -1160,6 +1196,8 @@ fn a_three_way_question_stands_in_the_platform_order() {
 
 #[test]
 fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (erased, erase) = counter();
     let (cancelled, cancel) = counter();
     let mut d = ModalDialog::new("Erase disk?", TestContent)
@@ -1202,6 +1240,8 @@ fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
 
 #[test]
 fn a_gate_may_read_state_the_content_writes_elsewhere() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // A form whose fields write into an app's shared core is gated on that
     // core, and its footer button is announced with the state it is painted
     // with.
@@ -1234,6 +1274,8 @@ fn a_gate_may_read_state_the_content_writes_elsewhere() {
 
 #[test]
 fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (fired, fire) = counter();
     let mut d = ModalDialog::new("Erase disk", TestContent)
         .primary_action("Erase", fire)
@@ -1272,6 +1314,8 @@ fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
 
 #[test]
 fn a_long_title_wraps_to_two_lines() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let short = lay(&ModalSpec::new("Rename"), &theme);
     let long = lay(
@@ -1332,6 +1376,8 @@ fn an_open_list_in_the_content_takes_the_press_before_the_scrim() {
             self.0.get_rect()
         }
     }
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (dismissed, dismiss) = counter();
     let events = Rc::new(Cell::new(0));
     let mut d = ModalDialog::new(
@@ -1360,6 +1406,8 @@ fn an_open_list_in_the_content_takes_the_press_before_the_scrim() {
 
 #[test]
 fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let mut sheet = ModalSheet::new();
     let actions = [
@@ -1419,6 +1467,8 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
 
 #[test]
 fn footer_actions_are_addressable_by_name() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut d = ModalDialog::new("Delete note?", TestContent)
         .with_test_id("notes.delete")
         .primary_action("Delete", || {})
@@ -1447,6 +1497,8 @@ fn footer_actions_are_addressable_by_name() {
 fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput, Toggle};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (saved, save) = counter();
     let on = crate::LocalState::new(false);
     let content = Column::new()
@@ -1489,6 +1541,8 @@ fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
 fn every_footer_action_is_one_focusable_button() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let (connected, connect) = counter();
     let content = Column::new().push(Box::new(TextInput::local().with_placeholder("Name")));
     let dialog = ModalDialog::new("Connection", content)
@@ -1551,6 +1605,8 @@ fn every_footer_action_is_one_focusable_button() {
 
 #[test]
 fn an_unpainted_sheet_centres_on_the_window_not_its_parent() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // A dialog mounted beside a sidebar is centred on the window it will be
     // painted over, so its content is placed and hit there from the first
     // frame instead of under the parent's centre.
@@ -1588,6 +1644,8 @@ fn an_unpainted_sheet_centres_on_the_window_not_its_parent() {
 
 #[test]
 fn what_stands_behind_an_open_sheet_never_takes_its_input() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // A page lists its content before its dialog. A greedy sibling (a table
     // that takes every press) must not see the press meant for the sheet.
     use crate::headless::Framed;
@@ -1614,4 +1672,67 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
         .expect("the action has an address");
     assert_eq!(confirmed.get(), 1, "the press reaches the sheet's action");
     assert_eq!(seen.get(), before, "and nothing behind the sheet sees it");
+}
+
+/// A dialog a click opens arrives from its centre over its fading scrim
+/// (`motion::Appear`) and leaves the same way, quicker; one built open is at
+/// rest from its first paint, so a host that rebuilds its tree never replays
+/// the entrance; a key opens it at once.
+#[test]
+fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
+    use crate::motion::note_source;
+    use crate::time::testing::with_monotonic_time;
+    use crate::tokens::MotionSource;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+
+    // Built open: resting.
+    let (mut built, _) = with_monotonic_time(t0, || laid_out_counting(true));
+    with_monotonic_time(t0, || {
+        let _ = present(&mut built, WINDOW, &theme);
+        assert!(
+            !built.appear.is_moving(),
+            "a dialog built open does not arrive"
+        );
+        assert!(built.appear.progress() >= 1.0);
+    });
+
+    // Opened by a click: it arrives, and the scrim with it.
+    let (mut d, _) = with_monotonic_time(t0, || laid_out_counting(false));
+    with_monotonic_time(t0, || {
+        note_source(MotionSource::Pointer);
+        d.set_open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(d.needs_animation_frame(), "it arrives");
+        assert!(d.appear.progress() < 0.05);
+    });
+    with_monotonic_time(at(80), || {
+        let _ = present(&mut d, WINDOW, &theme);
+        let p = d.appear.progress();
+        assert!(p > 0.0 && p < 1.0, "mid-arrival: {p}");
+    });
+    with_monotonic_time(at(400), || {
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.needs_animation_frame(), "it rests");
+        // Closed by a click: it leaves, drawn but deaf.
+        d.set_open(false);
+        assert!(!d.is_open());
+        let leaving = present(&mut d, WINDOW, &theme);
+        assert!(
+            !leaving.encoding().is_empty(),
+            "it is drawn while it leaves"
+        );
+    });
+    with_monotonic_time(at(800), || {
+        let gone = present(&mut d, WINDOW, &theme);
+        assert!(gone.encoding().is_empty(), "and then it has gone");
+        // A key opens it at once.
+        note_source(MotionSource::Keyboard);
+        d.set_open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.appear.is_moving(), "a shortcut lands at once");
+    });
 }
