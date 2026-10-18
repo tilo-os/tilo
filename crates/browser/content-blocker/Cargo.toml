@@ -1,0 +1,26 @@
+[package]
+name = "tilo-content-blocker"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Brave/EasyList filter lists compiled into WebKit content-blocker JSON with adblock-rust."
+
+[lib]
+name = "tilo_content_blocker"
+path = "src/lib.rs"
+
+[dependencies]
+# The `content-blocking` feature provides the EasyList -> WebKit content
+# blocker conversion; blocking then runs inside WebKit's network process.
+adblock = { version = "0.12", default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

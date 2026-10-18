@@ -68,6 +68,7 @@ members = [
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
+    "crates/browser/content-blocker",
     "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
@@ -312,7 +313,9 @@ members = [
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     # Engines a few apps load, shipped beside it in the runtime bundle.
+    "crates/runtime/engine-loader",
     "crates/runtime/engines/accounts",
+    "crates/runtime/engines/adblock",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/fuse",
     "crates/runtime/engines/paint",
