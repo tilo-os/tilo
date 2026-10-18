@@ -10551,6 +10551,10 @@ pub fn run() {
         Instant::now().checked_add(d)
     });
     let mut stats_since = Instant::now();
+    // Report windows in which nothing painted, folded into the next report
+    // that has something to say: an idle session must not write two lines
+    // every two seconds into a bounded session log.
+    let mut paint_stats_idle = Duration::ZERO;
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
@@ -13594,7 +13598,19 @@ pub fn run() {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
             }
-            if stats_since.elapsed() >= Duration::from_secs(2) {
+            if stats_since.elapsed() >= Duration::from_secs(2) && frames_painted == 0 {
+                // Idle: keep tallying wakes, report once painting resumes.
+                paint_stats_idle = paint_stats_idle.saturating_add(stats_since.elapsed());
+                frames_total = 0;
+                stats_since = Instant::now();
+            } else if stats_since.elapsed() >= Duration::from_secs(2) {
+                if !paint_stats_idle.is_zero() {
+                    eprintln!(
+                        "paint-stats: idle {:.0}s before this, nothing painted",
+                        paint_stats_idle.as_secs_f64()
+                    );
+                    paint_stats_idle = Duration::ZERO;
+                }
                 let animation_host_labels =
                     crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
                         .collect::<Vec<_>>()
