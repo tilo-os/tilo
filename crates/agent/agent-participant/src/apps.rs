@@ -418,7 +418,7 @@ impl Replica {
                         || (self.offers_reads
                             && descriptor.contract.kind == policy::ActionKind::Read)
                 }
-                _ => false,
+                tilo_actions::OperationKind::View => false,
             })
             .collect()
     }

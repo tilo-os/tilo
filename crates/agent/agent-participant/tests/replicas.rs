@@ -72,10 +72,12 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
         page.resource_views(&resource, "wrong.kind", &viewer)
             .is_empty()
     );
+    // The door offers changes, never views: the record's document actions
+    // and those its chat's chain routes to the part they change.
     assert!(
         page.survey()
             .iter()
-            .all(|action| action.kind == tilo_actions::OperationKind::Document)
+            .all(|action| action.kind != tilo_actions::OperationKind::View)
     );
     assert_eq!(
         body(&page),

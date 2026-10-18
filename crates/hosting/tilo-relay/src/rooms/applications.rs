@@ -30,6 +30,70 @@ fn app_id_for(
     Ok(definition.app_id)
 }
 
+/// What a bot's changes to `record` build on: the record as the room holds
+/// it (`existing`) and the heads the room has of it (all of a `sealed` one,
+/// the complete plaintext of any other), or nothing for a part of a chain
+/// the room has not got yet, which the bot starts (then `true`).
+fn bot_base(
+    peer: &tilo_peer_state::StatePeer,
+    sealed: bool,
+    (app, record): (&str, &str),
+    existing: Option<Vec<u8>>,
+) -> Result<(automerge::AutoCommit, Vec<automerge::ChangeHash>, bool), CollaborationError> {
+    let Some(bytes) = existing else {
+        let part = ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some());
+        return if part {
+            Ok((automerge::AutoCommit::new(), Vec::new(), true))
+        } else {
+            Err(CollaborationError::new("native record is not prepared"))
+        };
+    };
+    let mut document = automerge::AutoCommit::load(&bytes)
+        .map_err(|error| CollaborationError::new(error.to_string()))?;
+    let heads = if sealed {
+        document.get_heads()
+    } else {
+        peer.plaintext_complete_heads(app, record)
+            .ok_or_else(|| CollaborationError::new("native record is not complete plaintext"))?
+    };
+    Ok((document, heads, false))
+}
+
+/// Start `record`, a new part of a chain, in `candidate` as the room's
+/// host, signed with `key`: the genesis `document` begins with, which holds
+/// nothing and is the same on every device. Sealed with `keys` for a record
+/// members write sealed. The heads after it.
+fn start_part(
+    candidate: &mut tilo_peer_state::StatePeer,
+    keys: Option<&super::sealed_records::RecordKeys>,
+    (app, record): (&str, &str),
+    document: &mut automerge::AutoCommit,
+    (key, at): (&ed25519_dalek::SigningKey, std::time::SystemTime),
+) -> Result<Vec<automerge::ChangeHash>, CollaborationError> {
+    let (hash, genesis) = document
+        .get_changes(&[])
+        .into_iter()
+        .find(|change| change.deps().is_empty())
+        .map(|change| (change.hash(), change.raw_bytes().to_vec()))
+        .ok_or_else(|| CollaborationError::new("the new part has no genesis"))?;
+    if let Some(keys) = keys {
+        super::sealed_records::publish_changes(
+            candidate,
+            Some(keys),
+            (app, record),
+            genesis,
+            key,
+            at,
+        )?;
+    } else {
+        let mut started = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut started, &genesis)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        candidate.publish_document(app, record, started.save(), key, at)?;
+    }
+    Ok(vec![hash])
+}
+
 impl Rooms {
     /// Author an existing native record (`""` for the primary) as its exact
     /// current governor. The registry and synchronous change come from
@@ -326,62 +390,19 @@ impl Rooms {
         // and is the same on every device (it meets anyone else's start of
         // it), so the room's host starts the part, as it prepares any record,
         // and what the bot wrote in it is the bot's.
-        let starts_part = existing.is_none()
-            && ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some());
-        let (mut document, heads) = match existing {
-            Some(bytes) => {
-                let mut document = automerge::AutoCommit::load(&bytes)
-                    .map_err(|error| CollaborationError::new(error.to_string()))?;
-                let heads = match &keys {
-                    Some(_) => document.get_heads(),
-                    None => governed
-                        .peer()
-                        .plaintext_complete_heads(app, record)
-                        .ok_or_else(|| {
-                            CollaborationError::new("native record is not complete plaintext")
-                        })?,
-                };
-                (document, heads)
-            }
-            None if starts_part => (automerge::AutoCommit::new(), Vec::new()),
-            None => return Err(CollaborationError::new("native record is not prepared")),
-        };
+        let (mut document, heads, starts_part) =
+            bot_base(governed.peer(), keys.is_some(), (app, record), existing)?;
         tilo_automerge::ApplyIncoming::load_incoming(&mut document, changes)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         let mut candidate = governed.peer().clone();
         let heads = if starts_part {
-            let genesis = document
-                .get_changes(&[])
-                .into_iter()
-                .find(|change| change.deps().is_empty())
-                .map(|change| (change.hash(), change.raw_bytes().to_vec()))
-                .ok_or_else(|| CollaborationError::new("the new part has no genesis"))?;
-            match &keys {
-                Some(keys) => {
-                    super::sealed_records::publish_changes(
-                        &mut candidate,
-                        Some(keys),
-                        (app, record),
-                        genesis.1,
-                        &self.inner.host.key,
-                        system_time(now),
-                    )?;
-                }
-                None => {
-                    let mut started = automerge::AutoCommit::new();
-                    started
-                        .load_incremental(&genesis.1)
-                        .map_err(|error| CollaborationError::new(error.to_string()))?;
-                    candidate.publish_document(
-                        app,
-                        record,
-                        started.save(),
-                        &self.inner.host.key,
-                        system_time(now),
-                    )?;
-                }
-            }
-            vec![genesis.0]
+            start_part(
+                &mut candidate,
+                keys.as_ref(),
+                (app, record),
+                &mut document,
+                (&self.inner.host.key, system_time(now)),
+            )?
         } else {
             heads
         };
