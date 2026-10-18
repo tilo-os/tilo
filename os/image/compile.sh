@@ -167,7 +167,26 @@ build_phase() {
   started=$now
 }
 trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; command -v sccache >/dev/null && sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT
-if [[ -n ${RUSTC_WRAPPER:-} ]]; then
+case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in
+  local:0|shared:0|off:0|publication:0) ;;
+  local:1|shared:1|publication:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;;
+  *) echo 'TILO_COMPILER_CACHE must be local, shared, publication or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;;
+esac
+if [[ $TILO_COMPILER_CACHE == publication ]]; then
+  case "${AWS_SESSION_TOKEN:-}:${SCCACHE_S3_KEY_PREFIX:-}" in
+    ?*:tilo/publication/*) ;;
+    *) echo 'The publication cache needs role session credentials and a tilo/publication/ prefix' >&2; exit 1 ;;
+  esac
+fi
+if [ "$TILO_COMPILER_CACHE" = off ]; then
+  # The independent rebuild: whatever wrapper or cache the caller set up, it compiles
+  # without, and a cache's settings reaching it say the lane is wired wrong.
+  if [ -n "${AWS_ACCESS_KEY_ID:-}${AWS_SECRET_ACCESS_KEY:-}${SCCACHE_BUCKET:-}${SCCACHE_ENDPOINT:-}${ACTIONS_CACHE_URL:-}${ACTIONS_RUNTIME_TOKEN:-}" ]; then
+    echo 'A build without the compiler cache received compiler-cache settings' >&2; exit 1
+  fi
+  export RUSTC_WRAPPER=; export CARGO_BUILD_RUSTC_WRAPPER=
+  echo 'compiling without a compiler cache' >&2
+elif [[ -n ${RUSTC_WRAPPER:-} ]]; then
   printf 'compiler cache: %s, as the build was given it\n' "$RUSTC_WRAPPER"
 elif [[ $TILO_COMPILER_CACHE == local ]]; then
   export RUSTC_WRAPPER=sccache SCCACHE_DIR=${SCCACHE_DIR:-$src/target/.sccache} SCCACHE_IGNORE_SERVER_IO_ERROR=1
@@ -177,8 +196,14 @@ elif [[ $TILO_COMPILER_CACHE == local ]]; then
     export RUSTC_WRAPPER=
     echo 'sccache did not start; compiling without it' >&2
   fi
+elif ! sccache --start-server; then
+  if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then
+    echo 'Required compiler cache is unavailable; refusing an uncached build' >&2; exit 1
+  fi
+  export RUSTC_WRAPPER=
+  echo 'sccache backend unavailable; compiling normally' >&2
 else
-  echo 'compiling without a compiler cache' >&2
+  export RUSTC_WRAPPER=sccache
 fi
 
 python3 crates/runtime/ush/native/build.py --out "$out/ush-editor/bash-editor.so"

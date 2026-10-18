@@ -230,17 +230,44 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
 
 class ContainerfileTests(unittest.TestCase):
     def test_off_refuses_cache_settings_and_runs_no_wrapper(self):
-        for path in ("os/Containerfile", "os/kernel/Containerfile"):
-            with self.subTest(path):
-                text = (ROOT / path).read_text()
-                self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
-                self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
-                self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
-                # Refuses the runner's cache URL and token.
-                self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
-        image = (ROOT / "os/Containerfile").read_text()
-        off = image.split('if [ "$TILO_COMPILER_CACHE" = off ]; then', 1)[1].split("elif", 1)[0]
-        self.assertIn("export RUSTC_WRAPPER=;", off)
+        # The OS compiles outside its image build (os/image/compile.sh); the kernel in its own.
+        with self.subTest("os/kernel/Containerfile"):
+            text = (ROOT / "os/kernel/Containerfile").read_text()
+            self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
+            self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
+            self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
+            # Refuses the runner's cache URL and token.
+            self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
+        with self.subTest("os/image/compile.sh"):
+            text = (ROOT / "os/image/compile.sh").read_text()
+            self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
+            self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL:-\}\$\{ACTIONS_RUNTIME_TOKEN:-\}')
+            off = text.split('if [ "$TILO_COMPILER_CACHE" = off ]; then', 1)[1].split("elif", 1)[0]
+            self.assertIn("export RUSTC_WRAPPER=;", off)
+
+    def test_off_compiles_without_the_wrapper_it_was_given(self):
+        """Run the cache selection of compile.sh alone, as the independent rebuild would."""
+        text = (ROOT / "os/image/compile.sh").read_text()
+        start = text.index('case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in')
+        end = text.index("python3 crates/runtime/ush/native/build.py")
+        script = ("set -euo pipefail\nsrc=$PWD scratch=$PWD\n" + text[start:end]
+                  + 'printf "wrapper=%s\\n" "${RUSTC_WRAPPER:-}"\n')
+        base = {"PATH": os.environ["PATH"], "TILO_REQUIRE_COMPILER_CACHE": "0"}
+        with tempfile.TemporaryDirectory() as temporary:
+            def run(env):
+                return subprocess.run(["bash", "-c", script], env={**base, **env}, cwd=temporary,
+                                      text=True, capture_output=True, check=False)
+            given = run({"TILO_COMPILER_CACHE": "off", "RUSTC_WRAPPER": "/usr/bin/sccache"})
+            self.assertEqual(given.returncode, 0, given.stderr)
+            self.assertIn("wrapper=\n", given.stdout)
+            leaked = run({"TILO_COMPILER_CACHE": "off", "ACTIONS_CACHE_URL": "http://cache/",
+                          "ACTIONS_RUNTIME_TOKEN": "t"})
+            self.assertNotEqual(leaked.returncode, 0)
+            self.assertIn("received compiler-cache settings", leaked.stderr)
+            kept = run({"TILO_COMPILER_CACHE": "local", "RUSTC_WRAPPER": "/t/wrapper"})
+            self.assertIn("wrapper=/t/wrapper\n", kept.stdout)
+            bad = run({"TILO_COMPILER_CACHE": "nonsense"})
+            self.assertNotEqual(bad.returncode, 0)
 
 
 if __name__ == "__main__":
