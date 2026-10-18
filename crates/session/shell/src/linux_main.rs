@@ -465,6 +465,20 @@ pub fn run() -> std::process::ExitCode {
     }) {
         ::launcher::priority::protect_session();
         ::launcher::priority::enable_focus_boost();
+        // Every launch after this answers is born in a cgroup of its own
+        // (`launcher::spawner`); until then, and without a user manager,
+        // launchers ask for their scope themselves.
+        // A harness without a user manager (the headless sessions) can hand
+        // it a cgroup subtree of its own instead.
+        let tree = compositor::dev_env::DEV_ENV_OVERRIDES
+            .then(|| std::env::var_os("TILO_APP_SPAWNER_TREE"))
+            .flatten()
+            .filter(|tree| !tree.is_empty())
+            .map(std::path::PathBuf::from);
+        match shell::shell::launcher::resolve_launcher_bin() {
+            Ok(launcher_bin) => ::launcher::spawner::enable(launcher_bin, tree),
+            Err(error) => eprintln!("tilo-spawner: not started: {error}"),
+        }
         // Input is dispatched on this thread's main loop, not its own thread.
         ::launcher::priority::request_main_loop_nice(::launcher::priority::MAIN_LOOP_NICE);
     }
