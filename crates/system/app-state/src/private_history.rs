@@ -1,9 +1,18 @@
 //! Bounded device-private action evidence, checkpointed through the owner's store.
 //! This is not an Automerge value and must never be offered to document sync.
+//!
+//! Scope: replacement evidence, not full application history. Each owner has
+//! eight reusable slots (at most 1,024 actions / 32 MiB plus format headers).
+//! A session exclusively leases one slot, retaining that slot's recent evidence
+//! across actor changes. Reusing it evicts obsolete evidence through the normal
+//! bounded replacement checkpoint; no actor-named files accumulate. Other live
+//! slots are never reclaimed. If all eight are busy, evidence is unavailable
+//! rather than overwriting an active writer. Nothing scans or deletes user data.
 use automerge::{AutoCommit, ChangeHash, ReadDoc};
 use durable_store::{Durability, DurableStore, Lease, Revision, StorageKey, WriteOp};
 use std::{collections::VecDeque, rc::Rc};
 
+const SLOTS: u64 = 8;
 const LIMIT: usize = 128;
 const BUDGET: usize = 4 * 1024 * 1024;
 const MAGIC: &[u8] = b"tilo-private-actions-v1\0";
@@ -44,13 +53,28 @@ impl PrivateHistory {
         owner: &StorageKey,
         actor: &[u8],
     ) -> Result<Self, String> {
-        let identity = format!("{owner}:{actor:?}");
-        let key = StorageKey::view(
-            "private-action-history",
-            blake3::hash(identity.as_bytes()).to_hex().to_string(),
-            0,
-        );
-        let lease = store.lease(&key).map_err(|e| e.to_string())?;
+        let identity = blake3::hash(format!("{owner:?}").as_bytes())
+            .to_hex()
+            .to_string();
+        let first =
+            u64::from_le_bytes(blake3::hash(actor).as_bytes()[..8].try_into().unwrap()) % SLOTS;
+        let mut acquired = None;
+        for offset in 0..SLOTS {
+            let key = StorageKey::view(
+                "private-action-history",
+                &identity,
+                (first + offset) % SLOTS,
+            );
+            match store.lease(&key) {
+                Ok(lease) => {
+                    acquired = Some((key, lease));
+                    break;
+                }
+                Err(durable_store::StoreError::Busy(_)) => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let (key, lease) = acquired.ok_or("all private history slots are in use")?;
         let entries = match store.read(&key).map_err(|e| e.to_string())? {
             Some(stored) => decode(&stored.bytes)?,
             None => VecDeque::new(),
@@ -234,6 +258,103 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use durable_store::MemoryStore;
+
+    #[test]
+    fn successive_actors_reuse_bounded_owner_slots_without_touching_live_writers() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = StorageKey::package("so.tilo.test");
+        let other = StorageKey::package("so.tilo.other");
+        let store: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
+        let mut live = PrivateHistory::open(store.clone(), &owner, b"live").unwrap();
+        let evidence = PrivateAction {
+            id: [42; 16],
+            hashes: vec![],
+            intent: b"live evidence".to_vec(),
+            receipt: None,
+        };
+        live.record(evidence.clone()).unwrap();
+        live.checkpoint().unwrap();
+        live.flush().unwrap();
+        let live_bytes = store.read(&live.key).unwrap().unwrap().bytes;
+        let mut other_history = PrivateHistory::open(store.clone(), &other, b"other").unwrap();
+        other_history.record(evidence.clone()).unwrap();
+        other_history.checkpoint().unwrap();
+        other_history.flush().unwrap();
+        let other_bytes = store.read(&other_history.key).unwrap().unwrap().bytes;
+        let sentinel = directory.path().join("user-document");
+        std::fs::write(&sentinel, b"legitimate user data").unwrap();
+
+        for actor in 0..(SLOTS * 2 + 3) {
+            // Independent stores exercise on-disk exclusion, not a shared map.
+            let session: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
+            let mut history =
+                PrivateHistory::open(session.clone(), &owner, &actor.to_le_bytes()).unwrap();
+            assert_ne!(history.key, live.key);
+            for id in 0..LIMIT + 1 {
+                history
+                    .record(PrivateAction {
+                        id: ((actor as u128 + 1) * 1000 + id as u128).to_le_bytes(),
+                        hashes: vec![],
+                        intent: vec![1],
+                        receipt: None,
+                    })
+                    .unwrap();
+            }
+            assert_eq!(history.entries.len(), LIMIT);
+            history.checkpoint().unwrap();
+            history.flush().unwrap();
+            // Also prove the byte boundary on the persisted replacement path.
+            history
+                .record(PrivateAction {
+                    id: [255; 16],
+                    hashes: vec![],
+                    intent: vec![2; BUDGET - 32],
+                    receipt: None,
+                })
+                .unwrap();
+            history.checkpoint().unwrap();
+            history.flush().unwrap();
+            drop((history, session));
+            let mut count = 0;
+            let mut bytes = 0;
+            let StorageKey::View {
+                device, workspace, ..
+            } = &live.key
+            else {
+                unreachable!()
+            };
+            for slot in 0..SLOTS {
+                if let Some(stored) = store
+                    .read(&StorageKey::view(device, workspace, slot))
+                    .unwrap()
+                {
+                    count += decode(&stored.bytes).unwrap().len();
+                    bytes += stored.bytes.len();
+                }
+            }
+            assert!(count <= SLOTS as usize * LIMIT);
+            assert!(bytes <= SLOTS as usize * (BUDGET + MAGIC.len()));
+            assert_eq!(store.read(&live.key).unwrap().unwrap().bytes, live_bytes);
+            assert_eq!(
+                store.read(&other_history.key).unwrap().unwrap().bytes,
+                other_bytes
+            );
+        }
+        // Every live slot is protected, including across separate FsStores.
+        let mut held = vec![live];
+        for actor in 1..SLOTS {
+            let session: Rc<dyn DurableStore> = Rc::new(crate::FsStore::new(directory.path()));
+            held.push(PrivateHistory::open(session, &owner, &actor.to_le_bytes()).unwrap());
+        }
+        assert!(PrivateHistory::open(store.clone(), &owner, b"overflow").is_err());
+        let freed = held.pop().unwrap().key.clone();
+        let replacement = PrivateHistory::open(store.clone(), &owner, b"replacement").unwrap();
+        assert_eq!(replacement.key, freed);
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"legitimate user data");
+        // Slot files and their permanent gates are the only owner metadata.
+        let path = store.local_path(&replacement.key).unwrap();
+        assert!(std::fs::read_dir(path.parent().unwrap()).unwrap().count() <= 2 * SLOTS as usize);
+    }
 
     #[test]
     fn queued_failures_require_a_replacement_and_never_claim_durability() {

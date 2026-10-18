@@ -530,6 +530,11 @@ impl DocWriter {
 
     /// Stage bounded, device-private evidence. The next ordinary save tick
     /// checkpoints it without waiting for storage or changing the CRDT.
+    /// This is replacement metadata, not full application history: an owner
+    /// has eight reusable, exclusively leased slots, each retaining at most
+    /// 128 actions / 4 MiB. Actor changes reuse slots rather than creating
+    /// unlimited files. Eight concurrent writers exhaust evidence capacity;
+    /// recording then fails rather than evicting a live writer's checkpoint.
     pub fn record_private_action(&mut self, action: crate::PrivateAction) -> Result<(), String> {
         self.private_history
             .as_mut()
@@ -537,7 +542,8 @@ impl DocWriter {
             .record(action)
     }
 
-    /// Recover only evidence whose referenced document history survived too.
+    /// Recover this session's slot evidence whose document history survived too.
+    /// Other slots and evidence evicted by bounded replacement are not included.
     /// This never treats an admission as publication authority.
     pub fn private_actions(&self, doc: &AutoCommit) -> Result<Vec<crate::PrivateAction>, String> {
         let history = self
