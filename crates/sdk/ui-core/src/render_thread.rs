@@ -345,14 +345,31 @@ impl RenderThreadHandle {
 }
 
 /// Same worker with the native window retained for standard Wayland feedback.
+pub(crate) fn spawn_render_thread_for_window(
+    render_cx: RenderContext,
+    surface: RenderSurface<'static>,
+    renderer: Renderer,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    window: Option<Arc<winit::window::Window>>,
+) -> Result<RenderThreadHandle, String> {
+    spawn_render_thread_deferred(move || Ok((render_cx, surface, renderer)), wake, window)
+}
+
+/// What a render worker renders with: the device context, the window's
+/// surface and vello's renderer.
+pub(crate) type RenderParts = (RenderContext, RenderSurface<'static>, Renderer);
+
+/// [`spawn_render_thread_for_window`] whose parts `prepare` makes on the
+/// worker itself, before its first frame: the handle (and the scene pool the
+/// main thread draws into) exists at once, so the first frame is drawn while
+/// the GPU is still being prepared. A `prepare` that fails ends the worker as
+/// a lost surface with its reason.
 #[allow(
     clippy::too_many_lines,
     reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
 )]
-pub(crate) fn spawn_render_thread_for_window(
-    render_cx: RenderContext,
-    mut surface: RenderSurface<'static>,
-    mut renderer: Renderer,
+pub(crate) fn spawn_render_thread_deferred(
+    prepare: impl FnOnce() -> Result<RenderParts, String> + Send + 'static,
     wake: Arc<dyn Fn() + Send + Sync>,
     window: Option<Arc<winit::window::Window>>,
 ) -> Result<RenderThreadHandle, String> {
@@ -370,6 +387,16 @@ pub(crate) fn spawn_render_thread_for_window(
         .spawn(move || {
             tilo_startup_metrics::mark("render-worker-start");
             tilo_rt::mark_ui_thread();
+            let (render_cx, mut surface, mut renderer) = match prepare() {
+                Ok(parts) => parts,
+                Err(reason) => {
+                    note_surface_loss(format!("its renderer could not start: {reason}"));
+                    let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
+                    notify_render_completion(&waiting, wake.as_ref(), FrameOutcome::SurfaceGone);
+                    return None;
+                }
+            };
+            tilo_startup_metrics::mark("window-render-context-done");
             // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
