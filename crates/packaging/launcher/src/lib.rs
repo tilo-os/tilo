@@ -28,6 +28,7 @@
 //! The launcher-facing manifest surface is kept in [`manifest`]; policy types
 //! are shared with `tilo-app-package`.
 
+pub mod app_cgroup;
 pub mod appdir;
 #[cfg(target_os = "linux")]
 mod browser_projection;
@@ -78,6 +79,8 @@ pub mod sandbox_view;
 pub mod scope;
 pub mod seccomp;
 pub mod services;
+#[cfg(target_os = "linux")]
+pub mod spawner;
 #[cfg(target_os = "linux")]
 pub mod system_authority;
 #[cfg(target_os = "linux")]
