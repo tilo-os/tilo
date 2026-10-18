@@ -29,6 +29,8 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
 mod doc_writer;
+mod private_history;
+pub use private_history::PrivateAction;
 mod fs_store;
 pub mod load_hint;
 pub use doc_writer::{DEFAULT_DEBOUNCE, DocOwner, DocWriter, DurabilitySnapshot, StoredLoad};

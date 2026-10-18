@@ -74,7 +74,19 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
 
         // A button bound to a group applies it as one action.
         let versions = app.versions().len();
-        app.harness().click_named("group").unwrap();
+        let capture = tilo_app::local_document_action::Queue::new();
+        {
+            let _scope = capture.enter("published-control-revision".into());
+            app.harness().click_named("group").unwrap();
+        }
+        let captured = capture.drain();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].revision, "published-control-revision");
+        assert_eq!(
+            captured[0].published.as_ref().unwrap().action,
+            tilo_app::tilo_resource::GROUP
+        );
+        assert_eq!(captured[0].mutation_hashes.len(), 1);
         assert_eq!(app.state().title, "Weekend");
         assert_eq!(app.state().items.len(), 3);
         assert_eq!(app.versions().len(), versions + 1);

@@ -1,4 +1,4 @@
-//! Interrupt immutable sandboxes when accepted file authority is withdrawn.
+//! Interrupt immutable sandboxes when accepted sandbox authority is withdrawn.
 //! No package-name signals, new grants, or automatic application restarts.
 use super::{Binding, Published};
 use collab_types::caps::{CapOverride, Effect, Scope, Subject, path_covers};
@@ -39,12 +39,21 @@ impl Sandbox {
             handle: process_handle(pid, start_time)?,
             pid,
             start_time,
-            binding,
+            // The launcher freezes these kernel grants and the egress gate at
+            // launch. Updating a policy file cannot retract either authority;
+            // interrupt the owning launcher (including its gate) and sandbox.
             capabilities: caps
                 .iter()
-                .filter(|cap| matches!(cap.scope, Scope::FsPath(_)))
+                .filter(|cap| {
+                    cap.subject == Subject::app(&binding.1)
+                        && matches!(
+                            cap.scope,
+                            Scope::FsPath(_) | Scope::NetHost(_) | Scope::Device(_)
+                        )
+                })
                 .cloned()
                 .collect(),
+            binding,
         })
     }
 
@@ -174,10 +183,13 @@ pub(super) fn reconcile(published: &mut Published) {
         if let Some(sandbox) = published.sandboxes.remove(&pid) {
             sandbox.interrupt();
             tracing::info!(room = %sandbox.binding.0, package_id = %sandbox.binding.1, authority_rejection,
-                "application interrupted after accepted filesystem authority withdrawal");
+                "application interrupted after accepted sandbox authority withdrawal");
         }
     }
 }
+
+#[cfg(test)]
+mod live_tests;
 
 #[cfg(test)]
 mod tests {
@@ -370,6 +382,95 @@ mod tests {
         );
         reconcile(&mut published);
         assert!(expired.stopped());
+    }
+
+    #[test]
+    fn network_and_device_withdrawal_refuse_stale_launches_and_interrupt_live_ones() {
+        for scope in [
+            Scope::NetHost("*".into()),
+            Scope::NetHost(".example.com".into()),
+            Scope::Device("camera".into()),
+            Scope::Device("microphone".into()),
+        ] {
+            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+            let room = tree.desktop.workspaces[0].room;
+            let grant =
+                CapOverride::grant(Subject::app("so.tilo.reader"), scope.clone(), Access::Read);
+            tree.desktop.workspaces[0].sandbox.push(grant.clone());
+            let mut published = Published {
+                rooms: super::super::Export::of(&tree).0,
+                ..Published::default()
+            };
+            let mut process = Process::new();
+            process.register(&mut published, room, "so.tilo.reader", &[grant]);
+            reconcile(&mut published);
+            assert!(process.0.try_wait().unwrap().is_none(), "{scope:?}");
+            // A narrower replacement must not leave a wildcard namespace or
+            // the previous hostname gate running with its old authority.
+            published.rooms.get_mut(&room).unwrap().sandbox = vec![CapOverride::grant(
+                Subject::app("so.tilo.reader"),
+                Scope::NetHost("public.example.com".into()),
+                Access::Read,
+            )];
+            let stale = &published.sandboxes[&process.0.id()];
+            assert!(stale.authorization_status(&published).is_err(), "{scope:?}");
+            reconcile(&mut published);
+            assert!(process.stopped(), "{scope:?}");
+        }
+    }
+
+    #[test]
+    fn expired_network_grants_interrupt_without_a_policy_edit() {
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let grant = CapOverride::grant(
+            Subject::app("so.tilo.reader"),
+            Scope::NetHost("*".into()),
+            Access::Read,
+        )
+        .with_expiry(1);
+        tree.desktop.workspaces[0].sandbox.push(grant.clone());
+        let mut published = Published {
+            rooms: super::super::Export::of(&tree).0,
+            ..Published::default()
+        };
+        let mut process = Process::new();
+        process.register(&mut published, room, "so.tilo.reader", &[grant]);
+        reconcile(&mut published);
+        assert!(process.stopped());
+    }
+
+    #[test]
+    fn reopening_after_expiry_stages_no_stale_authority() {
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let mut grants = collab_types::caps::LaunchGrants::default();
+        for scope in [
+            Scope::FsPath("/expired".into()),
+            Scope::NetHost("*".into()),
+            Scope::Device("camera".into()),
+        ] {
+            grants.sandbox.push(
+                CapOverride::grant(Subject::app("so.tilo.reader"), scope, Access::Read)
+                    .with_expiry(1),
+            );
+        }
+        tree.desktop.workspaces[0].sandbox = grants.sandbox.clone();
+        let mut published = Published {
+            rooms: super::super::Export::of(&tree).0,
+            ..Published::default()
+        };
+        // The production staging path supplies the same reduced vector to
+        // the child and the supervisor, not just a filtered policy file.
+        assert!(
+            super::super::super::stage_launch_capabilities("so.tilo.reader", &mut grants,)
+                .is_none()
+        );
+        assert!(grants.sandbox.is_empty());
+        let mut process = Process::new();
+        process.register(&mut published, room, "so.tilo.reader", &grants.sandbox);
+        reconcile(&mut published);
+        assert!(process.0.try_wait().unwrap().is_none());
     }
 
     #[test]

@@ -143,7 +143,8 @@ impl CapnpBrokerState {
             .ok_or("current certificate authority unavailable")?;
         let room_id = uuid::Uuid::parse_str(room).map_err(|_| "invalid exact room")?;
         authority.authorize_join(room_id, certificate)?;
-        let now = self.policy_now_ns()?;
+        let time = self.registered_policy_time()?;
+        let now = self.checked_policy_time(time.as_ref())?.1;
         tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "membership device certificate rejected")?;
         let membership = self
@@ -177,6 +178,7 @@ impl CapnpBrokerState {
             Some(super::InvocationCaller::Local {
                 route,
                 admitted: Box::new(admitted),
+                time,
             }),
         )
     }

@@ -475,7 +475,7 @@ pub(super) fn attach_optional(
 fn withdrawn() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
-        "filesystem authority was withdrawn while the application launch was pending",
+        "sandbox authority was withdrawn while the application launch was pending",
     )
 }
 
@@ -657,7 +657,7 @@ impl Lease {
         if let Err(reason) = sandbox.authorization_status(&published) {
             // The reason is a static category: no path, peer or grant.
             tracing::error!(room = %self.binding.0, package_id = %self.binding.1, authority_rejection = reason,
-                "application launch refused: its filesystem authority is not the accepted policy");
+                "application launch refused: its sandbox authority is not the accepted policy");
             return Err(withdrawn());
         }
         published.sandboxes.insert(pid, sandbox);

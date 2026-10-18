@@ -37,7 +37,6 @@ app-host = { path = "../../crates/packaging/app-host", default-features = false 
 # The installed-package row the app host lists.
 package-store = { path = "../../crates/packaging/package-store" }
 registry-types = { path = "../../crates/packaging/registry-types" }
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 blake3.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true

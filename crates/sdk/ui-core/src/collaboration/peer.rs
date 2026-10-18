@@ -6,6 +6,13 @@ use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec};
 /// envelopes before publishing events. Installing this adapter grants no model,
 /// action, HostContext, or storage authority. Queue failures are fail-closed.
 pub trait PeerTransport {
+    /// Authenticated connection provenance from the host, never app model state.
+    fn connection_snapshot(
+        &self,
+        _: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        None
+    }
     fn is_connected(&self) -> bool;
     fn send(&mut self, request: CollabRequest) -> Result<(), String>;
     fn poll(&mut self) -> Vec<CollabEvent>;
@@ -101,6 +108,16 @@ impl Drop for PeerTransportAdapter {
 }
 
 impl super::CollabTransport for PeerTransportAdapter {
+    fn connection_snapshot(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        self.check_owner();
+        if self.closed.is_some() {
+            return None;
+        }
+        self.peer.connection_snapshot(route)
+    }
     fn status(&self) -> super::TransportStatus {
         self.check_owner();
         if let Some(reason) = &self.closed {

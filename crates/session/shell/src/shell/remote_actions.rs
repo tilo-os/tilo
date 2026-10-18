@@ -7,7 +7,12 @@
 //! transport authenticated; the broker admits, permission-checks and
 //! dispatches the invocation exactly as it always has, and the shared
 //! invocation ledger makes a retried [`InvocationId`] idempotent whichever
-//! way it arrives.
+//! way it arrives. Native Person projections retain a certified session from
+//! the protected seat service for invocation and confirmation on a worker.
+//! Discovery uses ordinary visibility; lifecycle calls retain admitted custody.
+//! App connections
+//! and transport-authenticated network and agent callers never borrow that seat's
+//! certificate custody.
 //!
 //! [`InvocationId`]: tilo_actions::InvocationId
 
@@ -16,6 +21,10 @@ use tilo_actions::remote::{
     InvocationState, InvokeRequest, Pending,
 };
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::shell::certified_action_session::CertifiedActionSession;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::collab_broker_capnp::LaunchScope;
 
@@ -29,15 +38,155 @@ pub struct BrokerActionHost {
     /// The application the launcher authenticated for that connection; the
     /// only scope through which a launch may read content by hash.
     launch: Option<LaunchScope>,
+    /// Original native execution -> retained certified execution. Clones must
+    /// share this mapping: reopening per call loses invocation ownership.
+    native_sessions: Option<Arc<Mutex<HashMap<Caller, CertifiedActionSession>>>>,
 }
 
 impl BrokerActionHost {
+    /// The session facade. Native Person projections use a retained certified
+    /// door when this broker has a native-seat service; a missing service is
+    /// an uncertified/system context, never authority to sign an actor label.
     #[must_use]
     pub fn new(broker: AppActionBroker) -> Self {
         Self {
             broker,
             own_peer: None,
             launch: None,
+            native_sessions: Some(Arc::default()),
+        }
+    }
+
+    /// Applications and authenticated transports never borrow native custody.
+    fn is_native(&self, caller: &Caller) -> bool {
+        self.native_sessions.is_some()
+            && matches!(
+                caller.principal(),
+                tilo_actions::remote::CallerPrincipal::Person(_)
+            )
+            && caller.user_public_key().is_none()
+            && caller.device_public_key().is_none()
+            && !caller.is_foreign_device()
+            && caller.acting_for_person().is_none()
+            && caller.shortcut().is_none()
+    }
+
+    /// Lifecycle operations use only the already admitted execution. The
+    /// certified host rechecks revocation; this lookup never resolves identity.
+    fn retained_session(
+        &self,
+        caller: &Caller,
+    ) -> Result<Option<CertifiedActionSession>, ActionHostError> {
+        let Some(sessions) = &self.native_sessions else {
+            return Ok(None);
+        };
+        Ok(sessions
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "native action sessions unavailable".into(),
+            })?
+            .get(caller)
+            .cloned())
+    }
+
+    /// Certificate resolution and signing must never run on the UI thread.
+    fn with_native<T: Send + 'static>(
+        &self,
+        caller: &Caller,
+        operation: impl FnOnce(
+            Self,
+            Caller,
+            Option<CertifiedActionSession>,
+        ) -> Pending<Result<T, ActionHostError>>
+        + Send
+        + 'static,
+    ) -> Pending<Result<T, ActionHostError>> {
+        if !self.is_native(caller) {
+            return operation(self.clone(), caller.clone(), None);
+        }
+        let host = self.clone();
+        let caller = caller.clone();
+        let (complete, answer) = tilo_actions::remote::pending();
+        let spawned = std::thread::Builder::new()
+            .name("native-action-admission".into())
+            .spawn(move || {
+                let result = match host.native_session(&caller) {
+                    Ok(session) => operation(host, caller, session),
+                    Err(error) => Pending::ready(Err(error)),
+                };
+                result.then(move |result| {
+                    if let Some(result) = result {
+                        complete.complete(result);
+                    }
+                });
+            });
+        if spawned.is_err() {
+            return Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "native action worker unavailable".into(),
+            }));
+        }
+        answer
+    }
+
+    /// Worker-only acquisition; a configured seat's refusal is never fallback.
+    fn native_session(
+        &self,
+        caller: &Caller,
+    ) -> Result<Option<CertifiedActionSession>, ActionHostError> {
+        let Some(sessions) = &self.native_sessions else {
+            return Ok(None);
+        };
+        if !self.is_native(caller) {
+            return Ok(None);
+        }
+        let certificate = self
+            .broker
+            .state()
+            .native_local_person_certificate(caller)
+            .map_err(|_| ActionHostError::NotPermitted)?;
+        let Some(certificate) = certificate else {
+            // Pre-identity/system brokers have no certificate custody. Keep
+            // their ordinary door; never sign their displayed actor text.
+            return Ok(None);
+        };
+        if let Some(session) = self.retained_session(caller)? {
+            return if session.has_certificate(&certificate) {
+                Ok(Some(session))
+            } else {
+                // An existing execution may not silently become a new device.
+                Err(ActionHostError::NotPermitted)
+            };
+        }
+        // Signing is deliberately outside the map lock: UI lifecycle lookups
+        // must not wait on filesystem or protected seat work.
+        let session =
+            CertifiedActionSession::open_native(self.broker.clone(), caller, &certificate)
+                .map_err(|_| ActionHostError::NotPermitted)?;
+        let mut sessions = sessions.lock().map_err(|_| ActionHostError::Unavailable {
+            reason: "native action sessions unavailable".into(),
+        })?;
+        if let Some(existing) = sessions.get(caller) {
+            return if existing.has_certificate(&certificate) {
+                Ok(Some(existing.clone()))
+            } else {
+                Err(ActionHostError::NotPermitted)
+            };
+        }
+        sessions.retain(|caller, _| caller.execution_id().is_none() || caller.execution_is_live());
+        if sessions.len() >= 128 {
+            return Err(ActionHostError::Unavailable {
+                reason: "native action session limit reached".into(),
+            });
+        }
+        sessions.insert(caller.clone(), session.clone());
+        Ok(Some(session))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_fixture(broker: AppActionBroker) -> Self {
+        Self {
+            native_sessions: None,
+            ..Self::new(broker)
         }
     }
 
@@ -53,7 +202,13 @@ impl BrokerActionHost {
             broker,
             own_peer: Some(peer_id),
             launch,
+            native_sessions: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn broker_for_fixture(&self) -> AppActionBroker {
+        self.broker.clone()
     }
 
     /// Legacy source fixtures delegate into the production broker's native
@@ -90,15 +245,21 @@ impl BrokerActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
-        let state = std::sync::Arc::clone(self.broker.state());
-        let caller = caller.clone();
-        let invocation = request.invocation;
-        self.invoke(&caller, request).map(move |result| {
-            let receipt = result?;
-            let job = state
-                .remote_job(&caller, &invocation)
-                .ok_or(ActionHostError::UnknownInvocation)?;
-            Ok((job, receipt))
+        self.with_native(caller, move |host, caller, session| {
+            if let Some(session) = session {
+                return session.invoke_job(request);
+            }
+            let state = Arc::clone(host.broker.state());
+            let invocation = request.invocation;
+            state
+                .action_invoke(&caller, host.own_peer, host.launch.as_ref(), &request)
+                .map(move |result| {
+                    let receipt = result?;
+                    let job = state
+                        .remote_job(&caller, &invocation)
+                        .ok_or(ActionHostError::UnknownInvocation)?;
+                    Ok((job, receipt))
+                })
         })
     }
 }
@@ -109,6 +270,8 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        // Discovery is visibility, not signed admission. In particular, each
+        // search keystroke must not read identity files or contact the seat.
         self.broker.state().action_query(caller, &query)
     }
 
@@ -117,19 +280,43 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.broker
-            .state()
-            .action_invoke(caller, self.own_peer, self.launch.as_ref(), &request)
+        self.with_native(caller, move |host, caller, session| {
+            if let Some(session) = session {
+                let (host, caller) = session.host_and_caller();
+                host.invoke(caller, request)
+            } else {
+                host.broker.state().action_invoke(
+                    &caller,
+                    host.own_peer,
+                    host.launch.as_ref(),
+                    &request,
+                )
+            }
+        })
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.broker.state().action_observe(caller, id)
+        match self.retained_session(caller) {
+            Ok(Some(session)) => {
+                let (host, certified) = session.host_and_caller();
+                host.observe(certified, id)
+            }
+            Ok(None) => self.broker.state().action_observe(caller, id),
+            Err(_) => None,
+        }
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         // Authorized as `observe` is: an invocation this caller did not
         // admit has no change to wait for.
-        self.broker.state().action_next_change_after_now(caller, id)
+        match self.retained_session(caller) {
+            Ok(Some(session)) => {
+                let (host, certified) = session.host_and_caller();
+                host.next_change(certified, id)
+            }
+            Ok(None) => self.broker.state().action_next_change_after_now(caller, id),
+            Err(_) => None,
+        }
     }
 
     fn cancel(
@@ -137,7 +324,13 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.broker.state().action_cancel(caller, id)
+        match self.retained_session(caller)? {
+            Some(session) => {
+                let (host, certified) = session.host_and_caller();
+                host.cancel(certified, id)
+            }
+            None => self.broker.state().action_cancel(caller, id),
+        }
     }
 
     fn confirm(
@@ -145,7 +338,15 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
-        self.broker.state().request_witness(caller, None, request)
+        let request = request.clone();
+        self.with_native(caller, move |host, caller, session| {
+            if let Some(session) = session {
+                let (host, caller) = session.host_and_caller();
+                host.confirm(caller, &request)
+            } else {
+                host.broker.state().request_witness(&caller, None, &request)
+            }
+        })
     }
 }
 
@@ -275,6 +476,129 @@ mod tests {
         }
     }
 
+    fn wait<T>(answer: Pending<T>) -> T {
+        answer
+            .wait_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("action worker completed")
+    }
+
+    #[test]
+    fn native_certificate_resolution_never_runs_on_the_calling_thread() {
+        struct WorkerOnly {
+            ui_thread: std::thread::ThreadId,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+        impl tilo_action_broker::services::LocalPersonServices for WorkerOnly {
+            fn certificate(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<tilo_user_identity::DeviceCert, String> {
+                assert_ne!(std::thread::current().id(), self.ui_thread);
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err("seat refused".into())
+            }
+        }
+        let service = Arc::new(WorkerOnly {
+            ui_thread: std::thread::current().id(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                    WorkspaceTree::default().shared(),
+                )),
+                tilo_action_broker::services::HostServices {
+                    local_person: Some(service.clone()),
+                    ..Default::default()
+                },
+            );
+        let host = BrokerActionHost::new(broker);
+        let caller = Caller::local_person("displayed-person").in_room("room");
+        let request = refresh(tilo_actions::InvocationId::new());
+        assert_eq!(
+            wait(host.invoke(&caller, request.clone())),
+            Err(ActionHostError::NotPermitted)
+        );
+        assert!(matches!(
+            wait(host.invoke_job(&caller, request.clone())),
+            Err(ActionHostError::NotPermitted)
+        ));
+        assert!(matches!(
+            wait(host.confirm(&caller, &request)),
+            Err(ActionHostError::NotPermitted)
+        ));
+        assert_eq!(service.calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn installed_native_service_refusal_never_falls_back_and_other_doors_do_not_borrow_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Refuse(AtomicUsize);
+        impl tilo_action_broker::services::LocalPersonServices for Refuse {
+            fn certificate(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<tilo_user_identity::DeviceCert, String> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Err("native identity unavailable".into())
+            }
+        }
+        let service = Arc::new(Refuse(AtomicUsize::new(0)));
+        let tree = WorkspaceTree::default().shared();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                    tree,
+                )),
+                tilo_action_broker::services::HostServices {
+                    local_person: Some(service.clone()),
+                    ..Default::default()
+                },
+            );
+        let host = BrokerActionHost::new(broker.clone());
+        let native = Caller::local_person("displayed-person").in_room("room");
+        assert!(now(host.query(&native, CatalogueQuery::default())).is_ok());
+        let id = tilo_actions::InvocationId::new();
+        assert!(host.observe(&native, &id).is_none());
+        assert!(host.next_change(&native, &id).is_none());
+        let _ = host.cancel(&native, &id);
+        assert_eq!(
+            service.0.load(Ordering::Relaxed),
+            0,
+            "discovery and lifecycle lookup must not resolve native identity"
+        );
+        assert_eq!(
+            wait(host.invoke(&native, refresh(id))),
+            Err(ActionHostError::NotPermitted)
+        );
+        assert_eq!(service.0.load(Ordering::Relaxed), 1);
+        // These paths own their own authority. In particular, an MCP agent
+        // cannot turn its person's display label into native certificate custody.
+        let agent = Caller::local_agent("agent").in_room("room");
+        let delegated = native.clone().delegated_to("agent");
+        for caller in [agent, delegated, owner().in_room("room")] {
+            drop(host.query(&caller, CatalogueQuery::default()));
+            drop(host.invoke(&caller, refresh(tilo_actions::InvocationId::new())));
+        }
+        let app = BrokerActionHost::for_connection(broker.clone(), 7, None);
+        drop(app.query(&native, CatalogueQuery::default()));
+        drop(app.invoke(&native, refresh(tilo_actions::InvocationId::new())));
+        let source = crate::shell::certified_action_session::ActionSessionSource::fixture(broker);
+        let fixture = source.open("room", Some("displayed-person")).unwrap();
+        drop(fixture.query(CatalogueQuery::default()));
+        drop(fixture.invoke(refresh(tilo_actions::InvocationId::new())));
+        assert_eq!(
+            service.0.load(Ordering::Relaxed),
+            1,
+            "transport and fixture doors must not recurse into native admission"
+        );
+    }
+
     fn catalogue(host: &BrokerActionHost, caller: &Caller) -> CataloguePage {
         now(host.query(
             caller,
@@ -374,7 +698,7 @@ mod tests {
                 "a connection admitted to another room reaches nothing here"
             );
             assert_eq!(
-                now(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
+                wait(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
                 Err(ActionHostError::UnknownAction)
             );
         }
@@ -452,7 +776,8 @@ mod tests {
                 wait_ms: None,
                 appearance: None,
             };
-            match now(host.invoke(&caller, open)) {
+            // Native admission resolves on a worker, even without a seat service.
+            match wait(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
                     reason.contains("launcher authenticated"),
                     "refused for its missing launch scope: {reason}"

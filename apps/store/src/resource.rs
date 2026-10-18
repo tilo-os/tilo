@@ -306,14 +306,24 @@ pub enum StoreEffect {
         #[param("Remote name")]
         name: String,
     },
+    /// Prepare exact report or appeal parameters without submitting them.
+    #[effect(returns, kind = "read")]
+    PrepareModeration {
+        #[param("App identity of the report")]
+        app: String,
+        #[param("Prepare an appeal instead of a report")]
+        appeal: bool,
+    },
     /// Submit signed report.
     ///
     /// Signs the app's report draft with your workspace identity and sends
     /// it to the app's registry.
-    #[effect(job)]
+    #[effect(job, sensitive)]
     SubmitReport {
         #[param("App identity of the report")]
         app: String,
+        #[param("Exact operation JSON returned by prepare-moderation")]
+        operation: String,
     },
     /// Refresh status.
     ///
@@ -326,10 +336,12 @@ pub enum StoreEffect {
     /// Appeal decision.
     ///
     /// Appeals the app's moderation case, with its note as the reason.
-    #[effect(job)]
+    #[effect(job, sensitive)]
     Appeal {
         #[param("App identity of the report")]
         app: String,
+        #[param("Exact operation JSON returned by prepare-moderation")]
+        operation: String,
     },
     /// Export evidence envelope.
     #[effect(job)]
@@ -675,6 +687,22 @@ mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
+
+    #[test]
+    fn moderation_disclosures_require_framework_confirmation() {
+        for action in ["submit-report", "appeal"] {
+            let spec = StoreEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == action)
+                .unwrap();
+            assert_eq!(spec.contract.kind, ui::tilo_actions::ActionKind::Outside);
+            assert_eq!(
+                spec.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(spec.contract.risk, ui::tilo_actions::RiskLevel::Sensitive);
+        }
+    }
 
     /// A Store whose catalogue sources answer at once and offer nothing:
     /// no configured registry, an unreachable Flathub, a private cache.

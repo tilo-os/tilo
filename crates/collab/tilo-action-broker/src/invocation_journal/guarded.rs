@@ -353,6 +353,10 @@ struct Row {
     prepared_effect: Option<super::PreparedEffect>,
     #[serde(default, deserialize_with = "digest_present")]
     request_digest: Option<Digest>,
+    #[serde(default)]
+    admission: Option<crate::action_evidence::AdmissionEvidence>,
+    #[serde(default)]
+    terminal: Option<crate::action_evidence::TerminalReceipt>,
 }
 // Like the other optional members, absent only through #[serde(default)].
 fn digest_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Digest>, D::Error> {
@@ -452,6 +456,8 @@ impl<'de> Deserialize<'de> for DurableInvocation {
             cancellation_requested: row.cancellation_requested,
             guarded,
             prepared_effect: row.prepared_effect,
+            admission: row.admission,
+            terminal: row.terminal,
         })
     }
 }
@@ -462,7 +468,9 @@ impl Serialize for DurableInvocation {
             6_usize
                 .saturating_add(usize::from(self.guarded.is_some()))
                 .saturating_add(usize::from(self.prepared_effect.is_some()))
-                .saturating_add(usize::from(self.request_digest.is_some())),
+                .saturating_add(usize::from(self.request_digest.is_some()))
+                .saturating_add(usize::from(self.admission.is_some()))
+                .saturating_add(usize::from(self.terminal.is_some())),
         )?;
         row.serialize_field("key", &self.key)?;
         row.serialize_field("intent", &self.intent)?;
@@ -482,6 +490,12 @@ impl Serialize for DurableInvocation {
         }
         if let Some(digest) = &self.request_digest {
             row.serialize_field("request_digest", digest)?;
+        }
+        if let Some(admission) = &self.admission {
+            row.serialize_field("admission", admission)?;
+        }
+        if let Some(terminal) = &self.terminal {
+            row.serialize_field("terminal", terminal)?;
         }
         row.end()
     }

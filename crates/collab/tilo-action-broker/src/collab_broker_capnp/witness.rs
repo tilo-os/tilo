@@ -21,10 +21,17 @@ use super::execution_activity::ShownActor;
 use super::{BrokerActor, CapnpBrokerState, CrdtRoute};
 use crate::app_actions::{AppActionConsent, AppActionConsentRequest};
 
+/// These Store actions disclose signed content outside the workspace.
+/// Their confirmation must come from the host, not the publishing app.
+pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
+    app == "so.tilo.store" && matches!(action, "submit-report" | "appeal")
+}
+
 /// What the person is asked, and what their answer is bound to.
 struct Question {
     request: AppActionConsentRequest,
     actor: BrokerActor,
+    binding: super::WitnessBinding,
     /// The view the caller is shown waiting in, when the action runs in one.
     shown: Option<(CrdtRoute, ShownActor)>,
 }
@@ -43,7 +50,7 @@ pub(super) async fn serve_answering(
     let RemoteActionMessage::Invoke(request) = message else {
         return Some(first);
     };
-    if !needs_witness(&first) || BrokerActor::for_caller(&caller).direct() {
+    if !needs_witness(&first) {
         return Some(first);
     }
     let witnessed = match state
@@ -78,6 +85,250 @@ fn needs_witness(reply: &RemoteActionMessage) -> bool {
 }
 
 impl CapnpBrokerState {
+    /// Resolve only this provider's live publication. Host-owned providers
+    /// have no application publication; unrelated discovery cannot change them.
+    pub(super) fn witness_publication(&self, provider: &str) -> (u64, u64) {
+        let peer = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
+            self.canonical_token_directory(provider)
+                .ok()
+                .map(|root| root.peer_id)
+        } else if super::launchable::is_launchable_provider(provider) {
+            self.launchable.surface_for(provider).and_then(|retained| {
+                self.surfaces.lock().ok()?.values().find_map(|surface| {
+                    (surface.live
+                        && surface.app_id == retained.app_id
+                        && surface.route == retained.route)
+                        .then_some(surface.peer_id)
+                })
+            })
+        } else {
+            provider.parse::<u64>().ok()
+        };
+        peer.and_then(|peer| {
+            self.witness_publications
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&peer)
+                .copied()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Capture before asking, and reconstruct from the original request at
+    /// admission. Republishing this provider invalidates the pending answer.
+    pub(crate) fn witness_binding(
+        &self,
+        actor: &str,
+        room: &str,
+        request: &InvokeRequest,
+    ) -> super::WitnessBinding {
+        super::WitnessBinding {
+            actor: actor.into(),
+            provider: request.target.provider.clone(),
+            room: room.into(),
+            revision: request.revision.clone(),
+            publication: self.witness_publication(&request.target.provider),
+            invocation: request.invocation,
+            resource: request.target.address.resource.clone(),
+            action: request.target.address.action.clone(),
+            argument_digest: super::argument_digest(request.argument.to_slot().as_deref()),
+        }
+    }
+
+    pub(super) fn native_witness_binding(
+        &self,
+        actor: &str,
+        offered: &(super::PublishedSurface, super::PublishedAction),
+        argument: Option<&str>,
+        invocation: tilo_actions::InvocationId,
+    ) -> super::WitnessBinding {
+        super::WitnessBinding {
+            actor: actor.into(),
+            provider: offered.0.peer_id.to_string(),
+            room: offered.0.route.cluster_id.clone(),
+            revision: None,
+            publication: self.witness_publication(&offered.0.peer_id.to_string()),
+            invocation,
+            resource: offered.1.resource.clone(),
+            action: offered.1.action.clone(),
+            argument_digest: super::argument_digest(argument),
+        }
+    }
+
+    pub(super) fn consume_answer(
+        &self,
+        confirmation: Option<&Confirmation>,
+        binding: &super::WitnessBinding,
+    ) -> bool {
+        match confirmation {
+            Some(Confirmation::Witnessed(token)) => self.take_witness(token, binding),
+            _ => false,
+        }
+    }
+
+    /// A question must not outlive the publisher or the contract it showed.
+    pub(super) fn check_native_store_offer(
+        &self,
+        offered: &(super::PublishedSurface, super::PublishedAction),
+    ) -> Result<(), String> {
+        let current = self
+            .surfaces
+            .lock()
+            .map_err(|_| "task surface unavailable")?
+            .get(&offered.0.peer_id)
+            .and_then(|surface| surface.action_projection(&offered.1.resource, &offered.1.action))
+            .ok_or("Store action retired while awaiting confirmation")?;
+        if !current.0.live
+            || current.0.route != offered.0.route
+            || current.0.app_id != offered.0.app_id
+            || current.1.contract != offered.1.contract
+            || current.1.params != offered.1.params
+        {
+            return Err("Store action changed while awaiting confirmation".into());
+        }
+        Ok(())
+    }
+
+    /// Local RPC approval material is not a disclosure witness. Only the host
+    /// may ask the admitted person's device about this exact external payload.
+    pub(super) async fn local_store_witness(
+        &self,
+        admitted: &super::AdmittedJoinIdentity,
+        publication: &(super::PublishedSurface, super::PublishedAction),
+        argument: Option<&str>,
+        binding: &super::WitnessBinding,
+    ) -> Result<Confirmation, String> {
+        let (surface, offered) = publication;
+        if !requires_store_witness(&surface.app_id, &offered.action) {
+            return Err("external disclosure witness requested for another action".into());
+        }
+        let actor = admitted.broker_actor();
+        let argument_value = argument.map_or(tilo_actions::remote::InvokeArgument::None, |text| {
+            tilo_actions::remote::InvokeArgument::Text(text.into())
+        });
+        let moderation = crate::app_actions::ModerationConsentPreview::from_argument(
+            &offered.action,
+            &argument_value,
+            &admitted.verified.user_public_key,
+        )
+        .ok_or("Store disclosure arguments are invalid")?;
+        let question = Question {
+            request: AppActionConsentRequest {
+                handle: format!("confirm:{}", binding.invocation.0),
+                room: surface.route.cluster_id.clone(),
+                person: super::principal_id_for_root(admitted.verified.user_public_key),
+                app_id: actor.id().into(),
+                target_app: surface.app_id.clone(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                resource_label: offered.resource_label.clone(),
+                action_label: offered.action_label.clone(),
+                risk: offered.contract.risk,
+                needs_confirmation: true,
+                confirming: true,
+                moderation: Some(moderation),
+            },
+            actor,
+            binding: binding.clone(),
+            shown: None,
+        };
+        let answer = self
+            .ask_person(&question)
+            .ok_or("host confirmation unavailable")?
+            .await
+            .map_err(|_| "host confirmation ended")?;
+        if answer == AppActionConsent::Deny {
+            return Err("Store disclosure declined".into());
+        }
+        self.witness_confirmation(&question.binding)
+            .map(Confirmation::Witnessed)
+            .ok_or_else(|| "host confirmation unavailable".into())
+    }
+
+    /// Native task approval is not a disclosure witness. Ask on the same typed
+    /// host sheet as ordinary Store invocations, after any Task Center edits.
+    /// Dispatch consumes the returned witness, and revalidates task authority.
+    pub(super) async fn native_store_witness(
+        &self,
+        (run, lease, confirmed): (&super::PendingTaskRun, &str, bool),
+        publication: &(super::PublishedSurface, super::PublishedAction),
+        argument: Option<&str>,
+        caller: &super::durable_local_invocation::LocalCaller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Option<String>, String> {
+        let (surface, offered) = publication;
+        let app = surface.app_id.as_str();
+        if !requires_store_witness(app, &offered.action) {
+            return Ok(None);
+        }
+        let mut binding = run.native.clone().ok_or("native task binding absent")?;
+        binding.revision = runtime_collab::native_task_revision(lease)
+            .ok_or("invalid native lease")?
+            .1;
+        let actor = binding.actor()?;
+        let service = self
+            .native_tasks(&run.cluster_id)
+            .ok_or("native task owner unavailable")?;
+        service.authorize_action(
+            &run.cluster_id,
+            &run.agent_id,
+            &crate::services::NativeTaskActionRequirement {
+                binding: Some(binding.clone()),
+                app: app.into(),
+                resource_kind: offered.resource_kind.clone(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                need: offered.contract.need(),
+                consequential: !matches!(
+                    offered.contract.confirmation_for_argument(argument),
+                    tilo_actions::ConfirmationPolicy::None
+                ),
+                confirmed,
+            },
+        )?;
+        let current = caller.current(self)?;
+        let argument_value = argument.map_or(tilo_actions::remote::InvokeArgument::None, |text| {
+            tilo_actions::remote::InvokeArgument::Text(text.into())
+        });
+        let moderation = crate::app_actions::ModerationConsentPreview::from_argument(
+            &offered.action,
+            &argument_value,
+            &current.verified.user_public_key,
+        )
+        .ok_or("Store disclosure arguments are invalid")?;
+        let question = Question {
+            request: AppActionConsentRequest {
+                handle: format!("confirm:{}", uuid::Uuid::new_v4()),
+                room: run.cluster_id.clone(),
+                person: binding.starter.ok_or("native task starter absent")?,
+                app_id: run.agent_id.clone(),
+                target_app: app.into(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
+                resource_label: offered.resource_label.clone(),
+                action_label: offered.action_label.clone(),
+                risk: offered.contract.risk,
+                needs_confirmation: true,
+                confirming: true,
+                moderation: Some(moderation),
+            },
+            binding: self.native_witness_binding(actor.id(), publication, argument, invocation),
+            actor,
+            shown: None,
+        };
+        let answer = self
+            .ask_person(&question)
+            .ok_or("host confirmation unavailable")?
+            .await
+            .map_err(|_| "host confirmation ended")?;
+        if answer == AppActionConsent::Deny {
+            return Err("Store disclosure declined".into());
+        }
+        self.witness_confirmation(&question.binding)
+            .map(Some)
+            .ok_or_else(|| "host confirmation unavailable".into())
+    }
+
     /// Ask the person `caller` acts for — `person`, or the person its
     /// delegation names — to confirm `request` on their own device, showing
     /// the caller waiting meanwhile. The answer is the token naming their
@@ -89,20 +340,33 @@ impl CapnpBrokerState {
         request: &InvokeRequest,
     ) -> tilo_actions::remote::Pending<Result<Confirmation, ActionHostError>> {
         use tilo_actions::remote::Pending;
-        let Some(person) = person
-            .map(str::to_owned)
-            .or_else(|| caller.acting_for_person().map(str::to_owned))
-        else {
+        let Some(person) = (match caller.principal() {
+            // A direct caller cannot nominate another person to answer.
+            tilo_actions::remote::CallerPrincipal::Person(id) => Some(id.clone()),
+            _ => person
+                .map(str::to_owned)
+                .or_else(|| caller.acting_for_person().map(str::to_owned))
+                .or_else(|| {
+                    caller
+                        .user_public_key()
+                        .map(|root| super::principal_id_for_root(*root))
+                }),
+        }) else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
-        if BrokerActor::for_caller(caller).direct() {
-            // A person acting themselves confirms on the screen they act
-            // from; nobody else answers for them.
+        let Some(question) = self.witness_question(caller, &person, request) else {
+            return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
+                ActionHostError::ConfirmationRequired
+            } else {
+                ActionHostError::UnknownAction
+            }));
+        };
+        if question.actor.direct()
+            && !requires_store_witness(&question.request.target_app, &question.request.action)
+        {
+            // Other direct actions keep confirming on the caller's screen.
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
-        let Some(question) = self.witness_question(caller, &person, request) else {
-            return Pending::ready(Err(ActionHostError::UnknownAction));
-        };
         let Some(answer) = self.ask_person(&question) else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
@@ -147,11 +411,7 @@ impl CapnpBrokerState {
                 }
                 completer.complete(
                     state
-                        .witness_confirmation(
-                            question.actor.id(),
-                            (&question.request.resource, &question.request.action),
-                            request.argument.to_slot().as_deref(),
-                        )
+                        .witness_confirmation(&question.binding)
                         .map(Confirmation::Witnessed)
                         .ok_or(ActionHostError::ConfirmationRequired),
                 );
@@ -164,6 +424,26 @@ impl CapnpBrokerState {
         pending
     }
 
+    /// Resolve a directory's original identity and selected content revision.
+    fn witness_directory(
+        &self,
+        provider: &str,
+        room: &str,
+        revision: Option<&str>,
+    ) -> Option<super::ActionDirectoryRoot> {
+        // A directory's contents can move without replacing its root.
+        revision.filter(|revision| !revision.is_empty())?;
+        let directory = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
+            self.canonical_token_directory(provider).ok()?
+        } else {
+            let peer = provider.parse::<u64>().ok()?;
+            self.action_directory_roots()
+                .into_iter()
+                .find(|candidate| candidate.peer_id == peer && candidate.cluster_id == room)?
+        };
+        (directory.cluster_id == room).then_some(directory)
+    }
+
     /// The question `request` puts to `person`: the action as the catalogue
     /// offers it to `caller`. `None` for an action not offered.
     fn witness_question(
@@ -174,6 +454,7 @@ impl CapnpBrokerState {
     ) -> Option<Question> {
         let room = caller.room()?;
         let actor = self.caller_actor(caller, room);
+        let binding = self.witness_binding(actor.id(), room, request);
         let provider = request.target.provider.as_str();
         let address = &request.target.address;
         // The action as the catalogue offers it, or, for an application
@@ -197,11 +478,7 @@ impl CapnpBrokerState {
                 descriptor.contract.risk,
             )
         } else {
-            let peer = provider.parse::<u64>().ok()?;
-            let directory = self
-                .action_directory_roots()
-                .into_iter()
-                .find(|candidate| candidate.peer_id == peer && candidate.cluster_id == room)?;
+            let directory = self.witness_directory(provider, room, request.revision.as_deref())?;
             (
                 directory.app_id,
                 (address.resource.clone(), address.action.clone()),
@@ -230,6 +507,22 @@ impl CapnpBrokerState {
             tilo_actions::remote::CallerPrincipal::Bot(bot) => format!("bot:{bot}"),
             tilo_actions::remote::CallerPrincipal::Person(id) => id.clone(),
         };
+        // Only the Store's typed external actions use this disclosure. A broken
+        // payload or unavailable identity must not fall back to a generic prompt.
+        let moderation = if requires_store_witness(&app_id, &address.action) {
+            let signing_root = caller.user_public_key().copied().or_else(|| {
+                tilo_identity_host::broker::trusted_current_device(room)
+                    .ok()
+                    .map(|(_, certificate)| certificate.user_public_key)
+            })?;
+            Some(crate::app_actions::ModerationConsentPreview::from_argument(
+                &address.action,
+                &request.argument,
+                &signing_root,
+            )?)
+        } else {
+            None
+        };
         Some(Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", request.invocation.0),
@@ -244,7 +537,9 @@ impl CapnpBrokerState {
                 risk,
                 needs_confirmation: true,
                 confirming: true,
+                moderation,
             },
+            binding,
             actor,
             shown,
         })

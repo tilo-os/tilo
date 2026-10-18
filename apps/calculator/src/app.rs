@@ -1998,6 +1998,8 @@ mod tests {
     use ui::prelude::TestApp;
     use ui::tilo_resource::Invoke;
 
+    include!("local_capture_tests.rs");
+
     fn keyboard(key: WKey) -> WindowEvent {
         let text = if let WKey::Character(text) = &key {
             Some(text.clone())

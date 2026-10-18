@@ -279,11 +279,23 @@ async fn display_rpc_preserves_original_published_caller_and_refuses_missing_or_
                     .await
                     .is_err()
             );
-            caller
+            assert!(
+                caller
+                    .handle
+                    .cancel_published_invocation(delivered.id)
+                    .await
+                    .is_err(),
+                "certificate-owned jobs cannot be cancelled through the legacy actor-only door"
+            );
+            let cancelled = caller
                 .handle
-                .cancel_published_invocation(delivered.id)
+                .cancel_durable_published_invocation(
+                    &rig.binding.host,
+                    update.invocation().0.as_bytes(),
+                )
                 .await
                 .unwrap();
+            assert!(cancelled.result.unwrap().cancellation_requested);
             assert!(
                 settings
                     .display_control(br#"{"operation":"identify"}"#, original)

@@ -137,14 +137,16 @@ fn keep(source: Source, answer: Answer, fetched_at: u64) {
             tracing::warn!(%error, "could not keep the {} answer", source.name());
         }
     }
-    let mut store = STORE.lock_recover();
-    let store = store.get_or_insert_with(Store::default);
-    let Answer::Rates(rates) = answer;
-    store.rates = Some(Kept {
-        fetched_at,
-        value: rates,
-    });
-    store.failed_at = None;
+    {
+        let mut store = STORE.lock_recover();
+        let store = store.get_or_insert_with(Store::default);
+        let Answer::Rates(rates) = answer;
+        store.rates = Some(Kept {
+            fetched_at,
+            value: rates,
+        });
+        store.failed_at = None;
+    }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -195,13 +197,15 @@ fn fetch_in_background(source: Source) {
 /// answers from them.
 #[cfg(test)]
 pub(crate) fn keep_rates_for_test(rates: Rates, fetched_at: u64) {
-    let mut store = STORE.lock_recover();
-    let store = store.get_or_insert_with(Store::default);
-    store.loaded_from_disk = true;
-    store.rates = Some(Kept {
-        fetched_at,
-        value: rates,
-    });
+    {
+        let mut store = STORE.lock_recover();
+        let store = store.get_or_insert_with(Store::default);
+        store.loaded_from_disk = true;
+        store.rates = Some(Kept {
+            fetched_at,
+            value: rates,
+        });
+    }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }
 

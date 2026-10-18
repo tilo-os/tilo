@@ -89,6 +89,8 @@ pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
 mod input_publication;
+mod local_action_persistence;
+mod local_input_capture;
 #[cfg(feature = "native")]
 mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
@@ -538,6 +540,7 @@ pub struct App {
     focus_history: HistoryRuntime,
 
     collaboration: CollaborationRuntime,
+    local_input_capture: local_input_capture::LocalInputCapture,
     native_room_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
@@ -3955,6 +3958,37 @@ pub(crate) mod ordinary_confirmation_tests {
             bounded && measured,
             "unchanged-background events must retain bounded solved geometry: initial nodes={baseline_nodes}, rect={expected_rect:?}, samples={samples:?}"
         );
+    }
+
+    #[test]
+    fn ordinary_confirmation_unsigned_history_stays_visible_without_moving_content() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut host = Host::new(true, root);
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let original = app.root_widget.get_rect();
+        host.activate("Emit request");
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let status = app
+            .document_sync_status()
+            .expect("unmanaged input stays unsigned")
+            .into_owned();
+        assert_eq!(
+            status,
+            crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned")
+        );
+        let tree = app.build_a11y_tree_update(1.0);
+        let (_, node) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(status.as_str()))
+            .expect("unsigned history is published in the existing History bar");
+        assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
+        assert_eq!(app.root_widget.get_rect(), original);
+        assert!(ledger.borrow().is_empty());
     }
 
     fn published_confirmation_instruction(host: &mut Host) -> String {

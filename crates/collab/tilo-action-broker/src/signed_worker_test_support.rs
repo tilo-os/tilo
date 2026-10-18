@@ -338,6 +338,9 @@ pub struct OriginalRoom {
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
+    // Restore the environment before removing the identity and journal files.
+    _identity_env: tilo_test_env::ScopedEnv,
+    _root: tempfile::TempDir,
 }
 
 impl OriginalRoom {
@@ -346,7 +349,12 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+        Self::hosting(capabilities, expires_at_ns, persist_path, None, false)
+    }
+
+    /// Native caller using the enrolled identity, rather than a synthetic certificate.
+    pub fn current_native() -> Self {
+        Self::hosting(DeviceCapabilities::primary(), None, None, None, true)
     }
 
     /// The room on a host that keeps record content through `content`:
@@ -360,6 +368,7 @@ impl OriginalRoom {
             None,
             None,
             Some((content, room)),
+            false,
         )
     }
 
@@ -371,12 +380,41 @@ impl OriginalRoom {
             Arc<crate::record_content::RouteContent>,
             Option<tilo_desktop_model::RoomId>,
         )>,
+        current_native: bool,
     ) -> Self {
+        let fixture_root =
+            tempfile::tempdir().expect("private host identity and journal directory");
+        // ScopedEnv's lock is reentrant on this thread: record-content tests
+        // keep two rooms alive together. Keep the scopes in nesting order.
+        let mut identity_env = tilo_test_env::ScopedEnv::new();
+        identity_env
+            .set("XDG_CONFIG_HOME", fixture_root.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", fixture_root.path().join("identity"))
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &fixture_root.path().join("config/tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(fixture_root.path().join("identity")),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision real host receipt signer");
         let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
-        let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
-        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(50_000_000_000);
+        let (key, cert, start) = if current_native {
+            let (key, cert) = tilo_identity_host::broker::trusted_current_device(
+                &tilo_desktop_model::RoomId::new().to_string(),
+            )
+            .expect("enrolled native device");
+            let start = tilo_clock::unix_now_ns();
+            (key, cert, start)
+        } else {
+            (
+                key.clone(),
+                signed_device(&root, &key, "original worker", capabilities, expires_at_ns),
+                50_000_000_000,
+            )
+        };
+        let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId(83),
@@ -395,7 +433,9 @@ impl OriginalRoom {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Subject::Person(principal),
         )
-        .with_lifetime(tilo_action_policy::Lifetime::Until(100_000));
+        .with_lifetime(tilo_action_policy::Lifetime::Until(
+            start / 1_000_000 + 50_000,
+        ));
         workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
@@ -404,7 +444,8 @@ impl OriginalRoom {
         );
         let mut tree = crate::test_support::WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        tree.persist_path = persist_path;
+        tree.persist_path =
+            Some(persist_path.unwrap_or_else(|| fixture_root.path().join("workspace.json")));
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
@@ -436,6 +477,8 @@ impl OriginalRoom {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
+            _identity_env: identity_env,
+            _root: fixture_root,
         }
     }
 

@@ -32,7 +32,9 @@ settings-host = ["client", "dep:settings-store"]
 native-retained-qualification = ["client"]
 
 [dependencies]
+registry-types = { path = "../../packaging/registry-types" }
 browser-continuity.workspace = true
+blake3.workspace = true
 zeroize.workspace = true
 # Signed retained proofs use the current canonical personal/device identity.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }

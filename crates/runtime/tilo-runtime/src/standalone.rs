@@ -248,15 +248,30 @@ impl RuntimeServices for Standalone {
     }
 
     fn action_host(&self) -> io::Result<RuntimeActionHost> {
-        self.broker
+        let broker = self
+            .broker
             .app_action_broker()
-            .map(|broker| RuntimeActionHost {
-                broker,
-                room: self.room.clone(),
-                joined: Arc::clone(&self.joined),
-                session: None,
-            })
-            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))
+            .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
+        let admission = self
+            .joined
+            .admit_mcp_execution(&self.room, &self.room, &self.actor)
+            .map_err(io::Error::other)?;
+        let host = broker
+            .certified_local_action_host(admission.caller(), admission.presentation())
+            .map_err(io::Error::other)?;
+        admission.check(&self.joined).map_err(io::Error::other)?;
+        Ok(RuntimeActionHost {
+            broker,
+            room: self.room.clone(),
+            joined: Arc::clone(&self.joined),
+            session: Some(Arc::new(AdmittedRuntimeSession {
+                policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
+                host,
+                admission,
+                agent: None,
+                projection: Some(Caller::local_person(&self.actor).in_room(&self.room)),
+            })),
+        })
     }
 
     fn mcp_session_factory(
@@ -314,8 +329,8 @@ pub struct RuntimeActionHost {
     broker: AppActionBroker,
     room: String,
     joined: Arc<Joined>,
-    // Present only on the per-execution MCP factory path; no fallback after
-    // qualification fails. Existing local OS search keeps its original door.
+    // Retains original custody for both owner/search and MCP callers. An
+    // owner projection is not a native seat and never acquires seat authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
 }
 
@@ -324,12 +339,16 @@ struct AdmittedRuntimeSession {
     host: Arc<dyn ActionHost + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
     /// The agent the person's device handed this run to.
-    agent: String,
+    agent: Option<String>,
+    projection: Option<Caller>,
 }
 impl AdmittedRuntimeSession {
     /// The run's caller as the broker admits it: the agent, for the person.
-    fn acting(&self, caller: &Caller) -> Caller {
-        caller.clone().delegated_to(self.agent.clone())
+    fn acting(&self) -> Caller {
+        let caller = self.admission.caller().clone();
+        self.agent
+            .as_ref()
+            .map_or(caller.clone(), |agent| caller.delegated_to(agent.clone()))
     }
 
     fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), ActionHostError> {
@@ -339,7 +358,9 @@ impl AdmittedRuntimeSession {
             .map_err(|_| ActionHostError::NotPermitted)?;
         tilo_user_identity::verify_device_cert_at(self.admission.certificate(), now)
             .map_err(|_| ActionHostError::NotPermitted)?;
-        if caller != self.admission.caller() || self.admission.check(joined).is_err() {
+        if caller != self.projection.as_ref().unwrap_or(self.admission.caller())
+            || self.admission.check(joined).is_err()
+        {
             return Err(ActionHostError::NotPermitted);
         }
         Ok(())
@@ -397,7 +418,8 @@ impl RuntimeActionHost {
                     policy_time: policy_time.clone(),
                     host: qualified,
                     admission,
-                    agent,
+                    agent: Some(agent),
+                    projection: None,
                 })),
             };
             crate::mcp::McpServer::admitted(session_host, caller)
@@ -429,6 +451,19 @@ fn on_this_device(caller: &Caller) -> Caller {
 
 impl ActionHost for RuntimeActionHost {
     fn retire_execution(&self, caller: &Caller) {
+        if let Some(session) = &self.session {
+            if caller
+                == session
+                    .projection
+                    .as_ref()
+                    .unwrap_or(session.admission.caller())
+            {
+                self.broker
+                    .state()
+                    .retire_execution(session.admission.caller());
+            }
+            return;
+        }
         self.broker.state().retire_execution(caller);
     }
 
@@ -438,6 +473,17 @@ impl ActionHost for RuntimeActionHost {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
         if let Some(session) = &self.session {
+            // Owner discovery remains the ordinary read path: no per-query
+            // identity-store resolution. Opening a result uses retained custody.
+            if session.projection.as_ref() == Some(caller) {
+                if !self.admitted(caller) {
+                    return Pending::ready(Err(ActionHostError::NotPermitted));
+                }
+                return self
+                    .broker
+                    .state()
+                    .action_query(&on_this_device(caller), &query);
+            }
             if let Err(error) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(error));
             }
@@ -450,10 +496,7 @@ impl ActionHost for RuntimeActionHost {
             }
             // Existing general catalogue/builtin doors retain the exact
             // authenticated run. They make no SDK original-custody claim.
-            let answer = self
-                .broker
-                .state()
-                .action_query(&session.acting(caller), &query);
+            let answer = self.broker.state().action_query(&session.acting(), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
@@ -476,27 +519,15 @@ impl ActionHost for RuntimeActionHost {
             if let Err(error) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(error));
             }
-            if certified_provider(&request.target.provider) {
-                return session.host.invoke(caller, request);
-            }
-            let answer =
-                self.broker
-                    .state()
-                    .action_invoke(&session.acting(caller), None, None, &request);
-            return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
+            return session.host.invoke(session.admission.caller(), request);
         }
-        if !self.admitted(caller) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
-        }
-        self.broker
-            .state()
-            .action_invoke(&on_this_device(caller), None, None, &request)
+        Pending::ready(Err(ActionHostError::NotPermitted))
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.observe(caller, id);
+            return session.host.observe(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -511,7 +542,7 @@ impl ActionHost for RuntimeActionHost {
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined).ok()?;
-            return session.host.next_change(caller, id);
+            return session.host.next_change(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -533,12 +564,13 @@ impl ActionHost for RuntimeActionHost {
         let Some(session) = &self.session else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
+        if session.agent.is_none() {
+            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+        }
         if let Err(error) = session.check(caller, &self.joined) {
             return Pending::ready(Err(error));
         }
-        self.broker
-            .state()
-            .request_witness(&session.acting(caller), None, request)
+        session.host.confirm(session.admission.caller(), request)
     }
 
     fn cancel(
@@ -548,7 +580,7 @@ impl ActionHost for RuntimeActionHost {
     ) -> Result<(), ActionHostError> {
         if let Some(session) = &self.session {
             session.check(caller, &self.joined)?;
-            return session.host.cancel(caller, id);
+            return session.host.cancel(session.admission.caller(), id);
         }
         if !self.admitted(caller) {
             return Err(ActionHostError::UnknownInvocation);

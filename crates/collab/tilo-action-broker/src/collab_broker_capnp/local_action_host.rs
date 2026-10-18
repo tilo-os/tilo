@@ -12,6 +12,8 @@ struct CertifiedLocalActionHost {
     caller: Caller,
     effective: Caller,
     admission: VerifiedActionCaller,
+    /// Only the protected native-seat entrypoint supplies physical intent.
+    native_projection: Option<Caller>,
 }
 
 impl CapnpBrokerState {
@@ -63,6 +65,41 @@ impl CapnpBrokerState {
                 .ok_or_else(|| "private draft certificate unavailable".into())
         });
         self.mint_private_draft(certificate, origin, draft)
+    }
+
+    /// Resolve a native seat's projected Person through protected host custody.
+    /// `None` means this broker has no native seat (and grants no certificate
+    /// custody); a configured service's refusal is never a compatibility fallback.
+    ///
+    /// # Errors
+    /// Refuses retired executions, non-native callers and stale native custody.
+    pub fn native_local_person_certificate(
+        &self,
+        caller: &Caller,
+    ) -> Result<Option<tilo_user_identity::DeviceCert>, String> {
+        let Some(service) = self.services.local_person.as_ref() else {
+            return Ok(None);
+        };
+        if !self.is_accepting()
+            || (caller.execution_id().is_some() && !caller.execution_is_live())
+            || caller.is_foreign_device()
+            || caller.acting_for_person().is_some()
+            || caller.shortcut().is_some()
+            || caller.user_public_key().is_some()
+            || caller.device_public_key().is_some()
+        {
+            return Err("native person execution unavailable".into());
+        }
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native person required".into());
+        };
+        let room = caller.room().ok_or("native person room required")?;
+        let certificate = service.certificate(room, person)?;
+        if super::principal_id_for_root(certificate.user_public_key) != *person {
+            return Err("native person certificate mismatch".into());
+        }
+        self.current_native_person(room, &certificate)?;
+        Ok(Some(certificate))
     }
 
     /// Invoke through the native seat's existing palette/control provider.
@@ -131,6 +168,11 @@ impl CapnpBrokerState {
         })();
         match origin {
             Ok(origin) => {
+                match self.host_action_replay(caller, &origin, request) {
+                    Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+                    Err(error) => return Pending::ready(Err(error)),
+                    Ok(None) => {}
+                }
                 if let InvocationCaller::NativePerson {
                     room, certificate, ..
                 } = &origin
@@ -195,6 +237,54 @@ impl CapnpBrokerState {
         Ok(self.checked_local_host(caller, presentation)?)
     }
 
+    /// Preserve native physical intent without dropping the signed session.
+    /// Network, app and delegated-agent doors never select this entrypoint.
+    ///
+    /// # Errors
+    /// Refuses missing or replaced protected seat custody and invalid admission.
+    pub fn certified_native_action_host(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn ActionHost + Send + Sync>, String> {
+        let mut checked = (*self.checked_local_host(caller, presentation)?).clone();
+        if checked.effective.is_foreign_device() {
+            return Err("native action requires this device's person".into());
+        }
+        let CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native action requires a person".into());
+        };
+        let mut projection = Caller::local_person(person).in_room(&checked.admission.room);
+        if let Some(lease) = caller.execution_lease() {
+            projection = projection.in_execution(lease);
+        }
+        let certificate = self
+            .native_local_person_certificate(&projection)?
+            .ok_or("native seat custody unavailable")?;
+        if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
+            return Err("native seat differs from original certified admission".into());
+        }
+        checked.admission.native_projection_verified = true;
+        checked.effective = projection.clone();
+        checked.native_projection = Some(projection);
+        Ok(Arc::new(checked))
+    }
+
+    /// Retain the exact certificate owner for the native Jobs projection.
+    /// Every read and control revalidates the original session admission.
+    ///
+    /// # Errors
+    /// Refuses the same invalid or expired custody as `certified_local_action_host`.
+    pub fn certified_action_lifecycle(
+        self: &Arc<Self>,
+        caller: &Caller,
+        presentation: &[u8],
+    ) -> Result<CertifiedActionLifecycle, String> {
+        Ok(CertifiedActionLifecycle(
+            self.checked_local_host(caller, presentation)?,
+        ))
+    }
+
     /// [`Self::certified_local_action_host`] handed to agent `agent` by the
     /// person's own device (an MCP client): the session stays the person's
     /// admission, every action through it is the agent's, acting for the
@@ -249,12 +339,98 @@ impl CapnpBrokerState {
             caller: caller.clone(),
             effective,
             admission,
+            native_projection: None,
         });
         // The presentation was verified against current membership and
         // policy above, with this clock sample; only the lease is new.
         host.check_lease(caller)
             .map_err(|error| error.to_string())?;
         Ok(host)
+    }
+}
+
+/// Owner-aware lifecycle access under an existing certified session.
+#[derive(Clone)]
+pub struct CertifiedActionLifecycle(Arc<CertifiedLocalActionHost>);
+
+impl CertifiedActionLifecycle {
+    pub fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        let Ok(admitted) = self.0.check(&self.0.caller) else {
+            return Vec::new();
+        };
+        self.0
+            .state
+            .invocation_statuses_for_owner(&self.0.admission.owner())
+            .into_iter()
+            .filter(|(id, update)| self.permitted_job(*id, update.invocation(), &admitted))
+            .collect()
+    }
+
+    pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
+        let admitted = self.0.check(&self.0.caller).ok()?;
+        let update = self
+            .0
+            .state
+            .invocation_status_for_owner(id, &self.0.admission.owner())?;
+        self.permitted_job(id, update.invocation(), &admitted)
+            .then_some(update)
+    }
+
+    pub fn can_cancel(&self, id: u64) -> bool {
+        self.status(id).is_some()
+            && self
+                .0
+                .state
+                .can_cancel_for_owner(id, &self.0.admission.owner())
+    }
+
+    /// # Errors
+    /// Refuses revoked custody, foreign ownership and non-cancellable jobs.
+    pub fn cancel(&self, id: u64) -> Result<(), String> {
+        self.status(id)
+            .ok_or("the invocation is unavailable in this session")?;
+        self.0
+            .state
+            .request_cancellation_for_owner(id, &self.0.admission.owner())
+    }
+
+    fn permitted_job(
+        &self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+        admitted: &super::AdmittedJoinIdentity,
+    ) -> bool {
+        let Ok(guard) = self.0.state.journal.lock() else {
+            return false;
+        };
+        let Ok(Some(journal)) = guard.as_ref() else {
+            return false;
+        };
+        let key = super::InvocationKey {
+            host: journal.host(),
+            room: self.0.admission.room.clone(),
+            owner: self.0.admission.owner(),
+            invocation,
+        };
+        let in_room = journal
+            .lookup(&key)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.wire_id == id);
+        drop(guard);
+        in_room
+            && self
+                .0
+                .state
+                .authorize_checkpoint_job(
+                    &self.0.admission.room,
+                    admitted
+                        .certificate
+                        .as_ref()
+                        .filter(|_| admitted.agent_id.is_none()),
+                    id,
+                )
+                .is_ok()
     }
 }
 
@@ -322,6 +498,13 @@ impl CapnpBrokerState {
 }
 
 impl CertifiedLocalActionHost {
+    fn invocation_origin(&self) -> InvocationCaller {
+        InvocationCaller::Certified {
+            caller: Box::new(self.admission.clone()),
+            foreign_restriction: self.effective.is_foreign_device(),
+        }
+    }
+
     /// This door, handed to agent `agent` by the person's own device.
     fn delegated_to(&self, agent: &str) -> Self {
         Self {
@@ -329,6 +512,7 @@ impl CertifiedLocalActionHost {
             caller: self.caller.clone(),
             effective: self.effective.clone().delegated_to(agent),
             admission: self.admission.clone().delegated_to(agent),
+            native_projection: None,
         }
     }
 
@@ -341,6 +525,14 @@ impl CertifiedLocalActionHost {
             || !self.state.is_accepting()
             || self.admission.policy_time.is_none()
         {
+            return Err(ActionHostError::NotPermitted);
+        }
+        // Native custody was acquired at admission. Lifecycle reads must not
+        // resolve the seat's identity files again; `check` below validates the
+        // retained admission against current revocation and membership state.
+        if self.native_projection.as_ref().is_some_and(|projection| {
+            projection.execution_id().is_some() && !projection.execution_is_live()
+        }) {
             return Err(ActionHostError::NotPermitted);
         }
         Ok(())
@@ -365,16 +557,22 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // Numeric peer and application/retained-launch aliases preserve original
-        // custody to the actual numeric dispatch. Other doors remain separate.
-        if query
-            .provider
-            .as_ref()
-            .is_some_and(|provider| !certified_provider(provider))
-        {
+        // Allow only doors that retain original custody through application
+        // dispatch or the host-side admission barrier.
+        if query.provider.as_ref().is_some_and(|provider| {
+            !certified_provider(provider)
+                || query
+                    .target
+                    .as_ref()
+                    .is_some_and(|address| !certified_target(provider, address))
+        }) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let mut answer = self.state.action_query(&self.effective, &query);
+        let mut answer = self.state.action_query_with_origin(
+            &self.effective,
+            Some(&self.invocation_origin()),
+            &query,
+        );
         // An answer this call produced is covered by the check above; one
         // that arrives later is checked again when it does.
         if let PendingPoll::Ready(page) = answer.poll_ready() {
@@ -406,17 +604,42 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        let admitted = match self.check(caller) {
-            Ok(admitted) => admitted,
-            Err(error) => return Pending::ready(Err(error)),
+        // A new application admission is queued onto the broker. Validate its
+        // lease here, but verify live certificate/policy there, not twice across
+        // an asynchronous boundary. Replay/checkpoint replies still verify here
+        // because they may return retained private data without another dispatch.
+        let deferred = request.target.address.resource.as_str()
+            != super::workspace_checkpoints::RESOURCE
+            && self
+                .state
+                .remote_job(&self.effective, &request.invocation)
+                .is_none();
+        let admitted = if deferred {
+            if let Err(error) = self.check_lease(caller) {
+                return Pending::ready(Err(error));
+            }
+            self.admission.admitted.clone()
+        } else {
+            match self.check(caller) {
+                Ok(admitted) => admitted,
+                Err(error) => return Pending::ready(Err(error)),
+            }
         };
-        if !certified_provider(&request.target.provider) {
+        if !certified_target(&request.target.provider, &request.target.address) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
         if request.target.address.resource.as_str() == super::workspace_checkpoints::RESOURCE
             && admitted.agent_id.is_some()
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        match self
+            .state
+            .host_action_replay(&self.effective, &self.invocation_origin(), &request)
+        {
+            Ok(Some(receipt)) => return Pending::ready(Ok(receipt)),
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(None) => {}
         }
         let person_certificate = admitted
             .certificate
@@ -441,20 +664,36 @@ impl ActionHost for CertifiedLocalActionHost {
         {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
-        // This admission stands for the dispatch this call reaches; whatever
-        // continues after it returns verifies again.
-        super::admission_memo::with_admitted_now(&self.admission, admitted, || {
+        // Only lend a live admission to synchronous work. A newly queued
+        // dispatch verifies its original custody on the broker turn instead.
+        let invoke = || {
             self.state.action_invoke_with_origin(
                 &self.effective,
                 None,
                 None,
-                Some(&InvocationCaller::Certified {
-                    caller: Box::new(self.admission.clone()),
-                    foreign_restriction: self.effective.is_foreign_device(),
-                }),
+                Some(&self.invocation_origin()),
                 &request,
             )
-        })
+        };
+        if deferred {
+            invoke()
+        } else {
+            super::admission_memo::with_admitted_now(&self.admission, admitted, invoke)
+        }
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        if let Err(error) = self.check(caller) {
+            return Pending::ready(Err(error));
+        }
+        if !certified_target(&request.target.provider, &request.target.address) {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
+        self.state.request_witness(&self.effective, None, request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -485,7 +724,13 @@ impl ActionHost for CertifiedLocalActionHost {
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.check(caller)?;
-        self.state.action_cancel(&self.effective, id)
+        let job = self
+            .state
+            .remote_job(&self.effective, id)
+            .ok_or(ActionHostError::UnknownInvocation)?;
+        self.state
+            .request_cancellation_for_owner(job, &self.admission.owner())
+            .map_err(|reason| ActionHostError::NotCancellable { reason })
     }
 }
 
@@ -497,14 +742,148 @@ fn certified_page(mut page: CataloguePage) -> CataloguePage {
     page
 }
 
-// Only existing provider forms with preserved original SDK-delivery custody.
+// Registered workspace services now all retain original host admission. The
+// live dispatcher, not this syntactic provider gate, resolves the descriptor.
+fn certified_target(provider: &str, _address: &tilo_actions::ActionAddress) -> bool {
+    certified_provider(provider)
+}
+
+// Only provider forms with preserved original dispatch/admission custody.
+// Workspace tokens are browsable, but their rows and requests need target checks.
 fn certified_provider(provider: &str) -> bool {
     // This is only door classification. The action host independently looks
     // up the opaque token and revalidates its live registration/custody.
     if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
         return true;
     }
-    provider.parse::<u64>().is_ok()
+    matches!(
+        provider,
+        tilo_actions::remote::device_pairing::PROVIDER
+            | tilo_actions::remote::identity_admin::PROVIDER
+            | tilo_actions::remote::own_device::PROVIDER
+    ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
+        || tilo_actions::remote::workspace_provider_room(provider).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::remote::{CatalogueProvider, CatalogueRow, workspace_provider};
+    use tilo_actions::{ActionAddress, ActionDescriptor};
+
+    fn workspace_targets() -> (Vec<ActionAddress>, Vec<ActionAddress>) {
+        (
+            vec![
+                ActionAddress::new("app.so.tilo.notes", "open"),
+                ActionAddress::new("app.so.tilo.notes", "close"),
+                ActionAddress::new(
+                    tilo_automation::shortcut_resource_id("test-shortcut"),
+                    tilo_automation::SHORTCUT_RUN_ACTION,
+                ),
+                ActionAddress::new("workspace", "grant"),
+                ActionAddress::new("workspace", "preset.assign"),
+                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "create"),
+                ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "list"),
+                ActionAddress::new("keyboard-shortcuts", "list"),
+                ActionAddress::new("keyboard-shortcut:show-overview", "rebind"),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn workspace_requests_leave_descriptor_resolution_to_the_live_dispatcher() {
+        let provider = workspace_provider("room");
+        assert!(certified_provider(&provider));
+        let (allowed, blocked) = workspace_targets();
+        for address in allowed {
+            // Both invocation and confirmation use this exact target gate.
+            assert!(certified_target(&provider, &address), "{address:?}");
+        }
+        for address in blocked {
+            assert!(!certified_target(&provider, &address), "{address:?}");
+        }
+        assert!(!certified_provider("untrusted"));
+        assert!(!certified_target(
+            "untrusted",
+            &ActionAddress::new("app.so.tilo.notes", "open")
+        ));
+        assert!(certified_target("42", &ActionAddress::new("note", "edit")));
+    }
+
+    fn row(provider: &str, address: ActionAddress) -> CatalogueRow {
+        CatalogueRow::for_action(
+            provider,
+            "test-app",
+            ActionDescriptor {
+                semantic_identity: None,
+                address,
+                resource_kind: "test-resource".into(),
+                resource_label: "Test resource".into(),
+                action_label: "Test action".into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract::view(),
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        )
+    }
+
+    #[test]
+    fn workspace_page_keeps_registered_service_actions_and_resource_rows() {
+        let provider = workspace_provider("room");
+        let (allowed, blocked) = workspace_targets();
+        let mut rows: Vec<_> = allowed
+            .iter()
+            .chain(&blocked)
+            .cloned()
+            .map(|address| row(&provider, address))
+            .collect();
+        let mut resource_only = row(&provider, ActionAddress::new("shortcuts", "list"));
+        resource_only.action = None;
+        rows.push(resource_only);
+        rows.push(row("42", ActionAddress::new("note", "edit")));
+        rows.push(row("untrusted", ActionAddress::new("note", "edit")));
+        let providers = [provider.as_str(), "42", "untrusted"]
+            .into_iter()
+            .map(|provider| CatalogueProvider {
+                provider: provider.into(),
+                app_id: "test-app".into(),
+                room: "room".into(),
+                record_id: String::new(),
+                browsable: true,
+            })
+            .collect();
+        let page = certified_page(CataloguePage {
+            revision: "revision".into(),
+            rows,
+            providers,
+            next_cursor: vec![1],
+            ..CataloguePage::default()
+        });
+        assert_eq!(page.rows.len(), allowed.len() + 2);
+        assert!(page.rows[allowed.len()].action.is_none());
+        assert_eq!(
+            page.rows[..allowed.len()]
+                .iter()
+                .map(|row| row.action.as_ref().unwrap().address.clone())
+                .collect::<Vec<_>>(),
+            allowed
+        );
+        assert_eq!(page.rows.last().unwrap().provider, "42");
+        assert_eq!(
+            page.providers
+                .iter()
+                .map(|p| p.provider.as_str())
+                .collect::<Vec<_>>(),
+            [provider.as_str(), "42"]
+        );
+        assert_eq!(page.revision, "revision");
+        assert_eq!(page.next_cursor, [1]);
+    }
 }

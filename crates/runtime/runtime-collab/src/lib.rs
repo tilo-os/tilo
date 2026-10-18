@@ -73,6 +73,7 @@ pub mod collab_capnp {
 }
 
 pub mod approved_checks;
+pub mod external_moderation;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
 #[derive(Clone, Copy, Debug)]
@@ -1223,6 +1224,37 @@ impl ChannelHandle {
             );
         }
         Ok(value)
+    }
+
+    /// Complete an exact moderation operation under its admitted invocation.
+    /// No signature or key material is returned to the caller.
+    /// # Errors
+    /// Refuses invalid custody, oversized envelopes or invalid case receipts.
+    pub async fn external_moderation(
+        &self,
+        command: &external_moderation::Request,
+        parent: [u8; 16],
+    ) -> Result<registry_types::ModerationCase, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        command.validate().map_err(failed)?;
+        if parent == [0; 16] || uuid::Uuid::from_bytes(parent).to_string() != command.invocation {
+            return Err(failed("external moderation invocation differs".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|e| failed(e.to_string()))?;
+        if bytes.len() > external_moderation::MAX_WIRE_BYTES {
+            return Err(failed("external moderation request exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request.get().set_on_behalf_of(&parent);
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > external_moderation::MAX_WIRE_BYTES {
+            return Err(failed("external moderation response exceeds bound".into()));
+        }
+        let case = serde_json::from_slice(bytes).map_err(|e| failed(e.to_string()))?;
+        external_moderation::validate_receipt(command, &case).map_err(failed)?;
+        Ok(case)
     }
 
     /// Open with explicit access through original semantic action custody.
@@ -3557,12 +3589,62 @@ pub struct PublishedInvocationBinding {
 }
 
 /// A retained server observation, including uncertainty independently of JSON.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PublishedInvocationResult {
     pub id: u64,
     pub update_json: String,
+    /// Host-private `AdmissionEvidence` JSON from an owner-authorized observation,
+    /// never a public stream. Empty wire fields decode as absent.
+    pub admission_json: Option<String>,
+    /// Host-private terminal evidence JSON with the same owner-only visibility.
+    pub terminal_json: Option<String>,
     pub uncertain: bool,
     pub cancellation_requested: bool,
+}
+
+impl std::fmt::Debug for PublishedInvocationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublishedInvocationResult")
+            .field("id", &self.id)
+            .field("uncertain", &self.uncertain)
+            .field("cancellation_requested", &self.cancellation_requested)
+            .field("has_admission", &self.admission_json.is_some())
+            .field("has_terminal", &self.terminal_json.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Private report of an already performed, speculative local document action.
+/// The revision must come from the app's published directory snapshot at capture
+/// time, never from a later directory query. This supplies no publication authority.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalDocumentActionReport {
+    /// Original authenticated channel provenance, compared with live custody at admission.
+    #[serde(default)]
+    pub custody: Option<committed_document::ConnectionSnapshot>,
+    pub version: u8,
+    pub invocation: uuid::Uuid,
+    /// Random capture identity, preserved unchanged across retries.
+    pub capture_id: uuid::Uuid,
+    pub revision: String,
+    pub resource: String,
+    pub action: String,
+    pub argument: Option<String>,
+    /// Exact typed execution and context captured before transport admission.
+    pub encoded: tilo_actions::EncodedAction,
+    pub context: Option<tilo_actions::ActionContext>,
+    pub original_heads: Vec<[u8; 32]>,
+    pub mutation_hashes: Vec<[u8; 32]>,
+    pub group: Option<tilo_actions::ActionGroup>,
+}
+
+impl std::fmt::Debug for LocalDocumentActionReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalDocumentActionReport")
+            .field("invocation", &self.invocation)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An absent result never authorizes a new UUID or changed invocation intent.
@@ -3679,14 +3761,24 @@ fn reliable_decode_observation(
         #[serde(borrow)]
         invocation: &'a str,
     }
-    reliable_size(o.total_size()?)?;
+    // Preserve the existing 256 KiB outcome budget plus two bounded evidence
+    // fields; adding evidence must not make a previously valid outcome unreadable.
+    let size = o.total_size()?;
+    if size.word_count > 321 * 1024 / 8 || size.cap_count != 0 {
+        return Err(reliable_error());
+    }
     if reliable_array::<16>(o.get_host()?)? != *host
         || reliable_array::<16>(o.get_invocation()?)? != *invocation
     {
         return Err(reliable_error());
     }
     let json = o.get_update_json()?.to_str()?;
-    if !reliable_text(json, 256 * 1024, true, false) {
+    let admission_json = o.get_admission_json()?.to_str()?;
+    let terminal_json = o.get_terminal_json()?.to_str()?;
+    if !reliable_text(json, 256 * 1024, true, false)
+        || !reliable_text(admission_json, 32 * 1024, true, false)
+        || !reliable_text(terminal_json, 32 * 1024, true, false)
+    {
         return Err(reliable_error());
     }
     let result = if o.get_found() {
@@ -3700,12 +3792,16 @@ fn reliable_decode_observation(
         Some(PublishedInvocationResult {
             id: o.get_id(),
             update_json: json.to_owned(),
+            admission_json: (!admission_json.is_empty()).then(|| admission_json.to_owned()),
+            terminal_json: (!terminal_json.is_empty()).then(|| terminal_json.to_owned()),
             uncertain: o.get_uncertain(),
             cancellation_requested: o.get_cancellation_requested(),
         })
     } else {
         if o.get_id() != 0
             || !json.is_empty()
+            || !admission_json.is_empty()
+            || !terminal_json.is_empty()
             || o.get_uncertain()
             || o.get_cancellation_requested()
         {
@@ -3720,8 +3816,184 @@ fn reliable_decode_observation(
     })
 }
 
+impl LocalDocumentActionReport {
+    /// Bind the complete immutable report, except the invocation address itself.
+    /// Generate `capture_id` once; finalize this address only after mutation hashes
+    /// are known and preserve both identities across transport retries.
+    /// # Errors
+    /// Returns an error if the report cannot be encoded.
+    pub fn bound_invocation(&self) -> Result<uuid::Uuid, String> {
+        let mut value = serde_json::to_value(self).map_err(|_| "local report encoding failed")?;
+        value
+            .as_object_mut()
+            .ok_or("invalid local report")?
+            .remove("invocation");
+        // Match the broker's journal request digest, including recursively sorted
+        // object members even when serde_json's preserve_order feature is enabled.
+        fn canonical(value: &serde_json::Value, out: &mut Vec<u8>) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    let mut members: Vec<_> = fields.iter().collect();
+                    members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                    out.push(b'{');
+                    for (position, (name, member)) in members.into_iter().enumerate() {
+                        if position > 0 {
+                            out.push(b',');
+                        }
+                        canonical(&serde_json::Value::String(name.clone()), out);
+                        out.push(b':');
+                        canonical(member, out);
+                    }
+                    out.push(b'}');
+                }
+                serde_json::Value::Array(items) => {
+                    out.push(b'[');
+                    for (position, item) in items.iter().enumerate() {
+                        if position > 0 {
+                            out.push(b',');
+                        }
+                        canonical(item, out);
+                    }
+                    out.push(b']');
+                }
+                scalar => out.extend_from_slice(scalar.to_string().as_bytes()),
+            }
+        }
+        let mut encoded = Vec::new();
+        canonical(&value, &mut encoded);
+        let mut request = blake3::Hasher::new_derive_key("tilo invocation journal request v1");
+        request.update(&encoded);
+        let mut hash = blake3::Hasher::new_derive_key("tilo local document capture identity v1");
+        hash.update(request.finalize().as_bytes());
+        let bytes = hash
+            .finalize()
+            .as_bytes()
+            .first_chunk::<16>()
+            .copied()
+            .ok_or("invalid local report digest")?;
+        Ok(uuid::Uuid::from_bytes(bytes))
+    }
+
+    /// Closed, bounded encoding shared with the authenticated local endpoint.
+    /// Custody is recovery provenance, never caller-selected authority.
+    /// # Errors
+    /// Refuses invalid addresses, noncanonical hash sets and oversized reports.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        if self.version != 1 || self.invocation.is_nil() || self.capture_id.is_nil() {
+            return Err("invalid local document report version or invocation".into());
+        }
+        for field in [&self.revision, &self.resource, &self.action] {
+            if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+                return Err("invalid local document report address".into());
+            }
+        }
+        for hashes in [&self.original_heads, &self.mutation_hashes] {
+            if hashes.len() > 256 || hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err("local document report hashes must be bounded sorted sets".into());
+            }
+        }
+        if self.encoded.type_id.is_empty()
+            || self.encoded.type_id.len() > 4096
+            || self.encoded.type_id.chars().any(char::is_control)
+            || serde_json::from_slice::<serde_json::Value>(&self.encoded.payload).is_err()
+        {
+            return Err("invalid encoded local action report".into());
+        }
+        if self
+            .argument
+            .as_ref()
+            .is_some_and(|argument| argument.len() > 64 * 1024)
+        {
+            return Err("local document report exceeds byte budget".into());
+        }
+        if let Some(group) = &self.group {
+            for field in [&group.id, &group.label, &group.kind] {
+                if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
+                    return Err("invalid local document report group".into());
+                }
+            }
+        }
+        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
+        if bytes.len() > 64 * 1024 {
+            return Err("local document report exceeds byte budget".into());
+        }
+        Ok(bytes)
+    }
+}
+
+/// Explicit pre-admission rejection marker. Unmarked RPC errors may follow a
+/// committed admission and must never release the caller's recovery custody.
+pub const LOCAL_DOCUMENT_REJECTED: &str = "local-document-rejected: ";
+
+/// A rejection is definitive; an uncertain outcome must retain the exact UUID.
+#[derive(Clone, Debug)]
+pub enum LocalDocumentActionError {
+    Rejected(String),
+    Uncertain(String),
+}
+
+impl std::fmt::Display for LocalDocumentActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(message) | Self::Uncertain(message) => f.write_str(message),
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<NotAvailable> for LocalDocumentActionError {
+    fn from(error: NotAvailable) -> Self {
+        Self::Uncertain(error.to_string())
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<capnp::Error> for LocalDocumentActionError {
+    fn from(error: capnp::Error) -> Self {
+        Self::Uncertain(error.to_string())
+    }
+}
+
 #[cfg(feature = "client")]
 impl ChannelHandle {
+    /// Report speculative local document work on this authenticated session.
+    /// Admission is not execution, success, or `DocumentAuthorization`. No retry,
+    /// fallback, fresh revision lookup or replacement invocation is synthesized.
+    /// # Errors
+    /// Refuses malformed reports, unsupported endpoints and uncorrelated replies.
+    pub async fn admit_local_document_action(
+        &self,
+        report: &LocalDocumentActionReport,
+    ) -> Result<PublishedInvocationObservation, LocalDocumentActionError> {
+        let bytes = report
+            .encode()
+            .map_err(LocalDocumentActionError::Rejected)?;
+        let mut request = self.inner.admit_local_document_action_request();
+        request.get().set_request(&bytes);
+        let reply = request.send().promise.await.map_err(|error| {
+            if error.kind == capnp::ErrorKind::Failed {
+                // Two-party Cap'n Proto prefixes exception reasons on receipt.
+                let reason = error
+                    .extra
+                    .strip_prefix("remote exception: ")
+                    .unwrap_or(&error.extra);
+                if let Some(reason) = reason.strip_prefix(LOCAL_DOCUMENT_REJECTED) {
+                    return LocalDocumentActionError::Rejected(reason.to_owned());
+                }
+            }
+            LocalDocumentActionError::Uncertain(error.to_string())
+        })?;
+        let result = reply.get()?;
+        reliable_size(result.total_size()?)?;
+        let observation = result.get_observation()?;
+        let host = reliable_array::<16>(observation.get_host()?)?;
+        Ok(reliable_decode_observation(
+            observation,
+            &host,
+            report.invocation.as_bytes(),
+        )?)
+    }
+
     /// Resolve a reliable target; older @35 responses with no binding refuse.
     /// The result is inert data; the server revalidates authority at admission.
     /// # Errors
@@ -3893,3 +4165,198 @@ impl ChannelHandle {
 #[cfg(test)]
 #[cfg(feature = "client")]
 mod reliable_invocation_tests;
+
+#[cfg(all(test, feature = "client"))]
+mod local_document_action_transport_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn report() -> LocalDocumentActionReport {
+        LocalDocumentActionReport {
+            custody: None,
+            version: 1,
+            invocation: uuid::Uuid::from_bytes([1; 16]),
+            capture_id: uuid::Uuid::from_bytes([4; 16]),
+            revision: "captured-revision".into(),
+            resource: "document".into(),
+            action: "edit".into(),
+            argument: Some("private text".into()),
+            encoded: tilo_actions::EncodedAction {
+                type_id: "private-action-type".into(),
+                payload: br#"{"text":"private encoded payload"}"#.to_vec(),
+            },
+            context: Some(tilo_actions::ActionContext {
+                purpose: Some("private purpose".into()),
+                source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                    [7; 16],
+                ))),
+                ..Default::default()
+            }),
+            original_heads: vec![[2; 32]],
+            mutation_hashes: vec![[3; 32]],
+            group: None,
+        }
+    }
+
+    #[test]
+    fn closed_report_is_bounded_and_debug_does_not_disclose_payload() {
+        let mut value = report();
+        let json: serde_json::Value = serde_json::from_slice(&value.encode().unwrap()).unwrap();
+        let mut fields = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            vec![
+                "action",
+                "argument",
+                "capture_id",
+                "context",
+                "custody",
+                "encoded",
+                "group",
+                "invocation",
+                "mutation_hashes",
+                "original_heads",
+                "resource",
+                "revision",
+                "version",
+            ]
+        );
+        for forbidden in ["actor", "app", "record", "peer", "target"] {
+            assert!(json.get(forbidden).is_none());
+        }
+        assert_eq!(json["invocation"], value.invocation.to_string());
+        assert_eq!(json["capture_id"], value.capture_id.to_string());
+        let mut missing_custody = json.clone();
+        missing_custody.as_object_mut().unwrap().remove("custody");
+        let legacy: LocalDocumentActionReport = serde_json::from_value(missing_custody).unwrap();
+        assert!(legacy.custody.is_none());
+        let mut missing_capture = json.clone();
+        missing_capture
+            .as_object_mut()
+            .unwrap()
+            .remove("capture_id");
+        assert!(serde_json::from_value::<LocalDocumentActionReport>(missing_capture).is_err());
+        let mut nil_capture = value.clone();
+        nil_capture.capture_id = uuid::Uuid::nil();
+        assert!(nil_capture.encode().is_err());
+        let debug = format!("{value:?}");
+        assert!(!debug.contains("private text"));
+        assert!(!debug.contains("captured-revision"));
+        assert!(!debug.contains("private-action-type"));
+        assert!(!debug.contains("private encoded payload"));
+        assert!(!debug.contains("private purpose"));
+        assert!(!debug.contains("encoded"));
+        assert!(!debug.contains("context"));
+        let decoded: LocalDocumentActionReport = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.encoded, value.encoded);
+        assert_eq!(decoded.context, value.context);
+        assert_eq!(decoded.argument, value.argument);
+        assert_eq!(decoded.encode().unwrap(), value.encode().unwrap());
+        value.mutation_hashes.push([3; 32]);
+        assert!(value.encode().is_err());
+        value.mutation_hashes.clear();
+        value.original_heads.clear();
+        assert!(value.encode().is_ok());
+        value.mutation_hashes.push([3; 32]);
+        value.argument = Some("x".repeat(64 * 1024 + 1));
+        assert!(value.encode().is_err());
+    }
+
+    struct Server {
+        received: Rc<RefCell<Vec<Vec<u8>>>>,
+        wrong_id: bool,
+        refuse: bool,
+    }
+    impl collab_capnp::channel_handle::Server for Server {
+        fn admit_local_document_action(
+            self: Rc<Self>,
+            params: collab_capnp::channel_handle::AdmitLocalDocumentActionParams,
+            mut results: collab_capnp::channel_handle::AdmitLocalDocumentActionResults,
+        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            capnp::capability::Promise::from((|| {
+                self.received
+                    .borrow_mut()
+                    .push(params.get()?.get_request()?.to_vec());
+                if self.refuse {
+                    let reason = if self.wrong_id {
+                        "admission journal outcome unknown".to_owned()
+                    } else {
+                        format!("{LOCAL_DOCUMENT_REJECTED}local document policy refused")
+                    };
+                    return Err(capnp::Error::failed(reason));
+                }
+                let mut out = results.get().init_observation();
+                out.set_host(&[9; 16]);
+                out.set_invocation(if self.wrong_id { &[8; 16] } else { &[1; 16] });
+                out.set_found(true);
+                out.set_id(17);
+                out.set_update_json(
+                    r#"{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101"}"#,
+                );
+                out.set_admission_json(r#"{"private":"admission"}"#);
+                Ok(())
+            })())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exact_report_uses_existing_session_and_preserves_private_observation() {
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let captured = report();
+        let expected = captured.encode().unwrap();
+        crate::resolved_invocation_tests::over_wire(
+            Server {
+                received: received.clone(),
+                wrong_id: false,
+                refuse: false,
+            },
+            |channel| async move {
+                let observed = channel
+                    .admit_local_document_action(&captured)
+                    .await
+                    .unwrap();
+                let result = observed.result.unwrap();
+                assert_eq!(
+                    result.admission_json.as_deref(),
+                    Some(r#"{"private":"admission"}"#)
+                );
+                assert!(result.terminal_json.is_none());
+            },
+        )
+        .await;
+        assert_eq!(*received.borrow(), vec![expected]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn refusal_or_wrong_invocation_never_retries_or_falls_back() {
+        for (wrong_id, refuse) in [(true, false), (false, true), (true, true)] {
+            let received = Rc::new(RefCell::new(Vec::new()));
+            crate::resolved_invocation_tests::over_wire(
+                Server {
+                    received: received.clone(),
+                    wrong_id,
+                    refuse,
+                },
+                |channel| async move {
+                    let error = channel
+                        .admit_local_document_action(&report())
+                        .await
+                        .unwrap_err();
+                    if refuse && !wrong_id {
+                        assert!(matches!(error, LocalDocumentActionError::Rejected(_)));
+                    } else {
+                        assert!(matches!(error, LocalDocumentActionError::Uncertain(_)));
+                    }
+                },
+            )
+            .await;
+            assert_eq!(received.borrow().len(), 1);
+        }
+    }
+}

@@ -1423,6 +1423,33 @@ impl RecordSet {
         self.active.as_ref()
     }
 
+    pub(crate) fn record_active_private_action(
+        &mut self,
+        action: app_state::PrivateAction,
+    ) -> Result<(), String> {
+        let id = self.active.as_ref().ok_or("no active record")?;
+        let slot = self.open.get_mut(id).ok_or("active record is not open")?;
+        slot.autosave
+            .as_mut()
+            .ok_or("record has no private durable writer")?
+            .record_private_action(action)
+    }
+
+    pub(crate) fn active_private_actions(
+        &self,
+        doc: &AutoCommit,
+    ) -> Result<Vec<app_state::PrivateAction>, String> {
+        let id = self.active.as_ref().ok_or("no active record")?;
+        let slot = self.open.get(id).ok_or("active record is not open")?;
+        // A session-owned record may have no process-local checkpoint store.
+        // There is then nothing to recover; writing new evidence still requires
+        // a durable writer through record_active_private_action.
+        match slot.autosave.as_ref() {
+            Some(writer) => writer.private_actions(doc),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Every record this process has open, checked-out one included.
     pub fn open_records(&self) -> Vec<RecordCheckout> {
         let mut out: Vec<RecordCheckout> = self
@@ -3422,6 +3449,41 @@ impl RecordStore {
             .and_then(app_state::DocWriter::last_error)
     }
 
+    /// Stage private evidence on the exact record owner, never its CRDT.
+    pub(crate) fn record_private_action(
+        &self,
+        id: &RecordId,
+        action: app_state::PrivateAction,
+    ) -> Result<(), String> {
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| "record store is busy")?;
+        let slot = set.open.get_mut(id).ok_or("record is not open")?;
+        slot.autosave
+            .as_mut()
+            .ok_or("record has no private durable writer")?
+            .record_private_action(action)
+    }
+
+    /// Read bounded evidence against this owner's live history, without cloning
+    /// the document or opening a second owner.
+    pub(crate) fn private_actions(
+        &self,
+        id: &RecordId,
+    ) -> Result<Vec<app_state::PrivateAction>, String> {
+        let set = self.0.try_borrow().map_err(|_| "record store is busy")?;
+        let slot = set.open.get(id).ok_or("record is not open")?;
+        let doc = slot.doc.as_ref().ok_or("record document is lent")?;
+        // Absence of a local checkpoint store is not failed recovery. In
+        // particular, session-owned records need not have a local writer.
+        // record_private_action continues to refuse writes without one.
+        match slot.autosave.as_ref() {
+            Some(writer) => writer.private_actions(doc),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Offer one serviced canonical record without awaiting host ACK or
     /// touching another record. Accepted bytes remain Saving until durable.
     pub(crate) fn offer_record(&self, id: &RecordId) -> Result<(), String> {
@@ -5338,6 +5400,29 @@ mod tests {
                 assert_eq!(std::fs::read(&path).unwrap(), payload);
             }
         }
+    }
+
+    #[test]
+    fn absent_private_checkpoint_store_is_empty_but_never_accepts_evidence() {
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
+        store.create_record(&checkout).unwrap();
+        assert!(store.private_actions(&checkout.id).unwrap().is_empty());
+        let evidence = app_state::PrivateAction {
+            id: [1; 16],
+            hashes: Vec::new(),
+            intent: b"{}".to_vec(),
+            receipt: None,
+        };
+        assert_eq!(
+            store.record_private_action(&checkout.id, evidence),
+            Err("record has no private durable writer".into())
+        );
+        let _loan = store.0.borrow_mut();
+        assert_eq!(
+            store.private_actions(&checkout.id).unwrap_err(),
+            "record store is busy"
+        );
     }
 
     #[test]

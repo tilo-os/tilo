@@ -1106,44 +1106,55 @@ mod tests {
         );
         assert!(app.try_recv().is_err(), "nothing ran");
 
-        let witnessed = state
-            .witness_confirmation("agent:scribe", ("files.app", "new-window"), None)
-            .expect("the person's answer is recorded");
-        invoke(
-            &state,
-            &agent,
-            "5",
-            "new-window",
-            Some(Confirmation::Witnessed(witnessed.clone())),
-        )
-        .expect("the person's confirmation admits the call");
+        let mut request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: "5".into(),
+                address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            on_behalf_of: None,
+        };
+        let binding = state.witness_binding("agent:scribe", &room, &request);
+        let witnessed = state.witness_confirmation(&binding).unwrap();
+        request.confirmation = Some(Confirmation::Witnessed(witnessed));
+        let call = |request: &InvokeRequest| {
+            state
+                .action_invoke(&agent, None, None, request)
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .unwrap()
+        };
+        let first = call(&request).expect("the person's confirmation admits the call");
         assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
         assert_eq!(
-            invoke(
-                &state,
-                &agent,
-                "5",
-                "new-window",
-                Some(Confirmation::Witnessed(witnessed))
-            )
-            .err(),
-            Some(ActionHostError::ConfirmationRequired),
-            "the answer was for that one call"
+            call(&request).unwrap(),
+            first,
+            "exact retry returns the same receipt"
         );
-        let other = state
-            .witness_confirmation("agent:scribe", ("files.app", "empty-trash"), None)
-            .expect("recorded");
+        assert!(
+            app.try_recv().is_err(),
+            "an exact retry never dispatches twice"
+        );
+        request.invocation = tilo_actions::InvocationId::new();
         assert_eq!(
-            invoke(
-                &state,
-                &agent,
-                "5",
-                "new-window",
-                Some(Confirmation::Witnessed(other))
-            )
-            .err(),
-            Some(ActionHostError::ConfirmationRequired),
-            "an answer for another action confirms nothing here"
+            call(&request).err(),
+            Some(ActionHostError::ConfirmationRequired)
+        );
+        let mut other_binding = state.witness_binding("agent:scribe", &room, &request);
+        other_binding.action = "empty-trash".into();
+        request.confirmation = Some(Confirmation::Witnessed(
+            state.witness_confirmation(&other_binding).unwrap(),
+        ));
+        assert_eq!(
+            call(&request).err(),
+            Some(ActionHostError::ConfirmationRequired)
         );
     }
 

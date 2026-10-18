@@ -14190,6 +14190,24 @@ impl ShellOverlayHost {
         if self.portal_dialogs.view().is_none() {
             return false;
         }
+        if self.portal_dialogs.layout(self.overlay_area()).is_none() {
+            // A security review that cannot fit is not an invisible Allow
+            // button. Keep Escape available, but consume every other input.
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key: Key::Named(NamedKey::Escape),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                self.portal_dialogs.cancel();
+            }
+            return true;
+        }
         let modifiers = *ctx.modifiers;
         match event {
             WindowEvent::KeyboardInput {
@@ -14198,10 +14216,17 @@ impl ShellOverlayHost {
                         state: ElementState::Pressed,
                         logical_key,
                         physical_key,
+                        repeat,
                         ..
                     },
                 ..
             } => {
+                // Holding Enter must not traverse the disclosure and approve
+                // it with the same physical key press.
+                if *repeat && self.portal_dialogs.review_pages().is_some() {
+                    *ctx.handled = true;
+                    return true;
+                }
                 let state = modifiers.state();
                 let capture_chord = self.portal_dialogs.is_shortcut_editor()
                     && (state.control_key()
@@ -14237,6 +14262,16 @@ impl ShellOverlayHost {
                         }
                         Key::Named(NamedKey::ArrowUp) => {
                             self.portal_dialogs.select_next(true);
+                        }
+                        Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp)
+                            if self.portal_dialogs.review_pages().is_some() =>
+                        {
+                            self.portal_dialogs.review_back();
+                        }
+                        Key::Named(NamedKey::ArrowRight | NamedKey::PageDown)
+                            if self.portal_dialogs.reviewing_more() =>
+                        {
+                            self.portal_dialogs.confirm();
                         }
                         Key::Named(NamedKey::Enter) => {
                             self.portal_dialogs.confirm();
@@ -25341,7 +25376,7 @@ impl ShellOverlayHost {
             );
             text_renderer.draw_text(
                 scene,
-                &view.detail(),
+                &self.portal_dialogs.displayed_detail(),
                 14.0,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
@@ -25517,12 +25552,27 @@ impl ShellOverlayHost {
                 &ButtonFace::new(layout.cancel, &view.cancel_label())
                     .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
             );
+            if let Some(back) = layout.review_back {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(back, &t("guide-row-back"))
+                        .hovered(self.last_cursor.is_some_and(|p| back.contains(p))),
+                );
+            }
+            let confirm_label = if self.portal_dialogs.reviewing_more() {
+                t("shortcut-step-continue")
+            } else {
+                view.confirm_label()
+            };
             Button::paint(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                &ButtonFace::new(layout.confirm, &view.confirm_label())
+                &ButtonFace::new(layout.confirm, &confirm_label)
                     .role(ButtonRole::Primary)
                     .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
             );
