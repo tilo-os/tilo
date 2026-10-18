@@ -37,7 +37,13 @@ x11 = ["winit/x11", "tilo-host/x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
-syntax-definitions = ["dep:two-face"]
+syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
+# The grammar set is not linked: the code editor's highlighter opens it from
+# libtilo_highlight_engine.so the first time code is highlighted. The engine
+# library's own build (crates/runtime/engines/highlight) turns this on, so the
+# shared runtime every app maps leaves syntect and the grammars out; any
+# other build links them.
+lazy-highlight = ["dep:tilo-engine-loader"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
@@ -180,11 +186,11 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
-# Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
-# tokenizer over two-face's extended syntax set, the packed set Typst already
-# links for raw blocks, so the runtime carries those bytes once.
-syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
-two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"], optional = true }
+# Grammar-backed highlighting (`widget::code_editor::syntax`): the token
+# vocabulary, and the grammar set (syntect over two-face's extended syntax
+# set), linked unless `lazy-highlight` opens it from its engine library.
+tilo-highlight = { version = "0.1.0", path = "../../text/highlight" }
+tilo-highlight-grammars = { version = "0.1.0", path = "../../text/highlight-grammars" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true

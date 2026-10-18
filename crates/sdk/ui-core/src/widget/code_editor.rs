@@ -35,56 +35,12 @@ pub mod syntax;
 
 pub use syntax::{SyntaxHighlighter, SyntaxState};
 
-/// The syntactic category a run of source falls into. The editor never
-/// hard-codes a colour for these — the theme's
-/// [`SyntaxPalette`](crate::tokens::SyntaxPalette) resolves each to a
-/// concrete colour, so syntax tracks the active theme in light, dark and high
-/// contrast.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TokenKind {
-    Keyword,
-    /// Type name (`String`, `u32`, a capitalised identifier).
-    Type,
-    Function,
-    Number,
-    StringLit,
-    CharLit,
-    Comment,
-    Operator,
-    Punctuation,
-    /// `#[derive(..)]`, an HTML attribute name.
-    Attribute,
-    /// A markup tag name (`div` in `<div>`).
-    Tag,
-    /// `#include`, `#!`.
-    Preprocessor,
-    /// Named constant / literal keyword (`true`, `null`, `None`).
-    Constant,
-    Variable,
-    /// Markup heading (Typst `=`, Markdown `#`).
-    Heading,
-    Emphasis,
-    Strong,
-    /// Raw / inline-code / fenced markup run.
-    Raw,
-    Math,
-    /// Uncategorised body text (renders in the default text colour).
-    Text,
-}
-
-/// A coloured run within one logical line: a byte `range` (into that line)
-/// and its [`TokenKind`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub range: Range<usize>,
-    pub kind: TokenKind,
-}
-
-impl Span {
-    pub fn new(range: Range<usize>, kind: TokenKind) -> Self {
-        Self { range, kind }
-    }
-}
+/// The syntactic category of a run of source, and a coloured run within one
+/// line: shared with the grammar set (`tilo-highlight`), which the shared
+/// runtime opens only when code is first highlighted. The theme's
+/// [`SyntaxPalette`](crate::tokens::SyntaxPalette) resolves each kind to a
+/// concrete colour, so syntax tracks the active theme.
+pub use tilo_highlight::{Span, TokenKind};
 
 /// Opaque cross-line carry so multi-line constructs — block comments, fenced
 /// code — survive from one line to the next. `0` is the document start; a

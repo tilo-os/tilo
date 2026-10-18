@@ -318,6 +318,7 @@ members = [
     "crates/runtime/engines/adblock",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/fuse",
+    "crates/runtime/engines/highlight",
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",
     "crates/runtime/engines/spotify",
@@ -421,6 +422,8 @@ members = [
 
     # Text
     "crates/text/emoji",
+    "crates/text/highlight",
+    "crates/text/highlight-grammars",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
 
