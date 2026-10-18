@@ -53,7 +53,6 @@ pub use tilo_doc_codecs;
 pub use tilo_document;
 pub use tilo_files;
 pub use tilo_model_gateway;
-pub use tilo_pdf;
 pub use tilo_relay_protocol;
 pub use tilo_rich_text;
 pub use tilo_user_identity;

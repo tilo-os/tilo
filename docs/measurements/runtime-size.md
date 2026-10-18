@@ -71,7 +71,11 @@ providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
 reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar and
 the Spotify engine; the time-zone database, chrono-tz:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
-`libtilo_contact_directory_engine.so` for Contacts, Mail and Messages). It is
+`libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
+PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
+PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files, Writer and Print
+Centre, which hand its first-page rasteriser to the thumbnailer every app
+shares). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
@@ -90,7 +94,7 @@ relies on:
   another);
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
-  Contacts and Messages), named in `dist/apps/app-collections.toml`, the
+  Contacts, Messages, PDF Viewer, Files, Writer and Print Centre), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - one app may not load two engine libraries that both carry a crate (rustc
@@ -99,12 +103,15 @@ relies on:
   instead (`tilo-spotify-engine` takes rand 0.9 and sha1 0.10, which librespot
   shares with rustypipe, from the YouTube engine Music loads beside it, and
   account custody, which Spotify's sign-in uses, from the accounts engine);
-- the engine's crates go into the surface check's `ENGINES`. They must also
-  stay out of the workspace-hack, which is linked into the runtime: hakari
-  lists a crate there when members build it with different feature sets, so
-  give every member the same set (`tilo-typst-fonts` enables typst-assets'
-  `fonts` on every target for this). Excluding the crate in
-  `.config/hakari.toml` instead fails `cargo hakari verify`.
+- the engine's crates go into the surface check's `ENGINES`. The
+  workspace-hack listing one does not put it into the runtime: the hack's
+  library names none of its dependencies, and rustc links only the crates a
+  crate names, so a crate only the hack reaches is on no link line of
+  `libruntime_dylib.so` (the release's runtime link names none of
+  russh, wasmi or the other crates only the hack lists). The check follows
+  real dependencies and the features apps enable on them, which is how an
+  engine's crate comes back (Calendar's `live` asking tilo-dav for the
+  account custody its sign-in reaches, for one).
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
 beside the runtime's, fails when an app of `apps_without_media` loads one it

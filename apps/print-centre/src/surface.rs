@@ -93,6 +93,9 @@ enum PrintPreview {
 }
 
 fn load_print_preview(path: &std::path::Path) -> Option<thumbnail::RgbaThumb> {
+    // A PDF's first page comes from the PDF engine, which Print Centre links
+    // and the thumbnailer every app shares leaves out.
+    thumbnail::set_pdf_rasteriser(tilo_pdf::first_page_preview);
     let category = thumbnail::category_for_path(path);
     thumbnail::generate(&thumbnail::Source::Path(path), category, 720)
 }

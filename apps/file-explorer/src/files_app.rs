@@ -287,6 +287,7 @@ fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -
 fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     #[cfg(test)]
     crate::model::fixture_io_guard::ambient_io("build_thumb_service");
+    enable_pdf_previews();
     let dir = config_dir.map_or_else(
         || std::env::temp_dir().join("tilo-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
@@ -295,6 +296,12 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
         let fallback = std::env::temp_dir().join("tilo-file-explorer-thumbnails");
         ThumbnailService::open(&fallback, 4).ok()
     })
+}
+
+/// PDFs get first-page previews: Files links the PDF engine, which the
+/// thumbnailer every app shares leaves out (`thumbnail::set_pdf_rasteriser`).
+pub(crate) fn enable_pdf_previews() {
+    thumbnail::set_pdf_rasteriser(tilo_pdf::first_page_preview);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1682,6 +1689,7 @@ impl FileExplorerWidget {
     /// previews cached in the scene, and nothing read from the machine the
     /// capture is taken on.
     pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
+        enable_pdf_previews();
         let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)
             .ok()
             .map(Arc::new);

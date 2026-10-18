@@ -194,8 +194,9 @@ spotify() (
 )
 
 # Apps run their engine libraries. Settings has no probe, to keep its tapp as
-# it is, and Calendar none for the accounts engine (its probe runs the time-zone
-# one): for those only the trace of the start counts (an app need not accept
+# it is, Calendar none for the accounts engine (its probe runs the time-zone
+# one), and the PDF engine's apps none (build-thin-apps.sh runs its own
+# check): for those only the trace of the start counts (an app need not accept
 # --help).
 engines() (
   set -euo pipefail
@@ -211,7 +212,11 @@ engines() (
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-               "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
+               "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
+               "pdf-viewer libtilo_pdf_engine.so" \
+               "file-explorer libtilo_pdf_engine.so" \
+               "word-processor libtilo_pdf_engine.so" \
+               "print-centre libtilo_pdf_engine.so"; do
     read -r app library option <<<"$probe"
     if [[ ! -x $target/thin-app/$app ]]; then
       echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"

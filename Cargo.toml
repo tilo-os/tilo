@@ -309,6 +309,7 @@ members = [
     "crates/runtime/engines/accounts",
     "crates/runtime/engines/contact-directory",
     "crates/runtime/engines/paint",
+    "crates/runtime/engines/pdf",
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/timezone",
     "crates/runtime/engines/typst",

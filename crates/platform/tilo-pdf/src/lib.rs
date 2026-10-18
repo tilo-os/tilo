@@ -294,6 +294,38 @@ pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
     }
 }
 
+/// The first page of `pdf`, rasterised through [`Engine::shared`] to fit a
+/// `width` x `height` box: straight-alpha RGBA pixels and their size. `None`
+/// when no engine is available or the document is unreadable.
+///
+/// Its signature is a file preview's (`tilo_thumbnail::PdfRasteriser`): an
+/// app that links this engine hands it to the thumbnailer once, and every
+/// other app's previews stay free of the engine.
+pub fn first_page_preview(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let doc = Engine::shared().ok()?.open_bytes(pdf).ok()?;
+    let page = doc.page_size(0)?;
+    if !(page.width.is_finite() && page.height.is_finite() && page.width > 0.0 && page.height > 0.0)
+    {
+        return None;
+    }
+    // Render straight at the size that fits the box, so the helper never
+    // rasterises more pixels than the preview keeps.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "preview boxes are a few hundred pixels"
+    )]
+    let scale = (width.max(1) as f32 / page.width).min(height.max(1) as f32 / page.height);
+    let options = RenderOptions {
+        scale,
+        rotation: Rotation::None,
+        region: None,
+        annotations: true,
+        reader_markup: true,
+    };
+    let bitmap = doc.render(0, &options).ok()?;
+    Some((bitmap.pixels().to_vec(), bitmap.width(), bitmap.height()))
+}
+
 /// What [`sandboxed_for_test`] decided.
 #[derive(Debug)]
 pub enum HelperGate {

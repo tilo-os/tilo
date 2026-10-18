@@ -4545,6 +4545,7 @@ dependencies = [
  "tilo-history",
  "tilo-paths",
  "tilo-pdf",
+ "tilo-pdf-engine",
  "tilo-process",
  "tilo-test-env",
  "tilo-thumbnail",
@@ -11310,6 +11311,7 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tilo-pdf",
+ "tilo-pdf-engine",
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",
@@ -12117,6 +12119,8 @@ dependencies = [
  "tilo-files",
  "tilo-history",
  "tilo-ocr",
+ "tilo-pdf",
+ "tilo-pdf-engine",
  "tilo-thumbnail",
  "tilo-vello",
  "workspace-hack",
@@ -13475,7 +13479,6 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-model-gateway",
- "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-rich-text",
  "tilo-thumbnail",
@@ -18505,6 +18508,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-pdf-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-pdf",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-peer-state"
 version = "0.1.0"
 dependencies = [
@@ -19442,7 +19454,6 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tilo-paths",
- "tilo-pdf",
  "workspace-hack",
  "zip",
 ]
@@ -23347,6 +23358,7 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tilo-pdf",
+ "tilo-pdf-engine",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-spellcheck",
