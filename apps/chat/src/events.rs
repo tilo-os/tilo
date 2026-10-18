@@ -4166,7 +4166,7 @@ mod tests {
                 crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
             assert!(lines.primary.contains("Working"));
             assert!(!lines.primary.contains("task:review"));
-            assert!(lines.receipt.unwrap().contains("waiting for the agent"));
+            assert!(lines.receipt.unwrap().contains("Waiting for the agent"));
             let semantics = ui::Widget::accessibility(&app).unwrap();
             let heading = semantics
                 .children
@@ -4178,7 +4178,7 @@ mod tests {
                     .description
                     .as_deref()
                     .unwrap()
-                    .contains("waiting for the agent")
+                    .contains("Waiting for the agent")
             );
             assert!(!crate::projection::has_draft(&doc, &app.active_channel));
 
@@ -4336,7 +4336,7 @@ mod tests {
         assert!(state.adopt_doc(doc.chat));
         let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
         assert!(!driver.root::<ChatApp>().left_overlay());
-        driver.resize((620, 720)).expect("normal narrow layout");
+        driver.resize((540, 720)).expect("normal narrow layout");
         assert!(driver.root::<ChatApp>().left_overlay());
         driver.resize((960, 720)).expect("normal wide layout");
         assert!(!driver.root::<ChatApp>().left_overlay());
@@ -4426,7 +4426,7 @@ mod tests {
                 "composer controls fit beside navigation"
             );
         }
-        render_frame(&mut app, 620.0, 720.0);
+        render_frame(&mut app, 540.0, 720.0);
         assert!(
             app.left_overlay(),
             "navigation becomes a drawer when conversation detail no longer fits"
