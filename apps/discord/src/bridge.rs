@@ -100,6 +100,11 @@ pub struct BridgePlan {
     pub import_channels: Vec<Value>,
     /// `map` of a Tilo channel or category that already matches.
     pub adopt: Vec<Value>,
+    /// Chat `set-channel-category`: a joined channel moves to its Discord
+    /// channel's category.
+    pub file_channels: Vec<Value>,
+    /// Chat `delete-category`: a category of Tilo's own the moves left empty.
+    pub drop_categories: Vec<Value>,
     /// `finish-import`, with the Tilo channels left Tilo's own.
     pub finish: Vec<Value>,
     /// Plan again after this pass: something here unblocks more.
@@ -318,6 +323,8 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
         && plan.import_categories.is_empty()
         && plan.import_channels.is_empty()
         && plan.adopt.is_empty()
+        && plan.file_channels.is_empty()
+        && plan.drop_categories.is_empty()
         && plan.finish.is_empty());
     plan
 }
@@ -389,6 +396,13 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
             })
         }));
     plan.adopt.extend(values(import.adopt));
+    plan.file_channels.extend(values(import.file));
+    plan.drop_categories.extend(
+        import
+            .drop_categories
+            .into_iter()
+            .map(|category| json!({ "category": category })),
+    );
     plan.finish.extend(values(import.finish));
     if guild.ownership == Ownership::Adopted {
         let layout = layout::plan(guild, &tilo);
