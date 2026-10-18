@@ -67,55 +67,16 @@ impl PrivateProtocol {
             .room(&request.room)
             .await
             .map_err(|_| "private room unavailable")?;
-        // Subscribe before inspecting authority or the cursor, closing both wake races.
-        let mut authority = crate::authority_epoch::subscribe();
-        let mut governance = self.rooms.inner.changes.subscribe();
         if let PrivateOperation::NativeTaskRead { operation, .. } = &request.operation
             && let PrivateOperation::TaskMailboxWatch { after_sequence, .. } = operation.as_ref()
         {
-            let mut changes = {
-                let room = governed.lock().await;
-                self.authenticate(request, remote)?;
-                room.private_task_watch(&request.device_cert, request.operation.clone())?
-            };
-            loop {
-                let expires = {
-                    let room = governed.lock().await;
-                    let checked_at = tilo_clock::unix_now_ns();
-                    self.authenticate(request, remote)?;
-                    let reply =
-                        room.private_task_command(&request.device_cert, request.operation.clone())?;
-                    if !matches!(reply, PrivateReply::Changed(sequence) if sequence == *after_sequence)
-                    {
-                        return Ok(reply);
-                    }
-                    room.peer
-                        .certificates()
-                        .iter()
-                        .filter_map(|cert| cert.expires_at_ns)
-                        .filter(|deadline| *deadline > checked_at)
-                        .min()
-                };
-                let expiry = async {
-                    match expires {
-                        Some(ns) => {
-                            tokio::time::sleep(Duration::from_nanos(
-                                ns.saturating_sub(tilo_clock::unix_now_ns()),
-                            ))
-                            .await
-                        }
-                        None => std::future::pending::<()>().await,
-                    }
-                };
-                tokio::select! {
-                    _ = connection.closed() => return Err("private task stream disconnected".into()),
-                    result = changes.changed() => { result.map_err(|_| "private task stream closed")?; },
-                    _ = authority.changed() => {},
-                    _ = governance.recv() => {},
-                    () = expiry => {},
-                }
-            }
+            return self
+                .execute_task_watch(request, remote, connection, &governed, *after_sequence)
+                .await;
         }
+        // Subscribe before inspecting authority or the cursor, closing both wake races.
+        let mut authority = crate::authority_epoch::subscribe();
+        let mut governance = self.rooms.inner.changes.subscribe();
         if let PrivateOperation::Watch {
             peer,
             after_sequence,
@@ -194,6 +155,60 @@ impl PrivateProtocol {
             _ => room.private_command(&request.device_cert, request.operation.clone()),
         }
     }
+    async fn execute_task_watch(
+        &self,
+        request: &PrivateRequest,
+        remote: &[u8; 32],
+        connection: &iroh::endpoint::Connection,
+        governed: &Arc<tokio::sync::Mutex<super::GovernedRoom>>,
+        after_sequence: u64,
+    ) -> Result<PrivateReply, String> {
+        // Subscribe before inspecting authority or the cursor, closing both wake races.
+        let mut authority = crate::authority_epoch::subscribe();
+        let mut governance = self.rooms.inner.changes.subscribe();
+        let mut changes = {
+            let room = governed.lock().await;
+            self.authenticate(request, remote)?;
+            room.private_task_watch(&request.device_cert, &request.operation)?
+        };
+        loop {
+            let expires = {
+                let room = governed.lock().await;
+                let checked_at = tilo_clock::unix_now_ns();
+                self.authenticate(request, remote)?;
+                let reply =
+                    room.private_task_command(&request.device_cert, request.operation.clone())?;
+                if !matches!(reply, PrivateReply::Changed(sequence) if sequence == after_sequence) {
+                    return Ok(reply);
+                }
+                room.peer
+                    .certificates()
+                    .iter()
+                    .filter_map(|cert| cert.expires_at_ns)
+                    .filter(|deadline| *deadline > checked_at)
+                    .min()
+            };
+            let expiry = async {
+                match expires {
+                    Some(ns) => {
+                        tokio::time::sleep(Duration::from_nanos(
+                            ns.saturating_sub(tilo_clock::unix_now_ns()),
+                        ))
+                        .await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                _ = connection.closed() => return Err("private task stream disconnected".into()),
+                result = changes.changed() => { result.map_err(|_| "private task stream closed")?; },
+                _ = authority.changed() => {},
+                _ = governance.recv() => {},
+                () = expiry => {},
+            }
+        }
+    }
+
     async fn exchange(&self, connection: &iroh::endpoint::Connection) -> Result<(), ()> {
         let (mut send, mut recv) = tokio::time::timeout(HEADER_TIMEOUT, connection.accept_bi())
             .await

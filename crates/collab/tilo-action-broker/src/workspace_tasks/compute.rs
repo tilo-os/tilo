@@ -125,7 +125,7 @@ mod tests {
                 5 => entry.profile = " \t".into(),
                 6 | 7 => {}
                 8 => entry.profile = "Stale model".into(),
-                _ => unreachable!(),
+                _ => panic!("unexpected compute configuration state"),
             }
             let entries = match invalid {
                 6 => vec![entry.clone(), entry],

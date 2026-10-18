@@ -10,67 +10,8 @@ fn person_goal_read_uses_durable_private_custody_and_exact_current_certificate()
     let now = SystemTime::now();
     let mut room =
         GovernedRoom::create(directory.path(), "Private task", &cert, &key, now).unwrap();
-    let room_id = room.room().to_owned();
-    room.peer
-        .governance_mut()
-        .put_governed_grants(
-            &[tilo_action_policy::Grant::new(
-                "task-reader-agent",
-                Subject::agent("scribe"),
-                TreePath::room(room_id),
-                tilo_action_policy::KindSet::READ_UNDOABLE,
-                Answer::Allow,
-                Subject::person(hex::encode(cert.user_public_key)),
-            )],
-            &key,
-            now,
-        )
-        .unwrap();
-    let (_, result) = room
-        .peer
-        .workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::new_v4(),
-            [1; 32],
-            &WorkspaceTaskAuthority::Person {
-                caller: cert.clone(),
-            },
-            &WorkspaceTaskCommand::Queue {
-                title: "Summarize document".into(),
-                assigned_agent: "scribe".into(),
-                route: WorkspaceTaskRoute::Model,
-                resource: None,
-            },
-            now,
-        )
-        .unwrap();
-    let WorkspaceTaskMutationResult::Queued { task_id } = &result else {
-        panic!("queued task")
-    };
-    let task_id = task_id.clone();
     let secret = "Private goal never included in a room publication";
-    room.peer
-        .workspace_mut()
-        .bind_workspace_task_private_instruction(
-            &result,
-            &workspace_task::private_instruction_reference(secret),
-        )
-        .unwrap();
-    let texts = BTreeMap::from([(
-        task_id.clone(),
-        TaskText {
-            instruction: Some(secret.into()),
-            ..Default::default()
-        },
-    )]);
-    let bytes = serde_json::to_vec(&texts).unwrap();
-    tilo_files::native::atomic::write_private(
-        &room.path.with_extension("private-task-text-v1.json"),
-        &bytes,
-    )
-    .unwrap();
-    room.store_peer().unwrap();
-    room.persist().unwrap();
+    let (task_id, bytes) = seed_private_goal(&mut room, &cert, &key, now, secret);
     let reopened = GovernedRoom::open(room.path.clone(), &cert, &key).unwrap();
     let reply = reopened
         .private_task_command(
@@ -132,6 +73,84 @@ fn person_goal_read_uses_durable_private_custody_and_exact_current_certificate()
     )
     .unwrap();
 
+    assert_rejects_certificate_and_agent(&reopened, &cert, task_id);
+}
+
+fn seed_private_goal(
+    room: &mut GovernedRoom,
+    cert: &tilo_user_identity::DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+    secret: &str,
+) -> (String, Vec<u8>) {
+    let room_id = room.room().to_owned();
+    room.peer
+        .governance_mut()
+        .put_governed_grants(
+            &[tilo_action_policy::Grant::new(
+                "task-reader-agent",
+                Subject::agent("scribe"),
+                TreePath::room(room_id),
+                tilo_action_policy::KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Subject::person(hex::encode(cert.user_public_key)),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
+    let (_, result) = room
+        .peer
+        .workspace_mut()
+        .apply_workspace_task_command(
+            uuid::Uuid::new_v4(),
+            [1; 32],
+            &WorkspaceTaskAuthority::Person {
+                caller: cert.clone(),
+            },
+            &WorkspaceTaskCommand::Queue {
+                title: "Summarize document".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            now,
+        )
+        .unwrap();
+    let WorkspaceTaskMutationResult::Queued { task_id } = &result else {
+        panic!("queued task")
+    };
+    let task_id = task_id.clone();
+    room.peer
+        .workspace_mut()
+        .bind_workspace_task_private_instruction(
+            &result,
+            &workspace_task::private_instruction_reference(secret),
+        )
+        .unwrap();
+    let texts = BTreeMap::from([(
+        task_id.clone(),
+        TaskText {
+            instruction: Some(secret.into()),
+            ..Default::default()
+        },
+    )]);
+    let bytes = serde_json::to_vec(&texts).unwrap();
+    tilo_files::native::atomic::write_private(
+        &room.path.with_extension("private-task-text-v1.json"),
+        &bytes,
+    )
+    .unwrap();
+    room.store_peer().unwrap();
+    room.persist().unwrap();
+    (task_id, bytes)
+}
+
+fn assert_rejects_certificate_and_agent(
+    reopened: &GovernedRoom,
+    cert: &tilo_user_identity::DeviceCert,
+    task_id: String,
+) {
     let mut forged = cert.clone();
     forged.device_label = "uncertified caller claim".into();
     assert!(
@@ -152,13 +171,13 @@ fn person_goal_read_uses_durable_private_custody_and_exact_current_certificate()
         epoch: 0,
         after_sequence: 0,
     };
-    assert!(reopened.private_task_command(&cert, watch.clone()).is_err());
-    assert!(reopened.private_task_watch(&cert, watch.clone()).is_err());
+    assert!(reopened.private_task_command(cert, watch.clone()).is_err());
+    assert!(reopened.private_task_watch(cert, &watch).is_err());
     assert!(
         reopened
             .private_task_watch(
-                &cert,
-                PrivateOperation::NativeTaskRead {
+                cert,
+                &PrivateOperation::NativeTaskRead {
                     task: task_id.clone(),
                     epoch: 0,
                     agent: "scribe".into(),
@@ -172,7 +191,7 @@ fn person_goal_read_uses_durable_private_custody_and_exact_current_certificate()
     assert!(
         reopened
             .private_task_command(
-                &cert,
+                cert,
                 PrivateOperation::TaskSend {
                     recipient: task_id,
                     invocation: uuid::Uuid::new_v4(),

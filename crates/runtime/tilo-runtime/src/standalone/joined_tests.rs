@@ -68,6 +68,10 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
 }
 
 impl Joined {
+    pub(in crate::standalone) fn test_certificate(&self) -> &DeviceCert {
+        &self.custody.device_cert
+    }
+
     pub(in crate::standalone) async fn test_empty() -> (Arc<Self>, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let key = SigningKey::from_bytes(&[93; 32]);
@@ -355,11 +359,30 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     workspace.set_owner(actor.to_owned());
     workspace.set_room(room);
     let room = room.to_string();
+    let directory = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(directory.path().join("workspace.json"));
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
-    let broker =
-        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+        .unwrap()
+        .new_origin();
+    let admission = joined
+        .admit_mcp_execution(&room, "private-profile-room", actor)
+        .unwrap();
+    let mut services = membership.services();
+    services.native_certificates = Some(Arc::new(super::admission_tests::FixtureAuthority {
+        room: uuid::Uuid::parse_str(&room).unwrap(),
+        cert: admission.certificate().clone(),
+        time: origin.capture().unwrap(),
+    }));
+    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+        membership.authority(),
+        services,
+    );
+    let qualified = broker
+        .certified_local_action_host(admission.caller(), admission.presentation())
+        .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.files".into(),
@@ -385,15 +408,19 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
+    let owner = Caller::local_person(actor).in_room(room.clone());
     let host = RuntimeActionHost {
         broker,
         room: "private-profile-room".into(),
         joined: Arc::clone(joined),
-        session: None,
+        session: Some(Arc::new(crate::standalone::AdmittedRuntimeSession {
+            policy_time: origin.capture().unwrap(),
+            host: qualified,
+            admission,
+            agent: None,
+            projection: Some(owner.clone()),
+        })),
     };
-    let owner = Caller::local_person(actor)
-        .in_room(room.clone())
-        .in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
         on_behalf_of: None,
@@ -412,8 +439,12 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         wait_ms: None,
         appearance: None,
     };
-    let PendingPoll::Ready(Ok(_receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
-        panic!("the synthetic app must accept the invocation");
+    let mut pending = host.invoke(&owner, request.clone());
+    assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
+    turn();
+    let outcome = pending.poll_ready();
+    let PendingPoll::Ready(Ok(_receipt)) = outcome else {
+        panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
@@ -421,10 +452,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         .owner
         .invalidate_identity(RoomId::parse(&room).unwrap());
     assert!(host.observe(&owner, &id).is_none());
-    assert_eq!(
-        host.cancel(&owner, &id),
-        Err(ActionHostError::UnknownInvocation)
-    );
+    assert_eq!(host.cancel(&owner, &id), Err(ActionHostError::NotPermitted));
     assert!(matches!(
         host.invoke(&owner, request).poll_ready(),
         PendingPoll::Ready(Err(ActionHostError::NotPermitted))
@@ -441,6 +469,9 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways() {
+    if crate::standalone::tests::isolated_signing_identity("standalone::joined::tests::a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways").is_none() {
+        return;
+    }
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedRoom::start(directory.path())).await;
     let room = governing.room;

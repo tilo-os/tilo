@@ -50,6 +50,7 @@ impl NativeModels {
     }
 
     fn freeze(&self, lease: &dyn NativeModelLease) -> Result<FrozenRun, String> {
+        use std::io::Read as _;
         let _turn = self
             .selection_turn
             .lock()
@@ -104,7 +105,6 @@ impl NativeModels {
             model,
             contract,
         };
-        use std::io::Read as _;
         match std::fs::File::open(&path).and_then(|file| {
             let mut bytes = Vec::new();
             file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -324,15 +324,15 @@ impl NativeModelAuthority for Authority<'_> {
         view: &NativeCommittedView,
         now: SystemTime,
     ) -> Result<NativeModelContext, String> {
-        let dispatch = self.dispatch;
-        check_selection(&dispatch.frozen.profile, &dispatch.frozen.model)?;
-        let mut context = dispatch
-            .lease
-            .current(view, dispatch.frozen.contract.clone(), now)?;
+        check_selection(&self.dispatch.frozen.profile, &self.dispatch.frozen.model)?;
+        let mut context =
+            self.dispatch
+                .lease
+                .current(view, self.dispatch.frozen.contract.clone(), now)?;
         if view.device() != view.governor() {
-            context.private_run_digest = dispatch.private_run_digest;
+            context.private_run_digest = self.dispatch.private_run_digest;
         }
-        if context.private_run_digest != dispatch.private_run_digest {
+        if context.private_run_digest != self.dispatch.private_run_digest {
             return Err("native MODEL private run changed".into());
         }
         Ok(context)
@@ -392,7 +392,9 @@ impl Dispatch {
         )?;
         // Avoid all network waits under tree/owner custody. The live source is
         // checked again and pinned at the actual synchronous HTTP enqueue.
-        let registration = if host != governor {
+        let registration = if host == governor {
+            None
+        } else {
             Some(NativeModelHostRegistration::capture(
                 &owner,
                 room,
@@ -402,11 +404,9 @@ impl Dispatch {
                 &authority,
                 &key,
             )?)
-        } else {
-            None
         };
         let registration = registration
-            .map(|registration| self.enroll(registration, &requirement))
+            .map(|registration| self.enroll(&registration, &requirement))
             .transpose()?;
         let permit = registration
             .as_ref()
@@ -427,12 +427,13 @@ impl Dispatch {
             endpoint: attempt.endpoint.clone(),
             registration,
         });
+        drop(prepared);
         Ok(())
     }
 
     fn enroll(
         &self,
-        registration: NativeModelHostRegistration,
+        registration: &NativeModelHostRegistration,
         requirement: &TypedNativeModelRequirement,
     ) -> Result<Arc<Enrollment>, String> {
         let connection = self
@@ -477,7 +478,10 @@ impl Dispatch {
         let room = requirement.room;
         self.lease.on_close(Box::new(move || {
             let id = {
-                let mut state = listener.state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut state = listener
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.live = false;
                 state.registration.id()
             };
@@ -509,6 +513,7 @@ impl Dispatch {
             return Err("native MODEL lease closed during enrollment".into());
         }
         enrollments.insert(identity, enrollment.clone());
+        drop(enrollments);
         Ok(enrollment)
     }
 
@@ -633,10 +638,10 @@ impl NativeModelDispatch for Dispatch {
                     .map_err(|_| "native MODEL enrollment unavailable")
             })
             .transpose()?;
-        if let Some(state) = &enrollment {
-            if !state.live || SystemTime::now() >= state.registration.expires_at() {
-                return Err("native MODEL host enrollment expired or revoked".into());
-            }
+        if let Some(state) = &enrollment
+            && (!state.live || SystemTime::now() >= state.registration.expires_at())
+        {
+            return Err("native MODEL host enrollment expired or revoked".into());
         }
         let authority = Authority { dispatch: self };
         let gate = HostDispatchModel {
@@ -647,10 +652,10 @@ impl NativeModelDispatch for Dispatch {
         // only after that publication, inside the final synchronous enqueue,
         // or local governor dispatch deadlocks its own publication writer.
         let enqueue = |_: &[u8]| {
-            if let Some(state) = &enrollment {
-                if !state.live || SystemTime::now() >= state.registration.expires_at() {
-                    return Err("native MODEL host enrollment expired or revoked".into());
-                }
+            if let Some(state) = &enrollment
+                && (!state.live || SystemTime::now() >= state.registration.expires_at())
+            {
+                return Err("native MODEL host enrollment expired or revoked".into());
             }
             start()
         };

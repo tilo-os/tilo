@@ -5,11 +5,13 @@ edition = "2024"
 license.workspace = true
 publish.workspace = true
 [features]
-test-support = []
+test-support = ["dep:tilo-test-env"]
 [dependencies]
 # Host-owned inference, with the final HTTP transfer fenced by native task custody.
 tilo-model-gateway = { path = "../../agent/model-gateway", features = ["server"] }
 agent-provider-config = { path = "../../agent/provider-config" }
+# Certified native test fixtures retain real host signing custody and private journals.
+tilo-test-env = { path = "../../dev/test-env", optional = true }
 zeroize.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
@@ -26,6 +28,11 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
+registry-types = { path = "../../packaging/registry-types" }
+# The host's pinned registry configuration, never an app-supplied trust anchor.
+app-cli = { path = "../../packaging/app-cli" }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
 capnp-rpc.workspace = true
 # The broker thread is a panic boundary the session restarts.
 tilo-rt.workspace = true
@@ -75,6 +82,13 @@ workspace-hack = { version = "0.1" }
 # Drive the production Agent service against native broker custody. Agent's
 # normal dependency graph contains neither the broker nor the shell.
 agent = { path = "../../../apps/agent" }
+# The disclosure regression reaches the real verifier and durable registry store over HTTPS.
+registry-server = { path = "../../packaging/registry-server" }
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 # Paused time: the process-binding tests prove no clock decides a launch.
 tokio = { workspace = true, features = ["test-util"] }
 # Integration tests start a real relay.

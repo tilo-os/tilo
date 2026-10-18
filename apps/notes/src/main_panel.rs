@@ -2525,6 +2525,8 @@ mod tests {
     use ui::widget::BlockKind;
     use uuid::Uuid;
 
+    include!("local_capture_tests.rs");
+
     fn fresh_page_id() -> PageId {
         Uuid::new_v4()
     }

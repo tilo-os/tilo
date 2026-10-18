@@ -253,22 +253,13 @@ impl CapnpBrokerState {
         {
             return Ok(observed);
         }
-        let mut target = reask.target;
-        if let Some(argument) = argument.as_deref() {
-            target.argument = Some(argument);
-        }
-        let provenance = (reask.caller.clone(), invocation, reask.target.argument);
-        let job = self
-            .start_task_action(
-                reask.peer_id,
-                reask.agent_id,
-                reask.run_id,
-                reask.lease,
-                target,
-                (Some(&provenance), reference.as_deref()),
-            )
-            .await
-            .map_err(capnp::Error::failed)?;
+        let job = Box::pin(self.start_native_task_child(
+            reask,
+            invocation,
+            argument.as_deref(),
+            reference.as_deref(),
+        ))
+        .await?;
         if let Some(confirmation) = confirmation {
             let run = self
                 .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
@@ -295,6 +286,66 @@ impl CapnpBrokerState {
                 });
         }
         Ok((job.id, update))
+    }
+
+    /// Start the admitted child for `invocation`, with the argument the person
+    /// confirmed when there is one, and return the broker's own admission.
+    async fn start_native_task_child(
+        self: &Arc<Self>,
+        reask: &ChildReask<'_>,
+        invocation: tilo_actions::InvocationId,
+        argument: Option<&str>,
+        reference: Option<&str>,
+    ) -> Result<InvocationJob, capnp::Error> {
+        let mut target = reask.target;
+        if let Some(argument) = argument {
+            target.argument = Some(argument);
+        }
+        let run = self
+            .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+            .map_err(capnp::Error::failed)?;
+        let offered = self
+            .surfaces
+            .lock()
+            .map_err(|_| capnp::Error::failed("task surface unavailable".into()))?
+            .get(&target.peer_id)
+            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .ok_or_else(|| capnp::Error::failed("task action unavailable".into()))?;
+        let witness = self
+            .native_store_witness(
+                (
+                    &run,
+                    reask.lease,
+                    reference,
+                    &if target.provider.is_empty() {
+                        super::launchable::launchable_provider(&offered.0)
+                    } else {
+                        target.provider.to_owned()
+                    },
+                ),
+                &offered,
+                target.argument,
+                reask.caller,
+                invocation,
+            )
+            .await
+            .map_err(capnp::Error::failed)?;
+        reask.caller.current(self).map_err(capnp::Error::failed)?;
+        if witness.is_some() {
+            self.check_native_store_offer(&offered)
+                .map_err(capnp::Error::failed)?;
+        }
+        let provenance = (reask.caller.clone(), invocation, reask.target.argument);
+        self.start_task_action(
+            reask.peer_id,
+            reask.agent_id,
+            reask.run_id,
+            reask.lease,
+            target,
+            (Some(&provenance), (reference, witness.as_deref())),
+        )
+        .await
+        .map_err(capnp::Error::failed)
     }
 
     /// What a native task's request finds of its child: `None` when it has
@@ -568,8 +619,9 @@ impl CapnpBrokerState {
         caller: &durable_local_invocation::LocalCaller,
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
-        (confirmed, original_argument, requirement): (
+        (confirmed, witness, original_argument, requirement): (
             bool,
+            Option<&str>,
             Option<&str>,
             &crate::services::NativeTaskActionRequirement,
         ),
@@ -592,11 +644,31 @@ impl CapnpBrokerState {
             .actor()?;
         // Admission checked the person's answer for this exact invocation;
         // the token carries it to the dispatch, bound to these arguments.
-        let token = confirmed
-            .then(|| {
-                self.mint_confirmation_grant(target.peer_id, &offered.1, target.argument, &actor)
-            })
-            .transpose()?;
+        let token = if super::requires_store_witness(&offered.0.app_id, &offered.1.action) {
+            self.confirmation_token(
+                target.peer_id,
+                &offered.0.app_id,
+                &offered.1,
+                target.argument,
+                &actor,
+                witness
+                    .map(|token| tilo_actions::remote::Confirmation::Witnessed(token.into()))
+                    .as_ref(),
+                &self.native_witness_binding(actor.id(), &offered, target.argument, invocation),
+            )
+            .map_err(|error| error.to_string())?
+        } else {
+            confirmed
+                .then(|| {
+                    self.mint_confirmation_grant(
+                        target.peer_id,
+                        &offered.1,
+                        target.argument,
+                        &actor,
+                    )
+                })
+                .transpose()?
+        };
         let app = offered.0.app_id.clone();
         let frozen_offer = offered.clone();
         let (journal_admission, check, enqueue) = {
@@ -632,6 +704,7 @@ impl CapnpBrokerState {
                     origin: None,
                     retained_time: None,
                 },
+                None,
             )?;
             let super::PreparedInvocation {
                 journal_admission,
@@ -648,7 +721,9 @@ impl CapnpBrokerState {
                 .lock()
                 .map_err(|_| "invocation journal unavailable")?;
             let journal = guard.as_mut().map_err(|error| error.clone())?;
-            journal_admission.admit(journal.as_mut())
+            let admitted = journal_admission.admit(journal.as_mut());
+            drop(guard);
+            admitted
         })
         .await
         .map_err(|_| "native task journal admission interrupted")??;
@@ -980,11 +1055,13 @@ impl CapnpBrokerState {
                 .await;
                 let prepared = match prepared {
                     Ok(prepared) => prepared,
-                    Err(_error) => {
+                    Err(error) => {
                         // Offline subscriptions remain pending; test diagnostics
                         // distinguish this from an owner admission refusal.
                         #[cfg(test)]
-                        eprintln!("native approved task preparation refused: {_error}");
+                        eprintln!("native approved task preparation refused: {error}");
+                        #[cfg(not(test))]
+                        let _ = error;
                         tracing::debug!("native approved task preparation refused");
                         continue;
                     }
@@ -1139,34 +1216,7 @@ impl CapnpBrokerState {
             .native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?
             .private_instructions(&run.cluster_id, binding)?;
-        let directions = control
-            .directions
-            .iter()
-            .filter(|direction| direction.revision > revision)
-            .take(runtime_collab::TaskRunControl::MAX_DIRECTIONS)
-            .map(|direction| {
-                let text = if direction.text.starts_with("private-instruction:") {
-                    let text = private
-                        .as_ref()
-                        .and_then(|text| text.directions.get(&direction.revision))
-                        .ok_or("private task direction unavailable")?;
-                    if tilo_peer_state::workspace_task::private_instruction_reference(text)
-                        != direction.text
-                    {
-                        return Err("private task direction does not match public binding".into());
-                    }
-                    text.clone()
-                } else {
-                    direction.text.clone()
-                };
-                Ok(runtime_collab::TaskDirection {
-                    revision: direction.revision,
-                    author: direction.author.clone(),
-                    text,
-                    issued_at: direction.created_at,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let directions = native_task_directions(control, private.as_ref(), revision)?;
         let last = directions
             .last()
             .map_or(revision, |direction| direction.revision);
@@ -1279,7 +1329,6 @@ impl CapnpBrokerState {
             }
         }
         let ended = ended_outcome(&update);
-        let task_id = run.task_id.clone();
         if matches!(
             update,
             runtime_collab::TaskRunUpdate::Failed { .. }
@@ -1287,93 +1336,11 @@ impl CapnpBrokerState {
         ) {
             self.cancel_native_children(&run)?;
         }
-        let command = match update {
-            runtime_collab::TaskRunUpdate::InboxIncorporated { message_ids } => {
-                self.check_native_model_receipt(&run, binding.revision, &message_ids)
-                    .await?;
-                let room = run.cluster_id.clone();
-                return tokio::task::spawn_blocking(move || {
-                    service.acknowledge_messages(&room, &binding, &message_ids)
-                })
-                .await
-                .map_err(|_| "native task mailbox acknowledgement interrupted".to_owned())?;
-            }
-            runtime_collab::TaskRunUpdate::DirectionsApplied { revision } => {
-                let snapshot = snapshot().await?;
-                let task = snapshot
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == task_id)
-                    .ok_or("direction acknowledgement task absent")?;
-                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
-                    self.check_native_model_receipt(&run, revision, &[]).await?;
-                } else if binding.revision != revision {
-                    return Err("direction acknowledgement differs from request lease".into());
-                }
-                // Deterministic execution does not manufacture MODEL receipts.
-                WorkspaceTaskCommand::AppliedAck {
-                    task_id,
-                    run_epoch: binding.epoch,
-                    revision,
-                }
-            }
-            runtime_collab::TaskRunUpdate::Accepted => WorkspaceTaskCommand::ExecutionPhase {
-                task_id,
-                run_epoch: binding.epoch,
-                sequence: 0,
-                phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
-            },
-            runtime_collab::TaskRunUpdate::Progress {
-                message,
-                presentation,
-            } => {
-                let snapshot = snapshot().await?;
-                let execution = snapshot
-                    .controls
-                    .get(&task_id)
-                    .and_then(|control| control.execution.as_ref())
-                    .filter(|execution| execution.run_epoch == binding.epoch)
-                    .ok_or("public progress requires accepted run")?;
-                let sequence = execution
-                    .sequence
-                    .checked_add(1)
-                    .ok_or("task sequence exhausted")?;
-                if let Some(presentation) = presentation {
-                    let exact: tilo_actions::task_messaging::TaskReportPresentation =
-                        serde_json::from_value(
-                            serde_json::to_value(&presentation).map_err(|e| e.to_string())?,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    exact.validate()?;
-                    WorkspaceTaskCommand::Presentation {
-                        task_id,
-                        run_epoch: binding.epoch,
-                        sequence,
-                        presentation,
-                    }
-                } else {
-                    WorkspaceTaskCommand::PublicProgress {
-                        task_id,
-                        run_epoch: binding.epoch,
-                        sequence,
-                        message: bounded_public_task_message(&message)?,
-                    }
-                }
-            }
-            runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
-                task_id,
-                run_epoch: binding.epoch,
-                outcome: WorkspaceTaskFinish::Done,
-                summary: bounded_public_task_message(&message)?,
-            },
-            runtime_collab::TaskRunUpdate::Failed { message }
-            | runtime_collab::TaskRunUpdate::Cancelled { message } => {
-                WorkspaceTaskCommand::Abandon {
-                    task_id,
-                    run_epoch: binding.epoch,
-                    reason: bounded_public_task_message(&message)?,
-                }
-            }
+        let Some(command) = self
+            .native_task_report_command(&run, &binding, update, &service)
+            .await?
+        else {
+            return Ok(());
         };
         let room = run.cluster_id.clone();
         // Constructing the future may synchronously prepare an owner commit.
@@ -1394,6 +1361,138 @@ impl CapnpBrokerState {
             return Err("native task report receipt room differs".into());
         }
         Ok(())
+    }
+
+    /// The owner command `update` asks for, or `None` once the broker has
+    /// acknowledged mail itself.
+    async fn native_task_report_command(
+        &self,
+        run: &PendingTaskRun,
+        binding: &crate::services::NativeTaskBinding,
+        update: runtime_collab::TaskRunUpdate,
+        service: &Arc<dyn crate::services::WorkspaceTaskExecution>,
+    ) -> Result<Option<WorkspaceTaskCommand>, String> {
+        let snapshot = || {
+            let service = service.clone();
+            let room = run.cluster_id.clone();
+            async move {
+                tokio::task::spawn_blocking(move || service.snapshot(&room))
+                    .await
+                    .map_err(|_| "native task report observation interrupted".to_owned())?
+            }
+        };
+        let task_id = run.task_id.clone();
+        let command = match update {
+            runtime_collab::TaskRunUpdate::InboxIncorporated { message_ids } => {
+                self.check_native_model_receipt(run, binding.revision, &message_ids)
+                    .await?;
+                let room = run.cluster_id.clone();
+                let binding = binding.clone();
+                let service = service.clone();
+                tokio::task::spawn_blocking(move || {
+                    service.acknowledge_messages(&room, &binding, &message_ids)
+                })
+                .await
+                .map_err(|_| "native task mailbox acknowledgement interrupted".to_owned())??;
+                return Ok(None);
+            }
+            runtime_collab::TaskRunUpdate::DirectionsApplied { revision } => {
+                let snapshot = snapshot().await?;
+                let task = snapshot
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .ok_or("direction acknowledgement task absent")?;
+                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
+                    self.check_native_model_receipt(run, revision, &[]).await?;
+                } else if binding.revision != revision {
+                    return Err("direction acknowledgement differs from request lease".into());
+                }
+                // Deterministic execution does not manufacture MODEL receipts.
+                WorkspaceTaskCommand::AppliedAck {
+                    task_id,
+                    run_epoch: binding.epoch,
+                    revision,
+                }
+            }
+            runtime_collab::TaskRunUpdate::Accepted => WorkspaceTaskCommand::ExecutionPhase {
+                task_id,
+                run_epoch: binding.epoch,
+                sequence: 0,
+                phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+            },
+            runtime_collab::TaskRunUpdate::Progress {
+                message,
+                presentation,
+            } => {
+                self.progress_report_command(service, run, binding, task_id, message, presentation)
+                    .await?
+            }
+            runtime_collab::TaskRunUpdate::Succeeded { message } => WorkspaceTaskCommand::Finish {
+                task_id,
+                run_epoch: binding.epoch,
+                outcome: WorkspaceTaskFinish::Done,
+                summary: bounded_public_task_message(&message)?,
+            },
+            runtime_collab::TaskRunUpdate::Failed { message }
+            | runtime_collab::TaskRunUpdate::Cancelled { message } => {
+                WorkspaceTaskCommand::Abandon {
+                    task_id,
+                    run_epoch: binding.epoch,
+                    reason: bounded_public_task_message(&message)?,
+                }
+            }
+        };
+        Ok(Some(command))
+    }
+
+    /// The public progress frame for a run's accepted execution, or its
+    /// private presentation when the owner keeps the full turn snapshot.
+    async fn progress_report_command(
+        &self,
+        service: &Arc<dyn crate::services::WorkspaceTaskExecution>,
+        run: &PendingTaskRun,
+        binding: &crate::services::NativeTaskBinding,
+        task_id: String,
+        message: String,
+        presentation: Option<runtime_collab::TaskPresentation>,
+    ) -> Result<WorkspaceTaskCommand, String> {
+        let service = service.clone();
+        let room = run.cluster_id.clone();
+        let snapshot = tokio::task::spawn_blocking(move || service.snapshot(&room))
+            .await
+            .map_err(|_| "native task report observation interrupted".to_owned())??;
+        let execution = snapshot
+            .controls
+            .get(&task_id)
+            .and_then(|control| control.execution.as_ref())
+            .filter(|execution| execution.run_epoch == binding.epoch)
+            .ok_or("public progress requires accepted run")?;
+        let sequence = execution
+            .sequence
+            .checked_add(1)
+            .ok_or("task sequence exhausted")?;
+        if let Some(presentation) = presentation {
+            let exact: tilo_actions::task_messaging::TaskReportPresentation =
+                serde_json::from_value(
+                    serde_json::to_value(&presentation).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            exact.validate()?;
+            Ok(WorkspaceTaskCommand::Presentation {
+                task_id,
+                run_epoch: binding.epoch,
+                sequence,
+                presentation,
+            })
+        } else {
+            Ok(WorkspaceTaskCommand::PublicProgress {
+                task_id,
+                run_epoch: binding.epoch,
+                sequence,
+                message: bounded_public_task_message(&message)?,
+            })
+        }
     }
 
     /// Hand the run that ended to history, which records what it changed as
@@ -1427,6 +1526,42 @@ impl CapnpBrokerState {
             outcome: outcome.to_owned(),
         });
     }
+}
+
+/// The run's not-yet-acknowledged directions, with private text resolved
+/// through the owner's exact private instructions.
+fn native_task_directions(
+    control: &tilo_desktop_model::WorkspaceTaskControl,
+    private: Option<&crate::services::NativeTaskPrivateInstructions>,
+    revision: u64,
+) -> Result<Vec<runtime_collab::TaskDirection>, String> {
+    control
+        .directions
+        .iter()
+        .filter(|direction| direction.revision > revision)
+        .take(runtime_collab::TaskRunControl::MAX_DIRECTIONS)
+        .map(|direction| {
+            let text = if direction.text.starts_with("private-instruction:") {
+                let text = private
+                    .and_then(|text| text.directions.get(&direction.revision))
+                    .ok_or("private task direction unavailable")?;
+                if tilo_peer_state::workspace_task::private_instruction_reference(text)
+                    != direction.text
+                {
+                    return Err("private task direction does not match public binding".into());
+                }
+                text.clone()
+            } else {
+                direction.text.clone()
+            };
+            Ok(runtime_collab::TaskDirection {
+                revision: direction.revision,
+                author: direction.author.clone(),
+                text,
+                issued_at: direction.created_at,
+            })
+        })
+        .collect()
 }
 
 /// How a run that `update` ends ended, in a word history keeps; `None` for

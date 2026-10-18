@@ -842,6 +842,10 @@ impl super::ShellOverlayHost {
     }
 
     /// Mount the production task cursor widget; fixtures are never native admission proof.
+    ///
+    /// # Errors
+    /// Returns an error when the debug gate is closed, the phase is unknown, or the
+    /// task cursor fixture cannot be seeded.
     #[cfg(debug_assertions)]
     pub fn seed_task_cursor_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
         use crate::shell::agent_quick_composer::{
@@ -997,7 +1001,7 @@ mod tests {
             ..WorkspaceTaskControl::default()
         };
         let mut view = tilo_desktop::activity::TaskReviewSnapshot {
-            admissions: Default::default(),
+            admissions: std::collections::BTreeMap::default(),
             room: "room".into(),
             actor: "person".into(),
             generation: 1,

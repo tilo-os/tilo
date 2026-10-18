@@ -1,16 +1,14 @@
 //! Credential-free client for the registry's signed moderation protocol.
 //!
 //! No bearer token or private key enters this process. The launcher-bound
-//! identity broker signs the exact typed mutation after checking Store's
-//! `moderation.submit` action capability.
+//! host completes exact moderation operations under their admitted invocation.
 
 use std::io::Read as _;
 use std::time::Duration;
 
 use app_cli::config::RegistryConfig;
 use registry_types::{
-    ModerationActorRole, ModerationCase, ModerationMutation, SignedModerationMutation,
-    TransparencyPage, moderation_signing_message,
+    ModerationCase, ModerationMutation, SignedModerationMutation, TransparencyPage,
 };
 use thiserror::Error;
 
@@ -30,45 +28,6 @@ pub enum ModerationClientError {
     InvalidResponse,
     #[error("registry moderation proof failed: {0}")]
     InvalidProof(String),
-}
-
-/// Ask the launcher-bound identity service to sign an exact typed mutation.
-///
-/// # Errors
-/// Returns an identity or canonical-encoding error. Store never loads private
-/// key material.
-pub fn sign_with_runtime_identity(
-    request_id: String,
-    issued_at_unix: u64,
-    role: ModerationActorRole,
-    mutation: ModerationMutation,
-) -> Result<SignedModerationMutation, ModerationClientError> {
-    let identity = runtime_identity::load()
-        .map_err(|error| ModerationClientError::Identity(error.to_string()))?;
-    let mut request = SignedModerationMutation {
-        protocol: 1,
-        request_id,
-        issued_at_unix,
-        expires_at_unix: issued_at_unix.saturating_add(3_600),
-        actor_role: role,
-        actor_pubkey_hex: hex::encode(identity.signing_public_key()),
-        mutation,
-        signature_hex: String::new(),
-    };
-    let message = moderation_signing_message(&request)
-        .map_err(|error| ModerationClientError::Identity(error.to_string()))?;
-    let action = match &request.mutation {
-        ModerationMutation::FileReport { .. } => "submit-report",
-        ModerationMutation::PublisherReply { .. } => "publisher-reply",
-        ModerationMutation::PublisherAppeal { .. } => "appeal",
-        ModerationMutation::ReviewerDecision { .. } => "review-decision",
-    };
-    request.signature_hex = hex::encode(
-        identity
-            .sign_for(action, &message)
-            .map_err(|error| ModerationClientError::Identity(error.to_string()))?,
-    );
-    Ok(request)
 }
 
 /// Submit one signed mutation and validate the receipt's deterministic
@@ -305,7 +264,7 @@ mod tests {
                 "request-one".into(),
                 10,
                 20,
-                ModerationActorRole::Reporter,
+                registry_types::ModerationActorRole::Reporter,
                 ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
                     category: "policy".into(),

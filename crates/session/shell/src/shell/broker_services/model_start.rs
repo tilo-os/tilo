@@ -16,8 +16,8 @@ impl NativeOwnerCommitService {
         binding: &tilo_joined_room::task_policy::NativeTaskBinding,
     ) -> Result<NativeModelContract, String> {
         use tilo_relay_session::rooms::private::{PrivateOperation as O, PrivateReply as R};
-        if let Some(route) = super::task_mailboxes::remote::route(self, room, Some(binding), None)?
-        {
+        let route = super::task_mailboxes::remote::route(self, room, Some(binding), None)?;
+        if let Some(route) = route {
             let R::TaskModelContract(encoded) = super::task_mailboxes::remote::command(
                 route,
                 O::NativeTaskRead {
@@ -40,6 +40,7 @@ impl NativeOwnerCommitService {
             contract.source_for(room, &binding.task_id)?;
             return Ok(contract);
         }
+        drop(route);
         let id = tilo_desktop_model::RoomId::parse(room).ok_or("invalid MODEL room")?;
         let owner = self.opened_owner("MODEL owner unavailable")?;
         let caller = owner.with_current(id, |view| Ok(view.device().clone()))?;

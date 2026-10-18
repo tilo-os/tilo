@@ -69,12 +69,191 @@ pub(super) struct DirectoryNode {
     pub depth: usize,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 pub(super) struct ActionDirectorySnapshot {
+    // Computed once at construction, never by the input/gesture path.
+    retained_bytes: usize,
     pub(super) effective_invocations: Option<[u8; 32]>,
     pub roots: Vec<ActionDirectoryRow>,
     pub nodes: HashMap<String, DirectoryNode>,
     pub actions: HashMap<ActionAddress, ActionDirectoryRow>,
+}
+
+impl PartialEq for ActionDirectorySnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.effective_invocations == other.effective_invocations
+            && self.roots == other.roots
+            && self.nodes == other.nodes
+            && self.actions == other.actions
+    }
+}
+impl Eq for ActionDirectorySnapshot {}
+
+const MAX_PINNED_REVISIONS: usize = 64;
+const MAX_PINNED_BYTES: usize = 4 * 1024 * 1024;
+
+/// A pre-event inert directory retained only for local mutation admission.
+/// Dropping the last owner makes the revision unavailable to the local RPC.
+#[derive(Clone)]
+pub(super) struct LocalDocumentDirectoryPin {
+    revision: String,
+    snapshot: std::rc::Rc<ActionDirectorySnapshot>,
+    retained_bytes: usize,
+}
+
+impl App {
+    pub(super) fn checkpoint_local_directory_row(
+        &self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> Option<ActionDirectoryRow> {
+        self.actions
+            .local_document_directory_pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .filter(|pin| pin.revision == revision)
+            .find_map(|pin| {
+                pin.snapshot
+                    .actions
+                    .get(&ActionAddress::new(resource, action))
+                    .cloned()
+            })
+    }
+
+    pub(super) fn restore_local_directory_row(
+        &mut self,
+        revision: String,
+        resource: String,
+        action: String,
+        row: ActionDirectoryRow,
+    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+        if row.resource != resource
+            || row.action.as_deref() != Some(action.as_str())
+            || row.descriptor.is_none()
+        {
+            return None;
+        }
+        let mut snapshot = ActionDirectorySnapshot::default();
+        snapshot
+            .actions
+            .insert(ActionAddress::new(resource, action), row);
+        snapshot.retained_bytes = snapshot.estimate_retained_bytes();
+        let pins = &mut self.actions.local_document_directory_pins;
+        pins.retain(|pin| pin.strong_count() > 0);
+        let bytes = snapshot
+            .retained_bytes
+            .saturating_add(revision.len())
+            .saturating_add(128);
+        let retained: usize = pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .map(|pin| pin.retained_bytes)
+            .sum();
+        if pins.len() >= MAX_PINNED_REVISIONS || retained.saturating_add(bytes) > MAX_PINNED_BYTES {
+            return None;
+        }
+        let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
+            revision,
+            snapshot: std::rc::Rc::new(snapshot),
+            retained_bytes: bytes,
+        });
+        pins.push(std::rc::Rc::downgrade(&pin));
+        Some(pin)
+    }
+
+    pub(super) fn pin_local_document_action_directory(
+        &mut self,
+        revision: &str,
+    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+        if revision.is_empty() {
+            return None;
+        }
+        if self.collaboration.manager.is_connected() {
+            if self.try_action_directory_revision().ok()? != revision {
+                return None;
+            }
+        } else if self
+            .actions
+            .action_directory_stamp
+            .as_ref()
+            .map(|(_, stamp)| stamp.as_str())
+            != Some(revision)
+        {
+            // Disconnection must not recompute a revision against a now-absent
+            // primary witness. Only the previously frozen surface is usable.
+            return None;
+        }
+        let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
+        let pins = &mut self.actions.local_document_directory_pins;
+        pins.retain(|pin| pin.strong_count() > 0);
+        let mut retained_bytes = 0usize;
+        for pin in pins.iter().filter_map(std::rc::Weak::upgrade) {
+            if pin.revision == revision {
+                return Some(pin);
+            }
+            retained_bytes = retained_bytes.saturating_add(pin.retained_bytes);
+        }
+        let bytes = snapshot
+            .retained_bytes
+            .saturating_add(revision.len())
+            .saturating_add(std::mem::size_of::<LocalDocumentDirectoryPin>() + 64);
+        // Bound distinct revisions and their complete retained allocations.
+        // Never evict an in-flight report to admit another one.
+        if pins.len() >= MAX_PINNED_REVISIONS
+            || retained_bytes.saturating_add(bytes) > MAX_PINNED_BYTES
+        {
+            return None;
+        }
+        let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
+            revision: revision.to_owned(),
+            snapshot,
+            retained_bytes: bytes,
+        });
+        pins.push(std::rc::Rc::downgrade(&pin));
+        Some(pin)
+    }
+
+    pub(super) fn resolve_local_document_action_directory(
+        &self,
+        revision: &str,
+        resource: &str,
+        action: &str,
+    ) -> runtime_collab::ActionDirectoryResolution {
+        let mut revision_found = false;
+        let Some(pin) = self
+            .actions
+            .local_document_directory_pins
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .find(|pin| {
+                if pin.revision != revision {
+                    return false;
+                }
+                revision_found = true;
+                pin.snapshot
+                    .actions
+                    .contains_key(&ActionAddress::new(resource, action))
+            })
+        else {
+            return if revision_found {
+                runtime_collab::ActionDirectoryResolution::NotFound
+            } else {
+                runtime_collab::ActionDirectoryResolution::StaleRevision
+            };
+        };
+        // No live provider fallback: only rows actually frozen before input
+        // may explain an already-applied mutation.
+        pin.snapshot
+            .actions
+            .get(&ActionAddress::new(resource, action))
+            .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
+                runtime_collab::ActionDirectoryResolution::Found {
+                    row: Box::new(row.clone()),
+                    revision: Some(pin.revision.clone()),
+                }
+            })
+    }
 }
 
 struct Builder<'a, F> {
@@ -195,6 +374,64 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
 }
 
 impl ActionDirectorySnapshot {
+    fn estimate_retained_bytes(&self) -> usize {
+        fn rows(rows: &[ActionDirectoryRow]) -> usize {
+            rows.iter().fold(0usize, |bytes, row| {
+                let strings = row
+                    .parent_resource
+                    .capacity()
+                    .saturating_add(row.resource.capacity())
+                    .saturating_add(row.resource_kind.capacity())
+                    .saturating_add(row.resource_label.capacity())
+                    .saturating_add(row.action.as_ref().map_or(0, String::capacity));
+                // Count into a sink, not a temporary JSON buffer. The generous
+                // multiplier covers nested Vec/enum/map slots, allocator headers
+                // and small owned values in the exported descriptor/contract.
+                // These are cloned wire data, not arbitrary application caches.
+                let nested = runtime_collab::wire_json_len(&row.descriptor)
+                    .saturating_add(runtime_collab::wire_json_len(&row.presentation))
+                    .saturating_add(row.visibility.as_ref().map_or(0, |visibility| {
+                        visibility
+                            .action
+                            .capacity()
+                            .saturating_add(runtime_collab::wire_json_len(&visibility.contract))
+                    }))
+                    .saturating_mul(32);
+                bytes.saturating_add(strings).saturating_add(nested)
+            })
+        }
+        fn row_slots(capacity: usize) -> usize {
+            capacity.saturating_mul(std::mem::size_of::<ActionDirectoryRow>())
+        }
+        // HashMap capacity is usable entries, not buckets. Doubling covers
+        // spare buckets/control bytes, including the small-table case.
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(64)
+            .saturating_add(row_slots(self.roots.capacity()))
+            .saturating_add(rows(&self.roots))
+            .saturating_add(
+                self.nodes
+                    .capacity()
+                    .saturating_mul(2 * (std::mem::size_of::<(String, DirectoryNode)>() + 16)),
+            )
+            .saturating_add(self.actions.capacity().saturating_mul(
+                2 * (std::mem::size_of::<(ActionAddress, ActionDirectoryRow)>() + 16),
+            ));
+        for (key, node) in &self.nodes {
+            bytes = bytes
+                .saturating_add(key.capacity())
+                .saturating_add(row_slots(node.rows.capacity()))
+                .saturating_add(rows(&node.rows));
+        }
+        for (address, row) in &self.actions {
+            bytes = bytes
+                .saturating_add(address.resource.capacity())
+                .saturating_add(address.action.capacity())
+                .saturating_add(rows(std::slice::from_ref(row)));
+        }
+        bytes
+    }
+
     pub fn build(
         resources: &[Resource],
         descriptors: &[ActionDescriptor],
@@ -218,6 +455,7 @@ impl ActionDirectorySnapshot {
         }
         builder.snapshot.effective_invocations =
             builder.effective.finish(builder.snapshot.actions.len());
+        builder.snapshot.retained_bytes = builder.snapshot.estimate_retained_bytes();
         builder.snapshot
     }
 }

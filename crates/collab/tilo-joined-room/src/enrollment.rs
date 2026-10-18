@@ -148,8 +148,9 @@ fn restore_inner(
     if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
         let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
             .map_err(|e| e.to_string())?;
+        let descriptor_digest = metadata.descriptor_digest;
         if record.floor.as_ref().is_some_and(|floor| {
-            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
+            floor.generation != metadata.generation || floor.digest != descriptor_digest
         }) {
             return Err("native persisted descriptor/floor mismatch".into());
         }
@@ -818,6 +819,8 @@ impl NativeWorkspaceOwner {
     /// Commit a conscious person start with a host-selected MODEL ceiling.
     /// The shell hook runs under the same owner turn as the actual approval;
     /// neither the request nor a later worker claim can choose the profile.
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     pub fn commit_workspace_task_command_with_model_start(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
@@ -864,35 +867,111 @@ impl NativeWorkspaceOwner {
             Some(key) => ensure_private_task_baseline(&mut candidate, key, now)?,
             None => false,
         };
+        let source = TaskCommandSource {
+            command: &command,
+            authority: &authority,
+            invocation,
+            request_digest: binding.request_digest,
+            now,
+        };
+        let Some(prepared) =
+            PreparedTaskCommand::prepare(&candidate, &source, model_start, &request.room)?
+        else {
+            return self.with_current(room, |view| {
+                Ok(OwnerCommitReceipt {
+                    binding,
+                    generation: view.generation(),
+                    aggregate_hash: *blake3::hash(&view.record.peer).as_bytes(),
+                })
+            });
+        };
+        // Only the scrubbed command reaches the reducer and its audit/history.
+        // The original request survives outside private storage only as a digest.
+        let (changed, result) = candidate
+            .peer
+            .workspace_mut()
+            .apply_workspace_task_command_with_owner_preparation(
+                invocation,
+                binding.request_digest,
+                &authority,
+                &prepared.public_command,
+                now,
+                tilo_peer_state::workspace_task::WorkspaceTaskOwnerPreparation {
+                    model_start: prepared.model_snapshot.as_ref(),
+                    private_retry: prepared.private_retry.as_deref(),
+                },
+            )?;
+        prepared.retain(&mut candidate, &source, changed, &result, key)?;
+        let admission_changed = stop_task_admission(&mut candidate, room, &command, key)?;
+        if changed || migrated || admission_changed {
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_room(room, candidate.clone(), None)?;
+        }
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: candidate.generation(),
+            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
+        })
+    }
+}
+struct TaskCommandSource<'a> {
+    command: &'a tilo_peer_state::workspace_task::WorkspaceTaskCommand,
+    authority: &'a tilo_peer_state::workspace_task::WorkspaceTaskAuthority,
+    invocation: uuid::Uuid,
+    request_digest: [u8; 32],
+    now: SystemTime,
+}
+
+struct PreparedTaskCommand {
+    public_command: tilo_peer_state::workspace_task::WorkspaceTaskCommand,
+    private_confirmation: Option<(String, tilo_desktop_model::WorkspaceTaskConfirmation)>,
+    private_report: Option<crate::private_task_outputs::NativePrivateTaskReport>,
+    private_write: Option<crate::private_task_text::NativePrivateInstructionWrite>,
+    private_retry: Option<String>,
+    model_snapshot: Option<tilo_peer_state::workspace_task::WorkspaceTaskModelStart>,
+}
+
+impl PreparedTaskCommand {
+    fn prepare(
+        candidate: &NativeCommittedView,
+        source: &TaskCommandSource<'_>,
+        model_start: Option<&dyn crate::task_admission::model::NativeModelStartAuthority>,
+        room: &str,
+    ) -> Result<Option<Self>, String> {
         let (confirmation_command, private_confirmation) =
-            crate::private_task_confirmation::prepare(&candidate, &command)?;
+            crate::private_task_confirmation::prepare(candidate, source.command)?;
         let (report_command, mut private_report) = crate::private_task_outputs::prepare_report(
             &confirmation_command,
             &candidate.peer,
-            &authority,
-            invocation,
+            source.authority,
+            source.invocation,
         )?;
         if private_report.is_some()
             && candidate
                 .record
                 .private_task_text
                 .reports
-                .get(&invocation.to_string())
+                .get(&source.invocation.to_string())
                 .is_some_and(|report| {
                     report
                         .request_digest
-                        .is_some_and(|digest| digest != binding.request_digest)
+                        .is_some_and(|digest| digest != source.request_digest)
                 })
         {
             return Err("private report invocation already belongs to another source".into());
         }
         if let Some(report) = private_report.as_mut() {
-            report.request_digest = Some(binding.request_digest);
+            report.request_digest = Some(source.request_digest);
             if let Some(existing) = candidate
                 .record
                 .private_task_text
                 .reports
-                .get(&invocation.to_string())
+                .get(&source.invocation.to_string())
                 && existing.request_digest == report.request_digest
             {
                 report.accepted_at_unix_ns = existing.accepted_at_unix_ns;
@@ -903,13 +982,7 @@ impl NativeWorkspaceOwner {
                     );
                 }
                 // This exact accepted report is a replay, not fresh run authority.
-                return self.with_current(room, |view| {
-                    Ok(OwnerCommitReceipt {
-                        binding,
-                        generation: view.generation(),
-                        aggregate_hash: *blake3::hash(&view.record.peer).as_bytes(),
-                    })
-                });
+                return Ok(None);
             }
         }
         if let tilo_peer_state::workspace_task::WorkspaceTaskCommand::RequestConfirmation {
@@ -926,77 +999,47 @@ impl NativeWorkspaceOwner {
         let private_retry = candidate
             .record
             .private_task_text
-            .retained_chat_retry(&report_command, &candidate.peer, &authority, now)?
+            .retained_chat_retry(
+                &report_command,
+                &candidate.peer,
+                source.authority,
+                source.now,
+            )?
             .map(str::to_owned);
         let (public_command, private_write) = candidate
             .record
             .private_task_text
             .prepare_private_command(&report_command, &candidate.peer)?;
-        let model_snapshot = match (&authority, &public_command, model_start) {
-            (
-                tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person { caller },
-                tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
-                    task_id, ..
-                },
-                Some(hook),
-            ) => {
-                let state = tilo_peer_state::workspace_task::snapshot(
-                    candidate
-                        .peer
-                        .admitted_room()
-                        .ok_or("model start room absent")?,
-                )?;
-                let task = state
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == *task_id)
-                    .ok_or("model start task absent")?;
-                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
-                    let contract = hook.approved_model_start(&candidate, task_id, caller, now)?;
-                    contract.source_for(&request.room, task_id)?;
-                    if contract.selection.app.is_empty()
-                        || contract.selection.provider.is_empty()
-                        || contract.selection.model.is_empty()
-                        || !contract.selection.contract.is_object()
-                    {
-                        return Err("approved MODEL full selection snapshot incomplete".into());
-                    }
-                    Some(tilo_peer_state::workspace_task::WorkspaceTaskModelStart {
-                        request_model: contract.request_model.clone(),
-                        kind: contract.kind,
-                        contract: serde_json::to_value(contract).map_err(|e| e.to_string())?,
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        // Only the scrubbed command reaches the reducer and its audit/history.
-        // The original request survives outside private storage only as a digest.
-        let (changed, result) = candidate
-            .peer
-            .workspace_mut()
-            .apply_workspace_task_command_with_owner_preparation(
-                invocation,
-                binding.request_digest,
-                &authority,
-                &public_command,
-                now,
-                tilo_peer_state::workspace_task::WorkspaceTaskOwnerPreparation {
-                    model_start: model_snapshot.as_ref(),
-                    private_retry: private_retry.as_deref(),
-                },
-            )?;
+
+        let model_snapshot =
+            prepare_task_model_start(candidate, source, &public_command, model_start, room)?;
+        Ok(Some(Self {
+            public_command,
+            private_confirmation,
+            private_report,
+            private_write,
+            private_retry,
+            model_snapshot,
+        }))
+    }
+
+    fn retain(
+        mut self,
+        candidate: &mut NativeCommittedView,
+        source: &TaskCommandSource<'_>,
+        changed: bool,
+        result: &tilo_desktop_model::WorkspaceTaskMutationResult,
+        key: Option<&ed25519_dalek::SigningKey>,
+    ) -> Result<(), String> {
         // The reducer validates exact command retries before private invocation
         // collision checks. A new command must never overwrite another report.
         if changed
-            && let Some(report) = private_report.as_mut()
+            && let Some(report) = self.private_report.as_mut()
             && let Some(existing) = candidate
                 .record
                 .private_task_text
                 .reports
-                .get(&invocation.to_string())
+                .get(&source.invocation.to_string())
         {
             // Acceptance time and order belong to the first owner receipt.
             // Every source, task, actor and private body must still match.
@@ -1006,12 +1049,12 @@ impl NativeWorkspaceOwner {
             if report != existing {
                 return Err("private report invocation already belongs to another source".into());
             }
-            private_report = None;
+            self.private_report = None;
         }
-        if changed && let Some(model) = model_snapshot {
+        if changed && let Some(model) = self.model_snapshot {
             let tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
                 task_id, ..
-            } = &public_command
+            } = &self.public_command
             else {
                 return Err("private model snapshot lacks person start".into());
             };
@@ -1034,7 +1077,7 @@ impl NativeWorkspaceOwner {
                 .insert(task_id.clone(), full);
             candidate.record.private_task_text.validate()?;
         }
-        if changed && let Some(mut report) = private_report {
+        if changed && let Some(mut report) = self.private_report {
             report.sequence = u64::try_from(candidate.record.private_task_text.reports.len())
                 .ok()
                 .and_then(|sequence| sequence.checked_add(1))
@@ -1043,23 +1086,23 @@ impl NativeWorkspaceOwner {
                 .record
                 .private_task_text
                 .reports
-                .insert(invocation.to_string(), report);
+                .insert(source.invocation.to_string(), report);
             candidate.record.private_task_text.validate()?;
         }
-        if changed && let Some(write) = private_write {
+        if changed && let Some(write) = self.private_write {
             if let Some(reference) = write.instruction_reference() {
                 candidate
                     .peer
                     .workspace_mut()
-                    .bind_workspace_task_private_instruction(&result, &reference)?;
+                    .bind_workspace_task_private_instruction(result, &reference)?;
             }
             candidate
                 .record
                 .private_task_text
-                .retain_private_instruction(&result, write)?;
+                .retain_private_instruction(result, write)?;
         }
         if changed {
-            crate::private_task_confirmation::retain(&mut candidate, private_confirmation)?;
+            crate::private_task_confirmation::retain(candidate, self.private_confirmation)?;
             if let Some(key) = key {
                 // A receiver may recover this delta without any private bodies.
                 // Authenticate retained direction references independently of
@@ -1070,23 +1113,63 @@ impl NativeWorkspaceOwner {
                 )?;
             }
         }
-        let admission_changed = stop_task_admission(&mut candidate, room, &command, key)?;
-        if changed || migrated || admission_changed {
-            candidate.record.peer = candidate.peer.durable()?;
-            candidate.record.generation = candidate
-                .record
-                .generation
-                .checked_add(1)
-                .ok_or("native owner generation exhausted")?;
-            self.publish_room(room, candidate.clone(), None)?;
-        }
-        Ok(OwnerCommitReceipt {
-            binding,
-            generation: candidate.generation(),
-            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
-        })
+
+        Ok(())
     }
 }
+
+fn prepare_task_model_start(
+    candidate: &NativeCommittedView,
+    source: &TaskCommandSource<'_>,
+    public_command: &tilo_peer_state::workspace_task::WorkspaceTaskCommand,
+    model_start: Option<&dyn crate::task_admission::model::NativeModelStartAuthority>,
+    room: &str,
+) -> Result<Option<tilo_peer_state::workspace_task::WorkspaceTaskModelStart>, String> {
+    Ok({
+        match (source.authority, public_command, model_start) {
+            (
+                tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person { caller },
+                tilo_peer_state::workspace_task::WorkspaceTaskCommand::ApproveRun {
+                    task_id, ..
+                },
+                Some(hook),
+            ) => {
+                let state = tilo_peer_state::workspace_task::snapshot(
+                    candidate
+                        .peer
+                        .admitted_room()
+                        .ok_or("model start room absent")?,
+                )?;
+                let task = state
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == *task_id)
+                    .ok_or("model start task absent")?;
+                if task.route == tilo_desktop_model::WorkspaceTaskRoute::Model {
+                    let contract =
+                        hook.approved_model_start(candidate, task_id, caller, source.now)?;
+                    contract.source_for(room, task_id)?;
+                    if contract.selection.app.is_empty()
+                        || contract.selection.provider.is_empty()
+                        || contract.selection.model.is_empty()
+                        || !contract.selection.contract.is_object()
+                    {
+                        return Err("approved MODEL full selection snapshot incomplete".into());
+                    }
+                    Some(tilo_peer_state::workspace_task::WorkspaceTaskModelStart {
+                        request_model: contract.request_model.clone(),
+                        kind: contract.kind,
+                        contract: serde_json::to_value(contract).map_err(|e| e.to_string())?,
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    })
+}
+
 fn stop_task_admission(
     candidate: &mut NativeCommittedView,
     room: RoomId,

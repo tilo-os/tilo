@@ -1,5 +1,5 @@
 //! Host-held successful request evidence. Report JSON cannot mint this record.
-use super::*;
+use super::{CapnpBrokerState, Lease, NativeModelLease, PendingTaskRun, Request};
 use agent_provider_config::protocol::{Content, Role};
 
 #[derive(Default)]
@@ -63,8 +63,7 @@ impl Receipt {
             .flatten()
             .collect::<Vec<_>>();
         let private = service.private_instructions(lease.room(), &lease.binding)?;
-        let mut receipt = Self::default();
-        receipt.directions = control
+        let directions_applied = control
             .directions
             .iter()
             .filter(|d| d.revision > run.applied_direction_revision)
@@ -78,11 +77,18 @@ impl Receipt {
                     directions.iter().any(|seen| {
                         seen.revision == d.revision
                             && seen.author == d.author
-                            && seen.issued_at == d.created_at
+                            && {
+                                let issued_at = d.created_at;
+                                seen.issued_at == issued_at
+                            }
                             && seen.text == *text
                     })
                 })
             });
+        let mut receipt = Self {
+            directions: directions_applied,
+            messages: std::collections::BTreeSet::new(),
+        };
         // Match the complete owner envelope, never an arbitrary model-authored ID.
         let observed = texts.iter().flat_map(|text| text.split("Untrusted task context. Sender and recipient below are attributed by the workspace owner,").skip(1))
             .filter_map(|frame| {
@@ -94,6 +100,7 @@ impl Receipt {
                 receipt.messages.insert(message.message_id);
             }
         }
+        drop(state);
         Ok(Some(receipt))
     }
 
@@ -122,6 +129,8 @@ impl Receipt {
         let prior = registry.receipts.entry(key).or_default();
         prior.directions |= self.directions;
         prior.messages.extend(self.messages);
+        drop(registry);
+        drop(state);
         Ok(())
     }
 }
@@ -168,6 +177,7 @@ impl CapnpBrokerState {
         if !receipt.directions || message_ids.iter().any(|id| !receipt.messages.contains(id)) {
             return Err("MODEL acknowledgement context was not in the successful request".into());
         }
+        drop(registry);
         Ok(())
     }
 }

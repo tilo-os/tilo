@@ -17,14 +17,44 @@ mod durable_local_matrix {
         control: crate::peer_actions::PolicyClockTestControl,
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
     }
+    struct ProvisionedEnvironment {
+        environment: Environment,
+        _identity_env: tilo_test_env::ScopedEnv,
+    }
+    impl std::ops::Deref for ProvisionedEnvironment {
+        type Target = Environment;
+        fn deref(&self) -> &Environment {
+            &self.environment
+        }
+    }
+    impl std::ops::DerefMut for ProvisionedEnvironment {
+        fn deref_mut(&mut self) -> &mut Environment {
+            &mut self.environment
+        }
+    }
     impl Environment {
-        fn new() -> Self {
+        #[expect(
+            clippy::new_ret_no_self,
+            reason = "the thread-bound identity guard stays separate from the Send broker fixture"
+        )]
+        fn new() -> ProvisionedEnvironment {
             Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
         }
         fn with_owner_initializer(
             initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
-        ) -> Self {
+        ) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
+            let mut identity_env = tilo_test_env::ScopedEnv::new();
+            identity_env
+                .set("XDG_CONFIG_HOME", root.path().join("config"))
+                .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
+                .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                &root.path().join("config/tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(root.path().join("identity")),
+                tilo_identity_host::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision real host receipt signer");
             let mut owner = initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = owner.signing_key().clone();
@@ -72,18 +102,21 @@ mod durable_local_matrix {
                 owner
             });
             let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
-            Self {
-                root,
-                cert,
-                key,
-                person,
-                route,
-                membership,
-                publisher,
-                authority,
-                origin,
-                control,
-                owner_task,
+            ProvisionedEnvironment {
+                environment: Self {
+                    root,
+                    cert,
+                    key,
+                    person,
+                    route,
+                    membership,
+                    publisher,
+                    authority,
+                    origin,
+                    control,
+                    owner_task,
+                },
+                _identity_env: identity_env,
             }
         }
     }
@@ -99,6 +132,7 @@ mod durable_local_matrix {
         stream: Option<runtime_collab::InvocationStream>,
         binding: runtime_collab::PublishedInvocationBinding,
         authorize: ui::invocation_scope::PublishedInvocationAuthorizer,
+        bridge_task: tokio::task::JoinHandle<()>,
     }
     impl Rig {
         async fn new(env: &Environment) -> Self {
@@ -139,6 +173,20 @@ mod durable_local_matrix {
                 )
                 .await
                 .unwrap();
+            // Mirror the production accept loop: later continuations can queue
+            // another eager admission after the caller's first explicit drain.
+            let bridge_state = Arc::downgrade(&state);
+            let bridge_directories = directories.clone();
+            let turn = state.action_directory_bridge.turn.clone();
+            let bridge_task = tokio::task::spawn_local(async move {
+                loop {
+                    turn.notified().await;
+                    let Some(state) = bridge_state.upgrade() else {
+                        break;
+                    };
+                    state.drain_action_directory_bridge(&bridge_directories);
+                }
+            });
             Self {
                 state,
                 directories,
@@ -146,6 +194,7 @@ mod durable_local_matrix {
                 stream: Some(stream),
                 binding,
                 authorize,
+                bridge_task,
             }
         }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
@@ -176,6 +225,8 @@ mod durable_local_matrix {
             }
         }
         async fn stop(mut self) {
+            self.bridge_task.abort();
+            let _ = (&mut self.bridge_task).await;
             self.worker.server.abort();
             self.worker.client.abort();
             // Abort completion releases the real server's state/journal references.
@@ -1053,6 +1104,7 @@ mod durable_local_matrix {
                     crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
                         route: env.route.clone(),
                         admitted: Box::new(admitted),
+                        time: rig.state.registered_policy_time().unwrap(),
                     };
                 let invocation = tilo_actions::InvocationId::new();
                 let request = tilo_actions::remote::InvokeRequest {
@@ -1069,12 +1121,15 @@ mod durable_local_matrix {
                     wait_ms: None,
                     appearance: None,
                 };
-                assert!(matches!(
-                    rig.state
-                        .action_invoke_with_origin(&caller, None, None, Some(&origin), &request,)
-                        .poll_ready(),
-                    tilo_actions::remote::PendingPoll::Ready(Ok(_))
-                ));
+                local_host_answer(rig.state.action_invoke_with_origin(
+                    &caller,
+                    None,
+                    None,
+                    Some(&origin),
+                    &request,
+                ))
+                .await
+                .expect("the broker admits the queued original caller");
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 let request = ui::invocation_scope::PublishedInvocationRequest {
                     wire_id: delivered.id,
@@ -1110,6 +1165,9 @@ mod durable_local_matrix {
     include!("person_chat_selected_view_tests.rs");
     include!("private_draft_rpc_tests.rs");
     include!("admitted_local_host_tests.rs");
+    include!("certified_lifecycle_tests.rs");
+    include!("dispatcher_receipt_tests.rs");
+    include!("local_document_action_rpc_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");

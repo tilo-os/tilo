@@ -805,8 +805,9 @@ impl SimulatedVblankPresenter {
             OutputSignal {
                 sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                 hdr_layers: &frame.hdr_layers,
-                dim: None,
                 color_lut: None,
+                // Headless has no physical display brightness to control.
+                dim: None,
                 layers: frame.cache.as_ref(),
             },
         );

@@ -94,9 +94,10 @@ impl NativeCursorOwner {
             SystemTime::now(),
         )?;
         // Public, deterministic test seeds, never the current device's keys.
-        let root = SigningKey::from_bytes(&[91; 32]);
+        let governor_root = SigningKey::from_bytes(&[91; 32]);
         let key = SigningKey::from_bytes(&[92; 32]);
-        let certificate = tilo_joined_room::testing::certificate(&root, &key, "Cursor fixture");
+        let certificate =
+            tilo_joined_room::testing::certificate(&governor_root, &key, "Cursor fixture");
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)?;
         let room = RoomId::parse(tilo_joined_room::testing::ROOM).ok_or("invalid fixture room")?;
         owner.commit_workspace_membership_command(
@@ -184,7 +185,7 @@ impl NativeCursorOwner {
         let messages = self.owner.with_current(self.room, |view| {
             let mut next = view.peer().clone();
             let node = tilo_actions::action_node(
-                &TreePath::room(&self.room.to_string()),
+                &TreePath::room(self.room.to_string()),
                 "so.tilo.notes",
                 "document",
                 "notes:release",
@@ -383,99 +384,107 @@ impl NativeCursorOwner {
     }
 }
 
+fn cursor_private_instructions(
+    fixture: &NativeCursorOwner,
+    task: &str,
+) -> Result<Option<tilo_joined_room::NativePrivateTaskInstructions>, String> {
+    fixture.owner.workspace_task_private_instructions(
+        fixture.room,
+        task,
+        1,
+        &WorkspaceTaskAuthority::Person {
+            caller: fixture.certificate.clone(),
+        },
+        SystemTime::now(),
+    )
+}
+
 #[test]
-fn native_cursor_owner_keeps_private_a_when_the_same_agent_starts_b() -> Result<(), String> {
-    let fixture = NativeCursorOwner::new()?;
-    let initial = fixture.owner.workspace_task_snapshot(fixture.room)?;
-    let authority_a = initial.controls[&fixture.task_a]
-        .execution_authority
-        .as_ref()
-        .ok_or("approved A has no frozen authority")?;
-    assert_eq!(
-        authority_a.scope,
-        tilo_action_policy::TreePath::room(&fixture.room.to_string()),
-        "a private instruction must not narrow the starter's room scope"
-    );
-    let authority_before = serde_json::to_value(authority_a).map_err(|error| error.to_string())?;
-    fixture.allow_notes()?;
-    let requirement = fixture.notes_requirement()?;
-    let dispatched = std::cell::Cell::new(0);
-    let dispatch = || {
-        dispatched.set(dispatched.get() + 1);
+fn native_cursor_owner_keeps_private_a_when_the_same_agent_starts_b() {
+    let run = || -> Result<(), String> {
+        let fixture = NativeCursorOwner::new()?;
+        let initial = fixture.owner.workspace_task_snapshot(fixture.room)?;
+        let authority_a = initial.controls[&fixture.task_a]
+            .execution_authority
+            .as_ref()
+            .ok_or("approved A has no frozen authority")?;
+        assert_eq!(
+            authority_a.scope,
+            tilo_action_policy::TreePath::room(fixture.room.to_string()),
+            "a private instruction must not narrow the starter's room scope"
+        );
+        let authority_before =
+            serde_json::to_value(authority_a).map_err(|error| error.to_string())?;
+        fixture.allow_notes()?;
+        let requirement = fixture.notes_requirement()?;
+        let dispatched = std::cell::Cell::new(0);
+        let dispatch = || {
+            dispatched.set(dispatched.get() + 1);
+            Ok(())
+        };
+        let mut forged = requirement.clone();
+        forged
+            .invocation
+            .as_mut()
+            .ok_or("invocation absent")?
+            .private_run_digest = [0; 32];
+        assert!(fixture.admit_notes(&forged, dispatch).is_err());
+        assert_eq!(
+            dispatched.get(),
+            0,
+            "bad private provenance reached dispatch"
+        );
+        fixture.admit_notes(&requirement, dispatch)?;
+        assert_eq!(dispatched.get(), 1);
+        fixture.direct_a("Keep the original references")?;
+        // Fresh UUID/frontier: terminal refusal below cannot merely be a replay
+        // refusal or an outdated-direction check.
+        let unspent_a = fixture.notes_requirement()?;
+        let private_a = || cursor_private_instructions(&fixture, &fixture.task_a);
+        let before = private_a()?.ok_or("private A missing before completion")?;
+        assert_eq!(
+            before.instruction.as_deref(),
+            Some("Check the private release notes")
+        );
+        let task_b = fixture.complete_a_start_b()?;
+        assert_ne!(fixture.task_a, task_b);
+        let snapshot = fixture.owner.workspace_task_snapshot(fixture.room)?;
+        assert!(snapshot.controls[&fixture.task_a].active_run.is_none());
+        assert_eq!(
+            serde_json::to_value(
+                snapshot.controls[&fixture.task_a]
+                    .execution_authority
+                    .as_ref()
+            )
+            .map_err(|error| error.to_string())?,
+            authority_before,
+            "completing A and starting B must not rewrite A's retained scope"
+        );
+        assert_eq!(
+            snapshot.controls[&task_b]
+                .active_run
+                .as_ref()
+                .ok_or("B has no approved run")?
+                .agent_id,
+            "scribe"
+        );
+        let after = private_a()?.ok_or("historical private A lost after B started")?;
+        assert_eq!(before.instruction, after.instruction);
+        assert_eq!(before.directions, after.directions);
+        assert!(fixture.direct_a("Must not reach B").is_err());
+        assert!(fixture.admit_notes(&requirement, dispatch).is_err());
+        assert!(fixture.admit_notes(&unspent_a, dispatch).is_err());
+        assert_eq!(
+            dispatched.get(),
+            1,
+            "old A admission reached replacement work"
+        );
+        let private_b =
+            cursor_private_instructions(&fixture, &task_b)?.ok_or("private B missing")?;
+        assert!(private_b.directions.is_empty());
         Ok(())
     };
-    let mut forged = requirement.clone();
-    forged
-        .invocation
-        .as_mut()
-        .ok_or("invocation absent")?
-        .private_run_digest = [0; 32];
-    assert!(fixture.admit_notes(&forged, dispatch).is_err());
-    assert_eq!(
-        dispatched.get(),
-        0,
-        "bad private provenance reached dispatch"
-    );
-    fixture.admit_notes(&requirement, dispatch)?;
-    assert_eq!(dispatched.get(), 1);
-    fixture.direct_a("Keep the original references")?;
-    // Fresh UUID/frontier: terminal refusal below cannot merely be a replay
-    // refusal or an outdated-direction check.
-    let unspent_a = fixture.notes_requirement()?;
-    let person = WorkspaceTaskAuthority::Person {
-        caller: fixture.certificate.clone(),
-    };
-    let private_a = || {
-        fixture.owner.workspace_task_private_instructions(
-            fixture.room,
-            &fixture.task_a,
-            1,
-            &person,
-            SystemTime::now(),
-        )
-    };
-    let before = private_a()?.ok_or("private A missing before completion")?;
-    assert_eq!(
-        before.instruction.as_deref(),
-        Some("Check the private release notes")
-    );
-    let task_b = fixture.complete_a_start_b()?;
-    assert_ne!(fixture.task_a, task_b);
-    let snapshot = fixture.owner.workspace_task_snapshot(fixture.room)?;
-    assert!(snapshot.controls[&fixture.task_a].active_run.is_none());
-    assert_eq!(
-        serde_json::to_value(
-            snapshot.controls[&fixture.task_a]
-                .execution_authority
-                .as_ref()
-        )
-        .map_err(|error| error.to_string())?,
-        authority_before,
-        "completing A and starting B must not rewrite A's retained scope"
-    );
-    assert_eq!(
-        snapshot.controls[&task_b]
-            .active_run
-            .as_ref()
-            .ok_or("B has no approved run")?
-            .agent_id,
-        "scribe"
-    );
-    let after = private_a()?.ok_or("historical private A lost after B started")?;
-    assert_eq!(before.instruction, after.instruction);
-    assert_eq!(before.directions, after.directions);
-    assert!(fixture.direct_a("Must not reach B").is_err());
-    assert!(fixture.admit_notes(&requirement, dispatch).is_err());
-    assert!(fixture.admit_notes(&unspent_a, dispatch).is_err());
-    assert_eq!(
-        dispatched.get(),
-        1,
-        "old A admission reached replacement work"
-    );
-    let private_b = fixture
-        .owner
-        .workspace_task_private_instructions(fixture.room, &task_b, 1, &person, SystemTime::now())?
-        .ok_or("private B missing")?;
-    assert!(private_b.directions.is_empty());
-    Ok(())
+    if let Err(error) = run() {
+        panic!("native cursor owner custody: {error}");
+    }
 }

@@ -195,12 +195,16 @@ fn signed_expiry_is_checked_on_registration_reservation_and_claim() {
         "the deadline must be host-signed"
     );
     let mut wire = serde_json::to_value(&registered).unwrap();
-    let expiry = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64
-        - 1;
-    wire["issued_at_ns"] = serde_json::json!(expiry - 120_000_000_000);
+    let expiry = u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap()
+    .checked_sub(1)
+    .unwrap();
+    wire["issued_at_ns"] = serde_json::json!(expiry.checked_sub(120_000_000_000).unwrap());
     wire["expires_at_ns"] = serde_json::json!(expiry);
     let expired = resign(wire, &fixture.key);
     expired.verify().unwrap();
@@ -504,7 +508,8 @@ fn renewal_spends_old_nonce_and_cannot_restart_expired_connection() {
             let too_late = registered.expires_at() + Duration::from_secs(1);
             let mut wire = serde_json::to_value(&renewed).unwrap();
             wire["id"] = serde_json::json!(uuid::Uuid::new_v4());
-            let issued = too_late.duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+            let issued =
+                u64::try_from(too_late.duration_since(UNIX_EPOCH).unwrap().as_nanos()).unwrap();
             wire["issued_at_ns"] = serde_json::json!(issued);
             wire["expires_at_ns"] = serde_json::json!(issued + 120_000_000_000);
             let late_renewal = resign(wire, &fixture.key);

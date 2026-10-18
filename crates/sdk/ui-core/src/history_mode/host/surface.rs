@@ -278,6 +278,21 @@ impl Widget for HistoryHost {
             );
         }
         self.toolbar.draw(scene, transform, text, theme, presence);
+        if self.bar_status.text().is_some()
+            && let Some(row) = self.toolbar.children().first()
+            && let Some(control) = row.children().last()
+        {
+            let row = row.get_rect();
+            self.bar_status.paint(
+                scene,
+                transform,
+                text,
+                theme,
+                row,
+                row.x0,
+                control.get_rect().x0 - f64::from(theme.tokens.spacing.s3),
+            );
+        }
         if self.show_timeline() && !self.timeline_available() {
             self.unavailable
                 .draw(scene, transform, text, theme, presence);
@@ -322,6 +337,9 @@ impl Widget for HistoryHost {
             return vec![&panel.dialog];
         }
         let mut children: Vec<&dyn Widget> = vec![&self.toolbar];
+        if self.bar_status.text().is_some() {
+            children.push(&self.bar_status);
+        }
         if self.show_timeline() {
             if self.timeline_available() {
                 children.push(&self.timeline);
@@ -343,6 +361,9 @@ impl Widget for HistoryHost {
             return vec![&mut panel.dialog];
         }
         let mut children: Vec<&mut dyn Widget> = vec![&mut self.toolbar];
+        if self.bar_status.text().is_some() {
+            children.push(&mut self.bar_status);
+        }
         if show_timeline {
             if timeline_available {
                 children.push(&mut self.timeline);

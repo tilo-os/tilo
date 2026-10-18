@@ -66,7 +66,7 @@ pub enum NativeAdmissionCommand {
     Snapshot {
         agent: Option<String>,
     },
-    /// Separate physical-host enrollment; never inferred from ReserveModel.
+    /// Separate physical-host enrollment; never inferred from `ReserveModel`.
     RegisterModelHost(model_host::NativeModelHostRegistration),
     /// Signed successful physical-host HTTP delivery, never an actor report.
     ModelDelivery(model_delivery::NativeModelDeliveryReceipt),
@@ -572,17 +572,11 @@ impl NativeGovernorAdmission<'_> {
         self.peer.permissions(host.device_public_key, now)?;
         Ok(())
     }
-    /// # Errors
-    /// Returns an error if custody, binding, current policy or the task frontier is invalid.
-    pub fn reserve(
-        &mut self,
-        binding: NativeInvocationBinding,
+    fn check_reservation_binding(
+        &self,
+        binding: &NativeInvocationBinding,
         host: &DeviceCert,
-        now: SystemTime,
-        check: impl FnOnce(&crate::StatePeer, &NativeInvocationBinding) -> Result<(), String>,
-    ) -> Result<NativeInvocationReservation, String> {
-        self.custody()?;
-        self.host(host, now)?;
+    ) -> Result<(), String> {
         let host_device = host.device_public_key;
         if binding.room != self.room
             || binding.invocation.is_nil()
@@ -596,6 +590,22 @@ impl NativeGovernorAdmission<'_> {
         {
             return Err("native invocation binding is incomplete".into());
         }
+
+        Ok(())
+    }
+
+    /// # Errors
+    /// Returns an error if custody, binding, current policy or the task frontier is invalid.
+    pub fn reserve(
+        &mut self,
+        binding: NativeInvocationBinding,
+        host: &DeviceCert,
+        now: SystemTime,
+        check: impl FnOnce(&crate::StatePeer, &NativeInvocationBinding) -> Result<(), String>,
+    ) -> Result<NativeInvocationReservation, String> {
+        self.custody()?;
+        self.host(host, now)?;
+        self.check_reservation_binding(&binding, host)?;
         check(self.peer, &binding)?;
         let ledger = &*self.ledger;
         if ledger
@@ -1289,6 +1299,8 @@ impl NativeWorkspaceOwner {
 
     /// As atomic local admission, exposing the already-locked published view to
     /// the final synchronous authority fence. Never reenter the owner here.
+    /// # Errors
+    /// Rejects changed authority, stopped runs, consumed custody or failed publication.
     pub fn admit_local_native_invocation_with_view<T>(
         &self,
         binding: NativeInvocationBinding,
@@ -1393,6 +1405,8 @@ impl NativeWorkspaceOwner {
     }
 
     /// Final enqueue receives the current candidate without reentrant owner reads.
+    /// # Errors
+    /// Rejects changed authority, stopped runs, consumed custody or failed publication.
     pub fn admit_reserved_native_invocation_with_view<T>(
         &self,
         permit: &NativeInvocationPermit,

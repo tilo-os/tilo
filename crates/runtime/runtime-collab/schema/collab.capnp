@@ -464,16 +464,22 @@ interface ChannelHandle {
   browserServiceSessionCommand @63 (command :Data) -> (reply :Data);
   # Person-only private host door. The app, workspace and certificate come
   # from the admitted native worker; onBehalfOf names retained original custody.
+  # Admission of an already speculatively applied local Document action.
+  # Closed bounded version-1 JSON; caller/app/record derive from this channel.
+  # Never redispatches, certifies execution, or authorizes publication.
+  admitLocalDocumentAction @66 (request :Data)
+      -> (observation :PublishedInvocationObservation);
+
   personChat @64 (command :Data, onBehalfOf :Data) -> (reply :Data);
   # Native Chat's original person actor only; reauthorized on every next.
   subscribePersonChat @65 (publicKey :Text, onBehalfOf :Data) -> (stream :PersonChatStream);
 
   # Original owner-private reports for the authenticated agent's exact leased run.
   # Persons read the same reports through the existing read-conversation action.
-  taskReportTranscript @66 (runId :UInt64, lease :Text) -> (reportsJson :Text);
+  taskReportTranscript @67 (runId :UInt64, lease :Text) -> (reportsJson :Text);
   # Private typed MODEL custody on the certified Agent connection. No host
   # backend key or endpoint capability is returned to the application.
-  nativeModel @67 (command :Data) -> (reply :Data);
+  nativeModel @68 (command :Data) -> (reply :Data);
 
 }
 
@@ -497,6 +503,11 @@ struct PublishedInvocationObservation {
   updateJson @4 :Text;
   uncertain @5 :Bool;
   cancellationRequested @6 :Bool;
+  # Host-private AdmissionEvidence JSON, returned only to the authorized owner
+  # through invocation observation; never included in public streams.
+  admissionJson @7 :Text;
+  # Host-private terminal evidence JSON, with the same owner-only visibility.
+  terminalJson @8 :Text;
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -508,6 +519,11 @@ interface ActionDirectory {
   # An empty `revision` resolves against the directory as it is now; a found
   # resolution then names that revision in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text)
+      -> (resolution :ActionDirectoryResolution);
+  # Admission of an already-applied local document mutation only. Resolves
+  # an exact pre-event revision retained by the SDK until admission completes;
+  # never falls back to the current directory or authorizes remote delivery.
+  resolveLocalDocumentAction @2 (revision :Text, resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
 }
 

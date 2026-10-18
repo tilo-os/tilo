@@ -57,7 +57,7 @@ impl DelayedControl {
         if let Some(gate) = gate {
             gate.entered
                 .send(())
-                .map_err(|_| "control test receiver closed")?;
+                .map_err(|()| "control test receiver closed")?;
             gate.release
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(|_| "control test transport release missing")?;
@@ -105,12 +105,10 @@ impl WorkspaceTaskExecution for DelayedControl {
         room: &str,
         binding: &NativeTaskBinding,
     ) -> Result<Option<watch::Receiver<()>>, String> {
-        *self
-            .subscriptions
-            .lock()
-            .unwrap()
-            .entry(binding.task_id.clone())
-            .or_default() += 1;
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let count = subscriptions.entry(binding.task_id.clone()).or_default();
+        *count = count.checked_add(1).unwrap();
+        drop(subscriptions);
         self.inner.message_changes_for_run(room, binding)
     }
     fn report(
@@ -267,7 +265,7 @@ async fn blocked_private_control_keeps_stop_and_same_actor_other_task_live() {
             let other_mail = mail_for(&f, &other, 9911);
             let (entered, release) = service.delay(&f.task);
             let pending = stream.read_control_request().send().promise;
-            let reading = tokio::task::spawn_local(async move { pending.await });
+            let reading = tokio::task::spawn_local(pending);
             tokio::time::timeout(Duration::from_secs(2), entered)
                 .await
                 .unwrap()
@@ -351,7 +349,7 @@ async fn duplicate_read_is_bounded_and_disconnect_does_not_wait_for_private_cont
             mail(&f, 9912);
             let (entered, release) = service.delay(&f.task);
             let pending = stream.read_control_request().send().promise;
-            let reading = tokio::task::spawn_local(async move { pending.await });
+            let reading = tokio::task::spawn_local(pending);
             tokio::time::timeout(Duration::from_secs(2), entered)
                 .await
                 .unwrap()
@@ -393,7 +391,7 @@ async fn revocation_during_private_read_refuses_captured_body() {
             mail(&f, 9913);
             let (entered, release) = service.delay(&f.task);
             let pending = stream.read_control_request().send().promise;
-            let reading = tokio::task::spawn_local(async move { pending.await });
+            let reading = tokio::task::spawn_local(pending);
             tokio::time::timeout(Duration::from_secs(2), entered)
                 .await
                 .unwrap()
@@ -429,7 +427,7 @@ async fn starter_revocation_during_private_read_refuses_captured_body() {
                 .unwrap();
             let (entered, release) = service.delay(&f.task);
             let pending = stream.read_control_request().send().promise;
-            let reading = tokio::task::spawn_local(async move { pending.await });
+            let reading = tokio::task::spawn_local(pending);
             tokio::time::timeout(Duration::from_secs(2), entered)
                 .await
                 .unwrap()
@@ -589,6 +587,7 @@ async fn private_control_waits_for_owner_acceptance_and_never_consumes_mail() {
             )
             .unwrap();
             assert_eq!(observed.messages, vec![message, next]);
+            drop(f);
         })
         .await;
 }
@@ -609,6 +608,7 @@ async fn replaced_subscription_cannot_read_private_control() {
             f.state.refresh_task_control();
             assert!(old.read_control_request().send().promise.await.is_err());
             assert_eq!(control(&current).await.messages, vec![message]);
+            drop(f);
         })
         .await;
 }
@@ -647,6 +647,7 @@ async fn control_uses_owner_applied_frontier_without_acknowledging_directions() 
                     .applied_direction_revision,
                 0
             );
+            drop(f);
         })
         .await;
 }
@@ -666,7 +667,7 @@ async fn superseded_private_body_is_reobserved_without_closing_the_control_strea
             let (entered, release) = service.delay(&f.task);
             f.state.refresh_task_control();
             let pending = stream.read_control_request().send().promise;
-            let reading = tokio::task::spawn_local(async move { pending.await });
+            let reading = tokio::task::spawn_local(pending);
             tokio::time::timeout(Duration::from_secs(3), entered)
                 .await
                 .unwrap()

@@ -238,8 +238,9 @@ impl NativeTaskActionRequirement {
             .get(&binding.task_id)
             .ok_or("native task control absent")?;
         let run = control.active_run.as_ref().ok_or("native task run ended")?;
-        if run.epoch != binding.epoch
-            || control.run_epoch != binding.epoch
+        let expected_epoch = binding.epoch;
+        if run.epoch != expected_epoch
+            || control.run_epoch != expected_epoch
             || run.agent_id != agent
             || task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
             || task.assigned_agent.as_deref() != Some(agent)

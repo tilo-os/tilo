@@ -71,7 +71,7 @@ impl Store for TestOwnerWriter {
         if let Some(gate) = gate {
             gate.entered
                 .send(())
-                .map_err(|_| "publication observer closed".to_owned())?;
+                .map_err(|()| "publication observer closed".to_owned())?;
             gate.release
                 .recv()
                 .map_err(|_| "publication release closed".to_owned())?;
@@ -210,15 +210,12 @@ async fn withheld_report_publication_keeps_unrelated_task_rpc_live() {
                 .unwrap();
             let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
             assert!(snapshot.controls[&run.task_id].execution.is_some());
+            drop(f);
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "keep withheld ACTION, queued Stop and unrelated RPC delivery in one regression"
-)]
 async fn withheld_action_publication_keeps_rpc_live_and_stop_honestly_pending() {
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -315,6 +312,7 @@ async fn withheld_action_publication_keeps_rpc_live_and_stop_honestly_pending() 
                     .unwrap()
                     .get_cancelled()
             );
+            drop(f);
         })
         .await;
 }

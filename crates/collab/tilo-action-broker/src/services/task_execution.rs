@@ -69,6 +69,9 @@ pub trait WorkspaceTaskExecution: Send + Sync {
     fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String>;
     /// Recheck the owner's admission barrier, not a runner or projection flag.
     /// Historical delivery remains valid after this gate closes; ACK authority does not.
+    ///
+    /// # Errors
+    /// The owner is unavailable, or the run's MODEL admission barrier closed.
     fn ensure_model_run_open(
         &self,
         _room: &str,
@@ -115,11 +118,8 @@ pub trait WorkspaceTaskExecution: Send + Sync {
     ) -> Result<Option<NativeTaskPrivateInstructions>, String> {
         Err("native task private instruction owner unavailable".into())
     }
-    /// Digest the exact authenticated owner-private run envelope, not its lease.
-    ///
-    /// # Errors
-    /// Refuses unavailable private custody or a stale run/frontier.
     /// Recover the original child identity only while this exact review is held.
+    ///
     /// # Errors
     /// Review, run or request-time owner custody changed.
     fn confirmation_invocation(
@@ -131,6 +131,10 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         Err("native confirmation invocation custody unavailable".into())
     }
 
+    /// Digest the exact authenticated owner-private run envelope, not its lease.
+    ///
+    /// # Errors
+    /// Refuses unavailable private custody or a stale run/frontier.
     fn private_run_digest(
         &self,
         _room: &str,
@@ -151,6 +155,9 @@ pub trait WorkspaceTaskExecution: Send + Sync {
     }
     /// Subscribe before the first inbox read to avoid losing a committed send.
     /// Wake hints never carry private data or confer read authority.
+    ///
+    /// # Errors
+    /// The owner is unavailable or this service does not govern the room.
     fn message_changes(
         &self,
         _room: &str,
@@ -160,6 +167,9 @@ pub trait WorkspaceTaskExecution: Send + Sync {
 
     /// Subscribe to private mailbox changes scoped to the actual native run.
     /// Remote governors must authenticate physical host and run custody.
+    ///
+    /// # Errors
+    /// The owner is unavailable, the run changed, or this host does not hold it.
     fn message_changes_for_run(
         &self,
         room: &str,
@@ -278,7 +288,7 @@ pub trait WorkspaceTaskExecution: Send + Sync {
 
     /// Prepare one asynchronous transfer of the owner's guarded enqueue turn.
     /// Only owned metadata crosses to the worker; the original non-Send enqueue
-    /// closure stays on the broker LocalSet. The worker must recheck the original
+    /// closure stays on the broker `LocalSet`. The worker must recheck the original
     /// caller and task policy on the exact guarded owner view, including live
     /// expiry immediately before Ready, and hold its guard until completion or drop.
     /// Implementations must not re-enter the owner mutex from that callback.

@@ -291,10 +291,16 @@ impl LocalAppConnection {
         if !*connected || !self.process.alive() {
             return Err("MODEL protected connection ended".into());
         }
-        send()
+        // The gate stays held until the send has completed.
+        let result = send();
+        drop(connected);
+        result
     }
     pub(super) fn stop(&self) {
-        *self.connected.write().unwrap_or_else(|e| e.into_inner()) = false;
+        *self
+            .connected
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
     }
 }
 

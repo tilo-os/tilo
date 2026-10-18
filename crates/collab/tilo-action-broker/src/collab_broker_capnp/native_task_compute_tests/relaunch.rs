@@ -1,6 +1,34 @@
 //! A retained certificate selects a relaunch, never an already-ready executor.
 use super::*;
 
+async fn assert_goal_delivery(stream: &task_run_stream::Client, task: &str, goal: u64) {
+    // Read the actual admitted stream, not just a Running projection.
+    // The first run can also be redelivered after reconnecting.
+    let mut found = false;
+    for _ in 0..=goal {
+        let reply =
+            tokio::time::timeout(Duration::from_secs(2), stream.read_request().send().promise)
+                .await
+                .unwrap()
+                .unwrap();
+        let delivered: runtime_collab::TaskRunEnvelope = serde_json::from_str(
+            reply
+                .get()
+                .unwrap()
+                .get_task_json()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        if delivered.task_id == task {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "approved goal must reach its authenticated executor");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn failed_process_launch_keeps_the_saved_goal_queued_without_a_run() {
     tokio::task::LocalSet::new()
@@ -16,7 +44,7 @@ async fn failed_process_launch_keeps_the_saved_goal_queued_without_a_run() {
                 title: "Saved goal".into(),
                 assigned_agent: None,
                 route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-                metadata: Default::default(),
+                metadata: tilo_desktop_model::WorkspaceTaskMetadata::default(),
             })
             .unwrap();
             let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
@@ -45,8 +73,27 @@ async fn failed_process_launch_keeps_the_saved_goal_queued_without_a_run() {
                 saved
             );
             assert!(registry.candidates(&room().to_string()).unwrap().is_empty());
+            drop(f);
         })
         .await;
+}
+
+fn assert_offline_selection(f: &Fixture, registry: &crate::services::NativeTaskExecutorRegistry) {
+    let sample = f
+        .native
+        .owner
+        .with_current(room(), |view| {
+            registry.sample(
+                view.peer(),
+                view.governor(),
+                &room().to_string(),
+                &f.native.certificate,
+                Some("Configured test model"),
+            )
+        })
+        .unwrap();
+    assert_eq!(sample.len(), 1);
+    assert!(!sample[0].current_certified_executor);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -65,7 +112,7 @@ async fn second_model_goal_and_offline_assignment_wait_for_protected_resubscript
                         title: title.clone(),
                         assigned_agent: (goal == 1 && assigned).then(|| "scribe".into()),
                         route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-                        metadata: Default::default(),
+                        metadata: tilo_desktop_model::WorkspaceTaskMetadata::default(),
                     })
                     .unwrap();
                     let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
@@ -97,7 +144,8 @@ async fn second_model_goal_and_offline_assignment_wait_for_protected_resubscript
                             tilo_desktop_model::WorkspaceTaskStatus::Queued
                         );
                         assert_eq!(queued.assigned_agent.is_some(), goal == 1 && assigned);
-                        let (managed, socket) = managed_channel(&f, 79 + goal);
+                        let (managed, socket) =
+                            managed_channel(&f, 79_u64.checked_add(goal).unwrap());
                         let stream = managed
                             .subscribe_task_runs_request()
                             .send()
@@ -121,7 +169,11 @@ async fn second_model_goal_and_offline_assignment_wait_for_protected_resubscript
                         "{result:?}"
                     );
                     let current = registry
-                        .executor_for_peer(79 + goal, &room().to_string(), "scribe")
+                        .executor_for_peer(
+                            79_u64.checked_add(goal).unwrap(),
+                            &room().to_string(),
+                            "scribe",
+                        )
                         .unwrap();
                     assert!(registry.is_current(&current));
                     let approved = f.native.owner.workspace_task_snapshot(room()).unwrap();
@@ -132,53 +184,15 @@ async fn second_model_goal_and_offline_assignment_wait_for_protected_resubscript
                         f.native.certificate.device_public_key
                     );
                     assert_ne!(current.certificate, f.native.certificate);
-                    // Read the actual admitted stream, not just a Running projection.
-                    // The first run can also be redelivered after reconnecting.
-                    let mut found = false;
-                    for _ in 0..=goal {
-                        let reply = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            connection.2.read_request().send().promise,
-                        )
-                        .await
-                        .unwrap()
-                        .unwrap();
-                        let delivered: runtime_collab::TaskRunEnvelope = serde_json::from_str(
-                            reply
-                                .get()
-                                .unwrap()
-                                .get_task_json()
-                                .unwrap()
-                                .to_str()
-                                .unwrap(),
-                        )
-                        .unwrap();
-                        if delivered.task_id == task {
-                            found = true;
-                            break;
-                        }
-                    }
-                    assert!(found, "approved goal must reach its authenticated executor");
-                    f.state.disconnect_native_task_stream(79 + goal);
+                    assert_goal_delivery(&connection.2, &task, goal).await;
+                    f.state
+                        .disconnect_native_task_stream(79_u64.checked_add(goal).unwrap());
                     drop(connection);
                     assert!(!registry.is_current(&current));
                     assert_eq!(registry.candidates(&room().to_string()).unwrap().len(), 1);
-                    let sample = f
-                        .native
-                        .owner
-                        .with_current(room(), |view| {
-                            registry.sample(
-                                view.peer(),
-                                view.governor(),
-                                &room().to_string(),
-                                &f.native.certificate,
-                                Some("Configured test model"),
-                            )
-                        })
-                        .unwrap();
-                    assert_eq!(sample.len(), 1);
-                    assert!(!sample[0].current_certified_executor);
+                    assert_offline_selection(&f, &registry);
                 }
+                drop(f);
             }
         })
         .await;

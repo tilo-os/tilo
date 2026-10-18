@@ -1,7 +1,7 @@
 use super::*;
 use tilo_actions::task_messaging::{TaskMessageStatus, TaskRunAddress};
 
-fn envelope(argument: serde_json::Value) -> InvocationEnvelope {
+fn envelope(argument: &serde_json::Value) -> InvocationEnvelope {
     InvocationEnvelope {
         id: 1,
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(100)),
@@ -40,21 +40,21 @@ fn message(sequence: u64) -> TaskMessage {
 
 #[test]
 fn send_arguments_cannot_claim_source_or_authority() {
-    let request = envelope(serde_json::json!({"run_epoch":3,"text":"Context"}));
+    let request = envelope(&serde_json::json!({"run_epoch":3,"text":"Context"}));
     let (recipient, body) = send(&request).unwrap().unwrap();
     assert_eq!(recipient, "task:recipient");
     assert_eq!(body.run_epoch, 3);
     for injected in ["actor", "source", "agent_id", "grant", "role"] {
         let mut argument = serde_json::json!({"run_epoch":3,"text":"Context"});
         argument[injected] = "invented".into();
-        assert!(send(&envelope(argument)).is_err(), "{injected}");
+        assert!(send(&envelope(&argument)).is_err(), "{injected}");
     }
     for argument in [
         serde_json::json!({"run_epoch":0,"text":"Context"}),
         serde_json::json!({"run_epoch":3,"text":" "}),
         serde_json::json!({"run_epoch":3,"text":"x".repeat(TaskMessageSend::MAX_TEXT_BYTES + 1)}),
     ] {
-        assert!(send(&envelope(argument)).is_err());
+        assert!(send(&envelope(&argument)).is_err());
     }
     let mut unrelated = request;
     unrelated.action = "inspect".into();
@@ -74,7 +74,7 @@ fn registered_wait_is_a_bounded_cancellable_read_not_a_delivery_ack() {
     );
     assert!(action.contract.validate_declaration().is_empty());
     let mut request =
-        envelope(serde_json::json!({"run_epoch":3,"after_sequence":9,"timeout_ms":250}));
+        envelope(&serde_json::json!({"run_epoch":3,"after_sequence":9,"timeout_ms":250}));
     request.action = "wait-task-message".into();
     let (task, args) = wait(&request).unwrap().unwrap();
     assert_eq!(task, "task:recipient");

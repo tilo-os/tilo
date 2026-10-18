@@ -117,27 +117,21 @@ impl GovernedRoom {
         Ok(())
     }
 
-    fn custody(
+    fn check_custody_command(
         &self,
         caller: &DeviceCert,
-        command: C,
-        key: &ed25519_dalek::SigningKey,
-    ) -> Result<R, String> {
-        let now = SystemTime::now();
-        if !self.peer.certificates().contains(caller) {
-            return Err("native caller certificate is not current".into());
-        }
-        self.peer.permissions(caller.device_public_key, now)?;
-        let id = tilo_desktop_model::RoomId::parse(self.room()).ok_or("invalid native room")?;
-        let mut ledger = self.load_native_admission()?;
-        let snapshot = self.task_policy_snapshot()?;
-        match &command {
+        command: &C,
+        ledger: &TaskAdmissionLedger,
+        snapshot: &tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        match command {
             C::Reserve {
                 binding,
                 requirement,
             } => {
                 self.check_native_private_run(caller, requirement)?;
-                ledger.check_action(&self.peer, &snapshot, requirement, binding, now)?;
+                ledger.check_action(&self.peer, snapshot, requirement, binding, now)?;
             }
             C::Claim {
                 reservation,
@@ -146,7 +140,7 @@ impl GovernedRoom {
                 self.check_native_private_run(caller, requirement)?;
                 ledger.check_action(
                     &self.peer,
-                    &snapshot,
+                    snapshot,
                     requirement,
                     &reservation.binding,
                     now,
@@ -169,7 +163,7 @@ impl GovernedRoom {
                 self.check_model_private_run(caller, &current)?;
                 requirement.check_registered_context(
                     &self.peer,
-                    &snapshot,
+                    snapshot,
                     &requirement.binding()?,
                     &current,
                     now,
@@ -181,6 +175,257 @@ impl GovernedRoom {
             }
             _ => {}
         }
+
+        Ok(())
+    }
+
+    fn native_snapshot(
+        &self,
+        caller: &DeviceCert,
+        agent: Option<&str>,
+        now: SystemTime,
+    ) -> Result<R, String> {
+        Ok({
+            self.native_host(caller)?;
+            if let Some(agent) = agent {
+                self.peer
+                    .workspace()
+                    .check_task_execution_actor(agent, None, now)?;
+            }
+            let mut public = tilo_peer_state::workspace_task::snapshot(
+                self.peer.admitted_room().ok_or("native task room absent")?,
+            )?;
+            for task in &mut public.tasks {
+                if let Some(resource) = &mut task.resource {
+                    resource.agent_request = None;
+                }
+            }
+            for control in public.controls.values_mut() {
+                if let Some(held) = &mut control.confirmation {
+                    *held =
+                        tilo_joined_room::PrivateTaskConfirmationStore::public_confirmation(held);
+                }
+            }
+            R::Snapshot(
+                serde_json::to_string(&(public.tasks, public.controls, public.grants))
+                    .map_err(|e| e.to_string())?,
+            )
+        })
+    }
+
+    fn prepare_native_candidate(
+        &self,
+        caller: &DeviceCert,
+        request: &tilo_joined_room::task_admission::OwnerCommitRequest,
+        model_start: Option<
+            &tilo_joined_room::task_admission::model_start::NativeModelPersonStartSnapshot,
+        >,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<(tilo_peer_state::StatePeer, bool), String> {
+        let tilo_joined_room::task_admission::CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority,
+            command: task_command,
+        } = &request.operation
+        else {
+            return Err("native coordination task command absent".into());
+        };
+        let binding = request.binding()?;
+        // Use the same private-text preparation as the desktop owner. This
+        // retains hierarchy and strips the body before any CRDT history exists.
+        let path = self.path.with_extension("private-task-text-v1.json");
+        let texts = super::private_tasks::read_private(&path)?.unwrap_or_default();
+        let mut text = tilo_joined_room::PrivateTaskTextStore::from_instructions(texts);
+        let (report_command, report) =
+            self.prepare_task_report(task_command, authority, *invocation, binding.request_digest)?;
+        let snapshot = tilo_peer_state::workspace_task::snapshot(
+            self.peer
+                .admitted_room()
+                .ok_or("private task room absent")?,
+        )?;
+        let mut confirmations = self.task_confirmations(&snapshot)?;
+        if let T::RequestConfirmation {
+            task_id,
+            run_epoch,
+            confirmation,
+        } = &report_command
+        {
+            self.load_native_admission()?
+                .validate_confirmation_request(task_id, *run_epoch, confirmation)?;
+        }
+        let (confirmation_command, confirmation_write) =
+            confirmations.prepare(&snapshot, &report_command)?;
+        let (public, write) = text.prepare_private_command(&confirmation_command, &self.peer)?;
+        let mut candidate = self.peer.clone();
+        let (changed, result, approved_model) = if let Some(snapshot) = model_start {
+            if serde_json::to_vec(&public).map_err(|e| e.to_string())?
+                != serde_json::to_vec(task_command).map_err(|e| e.to_string())?
+            {
+                return Err("signed MODEL approval command changed during preparation".into());
+            }
+            let (changed, result, model) = snapshot.commit(
+                &mut candidate,
+                request.clone(),
+                tilo_joined_room::task_admission::model::NativeModelGovernorCustody {
+                    host: caller,
+                    key,
+                    now: SystemTime::now(),
+                },
+            )?;
+            (changed, result, Some(model))
+        } else {
+            let (changed, result) = candidate.workspace_mut().apply_workspace_task_command(
+                *invocation,
+                binding.request_digest,
+                authority,
+                &public,
+                now,
+            )?;
+            (changed, result, None)
+        };
+        if changed && let Some(model) = approved_model {
+            self.retain_native_model(&candidate, task_command, model)?;
+        }
+        if changed {
+            let accepted = tilo_peer_state::workspace_task::snapshot(
+                candidate
+                    .admitted_room()
+                    .ok_or("private task room absent")?,
+            )?;
+            confirmations.retain(&accepted, confirmation_write)?;
+            self.persist_task_confirmations(&confirmations)?;
+        }
+        if changed && let Some(report) = report {
+            // The private write-ahead record must reach disk before commit can
+            // publish its neutral receipt. Retries reuse its timestamp and actor.
+            self.retain_task_report(report, binding.request_digest)?;
+        }
+        if changed && let Some(write) = write {
+            Self::retain_native_text(&mut candidate, &mut text, &result, write, &path)?;
+        }
+
+        Ok((candidate, changed))
+    }
+
+    fn retain_native_model(
+        &self,
+        candidate: &tilo_peer_state::StatePeer,
+        task_command: &T,
+        model: tilo_peer_state::workspace_task::WorkspaceTaskModelStart,
+    ) -> Result<(), String> {
+        let T::ApproveRun { task_id, .. } = task_command else {
+            return Err("MODEL approval task absent".into());
+        };
+        let state = tilo_peer_state::workspace_task::snapshot(
+            candidate
+                .admitted_room()
+                .ok_or("MODEL approval room absent")?,
+        )?;
+        let mut full = state
+            .controls
+            .get(task_id)
+            .and_then(|control| control.model_authority.clone())
+            .ok_or("MODEL approved authority absent")?;
+        full.contract = model.contract;
+        let path = self
+            .path
+            .with_extension("private-task-model-authority-v1.json");
+        let mut models: std::collections::BTreeMap<
+            String,
+            tilo_desktop_model::task::WorkspaceTaskModelAuthority,
+        > = super::private_tasks::read_private(&path)?.unwrap_or_default();
+        models.insert(task_id.clone(), full);
+        let bytes = serde_json::to_vec(&models).map_err(|e| e.to_string())?;
+        if models.len() > 4096 || bytes.len() > 16 * 1024 * 1024 {
+            return Err("private model snapshot capacity exhausted".into());
+        }
+        tilo_files::native::atomic::write_private(&path, &bytes)
+            .map_err(|_| "private model snapshot persistence failed")?;
+
+        Ok(())
+    }
+
+    fn retain_native_text(
+        candidate: &mut tilo_peer_state::StatePeer,
+        text: &mut tilo_joined_room::PrivateTaskTextStore,
+        result: &tilo_desktop_model::WorkspaceTaskMutationResult,
+        write: tilo_joined_room::NativePrivateInstructionWrite,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        if let Some(reference) = write.instruction_reference() {
+            candidate
+                .workspace_mut()
+                .bind_workspace_task_private_instruction(result, &reference)?;
+        }
+        text.retain_private_instruction(result, write)?;
+        let bytes =
+            serde_json::to_vec(text.instructions()).map_err(|_| "private task encoding failed")?;
+        if bytes.len() > 72 * 1024 * 1024 {
+            return Err("private task custody exceeds capacity".into());
+        }
+        tilo_files::native::atomic::write_private(path, &bytes)
+            .map_err(|_| "private task persistence failed")?;
+
+        Ok(())
+    }
+
+    fn native_action_answer(
+        &self,
+        requirement: &tilo_joined_room::task_policy::NativeTaskActionRequirement,
+        snapshot: &tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
+        now: SystemTime,
+    ) -> Result<R, String> {
+        Ok({
+            let run = requirement
+                .binding
+                .as_ref()
+                .ok_or("native binding absent")?;
+            let answer = match requirement.check_with_snapshot(&self.peer, snapshot, self.room(), &run.agent_id, now) {
+                    Ok(()) => tilo_action_policy::Answer::Allow,
+                    Err(error) if tilo_joined_room::task_policy::NativeTaskActionRequirement::awaits_confirmation(&error) => tilo_action_policy::Answer::Ask,
+                    Err(_) => tilo_action_policy::Answer::Deny,
+                };
+            R::Policy(answer)
+        })
+    }
+
+    fn retain_native_model_delivery(
+        &self,
+        caller: &DeviceCert,
+        receipt: &tilo_joined_room::task_admission::model_delivery::NativeModelDeliveryReceipt,
+        ledger: &mut TaskAdmissionLedger,
+        id: tilo_desktop_model::RoomId,
+    ) -> Result<R, String> {
+        Ok({
+            self.native_host(caller)?;
+            if receipt.room() != id {
+                return Err("MODEL delivery room changed".into());
+            }
+            ledger.accept_model_delivery(receipt, caller.device_public_key)?;
+            // Retain authenticated provenance before its derived mailbox fact.
+            // Replay repairs a crash between these two private file writes.
+            self.persist_native_admission(ledger)?;
+            self.persist_model_delivery(receipt)?;
+            R::Acknowledged
+        })
+    }
+
+    fn custody(
+        &self,
+        caller: &DeviceCert,
+        command: C,
+        key: &ed25519_dalek::SigningKey,
+    ) -> Result<R, String> {
+        let now = SystemTime::now();
+        if !self.peer.certificates().contains(caller) {
+            return Err("native caller certificate is not current".into());
+        }
+        self.peer.permissions(caller.device_public_key, now)?;
+        let id = tilo_desktop_model::RoomId::parse(self.room()).ok_or("invalid native room")?;
+        let mut ledger = self.load_native_admission()?;
+        let snapshot = self.task_policy_snapshot()?;
+        self.check_custody_command(caller, &command, &ledger, &snapshot, now)?;
         let mut admission = NativeGovernorAdmission {
             room: id,
             peer: &self.peer,
@@ -190,59 +435,20 @@ impl GovernedRoom {
         };
         let reply = match command {
             C::ModelDelivery(receipt) => {
-                self.native_host(caller)?;
-                if receipt.room() != id {
-                    return Err("MODEL delivery room changed".into());
-                }
-                ledger.accept_model_delivery(&receipt, caller.device_public_key)?;
-                // Retain authenticated provenance before its derived mailbox fact.
-                // Replay repairs a crash between these two private file writes.
-                self.persist_native_admission(&ledger)?;
-                self.persist_model_delivery(&receipt)?;
-                R::Acknowledged
+                self.retain_native_model_delivery(caller, &receipt, &mut ledger, id)?
             }
-            C::RegisterModelHost(registration) => {
-                admission.register_model_host(&registration, caller, now)?;
-                R::Acknowledged
-            }
-            C::RevokeModelHost { registration } => {
-                admission.revoke_model_host(registration, caller, now)?;
-                R::Acknowledged
-            }
-            C::ReserveModel {
-                registration,
-                requirement,
-            } => {
-                let current =
-                    admission
-                        .ledger
-                        .check_model_host(registration, &requirement, caller)?;
-                R::Reserved(admission.reserve(
-                    requirement.binding()?,
+            command @ (C::RegisterModelHost(_)
+            | C::RevokeModelHost { .. }
+            | C::ReserveModel { .. }
+            | C::ClaimModel { .. }) => model_custody(
+                &mut admission,
+                &command,
+                &ModelCustodyContext {
                     caller,
                     now,
-                    |peer, exact| {
-                        requirement.check_registered_context(peer, &snapshot, exact, &current, now)
-                    },
-                )?)
-            }
-            C::ClaimModel {
-                registration,
-                requirement,
-                reservation,
-            } => {
-                let current =
-                    admission
-                        .ledger
-                        .check_model_host(registration, &requirement, caller)?;
-                // Claim must bind the requirement itself, not merely share a run.
-                if requirement.binding()? != reservation.binding {
-                    return Err("native MODEL reservation requirement changed".into());
-                }
-                R::Claimed(admission.claim(&reservation, caller, now, |peer, exact| {
-                    requirement.check_registered_context(peer, &snapshot, exact, &current, now)
-                })?)
-            }
+                    snapshot: &snapshot,
+                },
+            )?,
             C::Reserve {
                 binding,
                 requirement,
@@ -280,16 +486,7 @@ impl GovernedRoom {
                 R::Acknowledged
             }
             C::CheckAction { requirement } => {
-                let run = requirement
-                    .binding
-                    .as_ref()
-                    .ok_or("native binding absent")?;
-                let answer = match requirement.check_with_snapshot(&self.peer, &snapshot, self.room(), &run.agent_id, now) {
-                    Ok(()) => tilo_action_policy::Answer::Allow,
-                    Err(error) if tilo_joined_room::task_policy::NativeTaskActionRequirement::awaits_confirmation(&error) => tilo_action_policy::Answer::Ask,
-                    Err(_) => tilo_action_policy::Answer::Deny,
-                };
-                R::Policy(answer)
+                self.native_action_answer(&requirement, &snapshot, now)?
             }
             C::FenceAcknowledgement(ack) => {
                 if ack.fence.room != id {
@@ -306,33 +503,7 @@ impl GovernedRoom {
                 self.native_host(caller)?;
                 R::HostFences(ledger.pending_host_fences(caller.device_public_key))
             }
-            C::Snapshot { agent } => {
-                self.native_host(caller)?;
-                if let Some(agent) = agent {
-                    self.peer
-                        .workspace()
-                        .check_task_execution_actor(&agent, None, now)?;
-                }
-                let mut public = tilo_peer_state::workspace_task::snapshot(
-                    self.peer.admitted_room().ok_or("native task room absent")?,
-                )?;
-                for task in &mut public.tasks {
-                    if let Some(resource) = &mut task.resource {
-                        resource.agent_request = None;
-                    }
-                }
-                for control in public.controls.values_mut() {
-                    if let Some(held) = &mut control.confirmation {
-                        *held = tilo_joined_room::PrivateTaskConfirmationStore::public_confirmation(
-                            held,
-                        );
-                    }
-                }
-                R::Snapshot(
-                    serde_json::to_string(&(public.tasks, public.controls, public.grants))
-                        .map_err(|e| e.to_string())?,
-                )
-            }
+            C::Snapshot { agent } => self.native_snapshot(caller, agent.as_deref(), now)?,
             C::State { task, epoch } => {
                 self.native_host(caller)?;
                 R::State(ledger.state(&task, epoch))
@@ -344,6 +515,67 @@ impl GovernedRoom {
         self.persist_native_admission(&ledger)?;
         Ok(reply)
     }
+}
+
+struct ModelCustodyContext<'a> {
+    caller: &'a DeviceCert,
+    now: SystemTime,
+    snapshot: &'a tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
+}
+
+fn model_custody(
+    admission: &mut NativeGovernorAdmission<'_>,
+    command: &C,
+    cx: &ModelCustodyContext<'_>,
+) -> Result<R, String> {
+    Ok(match command {
+        C::RegisterModelHost(registration) => {
+            admission.register_model_host(registration, cx.caller, cx.now)?;
+            R::Acknowledged
+        }
+        C::RevokeModelHost { registration } => {
+            admission.revoke_model_host(*registration, cx.caller, cx.now)?;
+            R::Acknowledged
+        }
+        C::ReserveModel {
+            registration,
+            requirement,
+        } => {
+            let current =
+                admission
+                    .ledger
+                    .check_model_host(*registration, requirement, cx.caller)?;
+            R::Reserved(admission.reserve(
+                requirement.binding()?,
+                cx.caller,
+                cx.now,
+                |peer, exact| {
+                    requirement.check_registered_context(peer, cx.snapshot, exact, &current, cx.now)
+                },
+            )?)
+        }
+        C::ClaimModel {
+            registration,
+            requirement,
+            reservation,
+        } => {
+            let current =
+                admission
+                    .ledger
+                    .check_model_host(*registration, requirement, cx.caller)?;
+            // Claim must bind the requirement itself, not merely share a run.
+            if requirement.binding()? != reservation.binding {
+                return Err("native MODEL reservation requirement changed".into());
+            }
+            R::Claimed(
+                admission.claim(reservation, cx.caller, cx.now, |peer, exact| {
+                    requirement.check_registered_context(peer, cx.snapshot, exact, &current, cx.now)
+                })?,
+            )
+        }
+
+        _ => return Err("native MODEL custody command family refused".into()),
+    })
 }
 
 fn coordination_command(
@@ -449,121 +681,13 @@ impl Rooms {
         };
         let binding = request.binding()?;
         let now = SystemTime::now();
-        // Use the same private-text preparation as the desktop owner. This
-        // retains hierarchy and strips the body before any CRDT history exists.
-        let path = room.path.with_extension("private-task-text-v1.json");
-        let texts = super::private_tasks::read_private(&path)?.unwrap_or_default();
-        let mut text = tilo_joined_room::PrivateTaskTextStore::from_instructions(texts);
-        let (report_command, report) = room.prepare_task_report(
-            &task_command,
-            &authority,
-            invocation,
-            binding.request_digest,
+        let (candidate, changed) = room.prepare_native_candidate(
+            caller,
+            &request,
+            model_start.as_ref(),
+            &self.inner.host.key,
+            now,
         )?;
-        let snapshot = tilo_peer_state::workspace_task::snapshot(
-            room.peer
-                .admitted_room()
-                .ok_or("private task room absent")?,
-        )?;
-        let mut confirmations = room.task_confirmations(&snapshot)?;
-        if let T::RequestConfirmation {
-            task_id,
-            run_epoch,
-            confirmation,
-        } = &report_command
-        {
-            room.load_native_admission()?
-                .validate_confirmation_request(task_id, *run_epoch, confirmation)?;
-        }
-        let (confirmation_command, confirmation_write) =
-            confirmations.prepare(&snapshot, &report_command)?;
-        let (public, write) = text.prepare_private_command(&confirmation_command, &room.peer)?;
-        let mut candidate = room.peer.clone();
-        let (changed, result, approved_model) = if let Some(snapshot) = model_start {
-            if serde_json::to_vec(&public).map_err(|e| e.to_string())?
-                != serde_json::to_vec(&task_command).map_err(|e| e.to_string())?
-            {
-                return Err("signed MODEL approval command changed during preparation".into());
-            }
-            let (changed, result, model) = snapshot.commit(
-                &mut candidate,
-                request.clone(),
-                tilo_joined_room::task_admission::model::NativeModelGovernorCustody {
-                    host: caller,
-                    key: &self.inner.host.key,
-                    now: SystemTime::now(),
-                },
-            )?;
-            (changed, result, Some(model))
-        } else {
-            let (changed, result) = candidate.workspace_mut().apply_workspace_task_command(
-                invocation,
-                binding.request_digest,
-                &authority,
-                &public,
-                now,
-            )?;
-            (changed, result, None)
-        };
-        if changed && let Some(model) = approved_model {
-            let T::ApproveRun { task_id, .. } = &task_command else {
-                return Err("MODEL approval task absent".into());
-            };
-            let state = tilo_peer_state::workspace_task::snapshot(
-                candidate
-                    .admitted_room()
-                    .ok_or("MODEL approval room absent")?,
-            )?;
-            let mut full = state
-                .controls
-                .get(task_id)
-                .and_then(|control| control.model_authority.clone())
-                .ok_or("MODEL approved authority absent")?;
-            full.contract = model.contract;
-            let path = room
-                .path
-                .with_extension("private-task-model-authority-v1.json");
-            let mut models: std::collections::BTreeMap<
-                String,
-                tilo_desktop_model::task::WorkspaceTaskModelAuthority,
-            > = super::private_tasks::read_private(&path)?.unwrap_or_default();
-            models.insert(task_id.clone(), full);
-            let bytes = serde_json::to_vec(&models).map_err(|e| e.to_string())?;
-            if models.len() > 4096 || bytes.len() > 16 * 1024 * 1024 {
-                return Err("private model snapshot capacity exhausted".into());
-            }
-            tilo_files::native::atomic::write_private(&path, &bytes)
-                .map_err(|_| "private model snapshot persistence failed")?;
-        }
-        if changed {
-            let accepted = tilo_peer_state::workspace_task::snapshot(
-                candidate
-                    .admitted_room()
-                    .ok_or("private task room absent")?,
-            )?;
-            confirmations.retain(&accepted, confirmation_write)?;
-            room.persist_task_confirmations(&confirmations)?;
-        }
-        if changed && let Some(report) = report {
-            // The private write-ahead record must reach disk before commit can
-            // publish its neutral receipt. Retries reuse its timestamp and actor.
-            room.retain_task_report(report, binding.request_digest)?;
-        }
-        if changed && let Some(write) = write {
-            if let Some(reference) = write.instruction_reference() {
-                candidate
-                    .workspace_mut()
-                    .bind_workspace_task_private_instruction(&result, &reference)?;
-            }
-            text.retain_private_instruction(&result, write)?;
-            let bytes = serde_json::to_vec(text.instructions())
-                .map_err(|_| "private task encoding failed")?;
-            if bytes.len() > 72 * 1024 * 1024 {
-                return Err("private task custody exceeds capacity".into());
-            }
-            tilo_files::native::atomic::write_private(&path, &bytes)
-                .map_err(|_| "private task persistence failed")?;
-        }
         if let T::CancelForRun {
             task_id, run_epoch, ..
         } = &task_command

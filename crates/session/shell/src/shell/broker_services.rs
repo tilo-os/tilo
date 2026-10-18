@@ -144,7 +144,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
                     &request.operation
                     && network.governed_elsewhere(room)
                 {
-                    return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
+                    return record_receipt_elsewhere(network, &owner, room, &request, redacted)
                         .await;
                 }
             }

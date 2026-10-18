@@ -1,13 +1,12 @@
 //! Exercise the production person-commit adapters with actual pending tasks.
-#[path = "model_start_tests/executor.rs"]
-mod executor;
+use super::executor;
 #[path = "model_start_tests/gateway.rs"]
 mod gateway;
 
-const CHAT_GROUP: u64 = (1 << 48) | 500;
-const CHAT_TAB: u64 = (1 << 48) | 501;
-const OTHER_TAB: u64 = (1 << 48) | 502;
-const CHAT_STRIP: tilo_desktop_model::StripId = tilo_desktop_model::StripId((1 << 48) | 499);
+const CHAT_GROUP: u64 = (1 << 48) | 0x01f4;
+const CHAT_TAB: u64 = (1 << 48) | 0x01f5;
+const OTHER_TAB: u64 = (1 << 48) | 0x01f6;
+const CHAT_STRIP: tilo_desktop_model::StripId = tilo_desktop_model::StripId((1 << 48) | 0x01f3);
 
 use super::{NativeFixture, fixture};
 use crate::shell::broker_services::NativeOwnerCommitService;
@@ -19,13 +18,28 @@ use tilo_joined_room::task_admission::model::NativeModelContract;
 use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};
 
-fn request(fixture: &NativeFixture, command: WorkspaceTaskCommand) -> OwnerCommitRequest {
+/// The person a fixture commits as, without its thread-bound environment lock, so
+/// a commit built from it can be awaited on any thread.
+struct CommitCaller {
+    room: crate::shell::state::RoomId,
+    certificate: tilo_user_identity::DeviceCert,
+}
+impl CommitCaller {
+    fn of(fixture: &NativeFixture) -> Self {
+        Self {
+            room: fixture.room,
+            certificate: fixture.certificate.clone(),
+        }
+    }
+}
+
+fn request(caller: &CommitCaller, command: WorkspaceTaskCommand) -> OwnerCommitRequest {
     OwnerCommitRequest {
-        room: fixture.room.to_string(),
+        room: caller.room.to_string(),
         operation: CommitOperation::WorkspaceTaskCommand {
             invocation: uuid::Uuid::new_v4(),
             authority: WorkspaceTaskAuthority::Person {
-                caller: fixture.certificate.clone(),
+                caller: caller.certificate.clone(),
             },
             command,
         },
@@ -71,7 +85,27 @@ fn install_profile(
 }
 
 fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
-    // Publish topology through admitted owner ingress, not a cache-only tab.
+    publish_chat_topology(fixture);
+    instantiate_canonical_tabs(fixture);
+    let invocation = tilo_actions::InvocationId::new();
+    WorkspaceTaskResource {
+        app_id: Some("so.tilo.chat".into()),
+        app_label: None,
+        id: "message".into(),
+        kind: "message".into(),
+        label: "Request".into(),
+        agent_request: Some(WorkspaceAgentRequest {
+            chat_record: "conversation".into(),
+            channel_id: "channel".into(),
+            message_id: format!("m_{}", invocation.0),
+            instruction: "Review this message".into(),
+            invocation,
+        }),
+    }
+}
+
+/// Publish topology through admitted owner ingress, not a cache-only tab.
+fn publish_chat_topology(fixture: &NativeFixture) {
     let mut doc = fixture
         .owner
         .with_current(fixture.room, |view| {
@@ -134,57 +168,45 @@ fn chat_origin(fixture: &NativeFixture) -> WorkspaceTaskResource {
             std::time::SystemTime::now(),
         )
         .unwrap();
-    // Instantiate only the actual canonical UUIDs projected by the owner.
+}
+
+/// Instantiate only the actual canonical UUIDs projected by the owner.
+fn instantiate_canonical_tabs(fixture: &NativeFixture) {
     let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
-    {
-        let mut tree = tree.write();
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.room == fixture.room)
-            .unwrap();
-        let strip = workspace
-            .strips
-            .iter_mut()
-            .find(|s| s.id == CHAT_STRIP)
-            .unwrap();
-        let group = strip
-            .window_groups
-            .iter_mut()
-            .find(|g| g.id == CHAT_GROUP)
-            .unwrap();
-        for tab in &mut group.tabs {
-            tab.tile = TileContent::Foreign {
-                app_id: "so.tilo.chat".into(),
-                surface_id: tab.id,
-            };
-        }
-        assert_eq!(
-            tree.room_tab_record(fixture.room, CHAT_TAB).as_deref(),
-            Some("conversation")
-        );
+    let mut tree = tree.write();
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.room == fixture.room)
+        .unwrap();
+    let strip = workspace
+        .strips
+        .iter_mut()
+        .find(|s| s.id == CHAT_STRIP)
+        .unwrap();
+    let group = strip
+        .window_groups
+        .iter_mut()
+        .find(|g| g.id == CHAT_GROUP)
+        .unwrap();
+    for tab in &mut group.tabs {
+        tab.tile = TileContent::Foreign {
+            app_id: "so.tilo.chat".into(),
+            surface_id: tab.id,
+        };
     }
-    let invocation = tilo_actions::InvocationId::new();
-    WorkspaceTaskResource {
-        app_id: Some("so.tilo.chat".into()),
-        app_label: None,
-        id: "message".into(),
-        kind: "message".into(),
-        label: "Request".into(),
-        agent_request: Some(WorkspaceAgentRequest {
-            chat_record: "conversation".into(),
-            channel_id: "channel".into(),
-            message_id: format!("m_{}", invocation.0),
-            instruction: "Review this message".into(),
-            invocation,
-        }),
-    }
+    assert_eq!(
+        tree.room_tab_record(fixture.room, CHAT_TAB).as_deref(),
+        Some("conversation")
+    );
+    drop(tree);
 }
 
 #[test]
 fn production_person_start_freezes_pending_task_or_chat_origin_without_widening_attachment() {
     let fixture = fixture();
+    let caller = CommitCaller::of(&fixture);
     let (_settings, profile) = settings();
     let executor = executor::start(&fixture);
     let service = executor.service.clone();
@@ -193,7 +215,7 @@ fn production_person_start_freezes_pending_task_or_chat_origin_without_widening_
     for resource in [None, Some(attached)] {
         let receipt = runtime
             .block_on(service.execute(request(
-                &fixture,
+                &caller,
                 WorkspaceTaskCommand::Queue {
                     title: "Review request".into(),
                     assigned_agent: "scribe".into(),
@@ -217,7 +239,7 @@ fn production_person_start_freezes_pending_task_or_chat_origin_without_widening_
             .clone();
         assert!(pending.controls[&task_id].model_authority.is_none());
         let approval = request(
-            &fixture,
+            &caller,
             WorkspaceTaskCommand::ApproveRun {
                 task_id: task_id.clone(),
                 agent_id: "scribe".into(),
@@ -235,6 +257,10 @@ fn production_person_start_freezes_pending_task_or_chat_origin_without_widening_
         assert_snapshot(&fixture, &task_id, resource.as_ref(), &profile);
     }
     assert_host_start_has_no_model_approval(&fixture, &service, &runtime);
+    // The service only borrows the fixture's owner; the fixture owns the broker
+    // and the thread-bound environment lock, so it is released last.
+    drop(service);
+    drop(fixture);
 }
 
 fn assert_snapshot(
@@ -257,13 +283,12 @@ fn assert_snapshot(
         revision: run.applied_direction_revision,
         starter: Some(run.approval.as_ref().unwrap().person.clone()),
     };
-    let service = NativeOwnerCommitService::new(
+    let contract = NativeOwnerCommitService::new(
         crate::shell::native_workspace_owner::test_tree_of(&fixture.owner),
         None,
-    );
-    let contract = service
-        .read_task_model_contract(&fixture.room.to_string(), &binding)
-        .unwrap();
+    )
+    .read_task_model_contract(&fixture.room.to_string(), &binding)
+    .unwrap();
     assert_eq!(frozen.request_model, contract.request_model);
     assert_eq!(frozen.kind, contract.kind);
     assert_eq!(
@@ -328,9 +353,10 @@ fn assert_host_start_has_no_model_approval(
     service: &NativeOwnerCommitService,
     runtime: &tokio::runtime::Runtime,
 ) {
+    let caller = CommitCaller::of(fixture);
     runtime
         .block_on(service.execute(request(
-            fixture,
+            &caller,
             WorkspaceTaskCommand::Queue {
                 title: "Host-started request".into(),
                 assigned_agent: "scribe".into(),

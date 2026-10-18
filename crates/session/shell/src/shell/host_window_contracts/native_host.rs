@@ -10,11 +10,12 @@ fn tree_with_tiles(tiles: Vec<TileContent>) -> WorkspaceTree {
     workspace.strips[0].id = tilo_desktop_model::StripId(40);
     workspace.strips[0].window_groups.push(WindowGroup {
         id: 50,
+        // Fixture tab ids count up from 100 so they never collide with the group.
         tabs: tiles
             .into_iter()
-            .enumerate()
-            .map(|(index, tile)| Tab {
-                id: 100 + index as u64,
+            .zip(100u64..)
+            .map(|(tile, id)| Tab {
+                id,
                 title: "Window".into(),
                 tile,
             })

@@ -2406,33 +2406,41 @@ mod marker_actions {
                 changed = true;
             }
             if composer.take_conversation_request() {
-                if let (Some(request), Some(session)) =
-                    (composer.expansion_request(), self.session.as_ref())
-                {
-                    let draft = ui::private_draft::Draft {
-                        workspace: owner.room.clone(),
-                        target: ui::private_draft::Target::Task {
-                            agent: owner.agent.clone(),
-                            task: request.task.0.clone(),
-                            run_epoch: request.task.1,
-                        },
-                        editor: request.editor.clone(),
-                    };
-                    let staged = composer
-                        .marker_origin()
-                        .cloned()
-                        .ok_or_else(|| "original task paint source unavailable".to_owned())
-                        .and_then(|(app, interaction)| {
-                            session.stage_private_task_draft(draft, app, interaction)
-                        });
-                    match staged {
-                        Ok(token) => self.begin(expansion_operation(request, token)),
-                        Err(_) => composer.observe_expansion(&request, false),
-                    }
-                }
+                self.apply_conversation_request(composer, &owner);
                 changed = true;
             }
             changed
+        }
+
+        fn apply_conversation_request(
+            &mut self,
+            composer: &mut AgentQuickComposer,
+            owner: &ComposerOwner,
+        ) {
+            if let (Some(request), Some(session)) =
+                (composer.expansion_request(), self.session.as_ref())
+            {
+                let draft = ui::private_draft::Draft {
+                    workspace: owner.room.clone(),
+                    target: ui::private_draft::Target::Task {
+                        agent: owner.agent.clone(),
+                        task: request.task.0.clone(),
+                        run_epoch: request.task.1,
+                    },
+                    editor: request.editor.clone(),
+                };
+                let staged = composer
+                    .marker_origin()
+                    .cloned()
+                    .ok_or_else(|| "original task paint source unavailable".to_owned())
+                    .and_then(|(app, interaction)| {
+                        session.stage_private_task_draft(draft, app, interaction)
+                    });
+                match staged {
+                    Ok(token) => self.begin(expansion_operation(request, token)),
+                    Err(_) => composer.observe_expansion(&request, false),
+                }
+            }
         }
 
         fn task_offers(&mut self, task: &ComposerTask) {
@@ -3067,6 +3075,20 @@ mod marker_actions {
             use crate::shell::agent_quick_composer::marker::AgentQuickComposerOrigin;
             use ui::widget::Widget;
             use vello::kurbo::Rect;
+            fn type_private(widget: &mut dyn Widget, doc: &mut automerge::AutoCommit) -> bool {
+                if widget.test_id() == Some("agent-quick-editor") {
+                    return widget.perform_action(
+                        &ui::a11y::Action::SetValue("unsent secret body".into()),
+                        &[],
+                        &mut ui::widget::Edits::lend(doc),
+                        &automerge::ROOT,
+                    );
+                }
+                widget
+                    .children_mut()
+                    .into_iter()
+                    .any(|child| type_private(child, doc))
+            }
             let setup = request(ComposerIntent::Message);
             let mut composer = AgentQuickComposer::default();
             composer.open(
@@ -3082,20 +3104,6 @@ mod marker_actions {
             composer.bind_marker_task(setup.task.unwrap());
             let mut doc = automerge::AutoCommit::new();
             composer.sync(&doc, &automerge::ROOT);
-            fn type_private(widget: &mut dyn Widget, doc: &mut automerge::AutoCommit) -> bool {
-                if widget.test_id() == Some("agent-quick-editor") {
-                    return widget.perform_action(
-                        &ui::a11y::Action::SetValue("unsent secret body".into()),
-                        &[],
-                        &mut ui::widget::Edits::lend(doc),
-                        &automerge::ROOT,
-                    );
-                }
-                widget
-                    .children_mut()
-                    .into_iter()
-                    .any(|child| type_private(child, doc))
-            }
             assert!(type_private(&mut composer, &mut doc));
             composer.sync(&doc, &automerge::ROOT);
             let private = composer.expansion_request().unwrap();

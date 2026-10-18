@@ -1,5 +1,5 @@
 use super::*;
-use tilo_action_broker::services::WorkspaceTaskExecution;
+use tilo_action_broker::services::{WorkspaceMemberships, WorkspaceTaskExecution};
 
 #[test]
 fn joined_replica_never_substitutes_local_mailboxes_or_hydrates_private_text() {
@@ -74,7 +74,6 @@ fn joined_replica_never_substitutes_local_mailboxes_or_hydrates_private_text() {
             .unwrap_err()
             .contains(denied)
     );
-    use tilo_action_broker::services::WorkspaceMemberships;
     assert!(
         service
             .task_private_instructions(&room, &binding.task_id, 1, &caller)
@@ -100,6 +99,7 @@ fn joined_replica_never_substitutes_local_mailboxes_or_hydrates_private_text() {
             .contains(denied)
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(service);
 }
 
 #[test]

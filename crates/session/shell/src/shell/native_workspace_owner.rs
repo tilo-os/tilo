@@ -217,7 +217,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 }
 
 /// Finish under the caller's opening guard. Keyed restore may already have
-/// published replacements through TreeStore, so no pre-restore encoding or
+/// published replacements through `TreeStore`, so no pre-restore encoding or
 /// authority may cross this barrier.
 #[allow(
     clippy::significant_drop_tightening,

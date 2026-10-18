@@ -380,6 +380,64 @@ fn exact_confirmation_binding(
     }
 }
 
+fn assert_changed_confirmation_refused(
+    peer: &StatePeer,
+    snapshot: &tilo_peer_state::workspace_task::WorkspaceTaskSnapshot,
+    restarted: &tilo_joined_room::task_admission::TaskAdmissionLedger,
+    requirement: &NativeTaskActionRequirement,
+    now: std::time::SystemTime,
+) {
+    let child = requirement.invocation.as_ref().unwrap().id;
+    // Rebuild coherent exact bindings: failures must not merely be stale digests.
+    for change in [
+        "contract",
+        "provider",
+        "private run",
+        "revision",
+        "resource",
+        "arguments",
+    ] {
+        let mut changed = requirement.clone();
+        let original = changed.invocation.as_ref().unwrap();
+        let mut contract = original.contract.clone();
+        if change == "contract" {
+            contract.kind = tilo_action_policy::ActionKind::Outside;
+        }
+        changed.invocation = Some(
+            super::NativeTaskInvocation::new(
+                child,
+                if change == "provider" { "43" } else { "42" },
+                Some(if change == "arguments" {
+                    "{\"extra\":true}"
+                } else {
+                    "{}"
+                }),
+                &contract,
+                if change == "private run" {
+                    "native:test:1"
+                } else {
+                    "native:test:0"
+                },
+            )
+            .unwrap(),
+        );
+        if change == "revision" {
+            let binding = changed.binding.as_mut().unwrap();
+            binding.revision = binding.revision.checked_add(1).unwrap();
+        }
+        if change == "resource" {
+            changed.resource = "notes:other".into();
+        }
+        let changed_exact = exact_confirmation_binding(peer, &changed);
+        assert!(
+            restarted
+                .check_action(peer, snapshot, &changed, &changed_exact, now)
+                .is_err(),
+            "accepted changed {change}"
+        );
+    }
+}
+
 #[test]
 fn request_time_confirmation_custody_binds_one_exact_child_across_restart() {
     use tilo_joined_room::task_admission::{NativeGovernorAdmission, TaskAdmissionLedger};
@@ -446,53 +504,7 @@ fn request_time_confirmation_custody_binds_one_exact_child_across_restart() {
             .is_err()
     );
 
-    // Rebuild coherent exact bindings: failures must not merely be stale digests.
-    for change in [
-        "contract",
-        "provider",
-        "private run",
-        "revision",
-        "resource",
-        "arguments",
-    ] {
-        let mut changed = requirement.clone();
-        let original = changed.invocation.as_ref().unwrap();
-        let mut contract = original.contract.clone();
-        if change == "contract" {
-            contract.kind = tilo_action_policy::ActionKind::Outside;
-        }
-        changed.invocation = Some(
-            super::NativeTaskInvocation::new(
-                child,
-                if change == "provider" { "43" } else { "42" },
-                Some(if change == "arguments" {
-                    "{\"extra\":true}"
-                } else {
-                    "{}"
-                }),
-                &contract,
-                if change == "private run" {
-                    "native:test:1"
-                } else {
-                    "native:test:0"
-                },
-            )
-            .unwrap(),
-        );
-        if change == "revision" {
-            changed.binding.as_mut().unwrap().revision += 1;
-        }
-        if change == "resource" {
-            changed.resource = "notes:other".into();
-        }
-        let changed_exact = exact_confirmation_binding(&peer, &changed);
-        assert!(
-            restarted
-                .check_action(&peer, &snapshot, &changed, &changed_exact, now)
-                .is_err(),
-            "accepted changed {change}"
-        );
-    }
+    assert_changed_confirmation_refused(&peer, &snapshot, &restarted, &requirement, now);
 }
 
 #[test]

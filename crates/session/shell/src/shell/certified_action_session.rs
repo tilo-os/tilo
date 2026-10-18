@@ -18,8 +18,11 @@ use super::collab_broker::AppActionBroker;
 pub(crate) struct CertifiedActionSession {
     broker: AppActionBroker,
     caller: Caller,
+    /// Native physical projection used by the host's existing invocation ledger.
+    job_caller: Caller,
     host: Arc<dyn ActionHost + Send + Sync>,
     presentation: Vec<u8>,
+    certificate: tilo_user_identity::DeviceCert,
 }
 
 #[derive(Clone)]
@@ -72,7 +75,9 @@ impl ActionSessionSource {
     #[cfg(test)]
     pub(crate) fn fixture(broker: AppActionBroker) -> Self {
         Self {
-            fixture: Some(super::remote_actions::BrokerActionHost::new(broker.clone())),
+            fixture: Some(super::remote_actions::BrokerActionHost::for_fixture(
+                broker.clone(),
+            )),
             mock: None,
             broker,
             opens: Arc::default(),
@@ -151,6 +156,44 @@ impl ActionSessionSource {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum ActionLifecycle {
+    Certified(tilo_action_broker::collab_broker_capnp::CertifiedActionLifecycle),
+    /// Compatibility for rows admitted without certificate custody. Never
+    /// reinterpret these as a certified person's jobs or issue evidence.
+    Uncertified {
+        broker: AppActionBroker,
+        actor: String,
+    },
+}
+
+impl ActionLifecycle {
+    pub(crate) fn statuses(&self) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.statuses(),
+            Self::Uncertified { broker, actor } => broker.statuses(actor),
+        }
+    }
+    pub(crate) fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.status(id),
+            Self::Uncertified { broker, actor } => broker.status_for_actor(id, actor),
+        }
+    }
+    pub(crate) fn can_cancel(&self, id: u64) -> bool {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.can_cancel(id),
+            Self::Uncertified { broker, actor } => broker.can_cancel(id, actor),
+        }
+    }
+    pub(crate) fn cancel(&self, id: u64) -> Result<(), String> {
+        match self {
+            Self::Certified(lifecycle) => lifecycle.cancel(id),
+            Self::Uncertified { broker, actor } => broker.cancel(id, actor),
+        }
+    }
+}
+
 impl DesktopActionSession {
     pub(crate) fn stage_private_task_draft(
         &self,
@@ -168,6 +211,26 @@ impl DesktopActionSession {
             ),
             #[cfg(test)]
             _ => Err("task editor transfer requires actual native paint custody".into()),
+        }
+    }
+
+    pub(crate) fn lifecycle(&self) -> Result<ActionLifecycle, String> {
+        match self {
+            Self::Certified(session) => session
+                .broker
+                .state()
+                .certified_action_lifecycle(&session.caller, &session.presentation)
+                .map(ActionLifecycle::Certified),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => Ok(ActionLifecycle::Uncertified {
+                broker: host.broker_for_fixture(),
+                actor: match caller.principal() {
+                    tilo_actions::remote::CallerPrincipal::Person(actor) => actor.clone(),
+                    _ => return Err("fixture requires a person".into()),
+                },
+            }),
+            #[cfg(test)]
+            Self::Mock { .. } => Err("mock has no job ledger".into()),
         }
     }
 
@@ -271,6 +334,15 @@ impl CertifiedActionSession {
         room: &str,
         expected_person: Option<&str>,
     ) -> Result<Self, String> {
+        Self::open_execution(broker, room, expected_person, None)
+    }
+
+    fn open_execution(
+        broker: AppActionBroker,
+        room: &str,
+        expected_person: Option<&str>,
+        execution: Option<tilo_actions::remote::ExecutionLease>,
+    ) -> Result<Self, String> {
         let parsed = uuid::Uuid::parse_str(room).map_err(|_| "invalid action room")?;
         if parsed.is_nil() {
             return Err("invalid action room".into());
@@ -299,13 +371,57 @@ impl CertifiedActionSession {
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                 .in_room(room)
                 .in_new_execution();
-        let host = broker.certified_local_action_host(&caller, &presentation)?;
+        let caller = match execution {
+            Some(lease) => caller.in_execution(lease),
+            None => caller,
+        };
+        let host = broker
+            .state()
+            .certified_native_action_host(&caller, &presentation)?;
+        let job_caller = Caller::local_person(&person).in_room(room).in_execution(
+            caller
+                .execution_lease()
+                .ok_or("native execution unavailable")?,
+        );
         Ok(Self {
             broker,
             caller,
+            job_caller,
             host,
             presentation,
+            certificate: certificate.clone(),
         })
+    }
+
+    /// Resolve a native projection only through the protected seat service and
+    /// the selected device's signed presentation. The label is a consistency
+    /// fence; it is never used to manufacture signing authority.
+    pub(crate) fn open_native(
+        broker: AppActionBroker,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<Self, String> {
+        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
+            return Err("native person required".into());
+        };
+        let session = Self::open_execution(
+            broker,
+            caller.room().ok_or("native person room required")?,
+            Some(person),
+            caller.execution_lease(),
+        )?;
+        if session.certificate != *certificate {
+            return Err("selected identity differs from native seat custody".into());
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn has_certificate(&self, certificate: &tilo_user_identity::DeviceCert) -> bool {
+        self.certificate == *certificate
+    }
+
+    pub(crate) fn host_and_caller(&self) -> (&(dyn ActionHost + Send + Sync), &Caller) {
+        (self.host.as_ref(), &self.caller)
     }
 
     pub(crate) fn query(
@@ -334,7 +450,7 @@ impl CertifiedActionSession {
         request: InvokeRequest,
     ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
         let broker = self.broker.clone();
-        let caller = self.caller.clone();
+        let caller = self.job_caller.clone();
         let invocation = request.invocation;
         self.host.invoke(&self.caller, request).map(move |result| {
             let receipt = result?;

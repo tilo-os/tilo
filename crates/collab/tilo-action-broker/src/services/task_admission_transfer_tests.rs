@@ -12,11 +12,11 @@ fn foreign_governing_caller_is_uncapped_but_captured_ceiling_and_agent_still_app
 
     let directory = tempfile::tempdir().unwrap();
     let owner = tilo_joined_room::open_file(&directory.path().join("owner.json")).unwrap();
-    let root = SigningKey::from_bytes(&[91; 32]);
+    let root_key = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
-    let mut certificate = testing::certificate(&root, &key, "Governor");
+    let mut certificate = testing::certificate(&root_key, &key, "Governor");
     certificate.capabilities.foreign = true;
-    tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
     testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
     let room = tilo_desktop_model::RoomId::parse(testing::ROOM).unwrap();
     let now = std::time::SystemTime::now();

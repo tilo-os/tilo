@@ -611,7 +611,7 @@ impl WorkspaceTaskExecution for NativeOwnerCommitService {
                     .first_chunk::<16>()
                     .ok_or("invalid task report digest")?;
                 Ok::<_, String>(OwnerCommitRequest {
-                    room: room.into(),
+                    room,
                     operation: CommitOperation::WorkspaceTaskCommand {
                         invocation: uuid::Uuid::from_bytes(id),
                         authority: if matches!(command, WorkspaceTaskCommand::Abandon { .. }) {

@@ -183,17 +183,7 @@ impl CapnpBrokerState {
         if registry.live_executor(room, agent_id).is_none() {
             launcher.launch_task_executor(agent_id, &workspace)?;
         }
-        let executor = tokio::time::timeout(crate::services::APPLICATION_STARTUP_TIMEOUT, async {
-            loop {
-                let changed = registry.changed();
-                if let Some(executor) = registry.live_executor(room, agent_id) {
-                    break executor;
-                }
-                changed.await;
-            }
-        })
-        .await
-        .map_err(|_| "native executor did not subscribe before the opening deadline")?;
+        let executor = await_native_executor(registry, room, agent_id).await?;
         if !self.is_accepting()
             || pending
                 .cancellation_fence
@@ -211,6 +201,27 @@ impl CapnpBrokerState {
         receipt.validate_for(request)?;
         Ok(Some(receipt))
     }
+}
+
+/// Wait for the protected executor subscription the Start just launched.
+async fn await_native_executor(
+    registry: &crate::services::NativeTaskExecutorRegistry,
+    room: &str,
+    agent_id: &str,
+) -> Result<crate::services::NativeTaskExecutor, String> {
+    Ok(
+        tokio::time::timeout(crate::services::APPLICATION_STARTUP_TIMEOUT, async {
+            loop {
+                let changed = registry.changed();
+                if let Some(executor) = registry.live_executor(room, agent_id) {
+                    break executor;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .map_err(|_| "native executor did not subscribe before the opening deadline")?,
+    )
 }
 
 impl CapnpChannelHandle {

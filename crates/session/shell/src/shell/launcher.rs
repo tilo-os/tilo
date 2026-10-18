@@ -322,7 +322,7 @@ pub(super) fn registered_protected_model_launch(
     Some(launcher::registration_gate::ProtectedModelLaunch {
         app: launch.identity.app_id.clone(),
         room: launch.identity.workspace_id.clone(),
-        agent: launch.managed_actor.clone()?,
+        agent: launch.managed_actor?,
         launch: format!("{pid}-{start}"),
     })
 }
@@ -3080,7 +3080,11 @@ fn execute_workspace_agent(
         .iter()
         .position(|arg| arg == "--expected-package-hash")
     {
-        command.args[index + 1] = package_hash;
+        let next = command
+            .args
+            .get_mut(index.saturating_add(1))
+            .ok_or_else(|| refused("workspace agent command is missing its package hash".into()))?;
+        *next = package_hash;
     } else {
         command
             .args
@@ -3500,8 +3504,14 @@ fn execute_installed(
 
 fn stage_launch_capabilities(
     app_id: &str,
-    grants: &LaunchGrants,
+    grants: &mut LaunchGrants,
 ) -> Option<tempfile::NamedTempFile> {
+    // Exclude authority already expired before staging from both the child's
+    // input and its supervisor's snapshot. Otherwise reopening after expiry
+    // would be refused rather than launch with the remaining permissions.
+    // Expiry after this point still refuses a pending launch or interrupts it.
+    let now = Some(tilo_clock::unix_now_ms() / 1000);
+    grants.sandbox.retain(|cap| cap.is_live_at(now));
     match write_capabilities_file(app_id, grants) {
         Ok(path) => path,
         Err(error) => {
@@ -3572,11 +3582,11 @@ fn execute_installed_inner(
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capability_snapshot.map_or_else(
+    let mut capabilities = capability_snapshot.map_or_else(
         || capabilities_for_app(&app.package_id),
         |grants| grants.for_app(&app.package_id),
     );
-    let capabilities_file = stage_launch_capabilities(&app.package_id, &capabilities);
+    let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),

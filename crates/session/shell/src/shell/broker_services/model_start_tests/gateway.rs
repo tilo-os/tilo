@@ -2,6 +2,8 @@
 //! Only the delivered lease is trusted fixture plumbing; it derives its binding
 //! from the real person-approved run, never from inference request JSON.
 use super::*;
+use automerge::ReadDoc as _;
+use automerge::transaction::Transactable as _;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tilo_action_broker::native_model::{NativeModelHost, NativeModelLease};
@@ -60,16 +62,16 @@ impl tilo_model_gateway::caller::Session for Protected {
 }
 
 async fn membership(
-    fixture: &NativeFixture,
+    caller: &CommitCaller,
     service: &NativeOwnerCommitService,
     command: WorkspaceMembershipCommand,
 ) {
     service
         .execute(OwnerCommitRequest {
-            room: fixture.room.to_string(),
+            room: caller.room.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
-                caller: fixture.certificate.clone(),
+                caller: caller.certificate.clone(),
                 command,
             },
         })
@@ -78,13 +80,14 @@ async fn membership(
 }
 
 async fn approved(
-    fixture: &NativeFixture,
+    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    caller: &CommitCaller,
     service: &NativeOwnerCommitService,
     resource: WorkspaceTaskResource,
 ) -> Arc<DeliveredLease> {
     service
         .execute(request(
-            fixture,
+            caller,
             WorkspaceTaskCommand::Queue {
                 title: "Review attached resource".into(),
                 assigned_agent: "scribe".into(),
@@ -94,7 +97,7 @@ async fn approved(
         ))
         .await
         .unwrap();
-    let pending = fixture.owner.workspace_task_snapshot(fixture.room).unwrap();
+    let pending = owner.workspace_task_snapshot(caller.room).unwrap();
     let task = pending
         .tasks
         .iter()
@@ -106,19 +109,19 @@ async fn approved(
     // Permit only the actual MODEL action, not a room-wide outside-effects
     // grant competing with the delegation's Editor cap at the same specificity.
     let model_node = if let Some(origin) = resource.agent_request.as_ref() {
-        let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
+        let tree = crate::shell::native_workspace_owner::test_tree_of(owner);
         crate::shell::host_window_contracts::published(&tree.read())
             .into_iter()
             .find(|window| window.record.as_deref() == Some(origin.chat_record.as_str()))
             .unwrap()
             .request_model
     } else {
-        NativeModelContract::task_resource(&fixture.room.to_string(), &task_id)
+        NativeModelContract::task_resource(&caller.room.to_string(), &task_id)
             .action("requestModel")
     };
     // Person approval below still supplies independent frozen model authority.
     membership(
-        fixture,
+        caller,
         service,
         WorkspaceMembershipCommand::Grant {
             grant: tilo_action_policy::Grant::new(
@@ -128,7 +131,7 @@ async fn approved(
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Subject::person(hex::encode(
-                    fixture.certificate.user_public_key,
+                    caller.certificate.user_public_key,
                 )),
             ),
         },
@@ -136,7 +139,7 @@ async fn approved(
     .await;
     service
         .execute(request(
-            fixture,
+            caller,
             WorkspaceTaskCommand::ApproveRun {
                 task_id: task_id.clone(),
                 agent_id: "scribe".into(),
@@ -146,20 +149,20 @@ async fn approved(
         ))
         .await
         .unwrap();
-    let state = fixture.owner.workspace_task_snapshot(fixture.room).unwrap();
+    let state = owner.workspace_task_snapshot(caller.room).unwrap();
     let control = &state.controls[&task_id];
     let run = control.active_run.as_ref().unwrap();
     let scope = &control.execution_authority.as_ref().unwrap().scope;
     assert_eq!(
         scope,
-        &TreePath::room(fixture.room.to_string())
+        &TreePath::room(caller.room.to_string())
             .app(resource.app_id.as_deref().unwrap())
             .kind(&resource.kind)
             .resource(&resource.id)
     );
     assert!(!scope.covers(&control.model_authority.as_ref().unwrap().request_model));
     Arc::new(DeliveredLease {
-        room: fixture.room.to_string(),
+        room: caller.room.to_string(),
         binding: NativeTaskBinding {
             task_id,
             agent_id: run.agent_id.clone(),
@@ -251,7 +254,7 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
         let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
         assert!(crate::shell::host_window_contracts::published(&tree.read()).is_empty());
         let service = Arc::new(executor.service.clone());
-        let lease = approved(&fixture, &service, WorkspaceTaskResource {
+        let lease = approved(&fixture.owner, &CommitCaller::of(&fixture), &service, WorkspaceTaskResource {
             app_id: Some("so.tilo.notes".into()), app_label: None,
             id: "attached".into(), kind: "document".into(), label: "Proposal".into(),
             agent_request: None,
@@ -278,9 +281,11 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
             assert_eq!(denial, "native task starter or frozen execution scope changed");
             Ok(())
         }).unwrap();
-        let models = crate::shell::broker_services::native_model::NativeModels::new(service);
+        let models =
+            crate::shell::broker_services::native_model::NativeModels::new(service.clone());
         let invocation = uuid::Uuid::new_v4();
         let dispatch = models.claim(lease, invocation).unwrap();
+        drop(models);
         let session = Protected(NativeGatewaySource::new(dispatch).unwrap());
         let peer = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -295,6 +300,7 @@ fn attached_windowless_task_claim_reaches_protected_gateway_without_data_scope_w
         assert!(response.ok, "{:?}", response.error);
         let listener = tokio::time::timeout(Duration::from_secs(3), peer).await.unwrap().unwrap();
         no_http(&listener).await;
+        drop(service);
     });
 }
 
@@ -305,10 +311,11 @@ fn prepared_model_uses_desired_frontier_and_fences_stale_final_dispatch() {
     let executor = executor::start(&fixture);
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let service = Arc::new(executor.service.clone());
-        let initial = approved(&fixture, &service, chat_origin(&fixture)).await;
+        let caller = CommitCaller::of(&fixture);
+        let initial = approved(&fixture.owner, &caller, &service, chat_origin(&fixture)).await;
         let steer = |after_revision| {
             request(
-                &fixture,
+                &caller,
                 WorkspaceTaskCommand::DirectionForRun {
                     task_id: initial.binding.task_id.clone(),
                     run_epoch: initial.binding.epoch,
@@ -332,37 +339,7 @@ fn prepared_model_uses_desired_frontier_and_fences_stale_final_dispatch() {
         let contract = service
             .read_task_model_contract(&lease.room, &lease.binding)
             .unwrap();
-        fixture
-            .owner
-            .with_current(fixture.room, |view| {
-                let context = tilo_action_broker::native_model::current_context(
-                    view,
-                    &lease.binding,
-                    contract.clone(),
-                )?;
-                assert_eq!(context.revision, 1);
-                assert_ne!(context.private_run_digest, [0; 32]);
-                for field in ["revision", "epoch", "agent", "starter"] {
-                    let mut wrong = lease.binding.clone();
-                    match field {
-                        "revision" => wrong.revision = 0,
-                        "epoch" => wrong.epoch += 1,
-                        "agent" => wrong.agent_id = "another-agent".into(),
-                        _ => wrong.starter = None,
-                    }
-                    assert!(
-                        tilo_action_broker::native_model::current_context(
-                            view,
-                            &wrong,
-                            contract.clone(),
-                        )
-                        .is_err(),
-                        "{field}"
-                    );
-                }
-                Ok(())
-            })
-            .unwrap();
+        assert_lease_follows_desired_frontier(&fixture.owner, fixture.room, &lease, &contract);
         let models =
             crate::shell::broker_services::native_model::NativeModels::new(service.clone());
         let attempt = tilo_model_gateway::FrozenNativeAttempt {
@@ -392,26 +369,78 @@ fn prepared_model_uses_desired_frontier_and_fences_stale_final_dispatch() {
                 .applied_direction_revision,
             0
         );
-
-        let invocation = uuid::Uuid::new_v4();
-        let dispatch = models.claim(lease, invocation).unwrap();
-        let id = serde_json::json!(invocation);
-        dispatch.prepare(&id, &attempt).await.unwrap();
-        service.execute(steer(1)).await.unwrap();
-        let mut enqueued = false;
-        assert!(
-            dispatch
-                .dispatch(&id, &attempt, &mut || {
-                    enqueued = true;
-                    Ok(())
-                })
-                .is_err()
-        );
-        assert!(
-            !enqueued,
-            "a frozen lease cannot follow a newer desired plan"
-        );
+        assert_stale_plan_is_fenced(&service, &models, lease, &attempt, &steer).await;
+        drop(models);
+        drop(service);
     });
+}
+
+/// The delivered lease must resolve the desired frontier and refuse any binding
+/// whose revision, epoch, agent or starter no longer matches it.
+fn assert_lease_follows_desired_frontier(
+    owner: &tilo_joined_room::NativeWorkspaceOwner,
+    room: crate::shell::state::RoomId,
+    lease: &DeliveredLease,
+    contract: &NativeModelContract,
+) {
+    owner
+        .with_current(room, |view| {
+            let context = tilo_action_broker::native_model::current_context(
+                view,
+                &lease.binding,
+                contract.clone(),
+            )?;
+            assert_eq!(context.revision, 1);
+            assert_ne!(context.private_run_digest, [0; 32]);
+            for field in ["revision", "epoch", "agent", "starter"] {
+                let mut wrong = lease.binding.clone();
+                match field {
+                    "revision" => wrong.revision = 0,
+                    "epoch" => wrong.epoch = wrong.epoch.checked_add(1).unwrap(),
+                    "agent" => wrong.agent_id = "another-agent".into(),
+                    _ => wrong.starter = None,
+                }
+                assert!(
+                    tilo_action_broker::native_model::current_context(
+                        view,
+                        &wrong,
+                        contract.clone(),
+                    )
+                    .is_err(),
+                    "{field}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// A dispatch prepared against the previous plan cannot enqueue after a steer.
+async fn assert_stale_plan_is_fenced(
+    service: &Arc<NativeOwnerCommitService>,
+    models: &crate::shell::broker_services::native_model::NativeModels,
+    lease: Arc<DeliveredLease>,
+    attempt: &tilo_model_gateway::FrozenNativeAttempt,
+    steer: &(impl Fn(u64) -> OwnerCommitRequest + Sync),
+) {
+    let invocation = uuid::Uuid::new_v4();
+    let dispatch = models.claim(lease, invocation).unwrap();
+    let id = serde_json::json!(invocation);
+    dispatch.prepare(&id, attempt).await.unwrap();
+    service.execute(steer(1)).await.unwrap();
+    let mut enqueued = false;
+    assert!(
+        dispatch
+            .dispatch(&id, attempt, &mut || {
+                enqueued = true;
+                Ok(())
+            })
+            .is_err()
+    );
+    assert!(
+        !enqueued,
+        "a frozen lease cannot follow a newer desired plan"
+    );
 }
 
 #[test]
@@ -425,8 +454,15 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
         profile.endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
         let settings = install_profile(&profile);
         let service = Arc::new(executor.service.clone());
-        let lease = approved(&fixture, &service, chat_origin(&fixture)).await;
-        let models = crate::shell::broker_services::native_model::NativeModels::new(service);
+        let lease = approved(
+            &fixture.owner,
+            &CommitCaller::of(&fixture),
+            &service,
+            chat_origin(&fixture),
+        )
+        .await;
+        let models =
+            crate::shell::broker_services::native_model::NativeModels::new(service.clone());
         let invocation = uuid::Uuid::new_v4();
         let session = Protected(
             NativeGatewaySource::new(models.claim(lease.clone(), invocation).unwrap()).unwrap(),
@@ -460,41 +496,12 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
             NativeGatewaySource::new(models.claim(lease.clone(), invocation).unwrap()).unwrap(),
         );
         let tree = crate::shell::native_workspace_owner::test_tree_of(&fixture.owner);
-        {
-            let mut tree = tree.write();
-            let doc = tree.room_docs.get_mut(&fixture.room).unwrap();
-            assert!(matches!(
-                tilo_desktop_model::apps::bind_tab_record(
-                    doc,
-                    CHAT_STRIP,
-                    CHAT_GROUP,
-                    CHAT_TAB,
-                    "retargeted-conversation",
-                ),
-                Err(tilo_desktop_model::apps::BindRecordError::AlreadyBound)
-            ));
-            // Canonical routes cannot be rebound. Corrupt only the host's
-            // publication cache to prove even an already claimed dispatch
-            // refuses a mismatched live source, not to invent canonical state.
-            use automerge::{ReadDoc, transaction::Transactable};
-            let mut object = automerge::ROOT;
-            for key in [
-                "contents".to_owned(),
-                format!("{:016x}", CHAT_STRIP.raw()),
-                "groups".into(),
-                format!("{CHAT_GROUP:016x}"),
-                "tabs".into(),
-                format!("{CHAT_TAB:016x}"),
-            ] {
-                object = doc.get(&object, key).unwrap().unwrap().1;
-            }
-            doc.put(&object, "record_id", "retargeted-conversation")
-                .unwrap();
-        }
+        retarget_cached_record(&tree, fixture.room);
         let denial = models
             .claim(lease, uuid::Uuid::new_v4())
             .err()
             .expect("same tab with a different record must deny claim");
+        drop(models);
         assert!(denial.contains("originating window changed"), "{denial}");
         let response = Gateway::new()
             .unwrap()
@@ -509,5 +516,41 @@ fn claimed_chat_source_refuses_profile_change_and_same_tab_record_retarget() {
             agent_provider_config::protocol::ErrorKind::PermissionDenied
         );
         no_http(&listener).await;
+        drop(service);
     });
+}
+
+/// Canonical routes cannot be rebound. Corrupt only the host's publication cache
+/// to prove that even an already claimed dispatch refuses a mismatched live
+/// source, rather than inventing canonical state.
+fn retarget_cached_record(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: crate::shell::state::RoomId,
+) {
+    let mut tree = tree.write();
+    let doc = tree.room_docs.get_mut(&room).unwrap();
+    assert!(matches!(
+        tilo_desktop_model::apps::bind_tab_record(
+            doc,
+            CHAT_STRIP,
+            CHAT_GROUP,
+            CHAT_TAB,
+            "retargeted-conversation",
+        ),
+        Err(tilo_desktop_model::apps::BindRecordError::AlreadyBound)
+    ));
+    let mut object = automerge::ROOT;
+    for key in [
+        "contents".to_owned(),
+        format!("{:016x}", CHAT_STRIP.raw()),
+        "groups".into(),
+        format!("{CHAT_GROUP:016x}"),
+        "tabs".into(),
+        format!("{CHAT_TAB:016x}"),
+    ] {
+        object = doc.get(&object, key).unwrap().unwrap().1;
+    }
+    doc.put(&object, "record_id", "retargeted-conversation")
+        .unwrap();
+    drop(tree);
 }

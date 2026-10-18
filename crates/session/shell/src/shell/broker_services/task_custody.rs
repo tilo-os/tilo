@@ -1,8 +1,9 @@
 //! Exact governor custody over the existing authenticated private connection.
 use super::NativeOwnerCommitService;
+use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::task_admission::{NativeAdmissionCommand as C, NativeAdmissionReply as R};
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
+use tilo_peer_state::workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand};
 use tilo_relay_session::rooms::private::{PrivateOperation, PrivateReply};
 
 #[cfg(test)]
@@ -20,7 +21,7 @@ pub(super) fn fail_next_owner_operation(
     });
 }
 
-/// Drive an owned owner operation away from the broker's LocalSet. The runtime
+/// Drive an owned owner operation away from the broker's `LocalSet`. The runtime
 /// still drives remote I/O and timers; synchronous custody RPCs, owner reads and
 /// durable writes run on the blocking worker, including after an await.
 pub(super) async fn on_owner_worker<T, F, Fut>(work: F) -> Result<T, String>
@@ -51,12 +52,12 @@ impl NativeOwnerCommitService {
         room: tilo_desktop_model::RoomId,
         command: &C,
     ) -> Result<R, String> {
-        let remote = super::task_mailboxes::remote::route(self, &room.to_string(), None, None)?
-            .ok_or("native governor private route unavailable")?;
-        let payload = tilo_joined_room::task_admission::encode_admission_command(command)?;
         let PrivateReply::NativeTask { payload } = super::task_mailboxes::remote::command(
-            remote,
-            PrivateOperation::NativeTask { payload },
+            super::task_mailboxes::remote::route(self, &room.to_string(), None, None)?
+                .ok_or("native governor private route unavailable")?,
+            PrivateOperation::NativeTask {
+                payload: tilo_joined_room::task_admission::encode_admission_command(command)?,
+            },
         )?
         else {
             return Err("unexpected native custody reply".into());
@@ -109,27 +110,8 @@ impl NativeOwnerCommitService {
                         && task.route == tilo_desktop_model::WorkspaceTaskRoute::Model
                 }))
             })?;
-        let command = match authority {
-            WorkspaceTaskAuthority::Person { .. } if model_start => C::PersonModelStart {
-                invocation: *invocation,
-                command: command.clone(),
-                snapshot: self.capture_person_model_start(owner, request)?,
-            },
-            WorkspaceTaskAuthority::Person { .. } => C::PrivateCoordination {
-                invocation: *invocation,
-                command: command.clone(),
-            },
-            WorkspaceTaskAuthority::Agent { agent_id, .. } => C::Report {
-                invocation: *invocation,
-                agent: Some(agent_id.clone()),
-                command: command.clone(),
-            },
-            WorkspaceTaskAuthority::Host { .. } => C::Report {
-                invocation: *invocation,
-                agent: None,
-                command: command.clone(),
-            },
-        };
+        let command =
+            self.admission_command(owner, request, *invocation, authority, command, model_start)?;
         let R::Coordination(receipt) = self.native_task_custody(id, &command)? else {
             return Err("unexpected task coordination reply".into());
         };
@@ -186,6 +168,38 @@ impl NativeOwnerCommitService {
         .await
         .map_err(|_| "signed task receipt did not reach the native owner; outcome unknown")?
     }
+    fn admission_command(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        request: &OwnerCommitRequest,
+        invocation: uuid::Uuid,
+        authority: &WorkspaceTaskAuthority,
+        command: &WorkspaceTaskCommand,
+        model_start: bool,
+    ) -> Result<C, String> {
+        Ok(match authority {
+            WorkspaceTaskAuthority::Person { .. } if model_start => C::PersonModelStart {
+                invocation,
+                command: command.clone(),
+                snapshot: self.capture_person_model_start(owner, request)?,
+            },
+            WorkspaceTaskAuthority::Person { .. } => C::PrivateCoordination {
+                invocation,
+                command: command.clone(),
+            },
+            WorkspaceTaskAuthority::Agent { agent_id, .. } => C::Report {
+                invocation,
+                agent: Some(agent_id.clone()),
+                command: command.clone(),
+            },
+            WorkspaceTaskAuthority::Host { .. } => C::Report {
+                invocation,
+                agent: None,
+                command: command.clone(),
+            },
+        })
+    }
+
     pub(super) fn receive_task_fences(
         &self,
         room: tilo_desktop_model::RoomId,

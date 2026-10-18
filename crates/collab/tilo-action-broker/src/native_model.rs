@@ -19,7 +19,10 @@ pub use tilo_joined_room::task_admission::model::{
 /// Never constructed from inference JSON or a sender's display name/profile.
 pub trait NativeModelLease: Send + Sync {
     /// Hold the actual delivered lease and protected connection gates through
-    /// synchronous enqueue. Unsupported adapters fail closed, never cache live().
+    /// synchronous enqueue. Unsupported adapters fail closed, never cache `live()`.
+    ///
+    /// # Errors
+    /// Refuses an ended lease or unsupported pinned dispatch.
     fn with_current(
         &self,
         _view: &NativeCommittedView,
@@ -40,11 +43,17 @@ pub trait NativeModelLease: Send + Sync {
     }
     /// Register before enrollment. A closed lease invokes the callback before
     /// returning; callbacks never run under the broker's registry locks.
+    ///
+    /// # Errors
+    /// Refuses unsupported close notifications or an unavailable listener gate.
     fn on_close(&self, callback: NativeModelCloseCallback) -> Result<(), String> {
         let _ = callback;
         Err("native MODEL close notifications unavailable".into())
     }
     /// Called inside the owner's mutation turn; must not reenter the owner.
+    ///
+    /// # Errors
+    /// Refuses an ended lease, changed membership or invalid task custody.
     fn current(
         &self,
         view: &NativeCommittedView,
@@ -55,6 +64,8 @@ pub trait NativeModelLease: Send + Sync {
 
 /// Installed by the native host. This is not an application RPC interface.
 pub trait NativeModelHost: Send + Sync {
+    /// # Errors
+    /// Refuses unavailable host custody or a stale delivered task lease.
     fn claim(
         &self,
         lease: Arc<dyn NativeModelLease>,
@@ -64,6 +75,9 @@ pub trait NativeModelHost: Send + Sync {
 
 /// Build the context from the actual owner view, after connection/lease checks.
 /// Kept here so no caller can replace Model planning with a wire boolean.
+///
+/// # Errors
+/// Refuses missing task custody, a changed run/frontier or unavailable private text.
 pub fn current_context(
     view: &NativeCommittedView,
     binding: &NativeTaskBinding,
@@ -93,8 +107,9 @@ pub fn current_context(
         .map_or(0, |direction| direction.revision);
     // MODEL prepares the latest desired plan before DirectionsApplied. Never
     // upgrade an older delivered lease to that frontier implicitly.
-    if run.epoch != binding.epoch
-        || control.run_epoch != binding.epoch
+    let epoch = binding.epoch;
+    if run.epoch != epoch
+        || control.run_epoch != epoch
         || run.agent_id != binding.agent_id
         || binding.revision != revision
         || run
@@ -130,6 +145,9 @@ pub fn current_context(
 
 /// The gateway already shaped these bytes and opened its transport. Both calls
 /// compare the same complete, nonsecret selection, never just a profile id.
+///
+/// # Errors
+/// Refuses a disabled or changed provider, account, model or request option.
 pub fn attempt_matches(
     attempt: &FrozenNativeAttempt,
     profile: &agent_provider_config::ProviderProfile,

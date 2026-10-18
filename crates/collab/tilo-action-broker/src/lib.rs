@@ -1,4 +1,5 @@
 //! Production collaboration broker services shared by native hosts.
+pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
 pub mod channel_encryption;
@@ -10,6 +11,8 @@ pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
+mod evidence_signer;
+pub mod local_document_action;
 pub mod native_model;
 pub mod peer_actions;
 pub mod policy_schedule;

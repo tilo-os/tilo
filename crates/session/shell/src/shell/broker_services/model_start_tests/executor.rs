@@ -1,10 +1,13 @@
 //! A protected managed launch and real task subscription, using throwaway identity custody.
-use super::*;
+use super::NativeFixture;
+use crate::shell::broker_services::NativeOwnerCommitService;
 use std::sync::Arc;
+use tilo_action_broker::services::WorkspaceMemberships;
 use tilo_action_broker::services::{
     AuthenticatedApplicationLaunch, LauncherServices, ManagedApplicationIdentity,
 };
 use tilo_identity_host::native_agent::{ManagedNativeAgent, NativeAgentRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_relay_protocol::delegation::Delegation;
 
 struct Actor {
@@ -78,6 +81,27 @@ impl LauncherServices for Launch {
     }
 }
 
+/// The broker's view of the fixture's own tree and legacy journal root.
+struct Authority {
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    journal: std::path::PathBuf,
+}
+impl tilo_action_broker::services::WorkspaceAuthority for Authority {
+    fn with_tree(
+        &self,
+        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+    ) -> Result<(), String> {
+        read(&self.tree.read().desktop);
+        Ok(())
+    }
+    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
+        Some(self.journal.clone())
+    }
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
+}
+
 pub(super) struct Executor {
     pub service: NativeOwnerCommitService,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -99,6 +123,23 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
         task_executors: services.native_task_executors.clone().unwrap(),
         ..NativeOwnerCommitService::new(tree.clone(), None)
     };
+    admit_scribe(&service, fixture);
+    let room = fixture.room.to_string();
+    let identity = provision_scribe(fixture, &room);
+    let (certificate, _, proof) = identity.identity().unwrap();
+    let services = with_protected_launch(services, identity, &room);
+    let broker = spawn_broker(fixture, tree, service.clone(), services);
+    let (stop, thread) = subscribe_scribe(fixture, &room, &certificate, &proof);
+    assert_subscription_ready(&service, fixture, &room);
+    Executor {
+        service,
+        stop: Some(stop),
+        thread: Some(thread),
+        _broker: broker,
+    }
+}
+
+fn admit_scribe(service: &NativeOwnerCommitService, fixture: &NativeFixture) {
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(service.execute(OwnerCommitRequest {
@@ -114,8 +155,11 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
             },
         }))
         .unwrap();
-    let (key, governor) =
-        tilo_identity_host::broker::trusted_current_device(&fixture.room.to_string()).unwrap();
+}
+
+/// Provision the throwaway agent and admit it as this workspace's operator.
+fn provision_scribe(fixture: &NativeFixture, room: &str) -> Arc<Actor> {
+    let (key, governor) = tilo_identity_host::broker::trusted_current_device(room).unwrap();
     let person_room = collab_types::person_room_of(&hex::encode(governor.user_public_key))
         .unwrap()
         .to_string();
@@ -126,11 +170,11 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
             label: "Scribe".into(),
             color: [10, 20, 30],
             apps: vec!["so.tilo.agent".into()],
-            expires_at_ns: tilo_clock::unix_now_ns() + 3_600_000_000_000,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
         },
     )
     .unwrap();
-    let delegation = actor.delegate_room(&fixture.room.to_string()).unwrap();
+    let delegation = actor.delegate_room(room).unwrap();
     fixture
         .owner
         .admit_managed_agent(
@@ -143,42 +187,36 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
         )
         .unwrap();
     assert!(!actor.certificate().capabilities.can_act_as_host);
-    let identity = Arc::new(Actor { actor, delegation });
-    let (certificate, _, proof) = identity.identity().unwrap();
-    let room = fixture.room.to_string();
+    Arc::new(Actor { actor, delegation })
+}
+
+fn with_protected_launch(
+    services: tilo_action_broker::services::HostServices,
+    identity: Arc<Actor>,
+    room: &str,
+) -> tilo_action_broker::services::HostServices {
     let launch = Arc::new(Launch {
         identity,
         protected: launcher::registration_gate::ProtectedModelLaunch {
             app: "so.tilo.agent".into(),
-            room: room.clone(),
+            room: room.to_string(),
             agent: "scribe".into(),
             launch: uuid::Uuid::new_v4().to_string(),
         },
     });
-    let services = tilo_action_broker::services::HostServices {
+    tilo_action_broker::services::HostServices {
         launcher: Some(launch),
         ..services
-    };
-    struct Authority {
-        tree: crate::shell::state::WorkspaceTreeHandle,
-        journal: std::path::PathBuf,
     }
-    impl tilo_action_broker::services::WorkspaceAuthority for Authority {
-        fn with_tree(
-            &self,
-            read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-        ) -> Result<(), String> {
-            read(&self.tree.read().desktop);
-            Ok(())
-        }
-        fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-            Some(self.journal.clone())
-        }
-        fn announces_policy_changes(&self) -> bool {
-            true
-        }
-    }
-    let broker = tilo_action_broker::collab_broker::spawn_with_services(
+}
+
+fn spawn_broker(
+    fixture: &NativeFixture,
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    service: NativeOwnerCommitService,
+    services: tilo_action_broker::services::HostServices,
+) -> tilo_action_broker::collab_broker::BrokerHandle {
+    tilo_action_broker::collab_broker::spawn_with_services(
         fixture.home.runtime().join("model-executor.sock"),
         Some(Arc::new(Authority {
             tree,
@@ -186,22 +224,34 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
         })),
         tilo_action_broker::collab_outbound::PeerPublisher::with_optional_owner_commit(
             None,
-            Arc::new(service.clone()),
+            Arc::new(service),
         ),
         None,
         services,
         Arc::default(),
         Arc::default(),
     )
-    .unwrap();
-    let route = tilo_action_broker::route::CrdtRoute::record("so.tilo.agent", &room, "main");
+    .unwrap()
+}
+
+/// Join the protected agent channel on its own thread and hold the subscription open.
+fn subscribe_scribe(
+    fixture: &NativeFixture,
+    room: &str,
+    certificate: &tilo_user_identity::DeviceCert,
+    proof: &[u8; 64],
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let route = tilo_action_broker::route::CrdtRoute::record("so.tilo.agent", room, "main");
     let mut stream =
         std::os::unix::net::UnixStream::connect(fixture.home.runtime().join("model-executor.sock"))
             .unwrap();
-    launcher::services::write_collab_handoff(&mut stream, "so.tilo.agent", &room).unwrap();
+    launcher::services::write_collab_handoff(&mut stream, "so.tilo.agent", room).unwrap();
     let presentation = runtime_collab::CertifiedJoinIdentity {
-        workspace_id: room.clone(),
-        device_certificate: serde_json::to_vec(&certificate).unwrap(),
+        workspace_id: room.to_string(),
+        device_certificate: serde_json::to_vec(certificate).unwrap(),
         proof: proof.to_vec(),
     }
     .encode()
@@ -242,8 +292,16 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
     });
     wait.recv_timeout(std::time::Duration::from_secs(3))
         .unwrap();
+    (stop, thread)
+}
+
+fn assert_subscription_ready(
+    service: &NativeOwnerCommitService,
+    fixture: &NativeFixture,
+    room: &str,
+) {
     let compute = service
-        .current_task_compute(&room, &fixture.certificate)
+        .current_task_compute(room, &fixture.certificate)
         .unwrap()
         .unwrap();
     assert!(
@@ -253,10 +311,4 @@ pub(super) fn start(fixture: &NativeFixture) -> Executor {
             && entry.permitted),
         "real subscription and selected model must be ready"
     );
-    Executor {
-        service,
-        stop: Some(stop),
-        thread: Some(thread),
-        _broker: broker,
-    }
 }

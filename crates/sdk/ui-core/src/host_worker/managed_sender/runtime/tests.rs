@@ -264,6 +264,8 @@ impl Receiver {
                 host,
                 invocation,
                 result: reply.map(|update_json| runtime_collab::PublishedInvocationResult {
+                    admission_json: None,
+                    terminal_json: None,
                     id: 11,
                     update_json,
                     uncertain: false,

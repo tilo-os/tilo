@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tilo_user_identity::DeviceCert;
 
-const REGISTRATION_LIFETIME: Duration = Duration::from_secs(120);
+const REGISTRATION_LIFETIME_NS: u64 = 120_000_000_000;
 
 fn timestamp(now: SystemTime) -> Result<u64, String> {
     now.duration_since(UNIX_EPOCH)
@@ -83,7 +83,7 @@ impl NativeModelHostRegistration {
             }
             let issued_at_ns = timestamp(now)?;
             let expires_at_ns = issued_at_ns
-                .checked_add(REGISTRATION_LIFETIME.as_nanos() as u64)
+                .checked_add(REGISTRATION_LIFETIME_NS)
                 .ok_or("native MODEL enrollment expiry overflow")?;
             if key.verifying_key().to_bytes() != view.device().device_public_key {
                 return Err(
@@ -118,7 +118,9 @@ impl NativeModelHostRegistration {
     /// The governor retires the previous nonce for the same connection/lease.
     #[must_use]
     pub fn expires_at(&self) -> SystemTime {
-        UNIX_EPOCH + Duration::from_nanos(self.expires_at_ns)
+        UNIX_EPOCH
+            .checked_add(Duration::from_nanos(self.expires_at_ns))
+            .unwrap_or(UNIX_EPOCH)
     }
 
     #[must_use]
@@ -147,8 +149,7 @@ impl NativeModelHostRegistration {
             || self.context.epoch == 0
             || self.context.private_run_digest == [0; 32]
             || self.context.planning != NativeModelPlanning::Model
-            || self.expires_at_ns.checked_sub(self.issued_at_ns)
-                != Some(REGISTRATION_LIFETIME.as_nanos() as u64)
+            || self.expires_at_ns.checked_sub(self.issued_at_ns) != Some(REGISTRATION_LIFETIME_NS)
         {
             return Err("native MODEL enrollment incomplete".into());
         }
@@ -201,7 +202,8 @@ impl NativeGovernorAdmission<'_> {
             return Err("native MODEL host cannot be a delegated agent".into());
         }
         let context = &registration.context;
-        if registration.host != caller.device_public_key
+        let caller_host = caller.device_public_key;
+        if registration.host != caller_host
             || registration.room != self.room
             || self.ledger.is_fenced(&context.task, context.epoch)
         {
@@ -220,9 +222,11 @@ impl NativeGovernorAdmission<'_> {
             .active_run
             .as_ref()
             .ok_or("native MODEL run absent")?;
-        if run.agent_id != context.actor
-            || run.epoch != context.epoch
-            || control.run_epoch != context.epoch
+        let actor = &context.actor;
+        let expected_epoch = context.epoch;
+        if &run.agent_id != actor
+            || run.epoch != expected_epoch
+            || control.run_epoch != expected_epoch
             || control
                 .directions
                 .last()
@@ -358,10 +362,12 @@ impl super::TaskAdmissionLedger {
         certified_host(caller, SystemTime::now())?;
         let context = &registered.context;
         let exact: NativeInvocationBinding = requirement.binding()?;
+        let caller_host = caller.device_public_key;
+        let expected_actor = &exact.agent;
         if registered.room != exact.room
-            || registered.host != caller.device_public_key
+            || registered.host != caller_host
             || exact.host != registered.host
-            || context.actor != exact.agent
+            || &context.actor != expected_actor
             || context.task != exact.task
             || context.epoch != exact.epoch
             || context.revision != exact.revision

@@ -166,6 +166,7 @@ impl Frame {
             }
         }
         let mut scroll = Scrollable::new_vertical()
+            .always_visible()
             .fill_parent_height()
             .with_focus_reveal();
         let body: Box<dyn Widget> = if self.center_short_body {

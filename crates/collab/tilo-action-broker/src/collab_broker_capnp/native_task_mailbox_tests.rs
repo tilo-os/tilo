@@ -116,6 +116,7 @@ async fn registered_native_wait_retains_identity_until_bounded_empty_owner_resul
                     .unwrap()
                     .contains_key(&wire)
             );
+            drop(f);
         })
         .await;
 }
@@ -150,6 +151,7 @@ async fn registered_wait_refuses_another_epoch_without_inbox_contents() {
                     .unwrap()
                     .contains("messages")
             );
+            drop(f);
         })
         .await;
 }
@@ -172,6 +174,7 @@ async fn person_action_door_cannot_obtain_a_native_task_inbox() {
                 tilo_actions::InvocationUpdate::Failed { .. }
             ));
             assert!(!serde_json::to_string(&result).unwrap().contains("messages"));
+            drop(f);
         })
         .await;
 }
@@ -218,9 +221,9 @@ fn publish_owner_mail(f: &Fixture, run: &runtime_collab::TaskRunEnvelope) {
         text: "private owner context".into(),
     };
     let arguments = serde_json::to_string(&send).unwrap();
-    let sent = uuid::Uuid::from_u128(8901);
+    let invocation = uuid::Uuid::from_u128(8901);
     let mut exact = crate::services::NativeTaskInvocation::new(
-        sent,
+        invocation,
         &tilo_actions::remote::workspace_provider(&room().to_string()),
         Some(&arguments),
         &registered.contract,
@@ -250,7 +253,7 @@ fn publish_owner_mail(f: &Fixture, run: &runtime_collab::TaskRunEnvelope) {
             &room().to_string(),
             &binding,
             &f.task,
-            sent,
+            invocation,
             send,
             &requirement,
         )
@@ -320,6 +323,7 @@ async fn accepted_owner_private_mail_wakes_registered_wait_without_broker_refres
             assert_eq!(page.messages[0].source.agent_id, "scribe");
             assert_eq!(page.messages[0].recipient, page.task_run);
             assert!(!page.timed_out);
+            drop(f);
         })
         .await;
 }
@@ -376,61 +380,64 @@ async fn room_stop_is_not_blocked_by_a_registered_private_inbox_wait() {
             })
             .await
             .unwrap();
+            drop(f);
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn retained_native_wait_does_not_restart_elapsed_invocation_timeout() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            f.approve();
-            inbox_permission(&f);
-            f.state.refresh_workspace_membership_services().unwrap();
-            let channel = f.channel(100, true);
-            let run = delivered(&channel).await;
-            let invocation = uuid::Uuid::from_u128(8812);
-            let (wire, _) = wait_request(&f, &channel, &run, invocation, (&f.task, 1), 30_000, 0)
-                .await
-                .unwrap();
-            let mut pending = f.state.pending_invocations.lock().unwrap()[&wire].clone();
-            // Model a retained child whose original admission is already old.
-            // Keep its real caller, exact requirement and durable record intact.
-            pending.last_activity = std::time::Instant::now() - Duration::from_secs(31);
-            let envelope = InvocationEnvelope {
-                id: wire,
-                invocation: tilo_actions::InvocationId(invocation),
-                resource: format!("desktop:{}", f.task),
-                action: "wait-task-message".into(),
-                argument: Some(
-                    serde_json::json!({
-                        "run_epoch":1,"after_sequence":17,"timeout_ms":30_000,
-                    })
-                    .to_string(),
-                ),
-                actor: "scribe".into(),
-                context: None,
-            };
-            let result = tokio::time::timeout(
-                Duration::from_millis(250),
-                f.state
-                    .execute_task_message_wait(&room().to_string(), &envelope, &pending),
-            )
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
+        let f = Fixture::new();
+        f.approve();
+        inbox_permission(&f);
+        f.state.refresh_workspace_membership_services().unwrap();
+        let channel = f.channel(100, true);
+        let run = delivered(&channel).await;
+        let invocation = uuid::Uuid::from_u128(8812);
+        let (wire, _) = wait_request(&f, &channel, &run, invocation, (&f.task, 1), 30_000, 0)
             .await
-            .expect("a retained invocation must not receive a fresh thirty seconds");
-            match result {
-                Err(error) => assert_eq!(error, "task inbox owner observation deadline exceeded"),
-                Ok(Some(value)) => {
-                    let page: tilo_actions::task_messaging::TaskMessageWaitResult =
-                        serde_json::from_value(value).unwrap();
-                    assert!(page.timed_out);
-                    assert!(page.messages.is_empty());
-                }
-                Ok(None) => panic!("the registered mailbox read must be handled"),
+            .unwrap();
+        let mut pending = f.state.pending_invocations.lock().unwrap()[&wire].clone();
+        // Model a retained child whose original admission is already old.
+        // Keep its real caller, exact requirement and durable record intact.
+        pending.last_activity = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(31))
+            .unwrap();
+        let envelope = InvocationEnvelope {
+            id: wire,
+            invocation: tilo_actions::InvocationId(invocation),
+            resource: format!("desktop:{}", f.task),
+            action: "wait-task-message".into(),
+            argument: Some(
+                serde_json::json!({
+                    "run_epoch":1,"after_sequence":17,"timeout_ms":30_000,
+                })
+                .to_string(),
+            ),
+            actor: "scribe".into(),
+            context: None,
+        };
+        let result = tokio::time::timeout(
+            Duration::from_millis(250),
+            f.state
+                .execute_task_message_wait(&room().to_string(), &envelope, &pending),
+        )
+        .await
+        .expect("a retained invocation must not receive a fresh thirty seconds");
+        match result {
+            Err(error) => assert_eq!(error, "task inbox owner observation deadline exceeded"),
+            Ok(Some(value)) => {
+                let page: tilo_actions::task_messaging::TaskMessageWaitResult =
+                    serde_json::from_value(value).unwrap();
+                assert!(page.timed_out);
+                assert!(page.messages.is_empty());
             }
-        })
-        .await;
+            Ok(None) => panic!("the registered mailbox read must be handled"),
+        }
+        drop(f);
+    }))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -478,6 +485,7 @@ async fn registered_wait_is_capped_by_owner_run_budget_across_reasks() {
                     .unwrap();
             assert_eq!(retained_wire, wire);
             assert!(retained.is_terminal(), "a re-ask must not restart the wait");
+            drop(f);
         })
         .await;
 }

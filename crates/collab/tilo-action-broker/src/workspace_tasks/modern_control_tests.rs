@@ -152,7 +152,7 @@ fn unassigned_model_task_publishes_approval_with_optional_executor() {
     state.tasks[0].assigned_agent = None;
     state.tasks[0].status = WorkspaceTaskStatus::Queued;
     state.controls.get_mut("task:model").unwrap().active_run = None;
-    let catalogue = actions(&state, "Workspace", &Default::default());
+    let catalogue = actions(&state, "Workspace", &std::collections::BTreeSet::default());
     let approve = catalogue
         .iter()
         .find(|row| row.resource == "desktop:task:model" && row.action == "approve-run")
@@ -303,7 +303,11 @@ fn windowless_task_source_is_the_real_published_task_resource() {
         resource,
         tilo_joined_room::NativeModelContract::task_resource("room", &task_id)
     );
-    let published = actions(&snapshot, "Workspace", &Default::default());
+    let published = actions(
+        &snapshot,
+        "Workspace",
+        &std::collections::BTreeSet::default(),
+    );
     assert!(
         published
             .iter()

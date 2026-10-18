@@ -4,7 +4,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ScalarValue, transaction::Transactabl
 use serde_json::{Value, json};
 
 fn needs_migration(room: &AutoCommit) -> bool {
-    has_private_task_history(room, &Default::default()).unwrap()
+    has_private_task_history(room, &std::collections::BTreeMap::default()).unwrap()
 }
 
 fn put(room: &mut AutoCommit, field: &str, value: &Value) -> automerge::ObjId {
@@ -215,7 +215,7 @@ fn confirmation_draft_and_decline_reason_remain_private_even_for_manual_tasks() 
     };
     for decline in [false, true] {
         if decline {
-            confirmation.draft = Default::default();
+            confirmation.draft = tilo_actions::Draft::default();
             confirmation.state = tilo_desktop_model::WorkspaceTaskConfirmationState::Declined {
                 person: "person".into(),
                 at: 18,
@@ -267,7 +267,7 @@ fn malformed_historical_roots_fail_closed() {
         .unwrap();
     room.commit();
     assert_eq!(
-        has_private_task_history(&room, &Default::default()).unwrap_err(),
+        has_private_task_history(&room, &std::collections::BTreeMap::default()).unwrap_err(),
         "task history root is not a map"
     );
 }

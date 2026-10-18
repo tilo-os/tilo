@@ -81,7 +81,7 @@ struct State {
     writing: BTreeMap<StorageKey, (u64, u64)>,
     keys: BTreeMap<StorageKey, KeyStatus>,
     owners: BTreeMap<StorageKey, Vec<Arc<Owner>>>,
-    view_leases: BTreeSet<StorageKey>,
+    view_leases: BTreeMap<StorageKey, Arc<advisory_lock::FileLock>>,
     /// Keys whose existing bytes, read here rather than written here, still
     /// need their file and ancestors synced: taken by the writer thread, so
     /// no caller waits on the disk for them.
@@ -113,6 +113,8 @@ enum Preparation {
 }
 
 struct Batch {
+    // A queued commit keeps its view slot exclusive even after the caller drops.
+    view_gate: Option<Arc<advisory_lock::FileLock>>,
     first: u64,
     last: u64,
     op: WriteOp,
@@ -161,6 +163,7 @@ impl Owner {
 }
 
 struct FsLease {
+    _view_gate: Option<Arc<advisory_lock::FileLock>>,
     key: StorageKey,
     owner: Option<Arc<Owner>>,
     shared: Weak<Shared>,
@@ -463,6 +466,7 @@ impl DurableStore for FsStore {
                 })?;
             state.issued = revision;
             let writer = writer.map(<[u8]>::to_vec);
+            let view_gate = state.view_leases.get(key).cloned();
             if let Some(batch) = state.queue.get_mut(key) {
                 batch.op.coalesce(op);
                 batch.last = revision;
@@ -474,6 +478,7 @@ impl DurableStore for FsStore {
                 state.queue.insert(
                     key.clone(),
                     Batch {
+                        view_gate,
                         first: revision,
                         last: revision,
                         op,
@@ -602,11 +607,21 @@ impl DurableStore for FsStore {
                 let owner = Arc::new(open_owner(&directory)?);
                 Ok(Box::new(self.register(key, owner)?))
             }
-            Target::View(_) => {
-                if !lock(&self.shared.state).view_leases.insert(key.clone()) {
+            Target::View(path) => {
+                let mut state = lock(&self.shared.state);
+                if state.view_leases.contains_key(key) {
                     return Err(SeamError::Busy(key.to_string()));
                 }
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
+                }
+                // Never unlink this gate: an old handle and a new pathname
+                // must not admit two writers to the same bounded slot.
+                let gate = Arc::new(acquire_gate(&path.with_extension("lock"), true)?);
+                state.view_leases.insert(key.clone(), gate.clone());
+                drop(state);
                 Ok(Box::new(FsLease {
+                    _view_gate: Some(gate),
                     key: key.clone(),
                     owner: None,
                     shared: Arc::downgrade(&self.shared),
@@ -803,6 +818,7 @@ impl FsStore {
         }
         drop(state);
         Ok(FsLease {
+            _view_gate: None,
             key: key.clone(),
             owner: Some(owner),
             shared: Arc::downgrade(&self.shared),
@@ -1031,9 +1047,13 @@ fn writer_loop(shared: &Shared) {
         // Release the owner's handles before waking flushers: a caller that
         // then drops its lease must find the gate free.
         let Taken {
-            key, batch, owner, ..
+            key,
+            mut batch,
+            owner,
+            ..
         } = taken;
         drop(owner);
+        drop(batch.view_gate.take());
         finish(shared, &key, &batch, result, started);
     }
     guard.finished = true;
@@ -1238,23 +1258,36 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
             WriteOp::Append(bytes) => append_synced(shared, &document, bytes, false),
         };
     };
+    // Atomic replacement syncs the immediate parent, not the new directories
+    // above it. Establish the whole chain once before acknowledging this key.
+    // A flush of an absent key can set `synced` without creating anything, so
+    // only a successful prior commit proves the chain was established here.
+    let ancestors_synced = lock(&shared.state)
+        .keys
+        .get(&taken.key)
+        .is_some_and(|status| status.synced && status.durable > 0);
+    if let Some(parent) = view.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
+    }
     match &batch.op {
         WriteOp::Replace(bytes) => {
-            if let Some(parent) = view.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
+            // atomic::write requires a durably provisioned parent.
+            if !ancestors_synced && let Some(parent) = view.parent() {
+                sync_ancestors(shared, parent)?;
             }
             tilo_files::native::atomic::write(view, bytes)
-                .map_err(|e| io_err(format!("writing {}", view.display()), e))
+                .map_err(|e| io_err(format!("writing {}", view.display()), e))?;
         }
         WriteOp::Append(bytes) => {
-            if let Some(parent) = view.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
+            append_synced(shared, view, bytes, true)?;
+            // Unlike replacement, append does not sync its new file's entry.
+            if !ancestors_synced && let Some(parent) = view.parent() {
+                sync_ancestors(shared, parent)?;
             }
-            append_synced(shared, view, bytes, true)
         }
     }
+    Ok(())
 }
 
 fn append_synced(
@@ -1549,6 +1582,91 @@ mod tests {
             for bad in ["", "a", "zz", "é0"] {
                 assert_eq!(unhex(bad), None, "{bad}");
             }
+        }
+    }
+
+    #[test]
+    fn a_dropped_view_lease_keeps_queued_commits_exclusive_until_settled() {
+        let tmp = TempDir::new().unwrap();
+        let store = FsStore::with_debounce(tmp.path(), Duration::from_secs(600));
+        let peer = FsStore::new(tmp.path());
+        let key = StorageKey::view("private-action-history", "owner", 0);
+        let lease = store.lease(&key).unwrap();
+        let revision = store
+            .write(&key, WriteOp::Replace(b"evidence".to_vec()), None)
+            .unwrap();
+        drop(lease);
+        assert!(matches!(peer.lease(&key), Err(SeamError::Busy(_))));
+        store.flush(Some(&key)).unwrap();
+        assert_eq!(store.durability(&key, revision), Durability::Durable);
+        // The worker must release the gate before flush wakes its caller.
+        let _next = peer.lease(&key).unwrap();
+        assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
+    }
+
+    #[test]
+    fn view_creation_syncs_new_ancestors_once_and_retries_failed_durability() {
+        for initial in [
+            WriteOp::Replace(b"checkpoint".to_vec()),
+            WriteOp::Append(b"checkpoint".to_vec()),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let ancestor = fs::canonicalize(tmp.path()).unwrap().join("new");
+            let root = ancestor.join("profile");
+            let store = FsStore::with_debounce(&root, Duration::from_secs(600));
+            let key = StorageKey::view("D", "A", 1);
+            // Even an earlier flush of a missing key does not prove that its
+            // not-yet-created parent chain is durable.
+            store.flush(Some(&key)).unwrap();
+            assert!(!ancestor.exists());
+            store.faults().sync_failure = Some(ancestor.clone());
+            let replacement = initial.is_replace();
+            let first = store.write(&key, initial, None).unwrap();
+            assert!(store.flush(Some(&key)).is_err());
+            assert!(matches!(
+                store.durability(&key, first),
+                Durability::Failed(message) if message.contains("injected directory sync failure")
+            ));
+            assert!(!store.is_settled(&key));
+            if replacement {
+                assert!(
+                    store.read(&key).unwrap().is_none(),
+                    "no publication before durable parents"
+                );
+            } else {
+                assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"checkpoint");
+            }
+
+            {
+                let mut faults = store.faults();
+                faults.sync_failure = None;
+                faults.sync_threads.clear();
+            }
+            let retry = store
+                .write(&key, WriteOp::Replace(b"checkpoint".to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(store.durability(&key, retry), Durability::Durable);
+            assert!(store.is_settled(&key));
+            assert!(!store.faults().sync_threads.is_empty());
+
+            // Re-arm the same ancestor failure: later edits must not revisit
+            // the established chain (the atomic rename still syncs its parent).
+            {
+                let mut faults = store.faults();
+                faults.sync_threads.clear();
+                faults.sync_failure = Some(ancestor);
+            }
+            for edit in [
+                WriteOp::Replace(b"next".to_vec()),
+                WriteOp::Append(b" edit".to_vec()),
+            ] {
+                let revision = store.write(&key, edit, None).unwrap();
+                store.flush(Some(&key)).unwrap();
+                assert_eq!(store.durability(&key, revision), Durability::Durable);
+                assert!(store.faults().sync_threads.is_empty());
+            }
+            assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"next edit");
         }
     }
 

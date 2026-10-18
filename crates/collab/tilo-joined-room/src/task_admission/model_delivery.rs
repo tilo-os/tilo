@@ -52,16 +52,14 @@ impl NativeModelDeliveryReceipt {
                 if let Some(Ok(message)) = serde_json::Deserializer::from_str(json)
                     .into_iter::<TaskMessage>()
                     .next()
+                    && message.recipient.task_id == requirement.run.task_id
+                    && message.recipient.run_epoch == requirement.run.epoch
+                    && message.recipient.agent_id == requirement.run.agent_id
+                    && !messages
+                        .iter()
+                        .any(|m: &TaskMessage| m.message_id == message.message_id)
                 {
-                    if message.recipient.task_id == requirement.run.task_id
-                        && message.recipient.run_epoch == requirement.run.epoch
-                        && message.recipient.agent_id == requirement.run.agent_id
-                        && !messages
-                            .iter()
-                            .any(|m: &TaskMessage| m.message_id == message.message_id)
-                    {
-                        messages.push(message);
-                    }
+                    messages.push(message);
                 }
             }
         }

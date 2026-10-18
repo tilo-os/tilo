@@ -88,6 +88,7 @@ async fn owner_and_broker_restart_cannot_replay_or_reclaim_stopped_model_http() 
                 assert_eq!(reply["response"]["ok"], false, "{reply}");
             }
             queued::assert_no_http(&listener).await;
+            drop(f);
         })
         .await;
 }

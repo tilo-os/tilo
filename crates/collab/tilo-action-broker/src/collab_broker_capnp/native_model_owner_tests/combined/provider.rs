@@ -61,7 +61,8 @@ impl Server {
                     .windows(4)
                     .position(|window| window == b"\r\n\r\n")
                     .unwrap()
-                    + 4;
+                    .checked_add(4)
+                    .unwrap();
                 *blake3::hash(&bytes[start..]).as_bytes()
             })
             .collect()
@@ -123,7 +124,10 @@ fn operation(body: &Value, resource: &str, action: &str) -> String {
         .to_owned()
 }
 fn invoke(id: &str, operation: String, parameters: Value, reply: Option<&str>) -> Value {
-    let mut input = json!({"operation":operation,"parameters":parameters});
+    let mut input = Value::Object(serde_json::Map::from_iter([
+        ("operation".into(), Value::String(operation)),
+        ("parameters".into(), parameters),
+    ]));
     if let Some(reply) = reply {
         input["reply"] = reply.into();
     }
@@ -279,10 +283,12 @@ async fn respond(
     assert_eq!(body["model"], "selected");
     let mut raw = head;
     raw.extend(bytes);
-    let mut requests = captured.lock().unwrap();
-    let first_a = requests.is_empty();
-    requests.push(raw);
-    drop(requests);
+    let first_a = {
+        let mut requests = captured.lock().unwrap();
+        let first_a = requests.is_empty();
+        requests.push(raw);
+        first_a
+    };
     if first_a {
         ready.notify_one();
     }

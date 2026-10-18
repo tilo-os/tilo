@@ -55,6 +55,8 @@ impl NativeWorkspaceOwner {
     /// person. The transport must supply `authority`, never application JSON.
     /// The normal private instruction read authenticates the exact current
     /// certificate, host pin, agent, and run before returning any profile bytes.
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     pub fn workspace_task_private_model_contract(
         &self,
         room: RoomId,

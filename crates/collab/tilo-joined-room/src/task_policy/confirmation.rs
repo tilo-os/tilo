@@ -1,5 +1,5 @@
 //! Person answers are resolved from the owner's admitted state, never a wire flag.
-use super::*;
+use super::{Answer, NativeTaskActionRequirement, SystemTime, digest};
 use tilo_desktop_model::WorkspaceTaskConfirmationState;
 
 impl NativeTaskActionRequirement {
@@ -69,8 +69,8 @@ impl NativeTaskActionRequirement {
             let mut child_exact = exact.clone();
             child_exact.invocation = child_invocation.id;
             child_exact.request = child_invocation.request;
-            child_exact.resource = child.resource.clone();
-            child_exact.action = child.action.clone();
+            child_exact.resource.clone_from(&child.resource);
+            child_exact.action.clone_from(&child.action);
             child_exact.arguments_digest = child_invocation.arguments_digest;
             child_exact.contract_digest = child_invocation.contract_digest;
             child_exact.ceiling_digest = child.ceiling_digest()?;

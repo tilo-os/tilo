@@ -329,44 +329,6 @@ pub(crate) fn prepare_report(
     Ok((public, Some(report)))
 }
 
-#[cfg(test)]
-mod presentation_tests {
-    use super::*;
-    use collab_types::task_presentation::{TaskPresentation, TaskPresentationFinish};
-
-    #[test]
-    fn private_presentation_type_preserves_current_wire_fields_and_exact_bounds() {
-        let wire = TaskPresentation {
-            run: "r".repeat(TaskPresentation::MAX_RUN_BYTES),
-            sequence: 9,
-            received_at: Some(321),
-            text: "é".repeat(2048),
-            reasoning: "r".repeat(2048),
-            finish: Some(TaskPresentationFinish::Refused),
-            detail: "d".repeat(TaskPresentation::MAX_DETAIL_BYTES),
-        };
-        let json = serde_json::to_value(&wire).unwrap();
-        let private: tilo_actions::task_messaging::TaskReportPresentation =
-            serde_json::from_value(json.clone()).unwrap();
-        private.validate().unwrap();
-        assert_eq!(serde_json::to_value(&private).unwrap(), json);
-        validate_presentation_body(
-            &wire.text,
-            NativePrivateTaskReportKind::Presentation,
-            Some(&private),
-        )
-        .unwrap();
-        for field in ["run", "text", "reasoning", "detail"] {
-            let mut oversize = json.clone();
-            let current = oversize[field].as_str().unwrap().to_owned();
-            oversize[field] = format!("{current}x").into();
-            let private: tilo_actions::task_messaging::TaskReportPresentation =
-                serde_json::from_value(oversize).unwrap();
-            assert!(private.validate().is_err(), "{field}");
-        }
-    }
-}
-
 fn key(output: &TaskOutputRef) -> Result<String, String> {
     serde_json::to_string(&(
         &output.task_run,
@@ -517,5 +479,43 @@ impl NativeWorkspaceOwner {
                 .cloned()
                 .collect())
         })
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    use collab_types::task_presentation::{TaskPresentation, TaskPresentationFinish};
+
+    #[test]
+    fn private_presentation_type_preserves_current_wire_fields_and_exact_bounds() {
+        let wire = TaskPresentation {
+            run: "r".repeat(TaskPresentation::MAX_RUN_BYTES),
+            sequence: 9,
+            received_at: Some(321),
+            text: "é".repeat(2048),
+            reasoning: "r".repeat(2048),
+            finish: Some(TaskPresentationFinish::Refused),
+            detail: "d".repeat(TaskPresentation::MAX_DETAIL_BYTES),
+        };
+        let json = serde_json::to_value(&wire).unwrap();
+        let private: tilo_actions::task_messaging::TaskReportPresentation =
+            serde_json::from_value(json.clone()).unwrap();
+        private.validate().unwrap();
+        assert_eq!(serde_json::to_value(&private).unwrap(), json);
+        validate_presentation_body(
+            &wire.text,
+            NativePrivateTaskReportKind::Presentation,
+            Some(&private),
+        )
+        .unwrap();
+        for field in ["run", "text", "reasoning", "detail"] {
+            let mut oversize = json.clone();
+            let current = oversize[field].as_str().unwrap().to_owned();
+            oversize[field] = format!("{current}x").into();
+            let private: tilo_actions::task_messaging::TaskReportPresentation =
+                serde_json::from_value(oversize).unwrap();
+            assert!(private.validate().is_err(), "{field}");
+        }
     }
 }

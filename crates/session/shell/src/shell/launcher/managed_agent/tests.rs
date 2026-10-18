@@ -1,6 +1,7 @@
 //! The managed path verifies installed bytes independently of launch metadata.
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
 
@@ -26,7 +27,7 @@ fn install(root: &std::path::Path) -> InstalledApp {
     std::fs::create_dir_all(&payload).unwrap();
     std::fs::create_dir_all(&metadata).unwrap();
     std::fs::write(payload.join("agent"), b"executor").unwrap();
-    std::fs::write(metadata.join("signed-root"), &signed).unwrap();
+    std::fs::write(metadata.join("signed-root"), signed).unwrap();
     std::fs::write(metadata.join("manifest.toml"), &manifest).unwrap();
     std::fs::write(metadata.join("collection.qcl"), &collection).unwrap();
     let mut registry = String::new();
@@ -38,7 +39,7 @@ fn install(root: &std::path::Path) -> InstalledApp {
     InstalledApp {
         package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
         display_name: "Executor".into(),
-        localized_names: Default::default(),
+        localized_names: BTreeMap::default(),
         keywords: vec![],
         category: None,
         version: "0.1.0".into(),

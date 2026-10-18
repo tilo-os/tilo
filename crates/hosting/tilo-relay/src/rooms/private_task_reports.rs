@@ -28,6 +28,25 @@ struct ReportContent<'a> {
     neutral: &'static str,
 }
 
+fn report_presentation(
+    command: &C,
+) -> Result<Option<tilo_actions::task_messaging::TaskReportPresentation>, String> {
+    let presentation = match command {
+        C::Presentation { presentation, .. } => Some(
+            serde_json::from_value::<tilo_actions::task_messaging::TaskReportPresentation>(
+                serde_json::to_value(presentation).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?,
+        ),
+        _ => None,
+    };
+    if let Some(presentation) = &presentation {
+        presentation.validate()?;
+    }
+
+    Ok(presentation)
+}
+
 fn report_content(command: &C) -> Option<ReportContent<'_>> {
     let (task_id, epoch, body, kind, neutral) = match command {
         C::PublicProgress {
@@ -188,18 +207,7 @@ impl GovernedRoom {
         if body.len() > tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES {
             return Err("oversized private task report".into());
         }
-        let presentation = match command {
-            C::Presentation { presentation, .. } => Some(
-                serde_json::from_value::<tilo_actions::task_messaging::TaskReportPresentation>(
-                    serde_json::to_value(presentation).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?,
-            ),
-            _ => None,
-        };
-        if let Some(presentation) = &presentation {
-            presentation.validate()?;
-        }
+        let presentation = report_presentation(command)?;
         let mut public = command.clone();
         match &mut public {
             C::PublicProgress { message, .. } => *message = neutral.into(),

@@ -100,7 +100,7 @@ pub struct NativeTaskAdmissionReady {
 
 impl NativeTaskAdmissionReady {
     /// Complete the local enqueue, then await the owner's final result. Keep the
-    /// actual job on the LocalSet; only its success or error crosses this door.
+    /// actual job on the `LocalSet`; only its success or error crosses this door.
     ///
     /// # Errors
     /// The enqueue failed or the owner worker ended without confirming completion.

@@ -66,7 +66,7 @@ pub(super) fn enrolled_native_actor(native: &Native) -> Arc<EnrolledActor> {
             apps: vec!["so.tilo.agent".into()],
         },
         now,
-        now + 60 * 60 * 1_000_000_000,
+        now.checked_add(60 * 60 * 1_000_000_000).unwrap(),
     )
     .unwrap();
     native
@@ -123,7 +123,7 @@ fn managed_channel(f: &Fixture, peer: u64) -> (channel_handle::Client, tokio::ne
         &f.native.certificate
     );
     let channel = capnp_rpc::new_client(CapnpChannelHandle {
-        person_chat_views: Default::default(),
+        person_chat_views: RefCell::default(),
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
         state: f.state.clone(),
         directories: f.directories.clone(),
@@ -224,6 +224,7 @@ async fn only_protected_subscription_is_live_and_disconnect_retains_only_relaunc
                     .is_none()
             );
             assert_eq!(registry.candidates(&room().to_string()).unwrap().len(), 1);
+            drop(f);
         })
         .await;
 }
@@ -287,22 +288,27 @@ pub(super) async fn invoke_hook(
         p.set_action(action);
         p.set_has_argument(argument.is_some());
         if let Some(argument) = argument {
-            p.set_argument(&argument.to_string());
+            p.set_argument(argument.to_string());
         }
         p.set_confirmation_json("{}");
     }
     let accepted = invoke.send().promise.await.unwrap();
-    let id = accepted.get().unwrap().get_id();
+    let accepted = accepted.get().unwrap();
+    let first: tilo_actions::InvocationUpdate =
+        serde_json::from_str(accepted.get_update_json().unwrap().to_str().unwrap()).unwrap();
+    let invocation = first.invocation();
+    let host = f.state.invocation_host().unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             std::time::Instant::now() < deadline,
             "hook did not finish: {action}"
         );
-        let mut status = channel.published_invocation_status_request();
-        status.get().set_id(id);
+        let mut status = channel.published_invocation_observation_request();
+        status.get().set_host(host.as_bytes());
+        status.get().set_invocation(invocation.0.as_bytes());
         let response = status.send().promise.await.unwrap();
-        let response = response.get().unwrap();
+        let response = response.get().unwrap().get_observation().unwrap();
         assert!(response.get_found(), "accepted hook must retain its status");
         let update: tilo_actions::InvocationUpdate =
             serde_json::from_str(response.get_update_json().unwrap().to_str().unwrap()).unwrap();
@@ -319,6 +325,12 @@ struct ComputeDiscovery {
     native: Arc<Native>,
     configured: Option<String>,
     registrations: Vec<crate::services::NativeTaskComputeRegistration>,
+}
+impl ComputeDiscovery {
+    fn assert_caller(&self, requested: &str, caller: &tilo_user_identity::DeviceCert) {
+        assert_eq!(requested, room().to_string());
+        assert_eq!(caller, &self.native.certificate);
+    }
 }
 impl WorkspaceMemberships for ComputeDiscovery {
     fn requires_room(&self, requested: &str) -> bool {
@@ -338,8 +350,7 @@ impl WorkspaceMemberships for ComputeDiscovery {
         requested: &str,
         caller: &tilo_user_identity::DeviceCert,
     ) -> Result<Option<Vec<crate::services::NativeTaskComputeRegistration>>, String> {
-        assert_eq!(requested, room().to_string());
-        assert_eq!(caller, &self.native.certificate);
+        self.assert_caller(requested, caller);
         Ok(Some(self.registrations.clone()))
     }
     fn task_compute_configuration(
@@ -347,8 +358,7 @@ impl WorkspaceMemberships for ComputeDiscovery {
         requested: &str,
         caller: &tilo_user_identity::DeviceCert,
     ) -> Result<Option<String>, String> {
-        assert_eq!(requested, room().to_string());
-        assert_eq!(caller, &self.native.certificate);
+        self.assert_caller(requested, caller);
         Ok(self.configured.clone())
     }
 }
@@ -363,7 +373,7 @@ fn discovery_fixture(
         certificate_authority: f.native.clone(),
     };
     let (state, rx) = CapnpBrokerState::new_configured(
-        &f._fanout,
+        &f.fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::with_optional_owner_commit(None, f.native.clone()),
         Some(f.native.clone()),
@@ -415,6 +425,7 @@ async fn published_compute_read_has_exact_setup_states_and_no_configuration_side
                 "configuredModel": configured, "settings":"settings://agent_models", "workers": workers,
             }));
             assert_eq!(f.native.owner.workspace_task_snapshot(room()).unwrap(), before);
+            drop(f);
         }
     }).await;
 }
@@ -454,13 +465,19 @@ async fn rolebound_nonperson_cannot_invoke_published_compute_read() {
                 }
             };
             {
-                let id = accepted.get().unwrap().get_id();
+                let accepted = accepted.get().unwrap();
+                let first: tilo_actions::InvocationUpdate =
+                    serde_json::from_str(accepted.get_update_json().unwrap().to_str().unwrap())
+                        .unwrap();
+                let invocation = first.invocation();
+                let host = f.state.invocation_host().unwrap();
                 tokio::time::timeout(Duration::from_secs(2), async {
                     loop {
-                        let mut status = channel.published_invocation_status_request();
-                        status.get().set_id(id);
+                        let mut status = channel.published_invocation_observation_request();
+                        status.get().set_host(host.as_bytes());
+                        status.get().set_invocation(invocation.0.as_bytes());
                         let reply = status.send().promise.await.unwrap();
-                        let reply = reply.get().unwrap();
+                        let reply = reply.get().unwrap().get_observation().unwrap();
                         assert!(reply.get_found());
                         let update: tilo_actions::InvocationUpdate = serde_json::from_str(
                             reply.get_update_json().unwrap().to_str().unwrap(),
@@ -485,6 +502,7 @@ async fn rolebound_nonperson_cannot_invoke_published_compute_read() {
                 .await
                 .expect("role-bound read must be refused promptly");
             }
+            drop(f);
         })
         .await;
 }
@@ -535,6 +553,12 @@ struct Launcher {
     launched: tokio::sync::Notify,
     fail: bool,
 }
+impl Launcher {
+    fn assert_executor(agent: &str, workspace: &tilo_desktop_model::Workspace) {
+        assert_eq!(agent, "scribe");
+        assert_eq!(workspace.room, room());
+    }
+}
 impl crate::services::LauncherServices for Launcher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         Vec::new()
@@ -553,8 +577,7 @@ impl crate::services::LauncherServices for Launcher {
         agent: &str,
         workspace: &tilo_desktop_model::Workspace,
     ) -> Result<(), String> {
-        assert_eq!(agent, "scribe");
-        assert_eq!(workspace.room, room());
+        Self::assert_executor(agent, workspace);
         self.launched.notify_one();
         if self.fail {
             return Err("executor process failed to launch".into());
@@ -574,6 +597,59 @@ enum PendingChange {
     None,
     Stop,
     Source,
+}
+
+async fn subscribe_during_start(
+    f: &Fixture,
+    launcher: &Launcher,
+    task: &str,
+    change: PendingChange,
+) -> (
+    channel_handle::Client,
+    tokio::net::UnixStream,
+    Option<task_run_stream::Client>,
+) {
+    launcher.launched.notified().await;
+    let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
+    assert!(snapshot.controls[task].active_run.is_none());
+    assert!(
+        snapshot
+            .tasks
+            .iter()
+            .find(|row| row.id == task)
+            .unwrap()
+            .assigned_agent
+            .is_none(),
+        "provisioning must not assign or approve"
+    );
+    let (managed, socket) = managed_channel(f, 79);
+    match change {
+        PendingChange::None => {}
+        PendingChange::Stop => {
+            f.person_command(WorkspaceTaskCommand::CancelForRun {
+                task_id: task.to_owned(),
+                run_epoch: 0,
+                after_revision: 0,
+            })
+            .unwrap();
+        }
+        PendingChange::Source => {
+            let mut config = agent_provider_config::ProviderConfig::load();
+            config.profiles[0].endpoint = "http://127.0.0.1:8123/replaced/v1".into();
+            config.save().unwrap();
+        }
+    }
+    let stream = managed
+        .subscribe_task_runs_request()
+        .send()
+        .promise
+        .await
+        .unwrap()
+        .get()
+        .unwrap()
+        .get_stream()
+        .unwrap();
+    (managed, socket, Some(stream))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -598,7 +674,7 @@ async fn conscious_published_start_waits_for_subscription_and_revalidates_frozen
                     title: "Review the complete document".into(),
                     assigned_agent: None,
                     route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-                    metadata: Default::default(),
+                    metadata: tilo_desktop_model::WorkspaceTaskMetadata::default(),
                 })
                 .unwrap();
                 let task = f
@@ -621,50 +697,7 @@ async fn conscious_published_start_waits_for_subscription_and_revalidates_frozen
                         "agent_id":"scribe", "expected_run_epoch":0, "after_revision":0
                     })),
                 );
-                let subscribe = async {
-                    launcher.launched.notified().await;
-                    let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
-                    assert!(snapshot.controls[&task].active_run.is_none());
-                    assert!(
-                        snapshot
-                            .tasks
-                            .iter()
-                            .find(|row| row.id == task)
-                            .unwrap()
-                            .assigned_agent
-                            .is_none(),
-                        "provisioning must not assign or approve"
-                    );
-                    let (managed, socket) = managed_channel(&f, 79);
-                    match change {
-                        PendingChange::None => {}
-                        PendingChange::Stop => {
-                            f.person_command(WorkspaceTaskCommand::CancelForRun {
-                                task_id: task.clone(),
-                                run_epoch: 0,
-                                after_revision: 0,
-                            })
-                            .unwrap();
-                        }
-                        PendingChange::Source => {
-                            let mut config = agent_provider_config::ProviderConfig::load();
-                            config.profiles[0].endpoint =
-                                "http://127.0.0.1:8123/replaced/v1".into();
-                            config.save().unwrap();
-                        }
-                    }
-                    let stream = managed
-                        .subscribe_task_runs_request()
-                        .send()
-                        .promise
-                        .await
-                        .unwrap()
-                        .get()
-                        .unwrap()
-                        .get_stream()
-                        .unwrap();
-                    (managed, socket, Some(stream))
-                };
+                let subscribe = subscribe_during_start(&f, &launcher, &task, change);
                 let (result, _connection) =
                     tokio::time::timeout(std::time::Duration::from_secs(10), async {
                         tokio::join!(start, subscribe)
@@ -717,6 +750,7 @@ async fn conscious_published_start_waits_for_subscription_and_revalidates_frozen
                             .is_none()
                     );
                 }
+                drop(f);
             }
         })
         .await;

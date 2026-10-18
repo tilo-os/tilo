@@ -176,6 +176,7 @@ async fn queued_http_waits_across_unrelated_owner_transaction_and_stop_host_ack(
                     .unwrap(),
                 "the stop/host acknowledgement must survive owner restart",
             );
+            drop(f);
         })
         .await;
 }
@@ -214,6 +215,7 @@ async fn changed_full_profile_after_claim_cannot_send_to_either_endpoint() {
             }
             assert_no_http(&original).await;
             assert_no_http(&changed).await;
+            drop(f);
         })
         .await;
 }
@@ -290,6 +292,7 @@ async fn replaced_run_epoch_refuses_old_model_identity_without_http() {
                 );
             }
             assert_no_http(&listener).await;
+            drop(f);
         })
         .await;
 }

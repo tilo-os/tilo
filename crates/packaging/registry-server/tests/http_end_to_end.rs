@@ -21,9 +21,10 @@ use registry_server::{
     bind_and_run,
 };
 use registry_types::{
-    EntryAction, ModerationActorRole, ModerationCase, ModerationMutation, RegistryEntry,
-    RegistryHandshake, RegistryVersion, SignedModerationMutation, SignedRegistrySnapshot,
-    TransparencyPage, sign_change_request, sign_moderation_mutation,
+    EntryAction, ExternalModerationOperation, ModerationActorRole, ModerationCase,
+    ModerationDestination, ModerationMutation, RegistryEntry, RegistryHandshake, RegistryVersion,
+    SignedModerationMutation, SignedRegistrySnapshot, TransparencyPage, sign_change_request,
+    sign_external_moderation,
 };
 
 /// Start a server against a fresh tempdir. Returns the bound
@@ -96,7 +97,38 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
     }
 }
 
-fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerationMutation {
+fn sign_moderation_mutation(
+    request_id: String,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    role: ModerationActorRole,
+    mutation: ModerationMutation,
+    key: &SigningKey,
+    owner: &SigningKey,
+) -> Result<SignedModerationMutation, registry_types::ModerationWireError> {
+    let request = sign_external_moderation(
+        &ExternalModerationOperation {
+            destination: ModerationDestination {
+                base_url: "http://127.0.0.1".into(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+            },
+            request_id,
+            issued_at_unix,
+            expires_at_unix,
+            mutation,
+        },
+        key,
+    )?;
+    assert_eq!(request.actor_role, role);
+    Ok(request)
+}
+
+fn signed_report(
+    key: &SigningKey,
+    owner: &SigningKey,
+    request_id: &str,
+    now: u64,
+) -> SignedModerationMutation {
     sign_moderation_mutation(
         request_id.into(),
         now,
@@ -109,6 +141,7 @@ fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerati
             evidence_digest_hex: "ab".repeat(32),
         },
         key,
+        owner,
     )
     .unwrap()
 }
@@ -133,7 +166,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
         approve(&h, "so.tilo.editor");
 
         let now = tilo_clock::try_unix_now().unwrap();
-        let report = signed_report(&h.outsider, "http-report-one", now);
+        let report = signed_report(&h.outsider, &h.owner, "http-report-one", now);
         let response = client
             .post(url(h.addr, "/moderation/mutations"))
             .json(&report)
@@ -185,6 +218,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
                 reason: "Not enough evidence to establish the reported behavior".into(),
             },
             &h.outsider,
+            &h.owner,
         )
         .unwrap();
         assert_eq!(
@@ -207,6 +241,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
                 decision: registry_types::ModerationDecision::NoAction,
                 reason: "Not enough evidence to establish the reported behavior".into(),
             },
+            &h.owner,
             &h.owner,
         )
         .unwrap();

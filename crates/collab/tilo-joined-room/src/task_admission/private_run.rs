@@ -1,104 +1,5 @@
 //! Content binding for an authenticated owner-private execution envelope.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_desktop_model::task::{
-        WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskControl,
-        WorkspaceTaskDirection, WorkspaceTaskExecutionAuthority,
-    };
-
-    #[test]
-    fn desired_private_digest_precedes_applied_without_losing_content_or_run_fences() {
-        let room = RoomId::parse(crate::testing::ROOM).unwrap();
-        let mut private = NativePrivateTaskInstructions {
-            instruction: Some("Inspect the document".into()),
-            ..Default::default()
-        };
-        private.directions.insert(1, "Summarize the changes".into());
-        let reference = tilo_peer_state::workspace_task::private_instruction_reference;
-        let control = WorkspaceTaskControl {
-            run_epoch: 1,
-            private_instruction_ref: Some(reference(private.instruction.as_ref().unwrap())),
-            execution_authority: Some(WorkspaceTaskExecutionAuthority {
-                epoch: 1,
-                scope: tilo_action_policy::TreePath::room(room.to_string()),
-                starter: tilo_action_policy::Standing::person(
-                    tilo_action_policy::RoomPolicy {
-                        room: room.to_string(),
-                        owner: Some("owner".into()),
-                        members: Default::default(),
-                        joined: Default::default(),
-                        grants: Vec::new(),
-                    },
-                    "owner",
-                ),
-            }),
-            active_run: Some(WorkspaceTaskActiveRun {
-                epoch: 1,
-                agent_id: "scribe".into(),
-                started_at: 1,
-                applied_direction_revision: 0,
-                approval: Some(WorkspaceTaskApproval {
-                    person: "owner".into(),
-                    device: [1; 32],
-                    approved_at: 1,
-                    instruction_revision: 0,
-                }),
-            }),
-            directions: vec![WorkspaceTaskDirection::owner_admitted(
-                1,
-                uuid::Uuid::from_u128(1),
-                "owner".into(),
-                reference(&private.directions[&1]),
-                2,
-            )],
-            ..Default::default()
-        };
-        let task = serde_json::from_value(serde_json::json!({
-            "id": "task", "title": "Review", "created_by": "owner",
-            "assigned_agent": "scribe", "route": "model", "status": "in_progress",
-            "resource": null, "created_at": 1, "updated_at": 2,
-        }))
-        .unwrap();
-        let mut snapshot = WorkspaceTaskSnapshot {
-            tasks: vec![task],
-            controls: [("task".into(), control)].into(),
-            grants: Vec::new(),
-        };
-        let mut binding = NativeTaskBinding {
-            task_id: "task".into(),
-            agent_id: "scribe".into(),
-            epoch: 1,
-            revision: 1,
-            starter: Some("owner".into()),
-        };
-        let prepared = private_run_digest(room, &snapshot, &binding, &private).unwrap();
-        snapshot
-            .controls
-            .get_mut("task")
-            .unwrap()
-            .active_run
-            .as_mut()
-            .unwrap()
-            .applied_direction_revision = 1;
-        assert_eq!(
-            private_run_digest(room, &snapshot, &binding, &private).unwrap(),
-            prepared
-        );
-        private.directions.insert(1, "Different direction".into());
-        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
-        private.directions.insert(1, "Summarize the changes".into());
-        binding.revision = 0;
-        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
-        binding.revision = 1;
-        binding.epoch = 2;
-        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
-        binding.epoch = 1;
-        binding.starter = Some("another person".into());
-        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
-    }
-}
 use crate::task_policy::NativeTaskBinding;
 use crate::{NativeCommittedView, NativePrivateTaskInstructions, NativeWorkspaceOwner, RoomId};
 use std::time::SystemTime;
@@ -258,5 +159,105 @@ impl NativeWorkspaceOwner {
             }
             Self::current_private_run_digest(view, binding)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_desktop_model::task::{
+        WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskControl,
+        WorkspaceTaskDirection, WorkspaceTaskExecutionAuthority,
+    };
+
+    #[test]
+    fn desired_private_digest_precedes_applied_without_losing_content_or_run_fences() {
+        let room = RoomId::parse(crate::testing::ROOM).unwrap();
+        let mut private = NativePrivateTaskInstructions {
+            instruction: Some("Inspect the document".into()),
+            ..Default::default()
+        };
+        private.directions.insert(1, "Summarize the changes".into());
+        let reference = tilo_peer_state::workspace_task::private_instruction_reference;
+        let control = WorkspaceTaskControl {
+            run_epoch: 1,
+            private_instruction_ref: Some(reference(private.instruction.as_ref().unwrap())),
+            execution_authority: Some(WorkspaceTaskExecutionAuthority {
+                epoch: 1,
+                scope: tilo_action_policy::TreePath::room(room.to_string()),
+                starter: tilo_action_policy::Standing::person(
+                    tilo_action_policy::RoomPolicy {
+                        room: room.to_string(),
+                        owner: Some("owner".into()),
+                        members: std::collections::BTreeMap::default(),
+                        joined: std::collections::BTreeMap::default(),
+                        grants: Vec::new(),
+                    },
+                    "owner",
+                ),
+            }),
+            active_run: Some(WorkspaceTaskActiveRun {
+                epoch: 1,
+                agent_id: "scribe".into(),
+                started_at: 1,
+                applied_direction_revision: 0,
+                approval: Some(WorkspaceTaskApproval {
+                    person: "owner".into(),
+                    device: [1; 32],
+                    approved_at: 1,
+                    instruction_revision: 0,
+                }),
+            }),
+            directions: vec![WorkspaceTaskDirection::owner_admitted(
+                1,
+                uuid::Uuid::from_u128(1),
+                "owner".into(),
+                reference(&private.directions[&1]),
+                2,
+            )],
+            ..Default::default()
+        };
+        let task = serde_json::from_value(serde_json::json!({
+            "id": "task", "title": "Review", "created_by": "owner",
+            "assigned_agent": "scribe", "route": "model", "status": "in_progress",
+            "resource": null, "created_at": 1, "updated_at": 2,
+        }))
+        .unwrap();
+        let mut snapshot = WorkspaceTaskSnapshot {
+            tasks: vec![task],
+            controls: [("task".into(), control)].into(),
+            grants: Vec::new(),
+        };
+        let mut binding = NativeTaskBinding {
+            task_id: "task".into(),
+            agent_id: "scribe".into(),
+            epoch: 1,
+            revision: 1,
+            starter: Some("owner".into()),
+        };
+        let prepared = private_run_digest(room, &snapshot, &binding, &private).unwrap();
+        snapshot
+            .controls
+            .get_mut("task")
+            .unwrap()
+            .active_run
+            .as_mut()
+            .unwrap()
+            .applied_direction_revision = 1;
+        assert_eq!(
+            private_run_digest(room, &snapshot, &binding, &private).unwrap(),
+            prepared
+        );
+        private.directions.insert(1, "Different direction".into());
+        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
+        private.directions.insert(1, "Summarize the changes".into());
+        binding.revision = 0;
+        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
+        binding.revision = 1;
+        binding.epoch = 2;
+        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
+        binding.epoch = 1;
+        binding.starter = Some("another person".into());
+        assert!(private_run_digest(room, &snapshot, &binding, &private).is_err());
     }
 }

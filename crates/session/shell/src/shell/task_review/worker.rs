@@ -1,5 +1,6 @@
 use super::{Job, MAX_RESULTS, State};
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::SystemTime;
 use tilo_desktop::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
@@ -187,7 +188,7 @@ impl Worker {
                 actor: member.person,
                 tasks: snapshot.tasks,
                 controls: snapshot.controls,
-                admissions: Default::default(),
+                admissions: BTreeMap::default(),
             }))
         })?;
         // Read outside with_current: asking the governor takes its own owner lock.

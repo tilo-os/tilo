@@ -2491,6 +2491,20 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    let capture_heads = if broker_admitted {
+        Vec::new()
+    } else {
+        doc.get_heads()
+    };
+    let observation = if broker_admitted {
+        None
+    } else {
+        crate::local_document_action::reserve(&encoded, Some(&context), doc, &capture_heads)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+    };
+    let capture_before = observation.as_ref().map(|_| capture_heads);
+    let capture_encoded = observation.as_ref().map(|_| encoded.clone());
+    let capture_context = observation.as_ref().map(|_| context.clone());
     let step = action.change_kind().is_step() && context.change.is_step();
     let writer = document_writer(actor, doc);
     let dispatched =
@@ -2516,6 +2530,14 @@ fn execute_document(
             )
             .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
         };
+    if let (Some(observation), Some(capture_before), Some(encoded)) =
+        (observation, capture_before, capture_encoded)
+        && matches!(&dispatched, tilo_actions::Dispatched::AppliedLocal(_))
+    {
+        observation
+            .finish(doc, &capture_before, encoded, capture_context)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+    }
     if let Some(before) = before {
         let after = doc.get_heads();
         report_typed_action(doc, before, after, step);
@@ -2608,203 +2630,238 @@ pub(crate) fn execute_resource_operation(
     {
         return Err(tilo_actions::DoorError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
-    let started = if spec.kind == tilo_actions::OperationKind::Document {
-        let action = registry
-            .decode(&encoded)
-            .map_err(tilo_actions::DoorError::decoding)?;
-        if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
-            return Err(tilo_actions::DoorError::Failed(
-                "Deferred action locus differs from its declaration".into(),
-            ));
-        }
-        let mut context =
-            spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
-        if let Some(ambient) = ambient {
-            context = context.enriched_by(ambient);
-        }
-        // History names the app that published the action, not a guess from
-        // its action type.
-        if context.app.is_none()
-            && let Some(route) = target_route.as_ref()
-        {
-            context = context.with_app(&route.app_id, &route.app_id);
-        }
-        // The admitted caller is who the action is by, local or delivered:
-        // pinned with it, so its `apply` reads the same author everywhere.
-        if context.invoker.is_none() && !actor.is_empty() {
-            context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
-        }
-        // Ambient context is descriptive and may arrive from the caller. The
-        // retained dispatch boundary is the sole source for invocation
-        // identity, so replace any ambient value, including with `None`.
-        let mut context = context.with_source_invocation(source_invocation);
-        if !spec.carries_actions()
-            && let Some(described) = tilo_actions::Described::of_published(
-                &encoded,
-                tilo_actions::ActionKey::new("", &resource.kind, &spec.id),
-            )
-        {
-            context = context.with_described(described);
-        }
-        // Before apply, so a delete can still read the row it removes. Undo
-        // of this span applies the compensating action instead of patches.
-        note_native_text_policy(widget, doc, &encoded);
-        let applied = match execute_document(
-            doc,
-            action.as_ref(),
-            encoded,
-            transport,
-            actor,
-            broker_admitted,
-            context,
-        )? {
-            tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
-            tilo_actions::Dispatched::SubmittedToHost(_) => None,
-        };
-        let before = applied
-            .as_ref()
-            .map(|envelope| envelope.base_change_hashes());
-        if let Some(envelope) = applied.as_ref() {
-            // Reuse the executor's actual admission frontier: this adds no
-            // document loan, commit, replay behavior, or cross-owner traversal.
-            crate::history_mode::capability::document_action_applied(
-                widget,
-                &envelope.action,
-                &envelope.base_change_hashes(),
-                doc,
-                path,
-            );
-        }
-        let declared = matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. });
-        // An edit an effect waits on answers it what it changed, whatever its
-        // declaration: the effect replies to its own caller from that.
-        let value = (declared || answering())
-            .then(|| {
-                // Submitted to another host, nothing here shows its effect.
-                before.as_ref().and_then(|before| {
-                    let after = doc.get_heads();
-                    let changes = doc.diff(before, &after);
-                    crate::resources::document_action_result(&*widget, doc, address, &changes)
-                })
-            })
-            .and_then(|value| match value {
-                None if declared => Some(serde_json::Value::Null),
-                value => value,
-            });
-        // A verb that created items names them, so the view that submitted
-        // it can show what it made.
-        let resources = match (applied.as_ref(), before.as_ref()) {
-            (Some(envelope), Some(before)) => minted_items(doc, &resource.kind, envelope, before),
-            _ => Vec::new(),
-        };
-        let output = tilo_actions::ActionOutput { value, resources };
-        if !matches!(
-            spec.contract.execution,
-            tilo_actions::ExecutionMode::Immediate
-        ) && let Some(envelope) = applied.as_ref()
-            && let Some(effects) = crate::widget::capability::capability_mut::<
-                dyn crate::widget::document_effects::DocumentEffects,
-            >(widget)
-        {
-            let operation = match scope {
-                Some(scope) => crate::widget::ResourceOperation::scoped(
-                    scope,
-                    tilo_actions::OperationKind::Document,
-                    &envelope.action.type_id,
-                    &envelope.action.payload,
-                ),
-                None => crate::widget::ResourceOperation::local(
-                    source_invocation.unwrap_or(invocation),
-                    tilo_actions::OperationKind::Document,
-                    &envelope.action.type_id,
-                    &envelope.action.payload,
-                ),
-            };
-            let before = envelope.base_change_hashes();
-            let applied = crate::widget::document_effects::AppliedDocument {
-                invocation,
-                before: &before,
-                document: doc,
-                output: output.clone(),
-            };
-            effects
-                .start_document_effects(&operation, &applied)
-                .map_err(tilo_actions::DoorError::Failed)?
-                .unwrap_or(crate::widget::ResourceOperationStart::Completed(output))
-        } else {
-            crate::widget::ResourceOperationStart::Completed(output)
-        }
-    } else if let Some(readers) =
-        crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
+    let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
+    if let Some(ambient) = ambient {
+        context = context.enriched_by(ambient);
+    }
+    // History names the app that published the action, not a guess from
+    // its action type.
+    if context.app.is_none()
+        && let Some(route) = target_route.as_ref()
     {
-        let refused = |error: crate::semantic_document_read::SemanticReadError| {
-            let (code, reason) = error.describe();
-            tilo_actions::DoorError::Unavailable {
-                code: code.into(),
-                reason: reason.into(),
-            }
-        };
-        let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
-            .map_err(refused)?
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
-        crate::widget::ResourceOperationStart::Completed(
-            selected.read(scope, doc).map_err(refused)?,
+        context = context.with_app(&route.app_id, &route.app_id);
+    }
+    // The admitted caller is who the action is by, local or delivered:
+    // pinned with it, so its `apply` reads the same author everywhere.
+    if context.invoker.is_none() && !actor.is_empty() {
+        context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
+    }
+    // Ambient context is descriptive and may arrive from the caller. The
+    // retained dispatch boundary is the sole source for invocation
+    // identity, so replace any ambient value, including with `None`.
+    let mut context = context.with_source_invocation(source_invocation);
+    if !spec.carries_actions()
+        && let Some(described) = tilo_actions::Described::of_published(
+            &encoded,
+            tilo_actions::ActionKey::new("", &resource.kind, &spec.id),
         )
+    {
+        context = context.with_described(described);
+    }
+
+    // Reserve at the checked operation entry, not just in typed Document apply.
+    // The callback remains synchronous; admission is drained asynchronously.
+    // Broker deliveries already own an admission and must never be reported twice.
+    let capture_local = !broker_admitted
+        && spec.kind != tilo_actions::OperationKind::Document
+        && crate::local_document_action::input_is_active()
+        && context.source_invocation.is_none()
+        && !matches!(context.change, tilo_actions::ChangeKind::External);
+    let capture_heads = if capture_local {
+        doc.get_heads()
     } else {
-        let target = target_route.map(|route| {
-            crate::widget::resource_operation::OperationTarget::new(route, address.clone())
-        });
-        let op = match scope {
-            Some(scope) => crate::widget::ResourceOperation::scoped(
-                scope,
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            None => crate::widget::ResourceOperation::local(
-                invocation,
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-        };
-        let op = op.with_target(target.as_ref());
-        widget
-            .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
-            .map_err(tilo_actions::DoorError::Failed)?
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
+        Vec::new()
     };
-    match &started {
-        crate::widget::ResourceOperationStart::Accepted
-            if matches!(
+    let observation = if capture_local {
+        crate::local_document_action::reserve(&encoded, Some(&context), doc, &capture_heads)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+    } else {
+        None
+    };
+    let capture_encoded = observation.as_ref().map(|_| encoded.clone());
+    let capture_context = observation.as_ref().map(|_| context.clone());
+    let result = (|| {
+        let started = if spec.kind == tilo_actions::OperationKind::Document {
+            let action = registry
+                .decode(&encoded)
+                .map_err(tilo_actions::DoorError::decoding)?;
+            if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
+                return Err(tilo_actions::DoorError::Failed(
+                    "Deferred action locus differs from its declaration".into(),
+                ));
+            }
+            // Before apply, so a delete can still read the row it removes. Undo
+            // of this span applies the compensating action instead of patches.
+            note_native_text_policy(widget, doc, &encoded);
+            let applied = match execute_document(
+                doc,
+                action.as_ref(),
+                encoded,
+                transport,
+                actor,
+                broker_admitted,
+                context,
+            )? {
+                tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
+                tilo_actions::Dispatched::SubmittedToHost(_) => None,
+            };
+            let before = applied
+                .as_ref()
+                .map(|envelope| envelope.base_change_hashes());
+            if let Some(envelope) = applied.as_ref() {
+                // Reuse the executor's actual admission frontier: this adds no
+                // document loan, commit, replay behavior, or cross-owner traversal.
+                crate::history_mode::capability::document_action_applied(
+                    widget,
+                    &envelope.action,
+                    &envelope.base_change_hashes(),
+                    doc,
+                    path,
+                );
+            }
+            let declared = matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. });
+            // An edit an effect waits on answers it what it changed, whatever its
+            // declaration: the effect replies to its own caller from that.
+            let value = (declared || answering())
+                .then(|| {
+                    // Submitted to another host, nothing here shows its effect.
+                    before.as_ref().and_then(|before| {
+                        let after = doc.get_heads();
+                        let changes = doc.diff(before, &after);
+                        crate::resources::document_action_result(&*widget, doc, address, &changes)
+                    })
+                })
+                .and_then(|value| match value {
+                    None if declared => Some(serde_json::Value::Null),
+                    value => value,
+                });
+            // A verb that created items names them, so the view that submitted
+            // it can show what it made.
+            let resources = match (applied.as_ref(), before.as_ref()) {
+                (Some(envelope), Some(before)) => {
+                    minted_items(doc, &resource.kind, envelope, before)
+                }
+                _ => Vec::new(),
+            };
+            let output = tilo_actions::ActionOutput { value, resources };
+            if !matches!(
                 spec.contract.execution,
                 tilo_actions::ExecutionMode::Immediate
-            ) =>
+            ) && let Some(envelope) = applied.as_ref()
+                && let Some(effects) = crate::widget::capability::capability_mut::<
+                    dyn crate::widget::document_effects::DocumentEffects,
+                >(widget)
+            {
+                let operation = match scope {
+                    Some(scope) => crate::widget::ResourceOperation::scoped(
+                        scope,
+                        tilo_actions::OperationKind::Document,
+                        &envelope.action.type_id,
+                        &envelope.action.payload,
+                    ),
+                    None => crate::widget::ResourceOperation::local(
+                        source_invocation.unwrap_or(invocation),
+                        tilo_actions::OperationKind::Document,
+                        &envelope.action.type_id,
+                        &envelope.action.payload,
+                    ),
+                };
+                let before = envelope.base_change_hashes();
+                let applied = crate::widget::document_effects::AppliedDocument {
+                    invocation,
+                    before: &before,
+                    document: doc,
+                    output: output.clone(),
+                };
+                effects
+                    .start_document_effects(&operation, &applied)
+                    .map_err(tilo_actions::DoorError::Failed)?
+                    .unwrap_or(crate::widget::ResourceOperationStart::Completed(output))
+            } else {
+                crate::widget::ResourceOperationStart::Completed(output)
+            }
+        } else if let Some(readers) =
+            crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
         {
-            return Err(tilo_actions::DoorError::Failed(
-                "an immediate operation cannot remain pending".into(),
-            ));
-        }
-        crate::widget::ResourceOperationStart::Completed(output) => {
-            // What a document action answers an effect waiting on it is
-            // beside its declaration, which says what its callers get.
-            let declared = match &spec.contract.result {
-                tilo_actions::ResultSpec::None | tilo_actions::ResultSpec::Job if answering() => {
-                    tilo_actions::ActionOutput {
-                        value: None,
-                        ..output.clone()
-                    }
+            let refused = |error: crate::semantic_document_read::SemanticReadError| {
+                let (code, reason) = error.describe();
+                tilo_actions::DoorError::Unavailable {
+                    code: code.into(),
+                    reason: reason.into(),
                 }
-                _ => output.clone(),
             };
-            spec.contract
-                .result
-                .validate(&declared)
-                .map_err(tilo_actions::DoorError::Failed)?;
+            let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
+                .map_err(refused)?
+                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+            crate::widget::ResourceOperationStart::Completed(
+                selected.read(scope, doc).map_err(refused)?,
+            )
+        } else {
+            let target = target_route.map(|route| {
+                crate::widget::resource_operation::OperationTarget::new(route, address.clone())
+            });
+            let op = match scope {
+                Some(scope) => crate::widget::ResourceOperation::scoped(
+                    scope,
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                None => crate::widget::ResourceOperation::local(
+                    invocation,
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+            };
+            let op = op.with_target(target.as_ref());
+            widget
+                .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
+                .map_err(tilo_actions::DoorError::Failed)?
+                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
+        };
+        match &started {
+            crate::widget::ResourceOperationStart::Accepted
+                if matches!(
+                    spec.contract.execution,
+                    tilo_actions::ExecutionMode::Immediate
+                ) =>
+            {
+                return Err(tilo_actions::DoorError::Failed(
+                    "an immediate operation cannot remain pending".into(),
+                ));
+            }
+            crate::widget::ResourceOperationStart::Completed(output) => {
+                // What a document action answers an effect waiting on it is
+                // beside its declaration, which says what its callers get.
+                let declared = match &spec.contract.result {
+                    tilo_actions::ResultSpec::None | tilo_actions::ResultSpec::Job
+                        if answering() =>
+                    {
+                        tilo_actions::ActionOutput {
+                            value: None,
+                            ..output.clone()
+                        }
+                    }
+                    _ => output.clone(),
+                };
+                spec.contract
+                    .result
+                    .validate(&declared)
+                    .map_err(tilo_actions::DoorError::Failed)?;
+            }
+            crate::widget::ResourceOperationStart::Accepted => {}
         }
-        crate::widget::ResourceOperationStart::Accepted => {}
+        Ok(started)
+    })();
+    // A callback fault can still have written canonical changes. Preserve its
+    // actual span without turning the admission into proof of success.
+    if let (Some(observation), Some(encoded)) = (observation, capture_encoded) {
+        observation
+            .finish(doc, &capture_heads, encoded, capture_context)
+            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
     }
-    Ok(started)
+    result
 }
 
 /// One caller's request to a bound resource action, before resolution.
@@ -2960,6 +3017,29 @@ pub(crate) fn invoke_resource_action(
                     if let Some(scope) = scope {
                         scope.capture_locus_basis(target, invocation, actor, doc);
                     }
+                    let _capture = if !broker_admitted && source_invocation.is_none() {
+                        let supplied = arguments.clone().or_else(|| match argument {
+                            None => Some(serde_json::Map::new()),
+                            Some(value) if spec.params().len() == 1 => Some(
+                                serde_json::Map::from_iter([(
+                                    spec.params()[0].name.to_string(),
+                                    serde_json::Value::String(value.to_owned()),
+                                )]),
+                            ),
+                            Some(_) => None,
+                        });
+                        supplied.map(|arguments| {
+                            crate::local_document_action::with_invocation(
+                                crate::local_document_action::PublishedInvocation {
+                                    resource: target.address.address.resource.to_string(),
+                                    action: target.address.address.action.clone(),
+                                    arguments,
+                                },
+                            )
+                        })
+                    } else {
+                        None
+                    };
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,

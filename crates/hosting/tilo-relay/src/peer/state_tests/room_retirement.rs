@@ -5,7 +5,7 @@ use super::*;
 async fn device_first_baseline_retires_exact_selected_predecessor() {
     use automerge::{ROOT, transaction::Transactable};
     use std::time::SystemTime;
-    let room = uuid::Uuid::from_u128(0x726574697265).to_string();
+    let room = uuid::Uuid::from_u128(0x7265_7469_7265).to_string();
     let mut fixture = Fixture::with_workspace_id(crate::room_workspace_id(&room).unwrap());
     let cert = fixture.source.peer.cert.clone();
     let now = SystemTime::now();
@@ -19,7 +19,8 @@ async fn device_first_baseline_retires_exact_selected_predecessor() {
     .unwrap();
     peer.install_seed(
         tilo_peer_state::SeedState {
-            room_changes: tilo_peer_state::seed_room(&room, &cert, &[cert.clone()]).unwrap(),
+            room_changes: tilo_peer_state::seed_room(&room, &cert, std::slice::from_ref(&cert))
+                .unwrap(),
             documents: vec![],
         },
         &fixture.source_key,
@@ -55,7 +56,11 @@ async fn device_first_baseline_retires_exact_selected_predecessor() {
     assert!(fixture.store.sanitized_room_anchor().unwrap().is_none());
     let (_, baseline) = peer
         .clone()
-        .extract_native_task_private_baseline(&fixture.source_key, now, &Default::default())
+        .extract_native_task_private_baseline(
+            &fixture.source_key,
+            now,
+            &std::collections::BTreeMap::default(),
+        )
         .unwrap();
     // A valid signature over a different predecessor must not authorize retirement.
     let mut wrong = peer.clone();
@@ -76,7 +81,11 @@ async fn device_first_baseline_retires_exact_selected_predecessor() {
         )
         .unwrap();
     let (_, wrong_baseline) = wrong
-        .extract_native_task_private_baseline(&fixture.source_key, now, &Default::default())
+        .extract_native_task_private_baseline(
+            &fixture.source_key,
+            now,
+            &std::collections::BTreeMap::default(),
+        )
         .unwrap();
     let frame = |baseline: &tilo_peer_state::SanitizedRoomBaseline| {
         fixture.checkpoint_frame(
@@ -130,9 +139,12 @@ async fn device_first_baseline_retires_exact_selected_predecessor() {
         Some(baseline.anchor())
     );
     // Replay uses the separately durable pin, including after reopening.
-    let reopened =
-        crate::store::WorkspaceStore::open(fixture._tmp.path(), fixture.store.workspace_id(), true)
-            .unwrap();
+    let reopened = crate::store::WorkspaceStore::open(
+        fixture.directory.path(),
+        fixture.store.workspace_id(),
+        true,
+    )
+    .unwrap();
     assert_eq!(
         reopened.sanitized_room_anchor().unwrap(),
         Some(baseline.anchor())

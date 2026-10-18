@@ -204,5 +204,6 @@ fn request(question: &PendingConfirmation, person: &str) -> AppActionConsentRequ
             .unwrap_or(tilo_actions::RiskLevel::Destructive),
         needs_confirmation: true,
         confirming: true,
+        moderation: None,
     }
 }

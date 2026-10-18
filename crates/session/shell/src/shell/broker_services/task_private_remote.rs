@@ -77,20 +77,20 @@ pub(in crate::shell::broker_services) fn route(
         if caller.is_some_and(|caller| caller != actual) {
             return Err("private task caller differs from actual current device".into());
         }
-        if view.device() != view.governor() {
-            if let Some(binding) = binding {
-                if (!actual.capabilities.can_act_as_host && actual != view.governor())
-                    || actual.user_public_key != view.governor().user_public_key
-                    || !view.peer().certificates().contains(actual)
-                {
-                    return Err(
-                        "private native forwarding requires current physical host custody".into(),
-                    );
-                }
-                view.peer()
-                    .permissions(actual.device_public_key, SystemTime::now())?;
-                check_run(view.peer(), binding, false)?;
+        if view.device() != view.governor()
+            && let Some(binding) = binding
+        {
+            if (!actual.capabilities.can_act_as_host && actual != view.governor())
+                || actual.user_public_key != view.governor().user_public_key
+                || !view.peer().certificates().contains(actual)
+            {
+                return Err(
+                    "private native forwarding requires current physical host custody".into(),
+                );
             }
+            view.peer()
+                .permissions(actual.device_public_key, SystemTime::now())?;
+            check_run(view.peer(), binding, false)?;
         }
         Ok(actual.clone())
     })?;
@@ -114,7 +114,7 @@ pub(in crate::shell::broker_services) fn command(
         let _ = sender.send(result);
     });
     let result = receiver
-        .recv_timeout(TIMEOUT + Duration::from_secs(1))
+        .recv_timeout(TIMEOUT.saturating_add(Duration::from_secs(1)))
         .map_err(|_| "private task ended; outcome unknown".to_string());
     task.abort();
     drop(permit);

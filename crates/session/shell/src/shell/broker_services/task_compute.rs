@@ -296,14 +296,14 @@ impl NativeOwnerCommitService {
         else {
             return Ok(());
         };
-        let (task_id, agent_id) = match command {
-            WorkspaceTaskCommand::BindExecutor {
-                task_id, agent_id, ..
-            }
-            | WorkspaceTaskCommand::ApproveRun {
-                task_id, agent_id, ..
-            } => (task_id, agent_id),
-            _ => return Ok(()),
+        let (WorkspaceTaskCommand::BindExecutor {
+            task_id, agent_id, ..
+        }
+        | WorkspaceTaskCommand::ApproveRun {
+            task_id, agent_id, ..
+        }) = command
+        else {
+            return Ok(());
         };
         let WorkspaceTaskAuthority::Person { caller } = authority else {
             return Err("only a person may select task compute".into());

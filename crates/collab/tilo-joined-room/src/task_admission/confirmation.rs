@@ -1,6 +1,10 @@
 //! Request-time confirmation custody. Approval can bind one child and its required
 //! deterministic activation, never another child or a changed contract.
-use super::*;
+use super::{
+    Custody, Deserialize, DeviceCert, MAX_RESERVATIONS, NativeCommittedView,
+    NativeInvocationBinding, NativeWorkspaceOwner, RoomId, Serialize, SigningKey, SystemTime,
+    TaskAdmissionLedger, governor_custody, host_evidence,
+};
 use crate::task_policy::NativeTaskActionRequirement;
 use tilo_peer_state::workspace_task::WorkspaceTaskSnapshot;
 

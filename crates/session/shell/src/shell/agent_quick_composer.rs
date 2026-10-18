@@ -2128,7 +2128,6 @@ pub(crate) mod marker {
 
     /// Descriptive custody of a selected certified action session. This is a
     /// draft partition, never a capability or a substitute for broker admission.
-
     impl ComposerTask {
         fn key(&self) -> String {
             format!("{}:{}:{}", self.task_id, self.run_epoch, self.revision)
@@ -2458,7 +2457,29 @@ pub(crate) mod marker {
                     )
                     .on_click(move || expanded.set(!expanded.get())),
                 ));
-            let details = Column::new()
+            let body = Column::new()
+                .with_no_padding()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(bar))
+                .push(Box::new(When::from_state(
+                    &self.expanded,
+                    |expanded| *expanded,
+                    Box::new(self.details(modes, picker, actions)),
+                )));
+            Popover::with_content(
+                Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(body)),
+            )
+            .transparent_content()
+            .side(PopoverSide::Right)
+            .fallback_side(PopoverSide::Below)
+            .confined_to_viewport()
+            .with_label(t("agent-quick-accessible-name"))
+        }
+
+        fn details(&self, modes: ToggleGroup, picker: Dropdown, actions: Actions) -> Column {
+            Column::new()
                 .with_rhythm(ui::tokens::Rhythm::Related)
                 .push(Box::new(
                     Text::from_state(&self.context, Clone::clone)
@@ -2477,26 +2498,7 @@ pub(crate) mod marker {
                         .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
                         .dimmed(),
                 ))
-                .push(Box::new(actions));
-            let body = Column::new()
-                .with_no_padding()
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .push(Box::new(bar))
-                .push(Box::new(When::from_state(
-                    &self.expanded,
-                    |expanded| *expanded,
-                    Box::new(details),
-                )));
-            Popover::with_content(
-                Container::new()
-                    .with_no_padding()
-                    .with_child(Box::new(body)),
-            )
-            .transparent_content()
-            .side(PopoverSide::Right)
-            .fallback_side(PopoverSide::Below)
-            .confined_to_viewport()
-            .with_label(t("agent-quick-accessible-name"))
+                .push(Box::new(actions))
         }
 
         pub(crate) fn open(
@@ -2651,14 +2653,14 @@ pub(crate) mod marker {
             self.refresh_enabled();
         }
 
-        pub(crate) fn observe_ended(&mut self) {
+        pub(crate) fn observe_ended(&self) {
             if self.conversation_authorized {
                 self.status.set(t("agent-quick-run-ended"));
             }
         }
 
         #[cfg(debug_assertions)]
-        pub(crate) fn stage_for_shots(&mut self, text: &str) {
+        pub(crate) fn stage_for_shots(&self, text: &str) {
             self.draft.set(text.to_owned());
             self.refresh_enabled();
         }
@@ -3248,6 +3250,13 @@ pub(crate) mod marker {
                 input::mouse_input(ElementState::Pressed, MouseButton::Right),
                 input::mouse_input(ElementState::Pressed, MouseButton::Middle),
             ] {
+                fn focus(widget: &mut dyn Widget) -> bool {
+                    if widget.test_id() == Some("agent-quick-editor") {
+                        widget.set_focus(true);
+                        return true;
+                    }
+                    widget.children_mut().into_iter().any(focus)
+                }
                 let mut composer = AgentQuickComposer::default();
 
                 open(&mut composer, owner("tide"));
@@ -3273,13 +3282,6 @@ pub(crate) mod marker {
                 );
                 // Focus by itself must not freeze the anchor. The event below
                 // reaches the real retained TextInput through the popover.
-                fn focus(widget: &mut dyn Widget) -> bool {
-                    if widget.test_id() == Some("agent-quick-editor") {
-                        widget.set_focus(true);
-                        return true;
-                    }
-                    widget.children_mut().into_iter().any(focus)
-                }
                 assert!(focus(frame.root_mut::<AgentQuickComposer>()));
                 frame.recompose().unwrap();
                 assert!(!frame.root::<AgentQuickComposer>().anchor.frozen);
@@ -3699,12 +3701,15 @@ pub(crate) mod marker {
             };
             let second = ComposerTask {
                 task_id: "second".into(),
+                run_epoch: first.run_epoch,
+                revision: first.revision,
                 label: "Second task".into(),
-                ..first.clone()
             };
             let rerun = ComposerTask {
+                task_id: first.task_id.clone(),
                 run_epoch: 4,
-                ..first.clone()
+                revision: first.revision,
+                label: first.label.clone(),
             };
             composer.project(
                 &owner,
@@ -3938,7 +3943,7 @@ pub(crate) mod marker {
                         let pixel = ui::offscreen::OffscreenRenderer::sample(
                             &rgba,
                             800,
-                            ui::num::u32_of_f64((editor.x1 + send.x0) / 2.0),
+                            ui::num::u32_of_f64(f64::midpoint(editor.x1, send.x0)),
                             ui::num::u32_of_f64(editor.center().y),
                         );
                         assert_eq!(

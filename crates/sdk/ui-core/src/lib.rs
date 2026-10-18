@@ -112,6 +112,7 @@ pub mod accesskit_bridge;
 #[doc(hidden)]
 pub mod action_host;
 mod action_locus;
+pub mod local_document_action;
 pub mod table_model;
 pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;

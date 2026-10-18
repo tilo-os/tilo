@@ -26,6 +26,8 @@ pub(super) enum InvocationCaller {
     Local {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
+        // Captured at request custody, never rebound at admission or effect.
+        time: Option<crate::peer_actions::PolicyTime>,
     },
 }
 #[derive(Clone)]
@@ -427,7 +429,12 @@ impl OriginalInvocationData {
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 state
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;
@@ -442,9 +449,15 @@ impl OriginalInvocationData {
         requirement: &crate::services::NativeTaskActionRequirement,
     ) -> Result<(), String> {
         self.check_native_model_custody(requirement)?;
-        let InvocationCaller::Local { route, admitted } = &self.caller else {
+        let InvocationCaller::Local {
+            route,
+            admitted,
+            time,
+        } = &self.caller
+        else {
             return Err("native MODEL requires authenticated native task origin".into());
         };
+        state.checked_policy_time(time.as_ref())?;
         state
             .revalidate_admission(route, admitted)
             .map_err(|error| error.to_string())?;
@@ -512,9 +525,15 @@ impl OriginalInvocationData {
         state: &CapnpBrokerState,
         binding: &crate::services::NativeTaskBinding,
     ) -> Result<(), String> {
-        let InvocationCaller::Local { route, admitted } = &self.caller else {
+        let InvocationCaller::Local {
+            route,
+            admitted,
+            time,
+        } = &self.caller
+        else {
             return Err("task messages require the native Agent transport".into());
         };
+        state.checked_policy_time(time.as_ref())?;
         if admitted.agent_id.as_deref() != Some(binding.agent_id.as_str())
             || !matches!(
                 self.request.address.action.as_str(),
@@ -571,7 +590,12 @@ impl OriginalInvocationData {
                     .certificate
                     .ok_or("original person certificate unavailable")?
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 // The retained route identifies the invoking app; self.route
                 // identifies the target (for example Chat reading a desktop
                 // task). Revalidate the original app, within the same room.
@@ -657,6 +681,19 @@ impl OriginalInvocationData {
             self.spec.contract.field.as_deref(),
             &self.request.address.action,
         )
+    }
+
+    /// Retain the caller's custody for a host-minted launch child. Native
+    /// admission binds its UUID as well as its original certificate and time.
+    pub(super) fn launch_child_caller(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> InvocationCaller {
+        let mut caller = self.caller.clone();
+        if let InvocationCaller::NativePerson { invocation: id, .. } = &mut caller {
+            *id = invocation;
+        }
+        caller
     }
 
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {
@@ -921,6 +958,94 @@ impl OriginalInvocation {
         Ok(())
     }
 
+    pub(super) fn for_external_moderation(
+        channel: &super::CapnpChannelHandle,
+        request: &runtime_collab::external_moderation::Request,
+    ) -> Result<Arc<Self>, String> {
+        request.validate()?;
+        let route = channel.route();
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)
+            .map_err(|error| error.to_string())?;
+        let data = {
+            let pending = channel
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut matches = pending.values().filter(|pending| {
+                pending.peer_id == channel.peer_id
+                    && pending.update.invocation().0.to_string() == request.invocation
+            });
+            let selected = matches
+                .next()
+                .ok_or("external moderation has no retained target invocation")?;
+            if matches.next().is_some() {
+                return Err("ambiguous external moderation invocation identity".into());
+            }
+            selected
+                .original
+                .clone()
+                .ok_or("original invocation authority unavailable")?
+        };
+        if route.app_id != "so.tilo.store"
+            || data.route != route
+            || data.spec.kind != tilo_actions::OperationKind::Effect
+            || data.spec.contract.kind != tilo_actions::ActionKind::Outside
+        {
+            return Err("external moderation target action or contract mismatch".into());
+        }
+        // An Outside grant authorizes a capability, not an exact signed
+        // assertion. Admission of a Confirm contract consumes the host's
+        // one-use token bound to this actor, action and exact arguments.
+        // Refuse a Store publication that tries to remove that policy.
+        if data.spec.contract.confirmation != tilo_actions::ConfirmationPolicy::Confirm {
+            return Err("external moderation requires exact system confirmation".into());
+        }
+        let argument = data
+            .request
+            .argument
+            .as_deref()
+            .ok_or("external moderation arguments absent")?;
+        runtime_collab::external_moderation::validate_action(
+            &data.request.address.action,
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+            &request.operation,
+        )?;
+        let worker = if let Some(worker) = admitted.worker_registration.clone() {
+            TargetCustody::Registered(Box::new(worker))
+        } else {
+            let connection = channel
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.as_ref())
+                .filter(|connection| connection.current())
+                .cloned()
+                .ok_or("native target process custody unavailable")?;
+            admitted
+                .certificate
+                .as_ref()
+                .ok_or("native target certificate unavailable")?;
+            TargetCustody::Native {
+                connection,
+                admitted: Box::new(admitted),
+            }
+        };
+        let original = Arc::new(Self {
+            broker: Arc::downgrade(&channel.state),
+            peer: channel.peer_id,
+            worker,
+            data,
+        });
+        original.check_execution_frontier(&channel.state)?;
+        original.check_resource_publication(&channel.state)?;
+        original.check_lifecycle()?;
+        Ok(original)
+    }
+
     pub(super) fn for_approved_check(
         channel: &super::CapnpChannelHandle,
         request: &runtime_collab::approved_checks::Request,
@@ -1097,7 +1222,12 @@ impl OriginalInvocation {
             InvocationCaller::Certified { caller, .. } => {
                 state.current_action_caller(caller)?;
             }
-            InvocationCaller::Local { route, admitted } => {
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            } => {
+                state.checked_policy_time(time.as_ref())?;
                 state
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;

@@ -161,6 +161,13 @@ impl ActionHost {
             (None, Some(ambient)) => Some(ambient.clone()),
             (context, None) => context,
         };
+        let change_kind = action.change_kind();
+        let observation = if matches!(change_kind, tilo_actions::ChangeKind::External) {
+            None
+        } else {
+            crate::local_document_action::reserve(&encoded, context.as_ref(), doc, &before)?
+        };
+        let captured_context = observation.as_ref().and_then(|_| context.clone());
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
@@ -178,10 +185,15 @@ impl ActionHost {
                 Some(&actor),
             ),
         };
-        result?;
+        let dispatched = result?;
+        if let Some(observation) = observation
+            && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
+        {
+            observation.finish(doc, &before, encoded.clone(), captured_context)?;
+        }
         // Content from outside (fetched rows, a process's output) is nobody's
         // undo step: it opens no bracket and is left out of the open one.
-        let step = action.change_kind().is_step();
+        let step = change_kind.is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
             crate::bound_dispatch::report_typed_action(doc, before, after, step);

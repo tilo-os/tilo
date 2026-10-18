@@ -146,6 +146,7 @@ fn keep(source: Source, answer: Answer, fetched_at: u64) {
             value: rates,
         });
         store.failed_at = None;
+        drop(guard);
     }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }
@@ -205,6 +206,7 @@ pub(crate) fn keep_rates_for_test(rates: Rates, fetched_at: u64) {
             fetched_at,
             value: rates,
         });
+        drop(guard);
     }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }

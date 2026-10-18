@@ -12,13 +12,15 @@ use tilo_identity_host::native_agent::{
 use tilo_relay_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
 
+type ManagedActorKey = (String, String);
+type ManagedActors = HashMap<ManagedActorKey, Arc<ManagedNativeAgent>>;
+type ManagedLaunches = HashMap<ManagedActorKey, Arc<ManagedLaunch>>;
+
 /// An owner is installed by the authenticated session, never by an application.
 static OWNERS: LazyLock<Mutex<HashMap<RoomId, NativeWorkspaceOwner>>> =
     LazyLock::new(Mutex::default);
-static ACTORS: LazyLock<Mutex<HashMap<(String, String), Arc<ManagedNativeAgent>>>> =
-    LazyLock::new(Mutex::default);
-static LAUNCHES: LazyLock<Mutex<HashMap<(String, String), Arc<ManagedLaunch>>>> =
-    LazyLock::new(Mutex::default);
+static ACTORS: LazyLock<Mutex<ManagedActors>> = LazyLock::new(Mutex::default);
+static LAUNCHES: LazyLock<Mutex<ManagedLaunches>> = LazyLock::new(Mutex::default);
 
 pub(super) fn install_owner(owner: &NativeWorkspaceOwner) {
     let mut owners = lock(&OWNERS);

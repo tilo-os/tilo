@@ -10,7 +10,9 @@ pub(crate) struct NativeLocalPerson {
 
 fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
     let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    let certificate = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    // Admissions use the workspace-selected certificate, not the separately
+    // issued primary-device certificate. Keep that exact signed custody here.
+    let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
         .map_err(|error| error.to_string())?;
     if tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key)
         != person

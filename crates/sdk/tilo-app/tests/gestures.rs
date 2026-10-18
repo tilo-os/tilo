@@ -136,6 +136,9 @@ fn a_group_submitted_now_is_one_change() {
     let p = Mixer::paths();
     let doc = mixer.doc_mut();
     let before = doc.get_changes(&[]).len();
+    let original_heads = doc.get_heads();
+    let capture = tilo_app::local_document_action::Queue::new();
+    let _scope = capture.enter("published-group-revision".into());
     let group = Invoke::group([
         Invoke::edit(&p.name.replace("Drums")).unwrap(),
         Invoke::edit(&p.level.set(0.5)).unwrap(),
@@ -144,6 +147,17 @@ fn a_group_submitted_now_is_one_change() {
         .submit_now(&mut tilo_app::widget::Edits::lend(doc), group)
         .unwrap();
     assert_eq!(doc.get_changes(&[]).len(), before + 1, "one change");
+    let captured = capture.drain();
+    assert_eq!(captured.len(), 1, "a group is one distinct invocation");
+    assert_eq!(captured[0].revision, "published-group-revision");
+    assert_eq!(
+        captured[0].published.as_ref().unwrap().action,
+        tilo_app::tilo_resource::GROUP
+    );
+    assert_eq!(captured[0].mutation_hashes.len(), 1);
+    let mut expected_heads = original_heads.iter().map(|hash| hash.0).collect::<Vec<_>>();
+    expected_heads.sort_unstable();
+    assert_eq!(captured[0].original_heads, expected_heads);
     let state = mixer.state().unwrap();
     assert_eq!(state.name, "Drums");
     assert!((state.level - 0.5).abs() < f64::EPSILON);

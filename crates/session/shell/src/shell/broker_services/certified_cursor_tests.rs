@@ -1,6 +1,8 @@
 //! Certified cursor provenance and private expansion through authenticated app writers.
 use super::{NativeFixture, fixture};
 use crate::shell::broker_services::NativeOwnerCommitService;
+use ed25519_dalek::Signer as _;
+use futures_util::future::LocalBoxFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_action_broker::services::{
@@ -14,8 +16,7 @@ use tilo_relay_protocol::delegation::Delegation;
 
 // Reuse the protected MODEL executor, including its actual task subscription.
 // It never sends a model request to the configured endpoint.
-#[path = "model_start_tests/executor.rs"]
-mod executor;
+use super::executor;
 
 #[path = "certified_cursor_render_tests.rs"]
 mod render;
@@ -144,94 +145,20 @@ enum Command {
 impl CertifiedCursorFixture {
     pub(super) fn new() -> Self {
         let native = fixture();
-        let profile = agent_provider_config::ProviderProfile {
-            id: "cursor-test".into(),
-            label: "Local test".into(),
-            endpoint: "http://localhost:8000/v1".into(),
-            location: agent_provider_config::EndpointLocation::ThisDevice,
-            default_model: Some("selected-model".into()),
-            models: vec![agent_provider_config::ModelDescriptor {
-                id: "selected-model".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let config = agent_provider_config::ProviderConfig {
-            profiles: vec![profile],
-            default_profile: Some("cursor-test".into()),
-        };
-        assert!(config.validation_errors().is_empty());
-        let source = settings_store::HostDocument::new(
-            serde_json::json!({"agent_providers": {"config": config}})
-                .as_object()
-                .unwrap()
-                .clone(),
-            |_| Err(std::io::Error::other("read-only test Settings")),
-        );
-        let settings = crate::shell::test_support::install_settings(Arc::new(source));
+        let settings = cursor_settings();
         let executor = executor::start(&native);
         let tree = crate::shell::native_workspace_owner::test_tree_of(&native.owner);
         let room = native.room.to_string();
-        let (key, governor) = tilo_identity_host::broker::trusted_current_device(&room).unwrap();
-        let person_room = collab_types::person_room_of(&hex::encode(governor.user_public_key))
-            .unwrap()
-            .to_string();
-        let actor = tilo_identity_host::native_agent::provision_retained(
-            &person_room,
-            &NativeAgentRequest {
-                agent_id: "scribe".into(),
-                label: "Scribe".into(),
-                color: [10, 20, 30],
-                apps: vec!["so.tilo.agent".into()],
-                expires_at_ns: tilo_clock::unix_now_ns() + 3_600_000_000_000,
-            },
-        )
-        .unwrap();
-        let delegation = actor.delegate_room(&room).unwrap();
-        native
-            .owner
-            .admit_managed_agent(
-                native.room,
-                actor.certificate().clone(),
-                delegation.clone(),
-                &governor,
-                &key,
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
-        let actor = Arc::new(Actor { actor, delegation });
-        let (certificate, _, proof) = actor.identity().unwrap();
-        let mut services =
-            crate::shell::broker_services::native_services(Some(tree.clone()), None, None);
-        services.native_task_executors = Some(executor.service.task_executors.clone());
-        services.workspace_memberships = Some(Arc::new(executor.service.clone()));
-        services.launcher = Some(Arc::new(Launch {
-            room: room.clone(),
-            actor,
-            protected: launcher::registration_gate::ProtectedModelLaunch {
-                app: "so.tilo.agent".into(),
-                room: room.clone(),
-                agent: "scribe".into(),
-                launch: uuid::Uuid::new_v4().to_string(),
-            },
-        }));
+        let identity = provision_identity(&native, &room);
+        let services = cursor_services(&tree, &executor, &room, identity.actor.clone());
         let socket = native.home.runtime().join("cursor-broker.sock");
-        let broker = tilo_action_broker::collab_broker::spawn_with_services(
+        let broker = spawn_broker(
+            &native,
             socket.clone(),
-            Some(Arc::new(Authority {
-                tree,
-                journal: native.home.config().join("cursor-broker-journal"),
-            })),
-            tilo_action_broker::collab_outbound::PeerPublisher::with_optional_owner_commit(
-                None,
-                Arc::new(executor.service.clone()),
-            ),
-            None,
+            tree,
+            executor.service.clone(),
             services,
-            Arc::default(),
-            Arc::default(),
-        )
-        .unwrap();
+        );
         let actions = broker.app_action_broker().unwrap();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let sink = captured.clone();
@@ -247,53 +174,23 @@ impl CertifiedCursorFixture {
                 }
             }),
         );
-        let agent_presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.clone(),
-            device_certificate: serde_json::to_vec(&certificate).unwrap(),
-            proof: proof.to_vec(),
-        }
-        .encode()
-        .unwrap();
-        use ed25519_dalek::Signer as _;
-        let notes_presentation = runtime_collab::CertifiedJoinIdentity {
-            workspace_id: room.clone(),
-            device_certificate: serde_json::to_vec(&governor).unwrap(),
-            proof: key
-                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
-                .to_bytes()
-                .to_vec(),
-        }
-        .encode()
-        .unwrap();
+        let presentations = join_presentations(&room, &identity);
         let adopted = Arc::new(Mutex::new(None));
-        let adopted_sink = adopted.clone();
         let (chat_stream, chat_authorizer) = actions
             .state()
             .connect_local_worker_with_authorizer(
                 tilo_action_broker::route::CrdtRoute::record(CHAT, &room, ""),
-                &governor,
+                &identity.governor,
             )
             .unwrap();
-        let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let (ready, wait) = std::sync::mpsc::sync_channel(1);
-        let thread = std::thread::spawn(move || {
-            let _chat_authorizer = chat_authorizer;
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(tokio::task::LocalSet::new().run_until(run_clients(
-                    socket,
-                    room,
-                    agent_presentation,
-                    notes_presentation,
-                    chat_stream,
-                    adopted_sink,
-                    receiver,
-                    ready,
-                )));
-        });
-        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (commands, thread) = spawn_clients(
+            socket,
+            room,
+            presentations,
+            chat_stream,
+            chat_authorizer,
+            adopted.clone(),
+        );
         let task_a = start_task(&native, &executor.service, "Write release notes");
         Self {
             native,
@@ -373,6 +270,186 @@ impl Drop for CertifiedCursorFixture {
         }
     }
 }
+/// The provisioned agent plus the person custody the certified clients join with.
+struct Identity {
+    actor: Arc<Actor>,
+    certificate: tilo_user_identity::DeviceCert,
+    proof: [u8; 64],
+    key: ed25519_dalek::SigningKey,
+    governor: tilo_user_identity::DeviceCert,
+}
+
+fn cursor_settings() -> crate::shell::test_support::InstalledSettings {
+    let profile = agent_provider_config::ProviderProfile {
+        id: "cursor-test".into(),
+        label: "Local test".into(),
+        endpoint: "http://localhost:8000/v1".into(),
+        location: agent_provider_config::EndpointLocation::ThisDevice,
+        default_model: Some("selected-model".into()),
+        models: vec![agent_provider_config::ModelDescriptor {
+            id: "selected-model".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let config = agent_provider_config::ProviderConfig {
+        profiles: vec![profile],
+        default_profile: Some("cursor-test".into()),
+    };
+    assert!(config.validation_errors().is_empty());
+    let source = settings_store::HostDocument::new(
+        serde_json::json!({"agent_providers": {"config": config}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        |_| Err(std::io::Error::other("read-only test Settings")),
+    );
+    crate::shell::test_support::install_settings(Arc::new(source))
+}
+
+/// Provision the throwaway agent and admit it as this workspace's operator.
+fn provision_identity(native: &NativeFixture, room: &str) -> Identity {
+    let (key, governor) = tilo_identity_host::broker::trusted_current_device(room).unwrap();
+    let person_room = collab_types::person_room_of(&hex::encode(governor.user_public_key))
+        .unwrap()
+        .to_string();
+    let actor = tilo_identity_host::native_agent::provision_retained(
+        &person_room,
+        &NativeAgentRequest {
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+            apps: vec!["so.tilo.agent".into()],
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+        },
+    )
+    .unwrap();
+    let delegation = actor.delegate_room(room).unwrap();
+    native
+        .owner
+        .admit_managed_agent(
+            native.room,
+            actor.certificate().clone(),
+            delegation.clone(),
+            &governor,
+            &key,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    let actor = Arc::new(Actor { actor, delegation });
+    let (certificate, _, proof) = actor.identity().unwrap();
+    Identity {
+        actor,
+        certificate,
+        proof,
+        key,
+        governor,
+    }
+}
+
+fn cursor_services(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    executor: &executor::Executor,
+    room: &str,
+    actor: Arc<Actor>,
+) -> tilo_action_broker::services::HostServices {
+    let mut services =
+        crate::shell::broker_services::native_services(Some(tree.clone()), None, None);
+    services.native_task_executors = Some(executor.service.task_executors.clone());
+    services.workspace_memberships = Some(Arc::new(executor.service.clone()));
+    services.launcher = Some(Arc::new(Launch {
+        room: room.to_string(),
+        actor,
+        protected: launcher::registration_gate::ProtectedModelLaunch {
+            app: "so.tilo.agent".into(),
+            room: room.to_string(),
+            agent: "scribe".into(),
+            launch: uuid::Uuid::new_v4().to_string(),
+        },
+    }));
+    services
+}
+
+fn spawn_broker(
+    native: &NativeFixture,
+    socket: std::path::PathBuf,
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    service: NativeOwnerCommitService,
+    services: tilo_action_broker::services::HostServices,
+) -> tilo_action_broker::collab_broker::BrokerHandle {
+    tilo_action_broker::collab_broker::spawn_with_services(
+        socket,
+        Some(Arc::new(Authority {
+            tree,
+            journal: native.home.config().join("cursor-broker-journal"),
+        })),
+        tilo_action_broker::collab_outbound::PeerPublisher::with_optional_owner_commit(
+            None,
+            Arc::new(service),
+        ),
+        None,
+        services,
+        Arc::default(),
+        Arc::default(),
+    )
+    .unwrap()
+}
+
+/// The agent's and the person's certified join presentations for this workspace.
+fn join_presentations(room: &str, identity: &Identity) -> (Vec<u8>, Vec<u8>) {
+    let agent = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.to_string(),
+        device_certificate: serde_json::to_vec(&identity.certificate).unwrap(),
+        proof: identity.proof.to_vec(),
+    }
+    .encode()
+    .unwrap();
+    let notes = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: room.to_string(),
+        device_certificate: serde_json::to_vec(&identity.governor).unwrap(),
+        proof: identity
+            .key
+            .sign(&runtime_identity::collaboration_join_signing_bytes(room))
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .unwrap();
+    (agent, notes)
+}
+
+/// Run the client thread and hand back the command channel that drives it.
+fn spawn_clients(
+    socket: std::path::PathBuf,
+    room: String,
+    presentations: (Vec<u8>, Vec<u8>),
+    chat_stream: std::os::unix::net::UnixStream,
+    chat_authorizer: impl Send + 'static,
+    adopted: Arc<Mutex<Option<runtime_collab::private_draft::Draft>>>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<Command>,
+    std::thread::JoinHandle<()>,
+) {
+    let (agent_presentation, notes_presentation) = presentations;
+    let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (ready, wait) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        let _chat_authorizer = chat_authorizer;
+        run_clients(
+            socket,
+            room,
+            agent_presentation,
+            notes_presentation,
+            chat_stream,
+            adopted,
+            receiver,
+            ready,
+        );
+    });
+    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    (commands, thread)
+}
+
 fn start_task(native: &NativeFixture, service: &NativeOwnerCommitService, title: &str) -> String {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let execute = |command| {
@@ -413,33 +490,105 @@ fn start_task(native: &NativeFixture, service: &NativeOwnerCommitService, title:
     });
     task
 }
-async fn connect(
-    socket: &std::path::Path,
-    room: &str,
-    app: &str,
-    presentation: &[u8],
-    kind: &str,
-) -> runtime_collab::ChannelHandle {
+/// Take the certified join handoff for `app` in `room` off the broker's socket.
+fn client(socket: &std::path::Path, room: &str, app: &str) -> runtime_collab::CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     launcher::services::write_collab_handoff(&mut stream, app, room).unwrap();
     stream.set_nonblocking(true).unwrap();
-    let client = runtime_collab::CollabClient::from_raw(
+    runtime_collab::CollabClient::from_raw(
         runtime_portal::CapnpClient::from_connected_io(
             tokio::net::UnixStream::from_std(stream).unwrap(),
             capnp_rpc::rpc_twoparty_capnp::Side::Client,
         )
         .bootstrap(),
-    );
-    client
-        .join_channel_as_kind(
-            &tilo_action_broker::route::CrdtRoute::record(app, room, "main").channel_key(),
-            presentation,
-            if kind == "agent" { "scribe" } else { "Writer" },
-            kind,
-            "",
-        )
-        .await
-        .unwrap()
+    )
+}
+
+/// Join `app`'s channel in `room` through the broker's certified handoff.
+fn join_channel<'a>(
+    socket: &'a std::path::Path,
+    room: &'a str,
+    app: &'a str,
+    presentation: &'a [u8],
+    participant: &'a str,
+    kind: &'a str,
+) -> LocalBoxFuture<'a, runtime_collab::ChannelHandle> {
+    Box::pin(async move {
+        client(socket, room, app)
+            .join_channel_as_kind(
+                &tilo_action_broker::route::CrdtRoute::record(app, room, "main").channel_key(),
+                presentation,
+                participant,
+                kind,
+                "",
+            )
+            .await
+            .unwrap()
+    })
+}
+
+/// The Notes writer's one real action, which the agent invokes under its lease.
+fn notes_action() -> runtime_collab::ExportedAction {
+    runtime_collab::ExportedAction {
+        resource: RESOURCE.into(),
+        semantic_identity: None,
+        action: "append".into(),
+        resource_kind: "document".into(),
+        resource_label: "Release notes".into(),
+        action_label: "Append".into(),
+        description: None,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Undoable,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            ..Default::default()
+        },
+        view: None,
+        input: runtime_collab::ExportedInput::None,
+    }
+}
+
+/// Chat's one real view action: open the private draft the task run produced.
+fn chat_action() -> runtime_collab::ExportedAction {
+    runtime_collab::ExportedAction {
+        resource: "chat".into(),
+        semantic_identity: None,
+        action: "adopt-private-draft".into(),
+        resource_kind: "chat".into(),
+        resource_label: "Chat".into(),
+        action_label: "Open private draft".into(),
+        description: None,
+        operation_kind: tilo_actions::OperationKind::View,
+        params: vec![tilo_actions::ActionParam::required(
+            "token",
+            tilo_actions::ParamType::Text,
+            "Private draft handoff token",
+        )],
+        contract: tilo_actions::ActionContract {
+            result: tilo_actions::ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+            ..tilo_actions::ActionContract::view()
+        },
+        view: None,
+        input: runtime_collab::ExportedInput::None,
+    }
+}
+
+/// Chat's handoff argument: the opaque token of the private draft to adopt.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Argument {
+    token: uuid::Uuid,
+}
+
+fn draft_token(argument: &str) -> uuid::Uuid {
+    let argument = argument
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .unwrap_or(argument);
+    serde_json::from_str::<Argument>(argument).unwrap().token
 }
 struct ChatDirectory(runtime_collab::ExportedAction);
 impl ChatDirectory {
@@ -494,7 +643,11 @@ impl runtime_collab::raw::action_directory::Server for ChatDirectory {
     }
 }
 
-async fn run_clients(
+/// Drive the two certified clients and Chat's writer on one `LocalSet`.
+///
+/// The capnp clients are `Rc`-based, so the futures they hand back are `!Send`
+/// by construction; this function owns the runtime that drives them.
+fn run_clients(
     socket: std::path::PathBuf,
     room: String,
     agent_presentation: Vec<u8>,
@@ -504,201 +657,216 @@ async fn run_clients(
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
     ready: std::sync::mpsc::SyncSender<()>,
 ) {
-    let agent = connect(
-        &socket,
-        &room,
-        "so.tilo.agent",
-        &agent_presentation,
-        "agent",
-    )
-    .await;
-    let runs = agent.subscribe_task_runs().await.unwrap();
-    let notes = connect(&socket, &room, NOTES, &notes_presentation, "person").await;
-    notes
-        .publish_actions(
-            NOTES,
-            &[runtime_collab::ExportedAction {
-                resource: RESOURCE.into(),
-                semantic_identity: None,
-                action: "append".into(),
-                resource_kind: "document".into(),
-                resource_label: "Release notes".into(),
-                action_label: "Append".into(),
-                description: None,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                params: Vec::new(),
-                contract: tilo_actions::ActionContract {
-                    kind: tilo_actions::ActionKind::Undoable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(tokio::task::LocalSet::new().run_until(async move {
+            let agent = join_channel(
+                &socket,
+                &room,
+                "so.tilo.agent",
+                &agent_presentation,
+                "scribe",
+                "agent",
+            )
+            .await;
+            let mut runs = agent.subscribe_task_runs().await.unwrap();
+            let notes = join_channel(
+                &socket,
+                &room,
+                NOTES,
+                &notes_presentation,
+                "Writer",
+                "person",
+            )
+            .await;
+            notes
+                .publish_actions(NOTES, &[notes_action()])
+                .await
+                .unwrap();
+            let mut invocations = notes.subscribe_stable_invocations().await.unwrap();
+            let _context = notes.subscribe_context().await.unwrap();
+            chat_stream.set_nonblocking(true).unwrap();
+            let chat = runtime_collab::CollabClient::from_raw(
+                runtime_portal::CapnpClient::from_connected_io(
+                    tokio::net::UnixStream::from_std(chat_stream).unwrap(),
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
+                )
+                .bootstrap(),
+            )
+            .join_channel_as_kind(
+                &tilo_action_broker::route::CrdtRoute::record(CHAT, &room, "").channel_key(),
+                &notes_presentation,
+                "Writer",
+                "person",
+                "",
+            )
+            .await
+            .unwrap();
+            let chat_action = chat_action();
+            chat.publish_actions(CHAT, std::slice::from_ref(&chat_action))
+                .await
+                .unwrap();
+            let chat_invocations = chat.subscribe_stable_invocations().await.unwrap();
+            chat.publish_action_directory(CHAT, capnp_rpc::new_client(ChatDirectory(chat_action)))
+                .await
+                .unwrap();
+            ready.send(()).unwrap();
+            let mut run: Option<runtime_collab::TaskRunEnvelope> = None;
+            loop {
+                let command = tokio::select! {
+                    incoming = chat_invocations.read() => {
+                        adopt_private_draft(&chat, &incoming.unwrap(), &adopted, &room).await;
+                        continue;
+                    }
+                    command = commands.recv() => {
+                        let Some(command) = command else { break };
+                        command
+                    }
+                };
+                match command {
+                    Command::Invoke(ready, peer_id) => {
+                        run = Some(
+                            invoke_task(
+                                &agent,
+                                &mut runs,
+                                &notes,
+                                &mut invocations,
+                                peer_id,
+                                ready,
+                            )
+                            .await,
+                        );
+                    }
+                    Command::Finish(ready, task) => {
+                        finish_run(&agent, run.as_ref().unwrap(), task, ready).await;
+                    }
+                    Command::Stop => break,
+                }
+            }
+        }));
+}
+
+/// Adopt the private draft Chat was handed, then acknowledge it as the writer.
+fn adopt_private_draft<'a>(
+    chat: &'a runtime_collab::ChannelHandle,
+    incoming: &'a runtime_collab::Invocation,
+    adopted: &'a Mutex<Option<runtime_collab::private_draft::Draft>>,
+    room: &'a str,
+) -> LocalBoxFuture<'a, ()> {
+    Box::pin(async move {
+        assert_eq!(incoming.resource, "chat");
+        assert_eq!(incoming.action, "adopt-private-draft");
+        let token = draft_token(incoming.argument.as_deref().unwrap());
+        let bytes = chat
+            .private_draft(
+                &runtime_collab::private_draft::Request {
+                    private_draft: token,
+                    acknowledge: false,
+                },
+                &incoming.invocation_uuid,
+            )
+            .await
+            .unwrap();
+        let draft: runtime_collab::private_draft::Draft = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(draft.workspace, room);
+        chat.private_draft(
+            &runtime_collab::private_draft::Request {
+                private_draft: token,
+                acknowledge: true,
+            },
+            &incoming.invocation_uuid,
+        )
+        .await
+        .unwrap();
+        *adopted.lock().unwrap() = Some(draft);
+        chat.update_invocation(
+            incoming.id,
+            &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                    incoming.invocation_uuid,
+                )),
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"adopted": token.to_string()})),
                     ..Default::default()
                 },
-                view: None,
-                input: runtime_collab::ExportedInput::None,
-            }],
+            })
+            .unwrap(),
         )
         .await
         .unwrap();
-    let invocations = notes.subscribe_stable_invocations().await.unwrap();
-    let _context = notes.subscribe_context().await.unwrap();
-    chat_stream.set_nonblocking(true).unwrap();
-    let chat_client = runtime_collab::CollabClient::from_raw(
-        runtime_portal::CapnpClient::from_connected_io(
-            tokio::net::UnixStream::from_std(chat_stream).unwrap(),
-            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-        )
-        .bootstrap(),
-    );
-    let chat = chat_client
-        .join_channel_as_kind(
-            &tilo_action_broker::route::CrdtRoute::record(CHAT, &room, "").channel_key(),
-            &notes_presentation,
-            "Writer",
-            "person",
-            "",
-        )
-        .await
-        .unwrap();
-    let chat_action = runtime_collab::ExportedAction {
-        resource: "chat".into(),
-        semantic_identity: None,
-        action: "adopt-private-draft".into(),
-        resource_kind: "chat".into(),
-        resource_label: "Chat".into(),
-        action_label: "Open private draft".into(),
-        description: None,
-        operation_kind: tilo_actions::OperationKind::View,
-        params: vec![tilo_actions::ActionParam::required(
-            "token",
-            tilo_actions::ParamType::Text,
-            "Private draft handoff token",
-        )],
-        contract: tilo_actions::ActionContract {
-            result: tilo_actions::ResultSpec::Json {
-                schema: serde_json::json!({"type": "object"}),
-            },
-            ..tilo_actions::ActionContract::view()
-        },
-        view: None,
-        input: runtime_collab::ExportedInput::None,
-    };
-    chat.publish_actions(CHAT, &[chat_action.clone()])
-        .await
-        .unwrap();
-    let chat_invocations = chat.subscribe_stable_invocations().await.unwrap();
-    chat.publish_action_directory(CHAT, capnp_rpc::new_client(ChatDirectory(chat_action)))
-        .await
-        .unwrap();
-    ready.send(()).unwrap();
-    let mut run: Option<runtime_collab::TaskRunEnvelope> = None;
-    loop {
-        let command = tokio::select! {
-            incoming = chat_invocations.read() => {
-                let incoming = incoming.unwrap();
-                assert_eq!(incoming.resource, "chat");
-                assert_eq!(incoming.action, "adopt-private-draft");
-                let argument = incoming.argument.as_deref().unwrap();
-                let argument = argument
-                    .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                    .unwrap_or(argument);
-                #[derive(serde::Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Argument {
-                    token: uuid::Uuid,
-                }
-                let Argument { token } = serde_json::from_str(argument).unwrap();
-                let bytes = chat.private_draft(
-                    &runtime_collab::private_draft::Request {
-                        private_draft: token,
-                        acknowledge: false,
-                    },
-                    &incoming.invocation_uuid,
-                ).await.unwrap();
-                let draft: runtime_collab::private_draft::Draft =
-                    serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(draft.workspace, room);
-                chat.private_draft(
-                    &runtime_collab::private_draft::Request {
-                        private_draft: token,
-                        acknowledge: true,
-                    },
-                    &incoming.invocation_uuid,
-                ).await.unwrap();
-                *adopted.lock().unwrap() = Some(draft);
-                chat.update_invocation(
-                    incoming.id,
-                    &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
-                            incoming.invocation_uuid,
-                        )),
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({"adopted": token.to_string()})),
-                            ..Default::default()
-                        },
-                    }).unwrap(),
-                ).await.unwrap();
-                continue;
-            }
-            command = commands.recv() => {
-                let Some(command) = command else { break };
-                command
-            }
-        };
-        match command {
-            Command::Invoke(ready, peer_id) => {
-                let delivered = runs.read().await.unwrap();
-                let invocation = uuid::Uuid::new_v4();
-                agent
-                    .invoke_task_action(
-                        delivered.run_id,
-                        &delivered.lease,
-                        runtime_collab::TaskAction {
-                            peer_id,
-                            provider: "",
-                            resource: RESOURCE,
-                            action: "append",
-                            argument: None,
-                        },
-                        "",
-                        &invocation.to_string(),
-                    )
-                    .await
-                    .unwrap();
-                let incoming = invocations.read().await.unwrap();
-                assert_eq!(incoming.invocation_uuid, *invocation.as_bytes());
-                assert_eq!(incoming.resource, RESOURCE);
-                notes
-                    .update_invocation(
-                        incoming.id,
-                        &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: tilo_actions::InvocationId(invocation),
-                            output: tilo_actions::ActionOutput::default(),
-                        })
-                        .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                run = Some(delivered);
-                ready.send(()).unwrap();
-            }
-            Command::Finish(ready, task) => {
-                let run = run.as_ref().unwrap();
-                assert_eq!(run.task_id, task);
-                agent
-                    .report_task_run(
-                        run.run_id,
-                        &run.lease,
-                        &runtime_collab::TaskRunUpdate::Succeeded {
-                            message: "Finished the first cursor capture".into(),
-                        },
-                    )
-                    .await
-                    .unwrap();
-                ready.send(()).unwrap();
-            }
-            Command::Stop => break,
-        }
-    }
+    })
+}
+
+/// Invoke the Notes action under the delivered lease and settle its invocation.
+fn invoke_task<'a>(
+    agent: &'a runtime_collab::ChannelHandle,
+    runs: &'a mut runtime_collab::TaskRunStream,
+    notes: &'a runtime_collab::ChannelHandle,
+    invocations: &'a mut runtime_collab::InvocationStream,
+    peer_id: u64,
+    ready: std::sync::mpsc::SyncSender<()>,
+) -> LocalBoxFuture<'a, runtime_collab::TaskRunEnvelope> {
+    Box::pin(async move {
+        let delivered = runs.read().await.unwrap();
+        let invocation = uuid::Uuid::new_v4();
+        agent
+            .invoke_task_action(
+                delivered.run_id,
+                &delivered.lease,
+                runtime_collab::TaskAction {
+                    peer_id,
+                    provider: "",
+                    resource: RESOURCE,
+                    action: "append",
+                    argument: None,
+                },
+                "",
+                &invocation.to_string(),
+            )
+            .await
+            .unwrap();
+        let incoming = invocations.read().await.unwrap();
+        assert_eq!(incoming.invocation_uuid, *invocation.as_bytes());
+        assert_eq!(incoming.resource, RESOURCE);
+        notes
+            .update_invocation(
+                incoming.id,
+                &serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: tilo_actions::InvocationId(invocation),
+                    output: tilo_actions::ActionOutput::default(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        ready.send(()).unwrap();
+        delivered
+    })
+}
+
+/// Report the run that carried the original cursor capture as finished.
+fn finish_run<'a>(
+    agent: &'a runtime_collab::ChannelHandle,
+    run: &'a runtime_collab::TaskRunEnvelope,
+    task: String,
+    ready: std::sync::mpsc::SyncSender<()>,
+) -> LocalBoxFuture<'a, ()> {
+    Box::pin(async move {
+        assert_eq!(run.task_id, task);
+        agent
+            .report_task_run(
+                run.run_id,
+                &run.lease,
+                &runtime_collab::TaskRunUpdate::Succeeded {
+                    message: "Finished the first cursor capture".into(),
+                },
+            )
+            .await
+            .unwrap();
+        ready.send(()).unwrap();
+    })
 }
 
 #[test]
@@ -726,4 +894,5 @@ fn native_notes_writer_retains_certified_cursor_origin_after_agent_changes_tasks
             .is_some()
     );
     assert!(fixture.broker().app_action_broker().is_some());
+    drop(fixture);
 }

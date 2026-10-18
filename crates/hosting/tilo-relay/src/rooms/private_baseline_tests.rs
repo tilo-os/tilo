@@ -226,24 +226,12 @@ fn retirement_scrubs_every_room_author_and_pin_but_keeps_resource_channels() {
     assert!(store.retain_checkpoint(&room_channel, &foreign).is_err());
     assert_eq!(store.load_retained().unwrap(), retained);
     assert!(store.enqueue_pending(&[9; 32], 3, &old).is_err());
-    let mut current = tilo_automerge_isolate::load(&baseline.document).unwrap();
-    let heads = current.get_heads();
-    current.put(ROOT, "future_epoch_value", true).unwrap();
-    current.commit();
-    let updates = current
-        .get_changes(&heads)
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect();
-    let message = neighbour_wire::NeighbourMsg::SyncResp {
-        room: room.room().into(),
-        changes: updates,
-    };
-    let update = retained_frame(
+    let update = future_room_frame(
+        &baseline,
+        room.room(),
         workspace,
         cert.device_public_key,
         room_channel,
-        postcard::to_stdvec(&message).unwrap(),
     );
     store.retain_checkpoint(&room_channel, &update).unwrap();
     let retained = store.load_retained().unwrap();
@@ -274,6 +262,34 @@ fn retirement_scrubs_every_room_author_and_pin_but_keeps_resource_channels() {
             .is_none(),
         "restarting a sanitized chain must not manufacture another replacement"
     );
+}
+
+fn future_room_frame(
+    baseline: &tilo_peer_state::SanitizedRoomBaseline,
+    room: &str,
+    workspace: u64,
+    author: [u8; 32],
+    room_channel: [u8; 32],
+) -> Vec<u8> {
+    let mut current = tilo_automerge_isolate::load(&baseline.document).unwrap();
+    let heads = current.get_heads();
+    current.put(ROOT, "future_epoch_value", true).unwrap();
+    current.commit();
+    let updates = current
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let message = neighbour_wire::NeighbourMsg::SyncResp {
+        room: room.into(),
+        changes: updates,
+    };
+    retained_frame(
+        workspace,
+        author,
+        room_channel,
+        postcard::to_stdvec(&message).unwrap(),
+    )
 }
 
 fn has_marker(bytes: &[u8]) -> bool {

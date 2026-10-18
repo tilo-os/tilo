@@ -62,7 +62,7 @@ fn local<T>(
 fn local_admission_publishes_once_before_effect_and_retains_signed_consumption_after_reopen() {
     let (mut f, binding) = running();
     let store = observed(&mut f);
-    let (_, permit) = local(&f, binding.clone(), || {
+    let ((), permit) = local(&f, binding.clone(), || {
         assert_eq!(store.publications.load(Ordering::SeqCst), 1);
         assert!(
             f.owner.0.mutation.try_lock().is_none(),
@@ -94,7 +94,7 @@ fn local_admission_publishes_once_before_effect_and_retains_signed_consumption_a
             )
             .is_err()
     );
-    let mut second = binding.clone();
+    let mut second = binding;
     second.invocation = uuid::Uuid::new_v4();
     assert!(
         local(&f, second, || -> Result<(), String> {
@@ -239,7 +239,12 @@ fn local_admission_fresh_agent_revocation_denies_without_publication() {
                 &f.key,
                 f.now,
             )?;
-            peer.durable_mutation_messages(view.peer(), &f.key, f.now, view.generation() + 1)
+            peer.durable_mutation_messages(
+                view.peer(),
+                &f.key,
+                f.now,
+                view.generation().checked_add(1).unwrap(),
+            )
         })
         .unwrap();
     for message in messages {
@@ -504,7 +509,12 @@ fn grant_model(f: &Fixture, room: RoomId, task: &str) {
                 .collect::<Vec<_>>();
             peer.governance_mut()
                 .put_governed_grants(&grants, &f.key, f.now)?;
-            peer.durable_mutation_messages(view.peer(), &f.key, f.now, view.generation() + 1)
+            peer.durable_mutation_messages(
+                view.peer(),
+                &f.key,
+                f.now,
+                view.generation().checked_add(1).unwrap(),
+            )
         })
         .unwrap();
     for message in messages {

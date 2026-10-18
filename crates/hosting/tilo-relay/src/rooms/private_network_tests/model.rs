@@ -100,7 +100,9 @@ impl NativeModelAuthority for Lease {
         if !*connected {
             return Err("native connection replaced".into());
         }
-        enqueue(self.context.clone())
+        let result = enqueue(self.context.clone());
+        drop(connected);
+        result
     }
     fn current_model_context(
         &self,
@@ -494,91 +496,50 @@ async fn http_peer(
     listener
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_stop() {
-    let directory = tempfile::tempdir().unwrap();
-    let (governor_key, governor) = tests::governor();
-    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor).await;
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms
-        .create("Remote native model custody")
-        .await
-        .unwrap()
-        .room;
-    let id = tilo_desktop_model::RoomId::parse(&room).unwrap();
+async fn admit_model_agent(
+    rooms: &Rooms,
+    room: &str,
+    governor: &DeviceCert,
+    governor_key: &SigningKey,
+) {
     // Task-agent membership goes through the actual governor reducer, not a
     // hand-written Automerge control/run or a fabricated certificate list.
     {
-        let state = rooms.room(&room).await.unwrap();
+        let state = rooms.room(room).await.unwrap();
         let mut held = state.lock().await;
         let mut candidate = held.peer().clone();
         candidate
             .workspace_mut()
             .apply_workspace_membership_command(
-                &governor,
+                governor,
                 &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::AddAgent {
                     agent: "scribe".into(),
                     preset: tilo_action_policy::roles::AgentPreset::Observer,
                 },
-                &governor_key,
+                governor_key,
                 SystemTime::now(),
             )
             .unwrap();
         let collaboration = held.collaboration().clone();
-        held.commit(candidate, &governor_key, SystemTime::now(), |_, _| {
+        held.commit(candidate, governor_key, SystemTime::now(), |_, _| {
             Ok(collaboration)
         })
         .unwrap();
     }
-    let server = endpoint(&governor_key).await;
-    let router = iroh::protocol::Router::builder(server.clone())
-        .accept(PRIVATE_ALPN, PrivateProtocol::new(rooms.clone()))
-        .spawn();
-    let address = server.addr();
-    let (key_a, cert_a) = host(71);
-    let (key_b, cert_b) = host(72);
-    assert_eq!(cert_a.user_public_key, governor.user_public_key);
-    assert_eq!(cert_b.user_public_key, governor.user_public_key);
-    assert_ne!(cert_a.device_public_key, cert_b.device_public_key);
-    assert_ne!(cert_a.device_public_key, governor.device_public_key);
-    assert_ne!(cert_b.device_public_key, governor.device_public_key);
-    let starter = NativeEditor::join(&rooms, &room, &governor, &key_a, &cert_a).await;
-    coordinate(
-        &starter,
-        &address,
-        &room,
-        T::QueueInstruction {
-            title: "Review a private draft".into(),
-            instruction: PRIVATE_GOAL.into(),
-            assigned_agent: "scribe".into(),
-            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-        },
-    )
-    .await;
-    let task = rooms
-        .room(&room)
-        .await
-        .unwrap()
-        .lock()
-        .await
-        .task_policy_snapshot()
-        .unwrap()
-        .tasks[0]
-        .id
-        .clone();
-    model_permission(
-        &rooms,
-        &room,
-        &task,
-        &governor_key,
-        tilo_action_policy::Answer::Allow,
-    )
-    .await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let http = listener.local_addr().unwrap();
+}
+
+async fn approve_model_run(
+    starter: &NativeEditor,
+    address: &iroh::EndpointAddr,
+    room: &str,
+    task: &str,
+    key_a: &SigningKey,
+    cert_a: &DeviceCert,
+    http: std::net::SocketAddr,
+) {
     let selection = Selection(NativeModelContract::for_task(
-        &room,
-        &task,
+        room,
+        task,
         tilo_action_policy::ActionKind::Outside,
         FrozenNativeModelSelection {
             app: "so.tilo.agent".into(),
@@ -589,13 +550,13 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
     ));
     let invocation = uuid::Uuid::new_v4();
     let approval = T::ApproveRun {
-        task_id: task.clone(),
+        task_id: task.to_owned(),
         agent_id: "scribe".into(),
         expected_run_epoch: 0,
         after_revision: 0,
     };
     let request = OwnerCommitRequest {
-        room: room.clone(),
+        room: room.to_owned(),
         operation: CommitOperation::WorkspaceTaskCommand {
             invocation,
             authority: WorkspaceTaskAuthority::Person {
@@ -608,15 +569,15 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         &starter.owner,
         &request,
         &selection,
-        &key_a,
+        key_a,
         SystemTime::now(),
     )
     .unwrap();
     assert!(matches!(
         command(
-            &starter,
-            &address,
-            &room,
+            starter,
+            address,
+            room,
             C::PersonModelStart {
                 invocation,
                 command: approval,
@@ -626,11 +587,635 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
         .await,
         Some(R::Coordination(_))
     ));
+}
+
+struct ModelScenario<'a> {
+    rooms: &'a Rooms,
+    address: &'a iroh::EndpointAddr,
+    room: &'a str,
+    task: &'a str,
+    governor: &'a DeviceCert,
+    governor_key: &'a SigningKey,
+}
+#[derive(Clone, Copy)]
+struct ModelHost<'a> {
+    native: &'a NativeEditor,
+    key: &'a SigningKey,
+    cert: &'a DeviceCert,
+    lease: &'a Lease,
+    registration: &'a NativeModelHostRegistration,
+}
+
+impl<'a> ModelHost<'a> {
+    fn new(
+        native: &'a NativeEditor,
+        key: &'a SigningKey,
+        cert: &'a DeviceCert,
+        lease: &'a Lease,
+        registration: &'a NativeModelHostRegistration,
+    ) -> Self {
+        Self {
+            native,
+            key,
+            cert,
+            lease,
+            registration,
+        }
+    }
+}
+
+impl ModelScenario<'_> {
+    async fn assert_denied_policy(&self, hosts: &[ModelHost<'_>; 2], bodies: &[Vec<u8>; 2]) {
+        let address = self.address;
+        let room = self.room;
+        let task = self.task;
+        let governor_key = self.governor_key;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let lease_a = hosts[0].lease;
+        let lease_b = hosts[1].lease;
+        let reg_a = hosts[0].registration;
+        let reg_b = hosts[1].registration;
+        // Enrollment and a still-live host lease do not override current policy.
+        // Keep the replicas stale on purpose: the governor must reject independently.
+        model_permission(
+            self.rooms,
+            room,
+            task,
+            governor_key,
+            tilo_action_policy::Answer::Deny,
+        )
+        .await;
+        for (native, lease, registration) in [(a, lease_a, reg_a), (b, lease_b, reg_b)] {
+            assert!(
+                command(
+                    native,
+                    address,
+                    room,
+                    C::ReserveModel {
+                        registration: registration.id(),
+                        requirement: requirement(native, room, lease, &bodies[0]),
+                    },
+                )
+                .await
+                .is_none(),
+                "a live enrolled host must not bypass a denied requestModel action"
+            );
+        }
+        model_permission(
+            self.rooms,
+            room,
+            task,
+            governor_key,
+            tilo_action_policy::Answer::Allow,
+        )
+        .await;
+    }
+    async fn dispatch_http(
+        &self,
+        hosts: &[ModelHost<'_>; 2],
+        bodies: &[Vec<u8>; 2],
+        http: std::net::SocketAddr,
+    ) {
+        let address = self.address;
+        let room = self.room;
+        let governor = self.governor;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let key_a = hosts[0].key;
+        let key_b = hosts[1].key;
+        let lease_a = hosts[0].lease;
+        let lease_b = hosts[1].lease;
+        let reg_a = hosts[0].registration;
+        let reg_b = hosts[1].registration;
+        let id = tilo_desktop_model::RoomId::parse(room).unwrap();
+        for ((native, lease, registration, key), body) in
+            [(a, lease_a, reg_a, key_a), (b, lease_b, reg_b, key_b)]
+                .into_iter()
+                .zip(bodies)
+        {
+            let need = requirement(native, room, lease, body);
+            let permit = claim(self.rooms, native, address, registration, &need).await;
+            let gate = HostDispatchModel {
+                owner: &native.owner,
+                authority: lease,
+            };
+            let socket = gate.dispatch(&need, &permit, NativeModelHttpAttempt {
+            governor, outbound_body: body,
+        }, |bytes| {
+            let mut socket = std::net::TcpStream::connect(http).map_err(|e| e.to_string())?;
+            write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: {http}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).map_err(|e| e.to_string())?;
+            socket.write_all(bytes).map_err(|e| e.to_string())?;
+            socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+            Ok(socket)
+        }).unwrap();
+            let mut socket = tokio::net::TcpStream::from_std(socket).unwrap();
+            let mut response = Vec::new();
+            tilo_test_env::within(
+                "native model HTTP response",
+                socket.read_to_end(&mut response),
+            )
+            .await
+            .unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+            assert!(String::from_utf8_lossy(&response).contains("done"));
+            let completion = native
+                .owner
+                .complete_native_invocation(
+                    id,
+                    need.invocation,
+                    *blake3::hash(&response).as_bytes(),
+                    key,
+                )
+                .unwrap();
+            assert!(matches!(
+                command(native, address, room, C::Complete(completion)).await,
+                Some(R::Acknowledged)
+            ));
+            // Persisted host intent, not an HTTP counter, prevents duplicate sends.
+            let reopened =
+                tilo_joined_room::open_file(&native.directory.path().join("joined.json")).unwrap();
+            let repeated_dispatch = HostDispatchModel {
+                owner: &reopened,
+                authority: lease,
+            };
+            repeated_dispatch
+                .dispatch(
+                    &need,
+                    &permit,
+                    NativeModelHttpAttempt {
+                        governor,
+                        outbound_body: body,
+                    },
+                    |_| -> Result<(), String> {
+                        panic!("a completed invocation must not enqueue again after restart")
+                    },
+                )
+                .unwrap_err();
+        }
+    }
+    async fn reject_forged_requirements(
+        &self,
+        hosts: &[ModelHost<'_>; 2],
+        bodies: &[Vec<u8>; 2],
+    ) -> TypedNativeModelRequirement {
+        let address = self.address;
+        let room = self.room;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let key_a = hosts[0].key;
+        let lease_a = hosts[0].lease;
+        let reg_a = hosts[0].registration;
+        // Unknown enrollment, foreign authenticated host, changed profile/task and
+        // signed expiry all fail on the actual governor private-command path.
+        let need = requirement(a, room, lease_a, &bodies[0]);
+        for (native, registration, requirement_) in [
+            (a, uuid::Uuid::new_v4(), need.clone()),
+            (b, reg_a.id(), need.clone()),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.private_run_digest = [0x55; 32];
+                n
+            }),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.run.epoch = n.run.epoch.checked_add(1).unwrap();
+                n
+            }),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.run.revision = n.run.revision.checked_add(1).unwrap();
+                n
+            }),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.modelselection.selection.provider = "other-profile".into();
+                n
+            }),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.run.task_id = "forged-task".into();
+                n
+            }),
+            (a, reg_a.id(), {
+                let mut n = need.clone();
+                n.modelselection.selection.contract =
+                    serde_json::json!({"endpoint":"http://127.0.0.1:1"});
+                n
+            }),
+        ] {
+            assert!(
+                command(
+                    native,
+                    address,
+                    room,
+                    C::ReserveModel {
+                        registration,
+                        requirement: requirement_
+                    }
+                )
+                .await
+                .is_none()
+            );
+        }
+        assert!(
+            command(
+                a,
+                address,
+                room,
+                C::RegisterModelHost(expired(reg_a, key_a))
+            )
+            .await
+            .is_none()
+        );
+        need
+    }
+    async fn reject_forged_registrations(&self, hosts: &[ModelHost<'_>; 2]) {
+        let address = self.address;
+        let room = self.room;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let key_a = hosts[0].key;
+        let reg_a = hosts[0].registration;
+        for (field, value) in [("actor", "forged-agent"), ("task", "forged-task")] {
+            let mut forged = serde_json::to_value(reg_a).unwrap();
+            forged["context"][field] = serde_json::json!(value);
+            // A signature alone is not proof that a host has that task/agent lease.
+            assert!(
+                command(
+                    a,
+                    address,
+                    room,
+                    C::RegisterModelHost(resign(forged, key_a))
+                )
+                .await
+                .is_none()
+            );
+        }
+        let mut forged = serde_json::to_value(reg_a).unwrap();
+        forged["context"]["private_run_digest"] = serde_json::to_value([0x55_u8; 32]).unwrap();
+        assert!(
+            command(
+                a,
+                address,
+                room,
+                C::RegisterModelHost(resign(forged, key_a))
+            )
+            .await
+            .is_none(),
+            "even a certified host cannot enroll a different private run digest"
+        );
+        let mut forged = serde_json::to_value(reg_a).unwrap();
+        forged["context"]["contract"]["selection"]["model"] = serde_json::json!("tampered-model");
+        assert!(
+            command(
+                a,
+                address,
+                room,
+                C::RegisterModelHost(serde_json::from_value(forged).unwrap())
+            )
+            .await
+            .is_none()
+        );
+        assert!(
+            command(b, address, room, C::RegisterModelHost(reg_a.clone()))
+                .await
+                .is_none()
+        );
+    }
+    async fn claim_then_revoke(
+        &self,
+        hosts: &[ModelHost<'_>; 2],
+        bodies: &[Vec<u8>; 2],
+        need: &TypedNativeModelRequirement,
+    ) -> (TypedNativeModelRequirement, NativeInvocationPermit) {
+        let address = self.address;
+        let room = self.room;
+        let governor = self.governor;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let lease_a = hosts[0].lease;
+        let lease_b = hosts[1].lease;
+        let reg_a = hosts[0].registration;
+        let reg_b = hosts[1].registration;
+        let stopped_need = requirement(b, room, lease_b, &bodies[1]);
+        let queued = claim(self.rooms, b, address, reg_b, &stopped_need).await;
+        let queued_need = requirement(a, room, lease_a, &bodies[0]);
+        let queued_a = claim(self.rooms, a, address, reg_a, &queued_need).await;
+        HostDispatchModel {
+            owner: &a.owner,
+            authority: lease_a,
+        }
+        .dispatch(
+            &queued_need,
+            &queued_a,
+            NativeModelHttpAttempt {
+                governor,
+                outbound_body: b"changed after claim",
+            },
+            |_| -> Result<(), String> {
+                panic!("changed final bytes must enqueue zero HTTP requests")
+            },
+        )
+        .unwrap_err();
+        *lease_a.connected.write().unwrap() = false;
+        HostDispatchModel {
+            owner: &a.owner,
+            authority: lease_a,
+        }
+        .dispatch(
+            &queued_need,
+            &queued_a,
+            NativeModelHttpAttempt {
+                governor,
+                outbound_body: &bodies[0],
+            },
+            |_| -> Result<(), String> {
+                panic!("a replaced connection must enqueue zero HTTP requests")
+            },
+        )
+        .unwrap_err();
+        *lease_a.connected.write().unwrap() = true;
+        assert!(matches!(
+            command(
+                a,
+                address,
+                room,
+                C::RevokeModelHost {
+                    registration: reg_a.id()
+                }
+            )
+            .await,
+            Some(R::Acknowledged)
+        ));
+        assert!(
+            command(
+                a,
+                address,
+                room,
+                C::ReserveModel {
+                    registration: reg_a.id(),
+                    requirement: need.clone()
+                }
+            )
+            .await
+            .is_none()
+        );
+        self.assert_revoked_after_reopen(hosts, need, &stopped_need)
+            .await;
+        (stopped_need, queued)
+    }
+    async fn assert_revoked_after_reopen(
+        &self,
+        hosts: &[ModelHost<'_>; 2],
+        need: &TypedNativeModelRequirement,
+        stopped_need: &TypedNativeModelRequirement,
+    ) {
+        let state = self.rooms.room(self.room).await.unwrap();
+        let held = state.lock().await;
+        let reopened =
+            GovernedRoom::open(held.path.clone(), self.governor, self.governor_key).unwrap();
+        drop(held);
+        let ledger = reopened.load_native_admission().unwrap();
+        assert_eq!(
+            ledger.state(self.task, hosts[0].lease.context.epoch),
+            task_admission::NativeTaskAdmissionState::Open
+        );
+        assert!(
+            ledger
+                .check_model_host(hosts[0].registration.id(), need, hosts[0].cert)
+                .is_err(),
+            "revocation must survive governor restart without stopping the run"
+        );
+        ledger
+            .check_model_host(hosts[1].registration.id(), stopped_need, hosts[1].cert)
+            .unwrap();
+    }
+    async fn stop_hosts(&self, hosts: &[ModelHost<'_>; 2]) {
+        let address = self.address;
+        let room = self.room;
+        let task = self.task;
+        let governor = self.governor;
+        let a = hosts[0].native;
+        let b = hosts[1].native;
+        let key_a = hosts[0].key;
+        let key_b = hosts[1].key;
+        let cert_a = hosts[0].cert;
+        let cert_b = hosts[1].cert;
+        let lease_a = hosts[0].lease;
+        coordinate(
+            a,
+            address,
+            room,
+            T::CancelForRun {
+                task_id: task.to_owned(),
+                run_epoch: lease_a.context.epoch,
+                after_revision: lease_a.context.revision,
+            },
+        )
+        .await;
+        for (native, key, certificate) in [(a, key_a, cert_a), (b, key_b, cert_b)] {
+            let Some(R::HostFences(fences)) =
+                command(native, address, room, C::PendingHostFences).await
+            else {
+                panic!("host fences absent")
+            };
+            assert_eq!(fences.len(), 1);
+            assert_eq!(
+                fences[0].hosts,
+                std::collections::BTreeSet::from([
+                    cert_a.device_public_key,
+                    cert_b.device_public_key
+                ])
+            );
+            let ack = native
+                .owner
+                .acknowledge_native_host_fence(&fences[0], governor, key)
+                .unwrap();
+            assert_eq!(ack.host, certificate.device_public_key);
+            assert!(matches!(
+                command(native, address, room, C::FenceAcknowledgement(ack)).await,
+                Some(R::Acknowledged)
+            ));
+        }
+    }
+    async fn assert_stopped_after_reopen(
+        &self,
+        hosts: &[ModelHost<'_>; 2],
+        bodies: &[Vec<u8>; 2],
+        stopped_need: &TypedNativeModelRequirement,
+        queued: &NativeInvocationPermit,
+        need: &TypedNativeModelRequirement,
+    ) {
+        let address = self.address;
+        let room = self.room;
+        let task = self.task;
+        let governor = self.governor;
+        let governor_key = self.governor_key;
+        let b = hosts[1].native;
+        let cert_a = hosts[0].cert;
+        let cert_b = hosts[1].cert;
+        let lease_b = hosts[1].lease;
+        let reg_a = hosts[0].registration;
+        let reg_b = hosts[1].registration;
+        // The fence survives reopening a real host store and blocks a permit which
+        // was claimed before Stop, even when its local public replica is stale.
+        let reopened =
+            tilo_joined_room::open_file(&b.directory.path().join("joined.json")).unwrap();
+        HostDispatchModel {
+            owner: &reopened,
+            authority: lease_b,
+        }
+        .dispatch(
+            stopped_need,
+            queued,
+            NativeModelHttpAttempt {
+                governor,
+                outbound_body: &bodies[1],
+            },
+            |_| -> Result<(), String> {
+                panic!("a stopped queued permit must enqueue zero HTTP requests")
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            command(
+                b,
+                address,
+                room,
+                C::State {
+                    task: task.to_owned(),
+                    epoch: lease_b.context.epoch,
+                }
+            )
+            .await,
+            Some(R::State(task_admission::NativeTaskAdmissionState::Stopped))
+        ));
+        // Reopen the governor's durable room rather than reserializing a test ledger.
+        {
+            let state = self.rooms.room(room).await.unwrap();
+            let held = state.lock().await;
+            let reopened = GovernedRoom::open(held.path.clone(), governor, governor_key).unwrap();
+            drop(held);
+            let ledger = reopened.load_native_admission().unwrap();
+            assert!(ledger.check_model_host(reg_a.id(), need, cert_a).is_err());
+            assert!(
+                ledger
+                    .check_model_host(reg_b.id(), stopped_need, cert_b)
+                    .is_err()
+            );
+            assert_eq!(
+                ledger.state(task, lease_b.context.epoch),
+                task_admission::NativeTaskAdmissionState::Stopped
+            );
+        }
+    }
+}
+
+async fn start_remote_model_run(
+    rooms: &Rooms,
+    room: &str,
+    governor: &DeviceCert,
+    key_a: &SigningKey,
+    cert_a: &DeviceCert,
+    address: &iroh::EndpointAddr,
+    governor_key: &SigningKey,
+) -> (String, tokio::net::TcpListener) {
+    let starter = NativeEditor::join(rooms, room, governor, key_a, cert_a).await;
+    coordinate(
+        &starter,
+        address,
+        room,
+        T::QueueInstruction {
+            title: "Review a private draft".into(),
+            instruction: PRIVATE_GOAL.into(),
+            assigned_agent: "scribe".into(),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+        },
+    )
+    .await;
+    let task = rooms
+        .room(room)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .task_policy_snapshot()
+        .unwrap()
+        .tasks[0]
+        .id
+        .clone();
+    model_permission(
+        rooms,
+        room,
+        &task,
+        governor_key,
+        tilo_action_policy::Answer::Allow,
+    )
+    .await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let http = listener.local_addr().unwrap();
+    approve_model_run(&starter, address, room, &task, key_a, cert_a, http).await;
     starter.endpoint.close().await;
     drop(starter);
+    (task, listener)
+}
+
+fn assert_independent_hosts(governor: &DeviceCert, cert_a: &DeviceCert, cert_b: &DeviceCert) {
+    assert_eq!(cert_a.user_public_key, governor.user_public_key);
+    assert_eq!(cert_b.user_public_key, governor.user_public_key);
+    assert_ne!(cert_a.device_public_key, cert_b.device_public_key);
+    assert_ne!(cert_a.device_public_key, governor.device_public_key);
+    assert_ne!(cert_b.device_public_key, governor.device_public_key);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_stop() {
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor) = tests::governor();
+    run_model_hosts(
+        tests::view_read_relay(directory.path(), &governor_key, &governor).await,
+        &governor_key,
+        &governor,
+    )
+    .await;
+}
+
+async fn run_model_hosts(
+    relay: crate::daemon::Relay,
+    governor_key: &SigningKey,
+    governor: &DeviceCert,
+) {
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms
+        .create("Remote native model custody")
+        .await
+        .unwrap()
+        .room;
+    let id = tilo_desktop_model::RoomId::parse(&room).unwrap();
+    admit_model_agent(&rooms, &room, governor, governor_key).await;
+    let server = endpoint(governor_key).await;
+    let router = iroh::protocol::Router::builder(server.clone())
+        .accept(PRIVATE_ALPN, PrivateProtocol::new(rooms.clone()))
+        .spawn();
+    let address = server.addr();
+    let (key_a, cert_a) = host(71);
+    let (key_b, cert_b) = host(72);
+    assert_independent_hosts(governor, &cert_a, &cert_b);
+    let (task, listener) = start_remote_model_run(
+        &rooms,
+        &room,
+        governor,
+        &key_a,
+        &cert_a,
+        &address,
+        governor_key,
+    )
+    .await;
+    let http = listener.local_addr().unwrap();
     // Fresh, independently invited native stores observe the committed run.
-    let a = NativeEditor::join(&rooms, &room, &governor, &key_a, &cert_a).await;
-    let b = NativeEditor::join(&rooms, &room, &governor, &key_b, &cert_b).await;
+    let a = NativeEditor::join(&rooms, &room, governor, &key_a, &cert_a).await;
+    let b = NativeEditor::join(&rooms, &room, governor, &key_b, &cert_b).await;
     assert_ne!(a.directory.path(), b.directory.path());
     assert_ne!(a.endpoint.id(), b.endpoint.id());
     for native in [&a, &b] {
@@ -638,7 +1223,7 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
             .owner
             .with_current(id, |view| {
                 assert!(view.device().capabilities.can_act_as_host);
-                assert_eq!(view.governor(), &governor);
+                assert_eq!(view.governor(), governor);
                 Ok(())
             })
             .unwrap();
@@ -654,382 +1239,30 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
             Some(R::Acknowledged)
         ));
     }
+    let hosts = [
+        ModelHost::new(&a, &key_a, &cert_a, &lease_a, &reg_a),
+        ModelHost::new(&b, &key_b, &cert_b, &lease_b, &reg_b),
+    ];
     let bodies = [
         br#"{"model":"selected","messages":[{"role":"user","content":"Plan the review"}],"max_tokens":16}"#.to_vec(),
         br#"{"model":"selected","messages":[{"role":"user","content":"Complete the review"}],"max_tokens":16}"#.to_vec(),
     ];
-    // Enrollment and a still-live host lease do not override current policy.
-    // Keep the replicas stale on purpose: the governor must reject independently.
-    model_permission(
-        &rooms,
-        &room,
-        &task,
-        &governor_key,
-        tilo_action_policy::Answer::Deny,
+    let listener = exercise_model_hosts(
+        ModelScenario {
+            rooms: &rooms,
+            address: &address,
+            room: &room,
+            task: &task,
+            governor,
+            governor_key,
+        },
+        hosts,
+        bodies,
+        listener,
+        http,
     )
     .await;
-    for (native, lease, registration) in [(&a, &lease_a, &reg_a), (&b, &lease_b, &reg_b)] {
-        assert!(
-            command(
-                native,
-                &address,
-                &room,
-                C::ReserveModel {
-                    registration: registration.id(),
-                    requirement: requirement(native, &room, lease, &bodies[0]),
-                },
-            )
-            .await
-            .is_none(),
-            "a live enrolled host must not bypass a denied requestModel action"
-        );
-    }
-    model_permission(
-        &rooms,
-        &room,
-        &task,
-        &governor_key,
-        tilo_action_policy::Answer::Allow,
-    )
-    .await;
-    let peer = tokio::spawn(http_peer(listener, bodies.to_vec()));
-    for ((native, lease, registration, key), body) in [
-        (&a, &lease_a, &reg_a, &key_a),
-        (&b, &lease_b, &reg_b, &key_b),
-    ]
-    .into_iter()
-    .zip(&bodies)
-    {
-        let need = requirement(native, &room, lease, body);
-        let permit = claim(&rooms, native, &address, registration, &need).await;
-        let gate = HostDispatchModel {
-            owner: &native.owner,
-            authority: lease,
-        };
-        let socket = gate.dispatch(&need, &permit, NativeModelHttpAttempt {
-            governor: &governor, outbound_body: body,
-        }, |bytes| {
-            let mut socket = std::net::TcpStream::connect(http).map_err(|e| e.to_string())?;
-            write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: {http}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).map_err(|e| e.to_string())?;
-            socket.write_all(bytes).map_err(|e| e.to_string())?;
-            socket.set_nonblocking(true).map_err(|e| e.to_string())?;
-            Ok(socket)
-        }).unwrap();
-        let mut socket = tokio::net::TcpStream::from_std(socket).unwrap();
-        let mut response = Vec::new();
-        tilo_test_env::within(
-            "native model HTTP response",
-            socket.read_to_end(&mut response),
-        )
-        .await
-        .unwrap();
-        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
-        assert!(String::from_utf8_lossy(&response).contains("done"));
-        let completion = native
-            .owner
-            .complete_native_invocation(
-                id,
-                need.invocation,
-                *blake3::hash(&response).as_bytes(),
-                key,
-            )
-            .unwrap();
-        assert!(matches!(
-            command(native, &address, &room, C::Complete(completion)).await,
-            Some(R::Acknowledged)
-        ));
-        // Persisted host intent, not an HTTP counter, prevents duplicate sends.
-        let reopened =
-            tilo_joined_room::open_file(&native.directory.path().join("joined.json")).unwrap();
-        let replay = HostDispatchModel {
-            owner: &reopened,
-            authority: lease,
-        };
-        replay
-            .dispatch(
-                &need,
-                &permit,
-                NativeModelHttpAttempt {
-                    governor: &governor,
-                    outbound_body: body,
-                },
-                |_| -> Result<(), String> {
-                    panic!("a completed invocation must not enqueue again after restart")
-                },
-            )
-            .unwrap_err();
-    }
-    let listener = tilo_test_env::within("both remote model HTTP posts", peer)
-        .await
-        .unwrap();
-
-    // Unknown enrollment, foreign authenticated host, changed profile/task and
-    // signed expiry all fail on the actual governor private-command path.
-    let need = requirement(&a, &room, &lease_a, &bodies[0]);
-    for (native, registration, requirement_) in [
-        (&a, uuid::Uuid::new_v4(), need.clone()),
-        (&b, reg_a.id(), need.clone()),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.private_run_digest = [0x55; 32];
-            n
-        }),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.run.epoch = n.run.epoch.checked_add(1).unwrap();
-            n
-        }),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.run.revision = n.run.revision.checked_add(1).unwrap();
-            n
-        }),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.modelselection.selection.provider = "other-profile".into();
-            n
-        }),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.run.task_id = "forged-task".into();
-            n
-        }),
-        (&a, reg_a.id(), {
-            let mut n = need.clone();
-            n.modelselection.selection.contract =
-                serde_json::json!({"endpoint":"http://127.0.0.1:1"});
-            n
-        }),
-    ] {
-        assert!(
-            command(
-                native,
-                &address,
-                &room,
-                C::ReserveModel {
-                    registration,
-                    requirement: requirement_
-                }
-            )
-            .await
-            .is_none()
-        );
-    }
-    assert!(
-        command(
-            &a,
-            &address,
-            &room,
-            C::RegisterModelHost(expired(&reg_a, &key_a))
-        )
-        .await
-        .is_none()
-    );
-    for (field, value) in [("actor", "forged-agent"), ("task", "forged-task")] {
-        let mut forged = serde_json::to_value(&reg_a).unwrap();
-        forged["context"][field] = serde_json::json!(value);
-        // A signature alone is not proof that a host has that task/agent lease.
-        assert!(
-            command(
-                &a,
-                &address,
-                &room,
-                C::RegisterModelHost(resign(forged, &key_a))
-            )
-            .await
-            .is_none()
-        );
-    }
-    let mut forged = serde_json::to_value(&reg_a).unwrap();
-    forged["context"]["private_run_digest"] = serde_json::to_value([0x55_u8; 32]).unwrap();
-    assert!(
-        command(
-            &a,
-            &address,
-            &room,
-            C::RegisterModelHost(resign(forged, &key_a))
-        )
-        .await
-        .is_none(),
-        "even a certified host cannot enroll a different private run digest"
-    );
-    let mut forged = serde_json::to_value(&reg_a).unwrap();
-    forged["context"]["contract"]["selection"]["model"] = serde_json::json!("tampered-model");
-    assert!(
-        command(
-            &a,
-            &address,
-            &room,
-            C::RegisterModelHost(serde_json::from_value(forged).unwrap())
-        )
-        .await
-        .is_none()
-    );
-    assert!(
-        command(&b, &address, &room, C::RegisterModelHost(reg_a.clone()))
-            .await
-            .is_none()
-    );
-
-    let stopped_need = requirement(&b, &room, &lease_b, &bodies[1]);
-    let queued = claim(&rooms, &b, &address, &reg_b, &stopped_need).await;
-    let queued_need = requirement(&a, &room, &lease_a, &bodies[0]);
-    let queued_a = claim(&rooms, &a, &address, &reg_a, &queued_need).await;
-    HostDispatchModel {
-        owner: &a.owner,
-        authority: &lease_a,
-    }
-    .dispatch(
-        &queued_need,
-        &queued_a,
-        NativeModelHttpAttempt {
-            governor: &governor,
-            outbound_body: b"changed after claim",
-        },
-        |_| -> Result<(), String> { panic!("changed final bytes must enqueue zero HTTP requests") },
-    )
-    .unwrap_err();
-    *lease_a.connected.write().unwrap() = false;
-    HostDispatchModel {
-        owner: &a.owner,
-        authority: &lease_a,
-    }
-    .dispatch(
-        &queued_need,
-        &queued_a,
-        NativeModelHttpAttempt {
-            governor: &governor,
-            outbound_body: &bodies[0],
-        },
-        |_| -> Result<(), String> {
-            panic!("a replaced connection must enqueue zero HTTP requests")
-        },
-    )
-    .unwrap_err();
-    *lease_a.connected.write().unwrap() = true;
-    assert!(matches!(
-        command(
-            &a,
-            &address,
-            &room,
-            C::RevokeModelHost {
-                registration: reg_a.id()
-            }
-        )
-        .await,
-        Some(R::Acknowledged)
-    ));
-    assert!(
-        command(
-            &a,
-            &address,
-            &room,
-            C::ReserveModel {
-                registration: reg_a.id(),
-                requirement: need.clone()
-            }
-        )
-        .await
-        .is_none()
-    );
-    {
-        let state = rooms.room(&room).await.unwrap();
-        let held = state.lock().await;
-        let reopened = GovernedRoom::open(held.path.clone(), &governor, &governor_key).unwrap();
-        let ledger = reopened.load_native_admission().unwrap();
-        assert_eq!(
-            ledger.state(&task, lease_a.context.epoch),
-            task_admission::NativeTaskAdmissionState::Open
-        );
-        assert!(
-            ledger.check_model_host(reg_a.id(), &need, &cert_a).is_err(),
-            "revocation must survive governor restart without stopping the run"
-        );
-        ledger
-            .check_model_host(reg_b.id(), &stopped_need, &cert_b)
-            .unwrap();
-    }
-    coordinate(
-        &a,
-        &address,
-        &room,
-        T::CancelForRun {
-            task_id: task.clone(),
-            run_epoch: lease_a.context.epoch,
-            after_revision: lease_a.context.revision,
-        },
-    )
-    .await;
-    for (native, key, certificate) in [(&a, &key_a, &cert_a), (&b, &key_b, &cert_b)] {
-        let Some(R::HostFences(fences)) =
-            command(native, &address, &room, C::PendingHostFences).await
-        else {
-            panic!("host fences absent")
-        };
-        assert_eq!(fences.len(), 1);
-        assert_eq!(
-            fences[0].hosts,
-            std::collections::BTreeSet::from([cert_a.device_public_key, cert_b.device_public_key])
-        );
-        let ack = native
-            .owner
-            .acknowledge_native_host_fence(&fences[0], &governor, key)
-            .unwrap();
-        assert_eq!(ack.host, certificate.device_public_key);
-        assert!(matches!(
-            command(native, &address, &room, C::FenceAcknowledgement(ack)).await,
-            Some(R::Acknowledged)
-        ));
-    }
-    // The fence survives reopening a real host store and blocks a permit which
-    // was claimed before Stop, even when its local public replica is stale.
-    let reopened = tilo_joined_room::open_file(&b.directory.path().join("joined.json")).unwrap();
-    HostDispatchModel {
-        owner: &reopened,
-        authority: &lease_b,
-    }
-    .dispatch(
-        &stopped_need,
-        &queued,
-        NativeModelHttpAttempt {
-            governor: &governor,
-            outbound_body: &bodies[1],
-        },
-        |_| -> Result<(), String> {
-            panic!("a stopped queued permit must enqueue zero HTTP requests")
-        },
-    )
-    .unwrap_err();
-    assert!(matches!(
-        command(
-            &b,
-            &address,
-            &room,
-            C::State {
-                task: task.clone(),
-                epoch: lease_b.context.epoch,
-            }
-        )
-        .await,
-        Some(R::State(task_admission::NativeTaskAdmissionState::Stopped))
-    ));
-    // Reopen the governor's durable room rather than reserializing a test ledger.
-    {
-        let state = rooms.room(&room).await.unwrap();
-        let held = state.lock().await;
-        let reopened = GovernedRoom::open(held.path.clone(), &governor, &governor_key).unwrap();
-        let ledger = reopened.load_native_admission().unwrap();
-        assert!(ledger.check_model_host(reg_a.id(), &need, &cert_a).is_err());
-        assert!(
-            ledger
-                .check_model_host(reg_b.id(), &stopped_need, &cert_b)
-                .is_err()
-        );
-        assert_eq!(
-            ledger.state(&task, lease_b.context.epoch),
-            task_admission::NativeTaskAdmissionState::Stopped
-        );
-    }
+    drop(rooms);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
             .await
@@ -1039,5 +1272,35 @@ async fn two_authenticated_native_hosts_dispatch_exact_model_http_and_persist_st
     a.endpoint.close().await;
     b.endpoint.close().await;
     router.shutdown().await.unwrap();
+    shutdown_relay(relay).await;
+}
+
+async fn exercise_model_hosts(
+    scenario: ModelScenario<'_>,
+    hosts: [ModelHost<'_>; 2],
+    bodies: [Vec<u8>; 2],
+    listener: tokio::net::TcpListener,
+    http: std::net::SocketAddr,
+) -> tokio::net::TcpListener {
+    scenario.assert_denied_policy(&hosts, &bodies).await;
+    let peer = tokio::spawn(http_peer(listener, bodies.to_vec()));
+    scenario.dispatch_http(&hosts, &bodies, http).await;
+    let listener = tilo_test_env::within("both remote model HTTP posts", peer)
+        .await
+        .unwrap();
+
+    let need = scenario.reject_forged_requirements(&hosts, &bodies).await;
+    scenario.reject_forged_registrations(&hosts).await;
+
+    let (stopped_need, queued) = scenario.claim_then_revoke(&hosts, &bodies, &need).await;
+    scenario.stop_hosts(&hosts).await;
+    scenario
+        .assert_stopped_after_reopen(&hosts, &bodies, &stopped_need, &queued, &need)
+        .await;
+
+    listener
+}
+
+async fn shutdown_relay(relay: crate::daemon::Relay) {
     relay.shutdown().await;
 }

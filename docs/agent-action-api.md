@@ -349,6 +349,36 @@ answer is the admission receipt, as before; with `device` it is ignored.
 `tilo-control read` uses both waits: one listing and one invocation, and no
 sleeps.
 
+### Host effects and caller authority
+
+After identity registration, framework host actions use the original certified
+session's durable action admission before invoking the service. This includes
+application launch and close, workspace governance, shortcut-library and keyboard
+shortcut actions, native-task activation, and Store's installed-application launch
+handoff. A governance document's own signature does not substitute for admitting
+the invocation. UUID, arguments, context and confirmation remain bound to that
+request. Certificate, worker/session custody and live workspace policy are checked
+again after blocking admission, immediately before the effect.
+
+Physical user intent is separate from caller admission: a verified native seat
+may confirm its own interaction, but forwarding a certified device request never
+turns it into a physical click. Neither actor text nor a missing certificate grants
+a fallback user identity. Setup before a user identity exists is a distinct
+bootstrap context, not an exception for ordinary registered actions.
+
+The standalone runtime retains a certified owner session for owner commands and
+opening host-OS search results too; it does not impersonate a native seat. Search
+discovery keeps its ordinary read path, while opening and invocation lifecycle
+access revalidate the retained session. Revoking that device ends the existing
+door, including retries. A configured certificate authority without a seat
+service is still a registered host, never identity-free compatibility.
+
+Admission is not execution. A lost host-service answer is durably signed as an
+uncertain outcome, not proof that no effect occurred; inspect state before retrying.
+An application that never establishes its authenticated launch connection times
+out with `application_connection_timeout`, also uncertain, rather than reporting
+successful opening. A connected application may legitimately publish no resources.
+
 A client making many calls can keep one connection: `tilo-control actions
 session` reads one wire request per stdin line and writes one answer per stdout
 line, in order, over a single connection.

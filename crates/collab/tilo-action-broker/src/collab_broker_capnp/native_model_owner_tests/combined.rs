@@ -51,7 +51,7 @@ pub(super) fn task_contract(
 
 fn configure_task_model(f: &Fixture, endpoint: String) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", f.directory.path());
+    env.set("XDG_CONFIG_HOME", f.directory.path().join("config"));
     let mut profile = agent_provider_config::ProviderProfile::local_vllm();
     profile.id = "owner-loopback".into();
     profile.label = "Scripted loopback test provider".into();
@@ -86,19 +86,16 @@ impl PeerTransport for DeliveryGate {
         self.sdk.is_connected()
     }
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        match &request {
-            CollabRequest::ReportTaskRun { update, lease, .. } => {
-                eprintln!(
-                    "combined report kind={} revision={:?}",
-                    match update {
-                        runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => "directions",
-                        runtime_collab::TaskRunUpdate::InboxIncorporated { .. } => "inbox",
-                        _ => "other",
-                    },
-                    runtime_collab::native_task_revision(lease).map(|(_, revision)| revision)
-                );
-            }
-            _ => {}
+        if let CollabRequest::ReportTaskRun { update, lease, .. } = &request {
+            eprintln!(
+                "combined report kind={} revision={:?}",
+                match update {
+                    runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => "directions",
+                    runtime_collab::TaskRunUpdate::InboxIncorporated { .. } => "inbox",
+                    _ => "other",
+                },
+                runtime_collab::native_task_revision(lease).map(|(_, revision)| revision)
+            );
         }
         self.trace.lock().unwrap().push(request.clone());
         self.sdk
@@ -167,15 +164,38 @@ impl Drop for AgentThread {
     }
 }
 
-fn start_agent(
+fn agent_config(provider: tilo_agent::providers::ProviderSelection) -> tilo_agent::Config {
+    tilo_agent::Config {
+        agent_id: "scribe".into(),
+        endpoint: None,
+        endpoint_identity: None,
+        app_id: "so.tilo.agent".into(),
+        cluster: uuid::Uuid::parse_str(&room().to_string()).unwrap(),
+        record: Some("main".into()),
+        name: "Same executor".into(),
+        model: true,
+        model_timeout: Duration::from_secs(8),
+        permissions: app_framework::permissions::PermissionContext::agent_granted_at(
+            "scribe",
+            &[
+                tilo_action_policy::TreePath::root().app("so.tilo.desktop"),
+                tilo_action_policy::TreePath::root().app(output::APP),
+            ],
+            app_framework::permissions::KindSet::READ_UNDOABLE,
+        ),
+        content: tilo_content::ContentStore::memory(),
+        companions: Vec::new(),
+        provider: Some(provider),
+    }
+}
+
+fn agent_identity(
     f: &Fixture,
-    b: &str,
-    release: Arc<AtomicBool>,
-    trace: Trace,
-    delivered: Delivered,
-) -> (legacy::Connection, AgentThread) {
-    use std::os::fd::IntoRawFd;
-    let route = CrdtRoute::record("so.tilo.agent", room().to_string(), "main");
+    route: &CrdtRoute,
+) -> (
+    tilo_user_identity::DeviceCert,
+    app_framework::collaboration::CertifiedEndpointIdentity,
+) {
     let launch = f.state.services.launcher.as_ref().unwrap();
     let actor = launch
         .authenticated_launch(std::process::id(), &route.app_id, &route.cluster_id)
@@ -197,6 +217,24 @@ fn start_agent(
     }
     .encode()
     .unwrap();
+
+    let identity = app_framework::collaboration::CertifiedEndpointIdentity::new(
+        presentation,
+        super::super::compute::enrolled_actor_key(),
+    );
+    (certificate, identity)
+}
+
+fn start_agent(
+    f: &Fixture,
+    b: &str,
+    release: Arc<AtomicBool>,
+    trace: Trace,
+    delivered: Delivered,
+) -> (legacy::Connection, AgentThread) {
+    use std::os::fd::IntoRawFd;
+    let route = CrdtRoute::record("so.tilo.agent", room().to_string(), "main");
+    let (certificate, identity) = agent_identity(f, &route);
     let (mut client, _authorize) = f
         .state
         .connect_local_worker_with_authorizer(route, &certificate)
@@ -234,10 +272,6 @@ fn start_agent(
         });
         runtime_portal::serve_connected_io(server, service.client).await
     });
-    let identity = app_framework::collaboration::CertifiedEndpointIdentity::new(
-        presentation,
-        super::super::compute::enrolled_actor_key(),
-    );
     let provider = tilo_agent::providers::default_selection().unwrap();
     let b = b.to_owned();
     let stop = Arc::new(AtomicBool::new(false));
@@ -261,28 +295,7 @@ fn start_agent(
             trace,
             delivered,
         });
-        let cfg = tilo_agent::Config {
-            agent_id: "scribe".into(),
-            endpoint: None,
-            endpoint_identity: None,
-            app_id: "so.tilo.agent".into(),
-            cluster: uuid::Uuid::parse_str(&room().to_string()).unwrap(),
-            record: Some("main".into()),
-            name: "Same executor".into(),
-            model: true,
-            model_timeout: Duration::from_secs(8),
-            permissions: app_framework::permissions::PermissionContext::agent_granted_at(
-                "scribe",
-                &[
-                    tilo_action_policy::TreePath::root().app("so.tilo.desktop"),
-                    tilo_action_policy::TreePath::root().app(output::APP),
-                ],
-                app_framework::permissions::KindSet::READ_UNDOABLE,
-            ),
-            content: tilo_content::ContentStore::memory(),
-            companions: Vec::new(),
-            provider: Some(provider),
-        };
+        let cfg = agent_config(provider);
         let mut service =
             tilo_agent::Session::service(cfg, tilo_agent::wire::Link::from_service(manager))
                 .unwrap();
@@ -697,7 +710,8 @@ fn assert_trace(trace: &Trace, delivered: &Delivered, tasks: &[String; 2], stopp
         } = request
         {
             assert!([a_run.run_id, b_run.run_id].contains(run_id));
-            *per_run.entry(*run_id).or_insert(0) += 1;
+            let count = per_run.entry(*run_id).or_insert(0_u64);
+            *count = count.checked_add(1).unwrap();
             assert!(
                 model_ids.insert(*request_id),
                 "shared connection reused a MODEL correlation id"
@@ -745,6 +759,8 @@ fn assert_trace(trace: &Trace, delivered: &Delivered, tasks: &[String; 2], stopp
         );
     }
     assert!(requests.iter().any(|request| matches!(request, CollabRequest::InvokeTaskAction { action, resource, .. } if action == "wait-task-message" && resource == &format!("desktop:{}", tasks[0]))));
+    drop(runs);
+    drop(requests);
 }
 
 async fn journey(stopped: bool) {
@@ -848,4 +864,5 @@ async fn journey(stopped: bool) {
         assert!(conversation.to_string().contains(goal));
     }
     assert_private_reopen(&f, &tasks, stopped);
+    drop(f);
 }

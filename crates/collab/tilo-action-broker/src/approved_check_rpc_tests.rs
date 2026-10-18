@@ -113,11 +113,30 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
                     .to_string()
                     .contains("no retained target invocation")
             );
-            target
+            assert!(
+                target
+                    .handle
+                    .cancel_published_invocation(wire)
+                    .await
+                    .is_err(),
+                "certificate-owned jobs reject legacy actor-only cancellation"
+            );
+            let host = room
+                .state
+                .journal
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .host();
+            let cancelled = target
                 .handle
-                .cancel_published_invocation(wire)
+                .cancel_durable_published_invocation(host.as_bytes(), &delivered.invocation_uuid)
                 .await
                 .unwrap();
+            assert!(cancelled.result.unwrap().cancellation_requested);
             assert!(
                 target
                     .handle
@@ -164,6 +183,8 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
     }
     tokio::task::LocalSet::new().run_until(async {
         let room = signed_worker::OriginalRoom::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
+        // Replace the broker without retaining a second writer for its journal.
+        drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge) = CapnpBrokerState::new_configured(
             &fanout,
@@ -218,7 +239,11 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         let foreign_route = CrdtRoute::record(&room.route.app_id, &room.route.cluster_id, "foreign-record");
         let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();
         assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("target action or contract mismatch"), "same process and app cannot send an accepted invocation over a foreign record channel");
-        connection.handle.cancel_published_invocation(wire).await.unwrap();
+        assert!(connection.handle.cancel_published_invocation(wire).await.is_err(),
+            "certificate-owned jobs reject legacy actor-only cancellation");
+        let host = state.journal.lock().unwrap().as_ref().unwrap().as_ref().unwrap().host();
+        let cancelled = connection.handle.cancel_durable_published_invocation(host.as_bytes(), &delivered.invocation_uuid).await.unwrap();
+        assert!(cancelled.result.unwrap().cancellation_requested);
         assert!(connection.handle.approved_check(&request).await.unwrap_err().to_string().contains("retired or cancelled"));
         state.remove_connection(991);
         assert!(connection.handle.approved_check(&request).await.is_err());

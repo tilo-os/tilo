@@ -45,7 +45,9 @@ async fn publish(
     {
         let mut rows = publish.get().init_actions(4);
         for (index, task) in tasks.iter().enumerate() {
-            let mut row = rows.reborrow().get(u32::try_from(index * 2).unwrap());
+            let mut row = rows
+                .reborrow()
+                .get(u32::try_from(index.checked_mul(2).unwrap()).unwrap());
             row.set_resource(resource(task));
             row.set_resource_kind("task-output");
             row.set_resource_label("Private task result");
@@ -54,7 +56,9 @@ async fn publish(
             row.set_operation_kind("document");
             row.set_params_json(serde_json::to_string(&params).unwrap());
             row.set_contract_json(serde_json::to_string(&write).unwrap());
-            let mut row = rows.reborrow().get(u32::try_from(index * 2 + 1).unwrap());
+            let mut row = rows
+                .reborrow()
+                .get(u32::try_from(index.checked_mul(2).unwrap().checked_add(1).unwrap()).unwrap());
             row.set_resource(resource(task));
             row.set_resource_kind("task-output");
             row.set_resource_label("Private task result");

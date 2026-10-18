@@ -94,7 +94,7 @@ pub(in super::super) async fn channel(
     (Connection(task), reply.get().unwrap().get_handle().unwrap())
 }
 
-/// QueueInstruction tasks own their MODEL source at the task root, not at an
+/// `QueueInstruction` tasks own their MODEL source at the task root, not at an
 /// unrelated Chat window. Freeze the person's separate model-use consent there.
 pub(in super::super) fn configure_task_model(
     f: &Fixture,
@@ -102,7 +102,7 @@ pub(in super::super) fn configure_task_model(
 ) -> tilo_test_env::ScopedEnv {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", f.directory.path());
+    env.set("XDG_CONFIG_HOME", f.directory.path().join("config"));
     let mut profile = agent_provider_config::ProviderProfile::local_vllm();
     profile.id = "owner-loopback".into();
     profile.endpoint = endpoint;
@@ -145,7 +145,7 @@ async fn rpc(channel: &channel_handle::Client, command: serde_json::Value) -> se
 }
 
 /// Only a successful native complete carrying the exact owner directions may
-/// unlock the following DirectionsApplied report.
+/// unlock the following `DirectionsApplied` report.
 pub(in super::super) async fn successful_context(
     channel: &channel_handle::Client,
     run: &runtime_collab::TaskRunEnvelope,
@@ -188,7 +188,7 @@ pub(in super::super) async fn successful_context(
         request: context, ..
     } = &mut request
     else {
-        unreachable!()
+        panic!("expected an approved native task command")
     };
     context.messages.insert(
         0,
@@ -217,7 +217,13 @@ pub(in super::super) async fn successful_context(
     let posted = body.to_string();
     let original = serde_json::to_string(run.instruction()).unwrap();
     assert!(
-        posted.contains(&original[1..original.len() - 1]),
+        posted.contains(
+            original
+                .strip_prefix('"')
+                .unwrap()
+                .strip_suffix('"')
+                .unwrap()
+        ),
         "POST must retain the original task context"
     );
     for direction in observed.directions {

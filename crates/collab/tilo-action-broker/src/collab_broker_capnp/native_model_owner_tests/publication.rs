@@ -1,6 +1,33 @@
 //! Close and Settings changes during real durable dispatch publication.
 use super::*;
 
+fn assert_consumed(f: &Fixture, epoch: u64) {
+    let reopened = tilo_joined_room::open_file(&f.directory.path().join("native.json")).unwrap();
+    let (requirement, _) = f.models.queued.lock().unwrap().clone().unwrap();
+    let replayed = reopened
+        .admit_local_native_invocation(
+            requirement.binding().unwrap(),
+            &f.native.certificate,
+            &f.native.key,
+            |_, _, _| Ok(()),
+            || -> Result<(), String> { panic!("durably consumed MODEL invocation replayed") },
+        )
+        .unwrap_err();
+    assert!(
+        replayed.contains("already bound or dispatched"),
+        "{replayed}"
+    );
+    assert_eq!(
+        reopened
+            .native_task_admission_state(room(), &f.task, epoch)
+            .unwrap(),
+        f.native
+            .owner
+            .native_task_admission_state(room(), &f.task, epoch)
+            .unwrap(),
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn publication_rechecks_protected_connection_and_full_profile_before_http() {
     tokio::task::LocalSet::new()
@@ -79,30 +106,8 @@ async fn publication_rechecks_protected_connection_and_full_profile_before_http(
                 }
                 queued::assert_no_http(&listener).await;
                 // Consumption is durable even when the final connection check fails.
-                let reopened =
-                    tilo_joined_room::open_file(&f.directory.path().join("native.json")).unwrap();
-                let (requirement, _) = f.models.queued.lock().unwrap().clone().unwrap();
-                let replay = reopened
-                    .admit_local_native_invocation(
-                        requirement.binding().unwrap(),
-                        &f.native.certificate,
-                        &f.native.key,
-                        |_, _, _| Ok(()),
-                        || -> Result<(), String> {
-                            panic!("durably consumed MODEL invocation replayed")
-                        },
-                    )
-                    .unwrap_err();
-                assert!(replay.contains("already bound or dispatched"), "{replay}");
-                assert_eq!(
-                    reopened
-                        .native_task_admission_state(room(), &f.task, epoch)
-                        .unwrap(),
-                    f.native
-                        .owner
-                        .native_task_admission_state(room(), &f.task, epoch)
-                        .unwrap(),
-                );
+                assert_consumed(&f, epoch);
+                drop(f);
             }
         })
         .await;

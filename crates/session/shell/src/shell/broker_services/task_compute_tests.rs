@@ -140,9 +140,8 @@ fn assert_foreign_owner_denied(use_selected_caller: bool) {
             },
         },
     };
-    let error = match service.prepare_native_task_start(request) {
-        Ok(_) => panic!("foreign custody must not produce a pending native Start"),
-        Err(error) => error,
+    let Err(error) = service.prepare_native_task_start(request) else {
+        panic!("foreign custody must not produce a pending native Start");
     };
     assert_eq!(
         error,
@@ -153,4 +152,5 @@ fn assert_foreign_owner_denied(use_selected_caller: bool) {
         }
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(service);
 }

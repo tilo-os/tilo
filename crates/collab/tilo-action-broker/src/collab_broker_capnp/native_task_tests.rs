@@ -33,6 +33,8 @@ mod mailbox;
 mod model_owner;
 #[path = "native_task_paint_tests.rs"]
 mod paint_origin;
+#[path = "native_store_witness_tests.rs"]
+mod store_witness;
 #[path = "native_task_control_tests.rs"]
 mod task_control;
 
@@ -863,12 +865,13 @@ impl WorkspaceTaskExecution for Native {
 struct Fixture {
     directory: tempfile::TempDir,
     writer: Arc<durability::TestOwnerWriter>,
-    _fanout: Arc<FanoutState>,
+    fanout: Arc<FanoutState>,
     native: Arc<Native>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     models: Arc<model_owner::Models>,
     task: String,
+    _identity_env: tilo_test_env::ScopedEnv,
 }
 impl Fixture {
     fn new() -> Self {
@@ -890,14 +893,10 @@ impl Fixture {
     ) -> Self {
         Self::with_task_execution(launcher, registry, protected_model, |native| native)
     }
-    fn with_task_execution(
-        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
-        registry: Option<Arc<crate::services::NativeTaskExecutorRegistry>>,
-        protected_model: bool,
-        execution: impl FnOnce(Arc<Native>) -> Arc<dyn WorkspaceTaskExecution>,
-    ) -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
+    fn native_owner(
+        directory: &std::path::Path,
+    ) -> (Arc<Native>, Arc<durability::TestOwnerWriter>) {
+        let owner = tilo_joined_room::open_file(&directory.join("native.json")).unwrap();
         let writer = Arc::new(durability::TestOwnerWriter::new(
             tilo_joined_room::testing::store(&owner),
         ));
@@ -930,6 +929,37 @@ impl Fixture {
             spent_grants: Mutex::new(Vec::new()),
             start_models: Mutex::new(None),
         });
+
+        (native, writer)
+    }
+
+    fn identity_environment(directory: &std::path::Path) -> tilo_test_env::ScopedEnv {
+        let mut identity_env = tilo_test_env::ScopedEnv::new();
+        identity_env
+            .set("XDG_CONFIG_HOME", directory.join("config"))
+            .set("TILO_IDENTITY_ROOT", directory.join("identity"))
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &directory.join("config/tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(directory.join("identity")),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision the host admission and terminal receipt signer");
+        tilo_identity_host::broker::trusted_current_device(&room().to_string())
+            .expect("fixture workspace has a selected trusted receipt signer");
+
+        identity_env
+    }
+
+    fn with_task_execution(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        registry: Option<Arc<crate::services::NativeTaskExecutorRegistry>>,
+        protected_model: bool,
+        execution: impl FnOnce(Arc<Native>) -> Arc<dyn WorkspaceTaskExecution>,
+    ) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let identity_env = Self::identity_environment(directory.path());
+        let (native, writer) = Self::native_owner(directory.path());
         let membership = OwnerCommitRequest {
             room: room().to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
@@ -1014,12 +1044,13 @@ impl Fixture {
         Self {
             directory,
             writer,
-            _fanout: fanout,
+            fanout,
             native,
             state,
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
             models,
             task,
+            _identity_env: identity_env,
         }
     }
     /// Attenuate the live connection without changing its signed identity or
@@ -2120,6 +2151,62 @@ fn presentation_update(value: runtime_collab::TaskPresentation) -> runtime_colla
     }
 }
 
+async fn assert_private_presentation_capacity(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+) {
+    let presentation = |sequence| task_presentation(run, sequence);
+    let update = presentation_update;
+    let mut second = presentation(0);
+    second.run = format!("{}:1", run.run_id);
+    second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
+    let second_id = second.run.clone();
+    assert!(report(agent, run, update(second.clone())).await.is_err());
+    second.detail = "Exact private detail".into();
+    let text_bytes = tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
+        .checked_sub(second.reasoning.len())
+        .and_then(|remaining| remaining.checked_sub(second.detail.len()))
+        .unwrap();
+    second.text = "é".repeat(text_bytes / 2);
+    if !text_bytes.is_multiple_of(2) {
+        second.text.push('x');
+    }
+    assert_eq!(
+        second
+            .text
+            .len()
+            .checked_add(second.reasoning.len())
+            .and_then(|bytes| bytes.checked_add(second.detail.len()))
+            .unwrap(),
+        tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
+    );
+    let exact = second.clone();
+    report(agent, run, update(second)).await.unwrap();
+    let snapshot =
+        WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
+    let retained = &snapshot.controls[&f.task].presentations[&second_id];
+    assert_eq!(retained.finish, None);
+    assert!(retained.text.is_empty());
+    assert!(retained.detail.is_empty());
+    let private = f.private_presentations();
+    let retained = private
+        .iter()
+        .rev()
+        .find(|value| value.run == second_id)
+        .unwrap();
+    assert_eq!(retained.text, exact.text);
+    assert_eq!(retained.detail, exact.detail);
+    for turn in 2..collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
+        let mut next = presentation(0);
+        next.run = format!("{}:{turn}", run.run_id);
+        report(agent, run, update(next)).await.unwrap();
+    }
+    let mut excess = presentation(0);
+    excess.run = format!("{}:overflow", run.run_id);
+    assert!(report(agent, run, update(excess)).await.is_err());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustion() {
     tokio::task::LocalSet::new()
@@ -2152,47 +2239,7 @@ async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustio
                     .await
                     .is_err()
             );
-            let mut second = presentation(0);
-            second.run = format!("{}:1", run.run_id);
-            second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
-            let second_id = second.run.clone();
-            assert!(report(&agent, &run, update(second.clone())).await.is_err());
-            second.detail = "Exact private detail".into();
-            let text_bytes = tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
-                - second.reasoning.len()
-                - second.detail.len();
-            second.text = "é".repeat(text_bytes / 2);
-            if text_bytes % 2 != 0 {
-                second.text.push('x');
-            }
-            assert_eq!(
-                second.text.len() + second.reasoning.len() + second.detail.len(),
-                tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
-            );
-            let exact = second.clone();
-            report(&agent, &run, update(second)).await.unwrap();
-            let snapshot =
-                WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
-            let retained = &snapshot.controls[&f.task].presentations[&second_id];
-            assert_eq!(retained.finish, None);
-            assert!(retained.text.is_empty());
-            assert!(retained.detail.is_empty());
-            let private = f.private_presentations();
-            let retained = private
-                .iter()
-                .rev()
-                .find(|value| value.run == second_id)
-                .unwrap();
-            assert_eq!(retained.text, exact.text);
-            assert_eq!(retained.detail, exact.detail);
-            for turn in 2..collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
-                let mut next = presentation(0);
-                next.run = format!("{}:{turn}", run.run_id);
-                report(&agent, &run, update(next)).await.unwrap();
-            }
-            let mut excess = presentation(0);
-            excess.run = format!("{}:overflow", run.run_id);
-            assert!(report(&agent, &run, update(excess)).await.is_err());
+            assert_private_presentation_capacity(&f, &agent, &run).await;
             report(
                 &agent,
                 &run,
@@ -2231,6 +2278,59 @@ async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustio
         .await;
 }
 
+async fn apply_steered_run(
+    f: &Fixture,
+    agent: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    listener: Arc<tokio::net::TcpListener>,
+) -> runtime_collab::TaskRunEnvelope {
+    f.person_command(WorkspaceTaskCommand::DirectionForRun {
+        task_id: f.task.clone(),
+        run_epoch: 1,
+        after_revision: 0,
+        text: "Keep compatibility examples".into(),
+    })
+    .unwrap();
+    let control = observed_control(agent, run).await;
+    assert_eq!(control.directions[0].text, "Keep compatibility examples");
+    assert_eq!(control.applied_revision, 0);
+    assert!(
+        f.native
+            .owner
+            .with_task_action_admission(
+                room(),
+                &f.task,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("old plan must not enter") }
+            )
+            .is_err()
+    );
+    let mut prepared = run.clone();
+    let (base, _) = runtime_collab::native_task_revision(&run.lease).unwrap();
+    prepared.lease = format!("{base}:1");
+    assert!(
+        report(
+            agent,
+            &prepared,
+            runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
+        )
+        .await
+        .is_err()
+    );
+    model_owner::legacy::successful_context(agent, &prepared, listener.clone()).await;
+    report(
+        agent,
+        &prepared,
+        runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
+    )
+    .await
+    .unwrap();
+
+    prepared
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
     tokio::task::LocalSet::new()
@@ -2267,49 +2367,7 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
             report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
                 .await
                 .unwrap();
-            f.person_command(WorkspaceTaskCommand::DirectionForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-                text: "Keep compatibility examples".into(),
-            })
-            .unwrap();
-            let control = observed_control(&agent, &run).await;
-            assert_eq!(control.directions[0].text, "Keep compatibility examples");
-            assert_eq!(control.applied_revision, 0);
-            assert!(
-                f.native
-                    .owner
-                    .with_task_action_admission(
-                        room(),
-                        &f.task,
-                        "scribe",
-                        1,
-                        0,
-                        || -> Result<(), String> { panic!("old plan must not enter") }
-                    )
-                    .is_err()
-            );
-            let mut prepared = run.clone();
-            let (base, _) = runtime_collab::native_task_revision(&run.lease).unwrap();
-            prepared.lease = format!("{base}:1");
-            assert!(
-                report(
-                    &agent,
-                    &prepared,
-                    runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
-                )
-                .await
-                .is_err()
-            );
-            model_owner::legacy::successful_context(&agent, &prepared, listener.clone()).await;
-            report(
-                &agent,
-                &prepared,
-                runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
-            )
-            .await
-            .unwrap();
+            let prepared = apply_steered_run(&f, &agent, &run, listener.clone()).await;
             drop(agent);
             drop(connection);
             f.state.remove_connection(100);

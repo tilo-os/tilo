@@ -57,7 +57,7 @@ pub(super) fn owner(
         }
         Ok(())
     })?;
-    Ok((owner.clone(), room))
+    Ok((owner, room))
 }
 
 pub(super) fn messages(
@@ -65,7 +65,8 @@ pub(super) fn messages(
     room: &str,
     binding: &NativeTaskBinding,
 ) -> Result<Vec<TaskMessage>, String> {
-    if let Some(route) = remote::route(service, room, Some(binding), None)? {
+    let route = remote::route(service, room, Some(binding), None)?;
+    if let Some(route) = route {
         let PrivateReply::TaskMessages(messages) = remote::command(
             route,
             native_operation(
@@ -82,6 +83,7 @@ pub(super) fn messages(
         };
         return Ok(messages);
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     let authority = agent_authority(&owner, room, binding)?;
     owner.task_messages(room, &binding.task_id, binding.epoch, &authority, true)
@@ -166,7 +168,8 @@ pub(super) fn acknowledge(
     binding: &NativeTaskBinding,
     ids: &[String],
 ) -> Result<(), String> {
-    if let Some(route) = remote::route(service, room, Some(binding), None)? {
+    let route = remote::route(service, room, Some(binding), None)?;
+    if let Some(route) = route {
         return match remote::command(
             route,
             native_operation(
@@ -183,6 +186,7 @@ pub(super) fn acknowledge(
             _ => Err("unexpected private task acknowledgement reply".into()),
         };
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     let authority = agent_authority(&owner, room, binding)?;
     owner.acknowledge_task_messages(room, &binding.task_id, binding.epoch, &authority, ids)
@@ -195,7 +199,8 @@ pub(super) fn person_messages(
     epoch: u64,
     caller: &tilo_user_identity::DeviceCert,
 ) -> Result<Vec<TaskMessage>, String> {
-    if let Some(route) = remote::route(service, room, None, Some(caller))? {
+    let route = remote::route(service, room, None, Some(caller))?;
+    if let Some(route) = route {
         let PrivateReply::TaskMessages(messages) = remote::command(
             route,
             PrivateOperation::TaskMessages {
@@ -208,6 +213,7 @@ pub(super) fn person_messages(
         };
         return Ok(messages);
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     owner.task_messages(
         room,
@@ -251,7 +257,8 @@ pub(super) fn send(
     {
         return Err("task mailbox invocation binding mismatch".into());
     }
-    if let Some(route) = remote::route(service, room, Some(binding), None)? {
+    let route = remote::route(service, room, Some(binding), None)?;
+    if let Some(route) = route {
         let room_id = tilo_desktop_model::RoomId::parse(room).ok_or("invalid private task room")?;
         service
             .opened_owner("private task owner unavailable")?
@@ -275,6 +282,7 @@ pub(super) fn send(
             _ => Err("unexpected private task send reply".into()),
         };
     }
+    drop(route);
     let (owner, room_id) = owner(service, room)?;
     agent_authority(&owner, room_id, binding)?;
     owner.send_task_message(
@@ -330,7 +338,8 @@ pub(super) fn record_outputs(
             return Err("task output lacks original source custody".into());
         }
     }
-    if let Some(route) = remote::route(service, room, Some(binding), None)? {
+    let route = remote::route(service, room, Some(binding), None)?;
+    if let Some(route) = route {
         return match remote::command(
             route,
             native_operation(
@@ -347,6 +356,7 @@ pub(super) fn record_outputs(
             _ => Err("unexpected native output receipt".into()),
         };
     }
+    drop(route);
     let (owner, room_id) = owner(service, room)?;
     agent_authority(&owner, room_id, binding)?;
     owner.record_task_outputs(room_id, &address, outputs, |view| {
@@ -402,7 +412,8 @@ pub(super) fn person_reports(
     epoch: u64,
     caller: &tilo_user_identity::DeviceCert,
 ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
-    if let Some(route) = remote::route(service, room, None, Some(caller))? {
+    let route = remote::route(service, room, None, Some(caller))?;
+    if let Some(route) = route {
         return match remote::command(
             route,
             PrivateOperation::TaskReportTranscript {
@@ -419,6 +430,7 @@ pub(super) fn person_reports(
             _ => Err("unexpected private task transcript reply".into()),
         };
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     owner
         .task_report_transcript(
@@ -437,7 +449,8 @@ pub(super) fn reports(
     room: &str,
     binding: &NativeTaskBinding,
 ) -> Result<Vec<tilo_actions::task_messaging::TaskReport>, String> {
-    if let Some(route) = remote::route(service, room, Some(binding), None)? {
+    let route = remote::route(service, room, Some(binding), None)?;
+    if let Some(route) = route {
         return match remote::command(
             route,
             native_operation(
@@ -458,6 +471,7 @@ pub(super) fn reports(
             _ => Err("unexpected native task transcript reply".into()),
         };
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     let authority = agent_authority(&owner, room, binding)?;
     owner
@@ -472,7 +486,8 @@ pub(super) fn person_outputs(
     epoch: u64,
     caller: &tilo_user_identity::DeviceCert,
 ) -> Result<Vec<tilo_actions::task_messaging::TaskOutputRef>, String> {
-    if let Some(route) = remote::route(service, room, None, Some(caller))? {
+    let route = remote::route(service, room, None, Some(caller))?;
+    if let Some(route) = route {
         return match remote::command(
             route,
             PrivateOperation::TaskOutputs {
@@ -484,6 +499,7 @@ pub(super) fn person_outputs(
             _ => Err("unexpected private task outputs reply".into()),
         };
     }
+    drop(route);
     let (owner, room) = owner(service, room)?;
     owner.task_outputs(
         room,

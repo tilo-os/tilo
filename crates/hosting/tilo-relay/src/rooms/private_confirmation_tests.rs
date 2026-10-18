@@ -18,7 +18,7 @@ fn full() -> Confirmation {
         resource: "inbox".into(),
         action: "send".into(),
         kind: tilo_action_policy::ActionKind::Undoable,
-        risk: Default::default(),
+        risk: tilo_actions::RiskLevel::default(),
         draft: tilo_actions::Draft {
             action_label: SECRET.into(),
             description: Some(SECRET.into()),
@@ -48,7 +48,7 @@ fn legacy_history(room: &mut GovernedRoom, key: &SigningKey, now: SystemTime) ->
     let waiting = full();
     let mut control = tilo_desktop_model::WorkspaceTaskControl {
         run_epoch: 1,
-        confirmation: Some(waiting.clone()),
+        confirmation: Some(waiting),
         ..Default::default()
     };
     let bytes = ScalarValue::Bytes(serde_json::to_vec(&control).unwrap());
@@ -56,7 +56,7 @@ fn legacy_history(room: &mut GovernedRoom, key: &SigningKey, now: SystemTime) ->
     doc.put(&controls, "deleted", bytes).unwrap();
     doc.commit();
     let answered = declined();
-    control.confirmation = Some(answered.clone());
+    control.confirmation = Some(answered);
     doc.put(
         &controls,
         "current",
@@ -78,7 +78,7 @@ fn legacy_history(room: &mut GovernedRoom, key: &SigningKey, now: SystemTime) ->
         "current",
         ScalarValue::Bytes(
             serde_json::to_vec(&serde_json::json!({
-                "route": "model", "title": "Public title", "audit": [event.clone()]
+                "route": "model", "title": "Public title", "audit": [event]
             }))
             .unwrap(),
         ),

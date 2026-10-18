@@ -1,5 +1,6 @@
 //! A second, genuinely enrolled device of the starter, independently revocable.
 use super::*;
+use tilo_peer_state::join::{self, InviteGrant, JoinChallenge, MemberRole};
 
 fn publish(f: &Fixture, change: impl FnOnce(&mut tilo_peer_state::StatePeer)) {
     let now = std::time::SystemTime::now();
@@ -53,7 +54,6 @@ pub(super) fn approve(f: &Fixture) -> tilo_user_identity::DeviceCert {
             .as_nanos()
             .try_into()
             .unwrap();
-        use tilo_peer_state::join::{self, InviteGrant, JoinChallenge, MemberRole};
         let signed = join::issue_invitation(
             InviteGrant {
                 workspace_id: workspace,
@@ -138,6 +138,6 @@ pub(super) fn revoke(f: &Fixture, cert: &tilo_user_identity::DeviceCert) {
     publish(f, |peer| {
         peer.governance_mut()
             .publish_governed_revocations(&[entry], &f.native.key, std::time::SystemTime::now())
-            .unwrap()
+            .unwrap();
     });
 }

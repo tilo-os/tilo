@@ -1,6 +1,6 @@
 //! Signed physical-host snapshots for a separately authenticated person start.
 //! This is not a bearer approval: the governor must receive the exact canonical
-//! ApproveRun request over the approving person's authenticated private channel.
+//! `ApproveRun` request over the approving person's authenticated private channel.
 use super::model::{NativeModelContract, NativeModelStartAuthority};
 use super::{CommitOperation, OwnerCommitRequest};
 use crate::{NativeWorkspaceOwner, RoomId, StatePeer};
@@ -70,6 +70,8 @@ impl NativeModelStartAuthority for SignedStart<'_> {
 /// verifying the snapshot against their current canonical peer.
 pub trait NativeModelPersonStartTarget {
     type Receipt;
+    /// # Errors
+    /// Rejects invalid approval snapshots, current authority or durable custody.
     fn commit_person_start(
         self,
         snapshot: &NativeModelPersonStartSnapshot,
@@ -86,7 +88,7 @@ impl NativeModelPersonStartTarget for &NativeWorkspaceOwner {
         request: OwnerCommitRequest,
         custody: super::model::NativeModelGovernorCustody<'_>,
     ) -> Result<Self::Receipt, String> {
-        snapshot.commit_owner(self, request, custody)
+        snapshot.commit_owner(self, &request, custody)
     }
 }
 
@@ -112,6 +114,8 @@ impl NativeModelPersonStartTarget for &mut StatePeer {
 impl NativeModelPersonStartSnapshot {
     /// Commit through either the native owner or a caller-held governed-room
     /// writer turn. Transport authentication supplies `custody.host` in both cases.
+    /// # Errors
+    /// Rejects an invalid approval snapshot, changed authority or failed durable commit.
     pub fn commit<T: NativeModelPersonStartTarget>(
         &self,
         target: T,
@@ -128,22 +132,22 @@ impl NativeModelPersonStartSnapshot {
     fn commit_owner(
         &self,
         owner: &NativeWorkspaceOwner,
-        request: OwnerCommitRequest,
+        request: &OwnerCommitRequest,
         custody: super::model::NativeModelGovernorCustody<'_>,
     ) -> Result<super::OwnerCommitReceipt, String> {
         // Check the command family even if the reducer would never call a
         // model hook (for example, an attempt to reuse this as a host start).
-        if person_start(&request)?.0 != custody.host {
+        if person_start(request)?.0 != custody.host {
             return Err("signed model approval requires its authenticated person".into());
         }
         let room = RoomId::parse(&request.room).ok_or("model approval room invalid")?;
         owner.with_current(room, |view| {
-            self.verify_for_start(view.peer(), custody.host, &request, custody.now)
+            self.verify_for_start(view.peer(), custody.host, request, custody.now)
                 .map(|_| ())
         })?;
         let hook = SignedStart {
             snapshot: self,
-            request: &request,
+            request,
             caller: custody.host,
         };
         owner.commit_workspace_task_command_with_model_start(
@@ -196,6 +200,8 @@ impl NativeModelPersonStartSnapshot {
     /// Called by the trusted shell when a person consciously approves a run,
     /// never from a gateway claim or application-provided model selection.
     /// The physical host must itself be the authenticated approving device.
+    /// # Errors
+    /// Rejects an invalid approval snapshot, changed authority or failed durable commit.
     pub fn capture(
         owner: &NativeWorkspaceOwner,
         request: &OwnerCommitRequest,
@@ -218,7 +224,10 @@ impl NativeModelPersonStartSnapshot {
                 host: person.device_public_key,
                 request_digest: request.binding()?.request_digest,
                 invocation,
-                expires_at: super::super::enrollment::ns(now + Duration::from_secs(120))?,
+                expires_at: super::super::enrollment::ns(
+                    now.checked_add(Duration::from_secs(120))
+                        .ok_or("model approval expiry overflow")?,
+                )?,
                 contract,
                 signature: [[0; 32]; 2],
             };
@@ -246,6 +255,8 @@ impl NativeModelPersonStartSnapshot {
     /// Governor-side verification before passing the returned snapshot into the
     /// canonical reducer in the same durable transaction. `caller` must come
     /// from authenticated transport, not a field in a decoded command.
+    /// # Errors
+    /// Rejects an invalid approval snapshot, changed authority or failed durable commit.
     pub fn verify_for_start(
         &self,
         peer: &StatePeer,

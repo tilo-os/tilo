@@ -48,10 +48,10 @@ pub(crate) fn published(tree: &WorkspaceTree) -> Vec<HostWindowContract> {
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
                 .filter_map(move |tab| {
-                    let app = match &tab.tile {
-                        TileContent::Foreign { app_id, .. }
-                        | TileContent::LocalApp { app_id, .. } => app_id,
-                        _ => return None,
+                    let (TileContent::Foreign { app_id: app, .. }
+                    | TileContent::LocalApp { app_id: app, .. }) = &tab.tile
+                    else {
+                        return None;
                     };
                     let room = workspace.room.to_string();
                     // The app segment names the publisher, not the hosted app.

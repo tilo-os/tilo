@@ -407,7 +407,7 @@ async fn launched_channel(f: &Fixture) -> (legacy::Connection, runtime_collab::C
         certificate_authority: f.native.clone(),
     };
     let (state, rx) = CapnpBrokerState::new_configured(
-        &f._fanout,
+        &f.fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::with_optional_owner_commit(None, f.native.clone()),
         Some(f.native.clone()),
@@ -488,8 +488,8 @@ async fn approved_profile_is_private_and_survives_owner_restart() {
         f.native.owner.with_current(room(), |view| {
             signed.verify_for_start(view.peer(), &f.native.certificate, &request, now)?;
             let mut replaced = request.clone();
-            let CommitOperation::WorkspaceTaskCommand { command, .. } = &mut replaced.operation else { unreachable!() };
-            let WorkspaceTaskCommand::ApproveRun { expected_run_epoch, .. } = command else { unreachable!() };
+            let CommitOperation::WorkspaceTaskCommand { command, .. } = &mut replaced.operation else { panic!("expected an approval command") };
+            let WorkspaceTaskCommand::ApproveRun { expected_run_epoch, .. } = command else { panic!("expected an approval command") };
             *expected_run_epoch += 1;
             assert!(signed.verify_for_start(view.peer(), &f.native.certificate, &replaced, now).is_err());
             assert!(signed.verify_for_start(view.peer(), &f.native.certificate, &request, now + Duration::from_secs(121)).is_err());
@@ -534,6 +534,7 @@ async fn approved_profile_is_private_and_survives_owner_restart() {
         assert!(reopened.workspace_task_private_model_contract(
             room(), &wrong, &authority, std::time::SystemTime::now(),
         ).is_err());
+        drop(f);
     }).await;
 }
 
@@ -548,7 +549,7 @@ async fn delivered_live(
 }
 pub(super) fn configure(f: &Fixture, endpoint: String) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", f.directory.path());
+    env.set("XDG_CONFIG_HOME", f.directory.path().join("config"));
     let mut profile = agent_provider_config::ProviderProfile::local_vllm();
     profile.id = "owner-loopback".into();
     profile.endpoint = endpoint;
@@ -686,6 +687,7 @@ async fn protected_broker_plan_and_transform_reach_real_owner_and_loopback() {
                 f.models.close_notify.notified().await;
             }
         }).await.expect("disconnect closes both retained MODEL claims");
+        drop(f);
     }).await;
 }
 
@@ -749,6 +751,7 @@ async fn stop_after_real_model_claim_before_transport_submission_posts_zero_byte
                 .unwrap()
                 .unwrap();
             assert!(bytes.is_empty(), "a stopped queued attempt sent HTTP bytes");
+            drop(f);
         })
         .await;
 }

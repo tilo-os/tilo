@@ -1363,6 +1363,19 @@ impl NativeAgentMarkerSource {
     }
 }
 
+fn place_native_marker_rect(
+    placement: vello::kurbo::Affine,
+    painted_rect: Rect,
+    values: [f64; 4],
+) -> Option<Rect> {
+    let rect = Rect::new(values[0], values[1], values[2], values[3]);
+    if !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let placed = placement.transform_rect_bbox(rect).intersect(painted_rect);
+    (placed.width() > 0.0 && placed.height() > 0.0).then_some(placed)
+}
+
 fn publish_native_agent_markers(
     state: &mut State,
     frame: &mut FrameBuilder,
@@ -1422,16 +1435,8 @@ fn publish_native_agent_markers(
                     source.painted_rect.height() / viewport.height(),
                 )
                 .then_translate((source.painted_rect.x0, source.painted_rect.y0).into());
-            let translate = |values: [f64; 4]| {
-                let rect = Rect::new(values[0], values[1], values[2], values[3]);
-                if !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
-                    return None;
-                }
-                let placed = placement
-                    .transform_rect_bbox(rect)
-                    .intersect(source.painted_rect);
-                (placed.width() > 0.0 && placed.height() > 0.0).then_some(placed)
-            };
+            let translate =
+                |values: [f64; 4]| place_native_marker_rect(placement, source.painted_rect, values);
             let task = frame.host().certified_marker_task(
                 &room,
                 &source.app_id,

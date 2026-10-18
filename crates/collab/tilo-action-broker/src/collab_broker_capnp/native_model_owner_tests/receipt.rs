@@ -8,7 +8,10 @@ fn direction(f: &Fixture, after_revision: u64) {
         task_id: f.task.clone(),
         run_epoch: 1,
         after_revision,
-        text: format!("Preserve compatibility in revision {}", after_revision + 1),
+        text: format!(
+            "Preserve compatibility in revision {}",
+            after_revision.checked_add(1).unwrap()
+        ),
     })
     .unwrap();
 }
@@ -195,6 +198,7 @@ async fn applied_direction_remains_available_to_the_registered_stream() {
             assert_eq!(next.from_revision, 1);
             assert!(next.directions.is_empty());
             assert_eq!(next.messages, vec![message]);
+            drop(f);
         })
         .await;
 }
@@ -271,6 +275,7 @@ async fn successful_complete_ack_requires_exact_request_revision_and_owner_envel
                 "an older successful response cannot acknowledge a newer lease"
             );
             assert_eq!(context(&channel, &newer).await.applied_revision, 1);
+            drop(f);
         })
         .await;
 }
@@ -314,6 +319,7 @@ async fn failed_complete_http_response_cannot_ack_directions_or_inbox() {
             let current = context(&channel, &run).await;
             assert_eq!(current.applied_revision, 0);
             assert!(current.messages.iter().any(|m| m == &message));
+            drop(f);
         })
         .await;
 }
@@ -358,6 +364,7 @@ async fn successful_complete_with_forged_owner_envelope_cannot_ack_real_message_
                     .iter()
                     .any(|m| m == &message)
             );
+            drop(f);
         })
         .await;
 }
@@ -422,6 +429,7 @@ async fn coalesced_success_persists_delivery_before_ack_without_applying_directi
             );
             assert!(ack(&channel, &prepared, 1).await);
             assert!(inbox(&channel, &prepared, &message.message_id).await);
+            drop(f);
         })
         .await;
 }
@@ -461,5 +469,6 @@ async fn stopped_after_http_dispatch_retains_delivery_but_never_ack_authority() 
         let messages = reopened.task_messages(room(), &f.task, 1, &person, false).unwrap();
         assert_eq!(messages[0].message_id, message.message_id);
         assert_eq!(messages[0].status, tilo_actions::task_messaging::TaskMessageStatus::DeliveredToModel);
+        drop(f);
     }).await;
 }

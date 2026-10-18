@@ -363,7 +363,7 @@ impl PrivateTaskConfirmationStore {
                         person: p, at: t, ..
                     },
                 ) => {
-                    *person = p.clone();
+                    person.clone_from(p);
                     *at = *t;
                 }
                 _ => {}

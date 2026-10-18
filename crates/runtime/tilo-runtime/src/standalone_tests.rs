@@ -3,7 +3,6 @@ use super::workspace::{
     read_tree,
 };
 use super::*;
-use crate::mcp::McpServer;
 use serde_json::json;
 use std::{
     process::Stdio,
@@ -30,6 +29,13 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 )]
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
+    if isolated_signing_identity(
+        "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
+    )
+    .is_none()
+    {
+        return;
+    }
     use tilo_action_broker::{
         collab_broker::CrdtRoute,
         collab_broker_capnp::{
@@ -38,14 +44,32 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
 
+    let (joined, _directory) = Joined::test_empty().await;
+    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        joined.test_certificate().user_public_key,
+    );
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
-    workspace.set_owner("a1".repeat(32));
+    workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
     let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(_directory.path().join("workspace.json"));
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
-    let broker =
-        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    let (_origin, time) = execution_policy_clock().unwrap();
+    let admission = joined.admit_mcp_execution(&room, &room, &actor).unwrap();
+    let mut services = membership.services();
+    services.native_certificates = Some(Arc::new(joined::admission_tests::FixtureAuthority {
+        room: uuid::Uuid::parse_str(&room).unwrap(),
+        cert: admission.certificate().clone(),
+        time: time.clone(),
+    }));
+    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+        membership.authority(),
+        services,
+    );
+    let qualified = broker
+        .certified_local_action_host(admission.caller(), admission.presentation())
+        .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
         app_id: "so.tilo.files".into(),
@@ -71,16 +95,21 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         live: true,
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
-    let (joined, _directory) = Joined::test_empty().await;
+    let owner = Caller::local_person(actor)
+        .in_room(&room)
+        .in_new_execution();
     let host = RuntimeActionHost {
         broker,
         room: room.clone(),
         joined,
-        session: None,
+        session: Some(Arc::new(AdmittedRuntimeSession {
+            policy_time: time,
+            host: qualified,
+            admission,
+            agent: None,
+            projection: Some(owner.clone()),
+        })),
     };
-    let owner = Caller::local_person("a1".repeat(32))
-        .in_room(room)
-        .in_new_execution();
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
@@ -100,8 +129,12 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         wait_ms: None,
         appearance: None,
     };
-    let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
-        panic!("the synthetic app must accept the invocation");
+    let mut pending = host.invoke(&owner, request.clone());
+    assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
+    turn();
+    let outcome = pending.poll_ready();
+    let PendingPoll::Ready(Ok(receipt)) = outcome else {
+        panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
     assert!(host.observe(&owner, &id).is_some());
@@ -111,17 +144,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let change = host
         .next_change(&owner, &id)
         .expect("the owner may wait on its invocation");
-    assert_eq!(
-        host.cancel(&other, &id),
-        Err(ActionHostError::UnknownInvocation)
-    );
+    assert_eq!(host.cancel(&other, &id), Err(ActionHostError::NotPermitted));
     assert!(matches!(
         host.invoke(&owner, request.clone()).poll_ready(),
         PendingPoll::Ready(Ok(retry)) if retry == receipt
     ));
     assert!(matches!(
         host.invoke(&other, request).poll_ready(),
-        PendingPoll::Ready(Err(ActionHostError::InvocationConflict))
+        PendingPoll::Ready(Err(ActionHostError::NotPermitted))
     ));
     assert!(
         invocations.try_recv().is_err(),
@@ -173,6 +203,20 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         "the isolated child ran no test: {stdout}"
     );
     None
+}
+
+/// Provision only the receipt signer's host custody in an isolated process.
+/// The synthetic caller still uses its independently certified admission.
+pub(super) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
+    let root = isolated_root(test)?;
+    let registry = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        registry.identity_dir(),
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    Some(root)
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.
@@ -247,11 +291,7 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     let listed = tilo_rt::try_app()
         .unwrap()
         .block_on(async {
-            let server = McpServer::new(
-                session.action_host().unwrap(),
-                session.room().to_owned(),
-                session.actor().to_owned(),
-            );
+            let server = session.mcp_session_factory(session.room()).unwrap()().unwrap();
             server
                 .handle(json!({
                     "jsonrpc": "2.0",
@@ -715,6 +755,7 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         risk: tilo_actions::RiskLevel::default(),
         needs_confirmation: false,
         confirming: false,
+        moderation: None,
     }
 }
 

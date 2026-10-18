@@ -178,7 +178,7 @@ impl GovernedRoom {
     pub(super) fn private_task_watch(
         &self,
         caller: &DeviceCert,
-        operation: PrivateOperation,
+        operation: &PrivateOperation,
     ) -> Result<tokio::sync::watch::Receiver<()>, String> {
         let PrivateOperation::NativeTaskRead {
             task,
@@ -186,7 +186,7 @@ impl GovernedRoom {
             agent,
             operation: inner,
             ..
-        } = &operation
+        } = operation
         else {
             return Err("task mailbox watch requires native host custody".into());
         };
@@ -408,143 +408,20 @@ impl GovernedRoom {
                 task,
                 epoch,
                 revision,
-            } => {
-                let source = source
-                    .as_ref()
-                    .ok_or("MODEL contract requires physical host run custody")?;
-                self.authorize_task_read(&state, &task, epoch, &caller, now)?;
-                let control = state
-                    .controls
-                    .get(&task)
-                    .ok_or("MODEL task control absent")?;
-                let run = control.active_run.as_ref().ok_or("MODEL run ended")?;
-                let public = control
-                    .model_authority
-                    .as_ref()
-                    .ok_or("MODEL approval absent")?;
-                let models: BTreeMap<
-                    String,
-                    tilo_desktop_model::task::WorkspaceTaskModelAuthority,
-                > = read_private(
-                    &self
-                        .path
-                        .with_extension("private-task-model-authority-v1.json"),
-                )?
-                .unwrap_or_default();
-                let full = models.get(&task).ok_or("MODEL private contract absent")?;
-                let mut bound = full.clone();
-                bound.contract = workspace_task::private_model_contract_reference(&full.contract)?;
-                if &bound != public
-                    || full.epoch != epoch
-                    || run.epoch != epoch
-                    || run.agent_id != source.agent_id
-                    || run.applied_direction_revision != revision
-                    || control
-                        .directions
-                        .last()
-                        .map_or(0, |direction| direction.revision)
-                        != revision
-                    || run
-                        .approval
-                        .as_ref()
-                        .is_none_or(|approval| approval.person != full.starter.person)
-                {
-                    return Err("MODEL private contract run binding changed".into());
-                }
-                let contract: tilo_joined_room::task_admission::model::NativeModelContract =
-                    serde_json::from_value(full.contract.clone()).map_err(|e| e.to_string())?;
-                contract.source_for(self.room(), &task)?;
-                if contract.request_model != full.request_model || contract.kind != full.kind {
-                    return Err("MODEL private contract policy binding changed".into());
-                }
-                Ok(PrivateReply::TaskModelContract(
-                    serde_json::to_string(&contract).map_err(|e| e.to_string())?,
-                ))
-            }
+            } => self.task_model_contract(&cx, &task, epoch, revision),
             PrivateOperation::TaskConfirmationInvocation {
                 task,
                 epoch,
                 revision,
                 asking,
-            } => {
-                let source = source
-                    .as_ref()
-                    .ok_or("native confirmation requires exact source custody")?;
-                self.authorize_task_read(&state, &task, epoch, &caller, now)?;
-                let snapshot = self.task_policy_snapshot()?;
-                let starter = snapshot
-                    .controls
-                    .get(&task)
-                    .and_then(|c| c.active_run.as_ref())
-                    .and_then(|r| r.approval.as_ref())
-                    .ok_or("native confirmation starter absent")?;
-                let binding = tilo_joined_room::task_policy::NativeTaskBinding {
-                    task_id: task,
-                    agent_id: source.agent_id.clone(),
-                    epoch,
-                    revision,
-                    starter: Some(starter.person.clone()),
-                };
-                Ok(PrivateReply::TaskConfirmationInvocation(
-                    self.load_native_admission()?
-                        .frozen_confirmation_invocation(&snapshot, &binding, asking)?,
-                ))
-            }
+            } => self.task_confirmation_invocation(&cx, &task, epoch, revision, asking),
             PrivateOperation::TaskRunDigest {
                 task,
                 epoch,
                 revision,
-            } => {
-                let source = source
-                    .as_ref()
-                    .ok_or("private run digest requires native source custody")?;
-                self.authorize_task_read(&state, &task, epoch, &caller, now)?;
-                // Both inputs are read under the same governed-room writer lock.
-                let snapshot = self.task_policy_snapshot()?;
-                let run = snapshot
-                    .controls
-                    .get(&task)
-                    .and_then(|control| control.active_run.as_ref())
-                    .ok_or("private run ended")?;
-                let starter = run.approval.as_ref().ok_or("private run starter absent")?;
-                let binding = tilo_joined_room::task_policy::NativeTaskBinding {
-                    task_id: task.clone(),
-                    agent_id: source.agent_id.clone(),
-                    epoch,
-                    revision,
-                    starter: Some(starter.person.clone()),
-                };
-                let PrivateReply::TaskInstructions(encoded) =
-                    self.task_instructions(&cx, &task, epoch)?
-                else {
-                    return Err("unexpected private instruction reply".into());
-                };
-                let private: tilo_joined_room::NativePrivateTaskInstructions =
-                    serde_json::from_str(&encoded)
-                        .map_err(|_| "invalid private task instructions")?;
-                let digest = tilo_joined_room::task_admission::private_run::private_run_digest(
-                    tilo_desktop_model::RoomId::parse(self.room()).ok_or("invalid native room")?,
-                    &snapshot,
-                    &binding,
-                    &private,
-                )?;
-                Ok(PrivateReply::TaskRunDigest(digest))
-            }
+            } => self.task_run_digest(&cx, &task, epoch, revision),
             PrivateOperation::TaskConfirmation { task, epoch } => {
-                self.authorize_task_read(&state, &task, epoch, &caller, now)?;
-                let hydrated = self.task_policy_snapshot()?;
-                let confirmation = hydrated
-                    .controls
-                    .get(&task)
-                    .and_then(|control| control.confirmation.as_ref());
-                if confirmation.is_some_and(|held| held.run_epoch != epoch) {
-                    return Err("private task confirmation belongs to another run".into());
-                }
-                let encoded = confirmation
-                    .map(serde_json::to_string)
-                    .transpose()
-                    .map_err(|e| e.to_string())?;
-                Ok(PrivateReply::TaskConfirmation(encoded))
+                self.task_confirmation(&cx, &task, epoch)
             }
             PrivateOperation::TaskReportTranscript { task, epoch } => {
                 self.authorize_task_read(&state, &task, epoch, &caller, now)?;
@@ -590,6 +467,163 @@ impl GovernedRoom {
             } => self.task_send(&cx, &recipient, invocation, send),
             _ => Err("not a private task operation".into()),
         }
+    }
+
+    fn task_confirmation(
+        &self,
+        cx: &TaskCommand<'_>,
+        task: &str,
+        epoch: u64,
+    ) -> Result<PrivateReply, String> {
+        self.authorize_task_read(cx.state, task, epoch, cx.caller, cx.now)?;
+        let hydrated = self.task_policy_snapshot()?;
+        let confirmation = hydrated
+            .controls
+            .get(task)
+            .and_then(|control| control.confirmation.as_ref());
+        if confirmation.is_some_and(|held| held.run_epoch != epoch) {
+            return Err("private task confirmation belongs to another run".into());
+        }
+        let encoded = confirmation
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        Ok(PrivateReply::TaskConfirmation(encoded))
+    }
+
+    fn task_model_contract(
+        &self,
+        cx: &TaskCommand<'_>,
+        task: &str,
+        epoch: u64,
+        revision: u64,
+    ) -> Result<PrivateReply, String> {
+        let source = cx
+            .source
+            .as_ref()
+            .ok_or("MODEL contract requires physical host run custody")?;
+        self.authorize_task_read(cx.state, task, epoch, cx.caller, cx.now)?;
+        let control = cx
+            .state
+            .controls
+            .get(task)
+            .ok_or("MODEL task control absent")?;
+        let run = control.active_run.as_ref().ok_or("MODEL run ended")?;
+        let public = control
+            .model_authority
+            .as_ref()
+            .ok_or("MODEL approval absent")?;
+        let models: BTreeMap<String, tilo_desktop_model::task::WorkspaceTaskModelAuthority> =
+            read_private(
+                &self
+                    .path
+                    .with_extension("private-task-model-authority-v1.json"),
+            )?
+            .unwrap_or_default();
+        let full = models.get(task).ok_or("MODEL private contract absent")?;
+        let mut bound = full.clone();
+        bound.contract = workspace_task::private_model_contract_reference(&full.contract)?;
+        if &bound != public
+            || full.epoch != epoch
+            || run.epoch != epoch
+            || run.agent_id != source.agent_id
+            || run.applied_direction_revision != revision
+            || control
+                .directions
+                .last()
+                .map_or(0, |direction| direction.revision)
+                != revision
+            || run
+                .approval
+                .as_ref()
+                .is_none_or(|approval| approval.person != full.starter.person)
+        {
+            return Err("MODEL private contract run binding changed".into());
+        }
+        let contract: tilo_joined_room::task_admission::model::NativeModelContract =
+            serde_json::from_value(full.contract.clone()).map_err(|e| e.to_string())?;
+        contract.source_for(self.room(), task)?;
+        if contract.request_model != full.request_model || contract.kind != full.kind {
+            return Err("MODEL private contract policy binding changed".into());
+        }
+        Ok(PrivateReply::TaskModelContract(
+            serde_json::to_string(&contract).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    fn task_confirmation_invocation(
+        &self,
+        cx: &TaskCommand<'_>,
+        task: &str,
+        epoch: u64,
+        revision: u64,
+        asking: uuid::Uuid,
+    ) -> Result<PrivateReply, String> {
+        let source = cx
+            .source
+            .as_ref()
+            .ok_or("native confirmation requires exact source custody")?;
+        self.authorize_task_read(cx.state, task, epoch, cx.caller, cx.now)?;
+        let snapshot = self.task_policy_snapshot()?;
+        let starter = snapshot
+            .controls
+            .get(task)
+            .and_then(|c| c.active_run.as_ref())
+            .and_then(|r| r.approval.as_ref())
+            .ok_or("native confirmation starter absent")?;
+        let binding = tilo_joined_room::task_policy::NativeTaskBinding {
+            task_id: task.to_owned(),
+            agent_id: source.agent_id.clone(),
+            epoch,
+            revision,
+            starter: Some(starter.person.clone()),
+        };
+        Ok(PrivateReply::TaskConfirmationInvocation(
+            self.load_native_admission()?
+                .frozen_confirmation_invocation(&snapshot, &binding, asking)?,
+        ))
+    }
+
+    fn task_run_digest(
+        &self,
+        cx: &TaskCommand<'_>,
+        task: &str,
+        epoch: u64,
+        revision: u64,
+    ) -> Result<PrivateReply, String> {
+        let source = cx
+            .source
+            .as_ref()
+            .ok_or("private run digest requires native source custody")?;
+        self.authorize_task_read(cx.state, task, epoch, cx.caller, cx.now)?;
+        // Both inputs are read under the same governed-room writer lock.
+        let snapshot = self.task_policy_snapshot()?;
+        let run = snapshot
+            .controls
+            .get(task)
+            .and_then(|control| control.active_run.as_ref())
+            .ok_or("private run ended")?;
+        let starter = run.approval.as_ref().ok_or("private run starter absent")?;
+        let binding = tilo_joined_room::task_policy::NativeTaskBinding {
+            task_id: task.to_owned(),
+            agent_id: source.agent_id.clone(),
+            epoch,
+            revision,
+            starter: Some(starter.person.clone()),
+        };
+        let PrivateReply::TaskInstructions(encoded) = self.task_instructions(cx, task, epoch)?
+        else {
+            return Err("unexpected private instruction reply".into());
+        };
+        let private: tilo_joined_room::NativePrivateTaskInstructions =
+            serde_json::from_str(&encoded).map_err(|_| "invalid private task instructions")?;
+        let digest = tilo_joined_room::task_admission::private_run::private_run_digest(
+            tilo_desktop_model::RoomId::parse(self.room()).ok_or("invalid native room")?,
+            &snapshot,
+            &binding,
+            &private,
+        )?;
+        Ok(PrivateReply::TaskRunDigest(digest))
     }
 
     fn normalize_task_operation(

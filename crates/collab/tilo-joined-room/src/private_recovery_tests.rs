@@ -7,6 +7,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_desktop_model::{
     WorkspaceTaskConfirmation as Confirmation, WorkspaceTaskConfirmationState as State,
 };
+use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
 const SECRET: &str = "private historical confirmation body\n  exact whitespace";
 
@@ -21,7 +22,7 @@ fn confirmation() -> Confirmation {
         resource: "inbox".into(),
         action: "send".into(),
         kind: tilo_action_policy::ActionKind::Undoable,
-        risk: Default::default(),
+        risk: tilo_actions::RiskLevel::default(),
         draft: tilo_actions::Draft {
             action_label: SECRET.into(),
             description: Some(SECRET.into()),
@@ -145,7 +146,7 @@ fn legacy_candidate(
     let waiting = confirmation();
     let control = tilo_desktop_model::WorkspaceTaskControl {
         run_epoch: 1,
-        confirmation: Some(waiting.clone()),
+        confirmation: Some(waiting),
         ..Default::default()
     };
     legacy
@@ -173,7 +174,7 @@ fn legacy_candidate(
     // back to the contaminated checkpoint while opening it for recovery.
     let answered = declined();
     let mut control = control;
-    control.confirmation = Some(answered.clone());
+    control.confirmation = Some(answered);
     legacy
         .put(
             &controls,
@@ -197,7 +198,7 @@ fn legacy_candidate(
     .unwrap();
     candidate.record.peer = bytes;
     candidate.record.sanitized_baseline = Some(baseline.clone());
-    candidate.record.generation += 1;
+    candidate.record.generation = candidate.record.generation.checked_add(1).unwrap();
     crate::publication::refresh_governance_checkpoint(&mut candidate).unwrap();
     crate::publication::validate_private_recovery(&candidate, key).unwrap();
     (candidate, baseline)
@@ -248,7 +249,7 @@ fn keyed_open_recovers_contaminated_signed_checkpoint_before_strict_restore() {
     let (candidate, baseline) = legacy_candidate(&owner, room, now, &key);
     refuse_forged_or_unrelated(&candidate, &baseline, &key, now);
     let mut storage = owner.0.authority.read().clone();
-    storage.rooms.insert(room, candidate.record.clone());
+    storage.rooms.insert(room, candidate.record);
     let path = directory.path().join("rooms.json");
     std::fs::write(&path, serde_json::to_vec(&storage).unwrap()).unwrap();
     drop(owner);
@@ -259,7 +260,6 @@ fn keyed_open_recovers_contaminated_signed_checkpoint_before_strict_restore() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
 
-    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     assert!(
         with_failure(Checkpoint::BeforePublish, || {
             crate::open_file_with_private_recovery(&path, &key)
@@ -272,7 +272,10 @@ fn keyed_open_recovers_contaminated_signed_checkpoint_before_strict_restore() {
     // Normal reopening, not another recovery call, must validate the replacement.
     let reopened = crate::open_file(&path).unwrap();
     reopened
-        .with_current(room, |view| assert_recovered(view, &baseline))
+        .with_current(room, |view| {
+            assert_recovered(view, &baseline);
+            Ok(())
+        })
         .unwrap();
     let committed = std::fs::read(&path).unwrap();
     drop(reopened);
@@ -297,7 +300,7 @@ fn keyed_open_recovers_contaminated_signed_checkpoint_before_strict_restore() {
 fn assert_recovered(
     view: &crate::NativeCommittedView,
     baseline: &tilo_peer_state::SanitizedRoomBaseline,
-) -> Result<(), String> {
+) {
     let waiting = confirmation();
     let answered = declined();
     let private = &view.record.private_task_text;
@@ -324,14 +327,19 @@ fn assert_recovered(
         Some("keep this value")
     );
     let replacement = view.record.sanitized_baseline.as_ref().unwrap();
-    assert_eq!(replacement.generation, baseline.generation + 1);
-    let mut doc = replacement.verify_anchored_document(
-        &replacement.room,
-        replacement.governor,
-        &replacement.anchor(),
-    )?;
+    assert_eq!(
+        replacement.generation,
+        baseline.generation.checked_add(1).unwrap()
+    );
+    let mut doc = replacement
+        .verify_anchored_document(
+            &replacement.room,
+            replacement.governor,
+            &replacement.anchor(),
+        )
+        .unwrap();
     assert_eq!(doc.get_changes(&[]).len(), 1);
-    let mut public = crate::testing::entries(view)?;
+    let mut public = crate::testing::entries(view).unwrap();
     public.push(replacement.document.clone());
     public.extend(
         doc.get_changes(&[])
@@ -345,11 +353,11 @@ fn assert_recovered(
                 .any(|part| part == SECRET.as_bytes())
         );
     }
-    assert!(
-        view.task_policy_snapshot()?.controls["review-task"]
+    assert_eq!(
+        view.task_policy_snapshot().unwrap().controls["review-task"]
             .confirmation
-            .as_ref()
-            == Some(&answered)
+            .as_ref(),
+        Some(&answered)
     );
-    crate::publication::validate(view)
+    crate::publication::validate(view).unwrap();
 }

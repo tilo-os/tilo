@@ -575,6 +575,20 @@ impl BrokerTransport {
 }
 
 impl CollabTransport for BrokerTransport {
+    fn connection_snapshot(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
+        if self.status() != TransportStatus::Ready {
+            return None;
+        }
+        self.state
+            .connection_snapshots
+            .lock()
+            .ok()?
+            .get(&route.channel_id())
+            .cloned()
+    }
     fn status(&self) -> TransportStatus {
         match self.state.connect_phase() {
             // Why the worker stopped, when it stopped setting up.
@@ -1182,6 +1196,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::OpenSelected { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OpenSelectedV2 { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
+        CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
             meter.bytes(bytes);
@@ -1262,6 +1277,24 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(message);
         }
         CollabRequest::UpdateInvocation { update, .. } => serialized_bytes(update, &mut meter),
+        CollabRequest::ReportLocalDocumentAction { report, .. } => {
+            meter.string_capacity(&report.revision);
+            meter.string_capacity(&report.resource);
+            meter.string_capacity(&report.action);
+            if let Some(argument) = &report.argument {
+                meter.string_capacity(argument);
+            }
+            meter.string_capacity(&report.encoded.type_id);
+            meter.bytes(&report.encoded.payload);
+            serialized_bytes(&report.context, &mut meter);
+            meter.add_product(report.original_heads.capacity(), 32);
+            meter.add_product(report.mutation_hashes.capacity(), 32);
+            if let Some(group) = &report.group {
+                meter.string_capacity(&group.id);
+                meter.string_capacity(&group.label);
+                meter.string_capacity(&group.kind);
+            }
+        }
         CollabRequest::RecordLocalEffect { address, update } => {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
@@ -1775,6 +1808,26 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             meter.add(result.meter_bytes());
             "ManagedInvocationObservation"
         }
+        CollabEvent::LocalDocumentActionReported { result, .. } => {
+            match result {
+                Ok(observation) => {
+                    if let Some(result) = &observation.result {
+                        meter.string_capacity(&result.update_json);
+                        if let Some(json) = &result.admission_json {
+                            meter.string_capacity(json);
+                        }
+                        if let Some(json) = &result.terminal_json {
+                            meter.string_capacity(json);
+                        }
+                    }
+                }
+                Err(
+                    runtime_collab::LocalDocumentActionError::Rejected(error)
+                    | runtime_collab::LocalDocumentActionError::Uncertain(error),
+                ) => meter.string_capacity(error),
+            }
+            "LocalDocumentActionReported"
+        }
         CollabEvent::PublishedInvocationResult { result, .. } => {
             match result {
                 Ok((_, update)) => serialized_bytes(update, &mut meter),
@@ -1917,6 +1970,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 /// overload is detected by a subscription task on the shovel thread.
 #[derive(Clone)]
 struct BridgeState {
+    connection_snapshots: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                runtime_collab::committed_document::ConnectionSnapshot,
+            >,
+        >,
+    >,
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
@@ -2078,6 +2139,7 @@ impl BridgeState {
             owner: owner_wake.clone(),
         };
         Self {
+            connection_snapshots: Arc::default(),
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
@@ -4969,6 +5031,7 @@ struct SdkJoinContext<'a> {
 
 struct SdkRoute {
     _checks: Option<super::approved_checks::Registration>,
+    _moderation: Option<super::external_moderation::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -5006,6 +5069,11 @@ async fn ensure_sdk_route(
     if routes.contains_key(&channel_id) {
         return Ok(());
     }
+    inbound_tx
+        .state
+        .connection_snapshots
+        .lock_recover()
+        .remove(&channel_id);
     let identity_bytes = match person {
         Some((room, proof)) if *room == spec.cluster_id.to_string() => proof.as_slice(),
         _ => presentation,
@@ -5053,6 +5121,21 @@ async fn ensure_sdk_route(
         },
     )
     .await?;
+    if let Ok(runtime_collab::committed_document::Reply::ConnectionSnapshot(snapshot)) = channel
+        .committed_document(&runtime_collab::committed_document::Request::ConnectionSnapshot)
+        .await
+    {
+        if snapshot.app_id == spec.app_id
+            && snapshot.room == spec.cluster_id.to_string()
+            && snapshot.document == spec.record.as_deref().unwrap_or("")
+        {
+            inbound_tx
+                .state
+                .connection_snapshots
+                .lock_recover()
+                .insert(channel_id.clone(), snapshot);
+        }
+    }
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.
@@ -5126,6 +5209,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let moderation = super::external_moderation::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: external moderation lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -5139,6 +5228,7 @@ async fn ensure_sdk_route(
         channel_id,
         SdkRoute {
             _checks: checks,
+            _moderation: moderation,
             spec: spec.clone(),
             channel,
             presence,
@@ -6796,6 +6886,59 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             )
         })
     }
+
+    fn resolve_local_document_action(
+        self: std::rc::Rc<Self>,
+        params: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionParams,
+        mut results: runtime_collab::collab_capnp::action_directory::ResolveLocalDocumentActionResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        let request = params.get().and_then(|request| {
+            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
+                value
+                    .and_then(|value| {
+                        value
+                            .to_str()
+                            .map_err(|error| capnp::Error::failed(error.to_string()))
+                    })
+                    .map(str::to_owned)
+            };
+            Ok((
+                text(request.get_revision())?,
+                text(request.get_resource())?,
+                text(request.get_action())?,
+            ))
+        });
+        let (revision, resource, action) = match request {
+            Ok(request) => request,
+            Err(error) => return capnp::capability::Promise::err(error),
+        };
+        let requests = self.requests.clone();
+        let owner = self.owner.clone();
+        capnp::capability::Promise::from_future(async move {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::ResolveLocalDocumentAction {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                },
+            )
+            .is_err()
+            {
+                directory_unavailable()
+            } else {
+                // As for a query: the asker's deadline, not one of ours.
+                response.await.unwrap_or_else(|_| directory_unavailable())
+            };
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
+        })
+    }
 }
 
 type TaskActionResult = Result<(u64, tilo_actions::InvocationUpdate), String>;
@@ -6832,6 +6975,14 @@ async fn dispatch_sdk_request(
         return false;
     }
     match request {
+        CollabRequest::ExternalModeration {
+            command,
+            on_behalf_of,
+            reply,
+        } => {
+            super::external_moderation::execute(&route.channel, &command, on_behalf_of, &reply)
+                .await;
+        }
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => {
@@ -7261,6 +7412,23 @@ async fn dispatch_sdk_request(
                 let _ =
                     inbound_tx.send_durable(CollabEvent::ManagedInvocationObservation { result });
             }
+        }
+        CollabRequest::ReportLocalDocumentAction { request_id, report } => {
+            // Only the already authenticated route owns this call. In particular,
+            // do not query the directory to rebase a stale captured revision.
+            let result = tokio::time::timeout(
+                Duration::from_secs(4),
+                route.channel.admit_local_document_action(&report),
+            )
+            .await
+            .map_err(|_| {
+                runtime_collab::LocalDocumentActionError::Uncertain(
+                    "local document report timed out; admission may be unknown".to_owned(),
+                )
+            })
+            .and_then(std::convert::identity);
+            let _ = inbound_tx
+                .send_durable(CollabEvent::LocalDocumentActionReported { request_id, result });
         }
         CollabRequest::QueryActionDirectory { request_id, query } => {
             let result = directory_client::query(route, &query).await;

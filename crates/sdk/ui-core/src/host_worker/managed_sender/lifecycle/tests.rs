@@ -90,6 +90,8 @@ fn managed_sender_lifecycle_terminal_barrier_and_inflight_consumption_fence() {
             host: ticket.host,
             invocation: ticket.invocation,
             result: Some(runtime_collab::PublishedInvocationResult {
+                admission_json: None,
+                terminal_json: None,
                 id: 7,
                 update_json: format!(
                     r#"{{"state":"succeeded","invocation":"{}","output":{{}}}}"#,
@@ -236,7 +238,7 @@ fn terminal(sender: &mut ManagedSender, ticket: Ticket) {
         .unwrap();
     let route = crate::collaboration::RouteSpec::record("caller-app", sender.room, "caller-record");
     assert!(attempt.claim(&route).unwrap().is_ok());
-    let reply=attempt.finish(Ok(runtime_collab::PublishedInvocationObservation{host:ticket.host,invocation:ticket.invocation,result:Some(runtime_collab::PublishedInvocationResult{id:7,update_json:format!(r#"{{"state":"succeeded","invocation":"{}","output":{{"value":"original result"}}}}"#,uuid::Uuid::from_bytes(ticket.invocation)),uncertain:false,cancellation_requested:false})})).unwrap();
+    let reply=attempt.finish(Ok(runtime_collab::PublishedInvocationObservation{host:ticket.host,invocation:ticket.invocation,result:Some(runtime_collab::PublishedInvocationResult{ admission_json: None, terminal_json: None,id:7,update_json:format!(r#"{{"state":"succeeded","invocation":"{}","output":{{"value":"original result"}}}}"#,uuid::Uuid::from_bytes(ticket.invocation)),uncertain:false,cancellation_requested:false})})).unwrap();
     sender.observe_result(reply, caller()).unwrap();
     assert_eq!(commit(sender), Completion::Observed(ticket));
 }

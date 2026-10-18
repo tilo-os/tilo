@@ -16,7 +16,7 @@ fn bound_instruction_requires_exact_owner_private_body() {
     let mut private = NativeTaskPrivateInstructions {
         instruction: Some(body.into()),
         agent_request: None,
-        directions: Default::default(),
+        directions: std::collections::BTreeMap::new(),
     };
     assert_eq!(
         bound_private_instruction(&control, Some(&private), "Task").unwrap(),

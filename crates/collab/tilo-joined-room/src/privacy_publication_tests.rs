@@ -80,7 +80,7 @@ fn failed_publication_migration_cannot_release_predecessor_bytes() {
     let (directory, owner, key, room) = governor();
     let now = SystemTime::now();
     let before = owner
-        .with_current(room, |view| Ok(view.peer().durable()?))
+        .with_current(room, |view| view.peer().durable())
         .unwrap();
     assert!(
         with_failure(Checkpoint::BeforePublish, || owner

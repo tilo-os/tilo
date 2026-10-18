@@ -2,6 +2,16 @@
 use super::{CapnpBrokerState, InvocationEnvelope, InvocationOwner, PendingInvocation};
 use std::sync::Arc;
 
+/// One authenticated mailbox wait, resolved from the durable admission the
+/// invocation recorded before any owner read.
+struct AdmittedMailboxWait {
+    address: tilo_actions::task_messaging::TaskRunAddress,
+    wait: tilo_actions::task_messaging::TaskMessageWait,
+    binding: crate::services::NativeTaskBinding,
+    requirement: crate::services::NativeTaskActionRequirement,
+    record: super::DurableInvocation,
+}
+
 impl CapnpBrokerState {
     async fn check_mailbox_wait_run(
         &self,
@@ -59,7 +69,10 @@ impl CapnpBrokerState {
             .ok_or("task inbox run deadline invalid")?;
         let now = tokio::time::Instant::now();
         let remaining = until_ns.saturating_sub(self.policy_now_ns()?);
-        Ok(Some(now + std::time::Duration::from_nanos(remaining)))
+        let deadline = now
+            .checked_add(std::time::Duration::from_nanos(remaining))
+            .ok_or("task inbox run deadline invalid")?;
+        Ok(Some(deadline))
     }
 
     async fn check_mailbox_wait_source(
@@ -76,15 +89,14 @@ impl CapnpBrokerState {
             .map_err(|_| "task inbox source observation interrupted")?
     }
 
-    /// A retained read-only child, never a second subscription or a public text
-    /// stream. Remote owners use the existing authenticated private inbox read.
-    pub(super) async fn execute_task_message_wait(
-        self: &Arc<Self>,
+    /// Resolve a `wait-task-message` envelope against its durable admission;
+    /// `None` when the envelope names another action.
+    fn admitted_task_mailbox_wait(
+        &self,
         room: &str,
         envelope: &InvocationEnvelope,
         pending: &PendingInvocation,
-    ) -> Result<Option<serde_json::Value>, String> {
-        use tilo_actions::task_messaging::TaskRunAddress;
+    ) -> Result<Option<AdmittedMailboxWait>, String> {
         let Some((target, wait)) = crate::workspace_tasks::messaging::wait(envelope)? else {
             return Ok(None);
         };
@@ -106,13 +118,16 @@ impl CapnpBrokerState {
                 .journal
                 .lock()
                 .map_err(|_| "native mailbox journal unavailable")?;
-            guard
+            let journal = guard
                 .as_ref()
                 .map_err(Clone::clone)?
                 .as_ref()
-                .ok_or("native mailbox durable journal absent")?
+                .ok_or("native mailbox durable journal absent")?;
+            let record = journal
                 .lookup(key)?
-                .ok_or("native mailbox admitted read absent")?
+                .ok_or("native mailbox admitted read absent")?;
+            drop(guard);
+            record
         };
         let requirement: crate::services::NativeTaskActionRequirement = serde_json::from_value(
             record
@@ -129,7 +144,8 @@ impl CapnpBrokerState {
         let binding = requirement
             .binding
             .as_ref()
-            .ok_or("native mailbox run binding absent")?;
+            .ok_or("native mailbox run binding absent")?
+            .clone();
         if binding.task_id != *task
             || binding.agent_id != *agent
             || binding.epoch != *epoch
@@ -156,6 +172,147 @@ impl CapnpBrokerState {
         if admitted_wait != wait {
             return Err("native mailbox wait differs from admitted exact arguments".into());
         }
+        Ok(Some(AdmittedMailboxWait {
+            address: tilo_actions::task_messaging::TaskRunAddress {
+                task_id: task.clone(),
+                run_epoch: *epoch,
+                agent_id: agent.clone(),
+            },
+            wait,
+            binding,
+            requirement,
+            record,
+        }))
+    }
+
+    /// One currently authorized private observation of the admitted run's
+    /// inbox, bounded by the wait deadline and the run's execution budget.
+    async fn observe_task_mailbox(
+        self: &Arc<Self>,
+        room: &str,
+        original: &Arc<super::OriginalInvocationData>,
+        admitted: &AdmittedMailboxWait,
+        service: &Arc<dyn crate::services::WorkspaceTaskExecution>,
+        deadline: tokio::time::Instant,
+    ) -> Result<
+        (
+            Vec<tilo_actions::task_messaging::TaskMessage>,
+            tokio::time::Instant,
+        ),
+        String,
+    > {
+        self.check_mailbox_wait_source(original, &admitted.binding)
+            .await?;
+        let run_deadline = self
+            .check_mailbox_wait_run(room, &admitted.binding, &admitted.record)
+            .await?;
+        let read_deadline = run_deadline.map_or(deadline, |until| deadline.min(until));
+        let observe = async {
+            let messages = {
+                let service = service.clone();
+                let room = room.to_owned();
+                let binding = admitted.binding.clone();
+                let requirement = admitted.requirement.clone();
+                let runtime = tokio::runtime::Handle::current();
+                // Construct the borrowed future on the worker too:
+                // implementations may prepare synchronous owner reads
+                // before returning their asynchronous observation.
+                tokio::task::spawn_blocking(move || {
+                    runtime.block_on(service.poll_messages(&room, &binding, &requirement))
+                })
+                .await
+                .map_err(|_| "task inbox owner observation interrupted")??
+            };
+            self.check_mailbox_wait_source(original, &admitted.binding)
+                .await?;
+            let _ = self
+                .check_mailbox_wait_run(room, &admitted.binding, &admitted.record)
+                .await?;
+            Ok::<_, String>(messages)
+        };
+        let messages = tokio::time::timeout_at(read_deadline, observe)
+            .await
+            .map_err(|_| "task inbox owner observation deadline exceeded")??;
+        Ok((messages, read_deadline))
+    }
+
+    /// Wait for a committed-owner or broker hint, or the deadline; `true`
+    /// when the deadline passed.
+    async fn task_mailbox_hint(
+        &self,
+        refresh: &mut tokio::sync::watch::Receiver<()>,
+        owner_changes: &mut Option<tokio::sync::watch::Receiver<()>>,
+        deadline: tokio::time::Instant,
+    ) -> Result<bool, String> {
+        tokio::select! {
+            biased;
+            changed = refresh.changed() => {
+                changed.map_err(|_| "task inbox wait notification closed")?;
+                Ok(false)
+            }
+            changed = async {
+                match owner_changes.as_mut() {
+                    Some(changes) => changes.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                changed.map_err(|_| "task inbox owner notification closed")?;
+                self.refresh_task_control();
+                Ok(false)
+            }
+            () = tokio::time::sleep_until(deadline) => Ok(true),
+        }
+    }
+
+    /// The wait's last observation at its deadline: recheck the original
+    /// source and answer the empty page already observed, never a fabricated
+    /// fresh owner read.
+    async fn expired_task_mailbox_page(
+        self: &Arc<Self>,
+        pending: &PendingInvocation,
+        original: &Arc<super::OriginalInvocationData>,
+        admitted: &AdmittedMailboxWait,
+    ) -> Result<Option<serde_json::Value>, String> {
+        if !self.is_accepting()
+            || pending
+                .cancellation_fence
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("task inbox wait cancelled".into());
+        }
+        // No new owner observation is fabricated at the deadline. The previous
+        // authorized empty page remains just an observation.
+        self.check_mailbox_wait_source(original, &admitted.binding)
+            .await?;
+        if !self.is_accepting()
+            || pending
+                .cancellation_fence
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err("task inbox wait cancelled".into());
+        }
+        let page = crate::workspace_tasks::messaging::wait_page(
+            admitted.address.clone(),
+            admitted.wait,
+            Vec::new(),
+            true,
+        )?;
+        serde_json::to_value(page)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    /// A retained read-only child, never a second subscription or a public text
+    /// stream. Remote owners use the existing authenticated private inbox read.
+    pub(super) async fn execute_task_message_wait(
+        self: &Arc<Self>,
+        room: &str,
+        envelope: &InvocationEnvelope,
+        pending: &PendingInvocation,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(admitted) = self.admitted_task_mailbox_wait(room, envelope, pending)? else {
+            return Ok(None);
+        };
         let original = pending
             .original
             .as_ref()
@@ -169,7 +326,7 @@ impl CapnpBrokerState {
         let mut owner_changes = {
             let service = service.clone();
             let room = room.to_owned();
-            let binding = binding.clone();
+            let binding = admitted.binding.clone();
             tokio::task::spawn_blocking(move || service.message_changes_for_run(&room, &binding))
                 .await
                 .map_err(|_| "task inbox owner subscription interrupted")??
@@ -179,7 +336,10 @@ impl CapnpBrokerState {
         // Mailbox children publish no progress: this retained admission instant
         // is the original start, not the time of a transport re-ask.
         let mut deadline = tokio::time::Instant::from_std(pending.last_activity)
-            + std::time::Duration::from_millis(u64::from(wait.timeout_ms));
+            .checked_add(std::time::Duration::from_millis(u64::from(
+                admitted.wait.timeout_ms,
+            )))
+            .ok_or("task inbox wait deadline invalid")?;
         loop {
             if !self.is_accepting()
                 || pending
@@ -188,38 +348,7 @@ impl CapnpBrokerState {
             {
                 return Err("task inbox wait cancelled".into());
             }
-            let observation_deadline = deadline;
-            let read = async {
-                self.check_mailbox_wait_source(original, binding).await?;
-                let run_deadline = self.check_mailbox_wait_run(room, binding, &record).await?;
-                let read_deadline = run_deadline.map_or(observation_deadline, |until| {
-                    observation_deadline.min(until)
-                });
-                let observe = async {
-                    let messages = {
-                        let service = service.clone();
-                        let room = room.to_owned();
-                        let binding = binding.clone();
-                        let requirement = requirement.clone();
-                        let runtime = tokio::runtime::Handle::current();
-                        // Construct the borrowed future on the worker too:
-                        // implementations may prepare synchronous owner reads
-                        // before returning their asynchronous observation.
-                        tokio::task::spawn_blocking(move || {
-                            runtime.block_on(service.poll_messages(&room, &binding, &requirement))
-                        })
-                        .await
-                        .map_err(|_| "task inbox owner observation interrupted")??
-                    };
-                    self.check_mailbox_wait_source(original, binding).await?;
-                    let _ = self.check_mailbox_wait_run(room, binding, &record).await?;
-                    Ok::<_, String>(messages)
-                };
-                let messages = tokio::time::timeout_at(read_deadline, observe)
-                    .await
-                    .map_err(|_| "task inbox owner observation deadline exceeded")??;
-                Ok::<_, String>((messages, read_deadline))
-            };
+            let read = self.observe_task_mailbox(room, original, &admitted, &service, deadline);
             tokio::pin!(read);
             let (messages, read_deadline) = loop {
                 tokio::select! {
@@ -242,12 +371,8 @@ impl CapnpBrokerState {
             deadline = deadline.min(read_deadline);
             let expired = tokio::time::Instant::now() >= deadline;
             let page = crate::workspace_tasks::messaging::wait_page(
-                TaskRunAddress {
-                    task_id: task.clone(),
-                    run_epoch: *epoch,
-                    agent_id: agent.clone(),
-                },
-                wait,
+                admitted.address.clone(),
+                admitted.wait,
                 messages,
                 expired,
             )?;
@@ -267,55 +392,13 @@ impl CapnpBrokerState {
             // Only a committed-owner or broker hint triggers another private
             // read. The deadline completes the last empty observation, not a
             // fabricated fresh observation or a delivery acknowledgement.
-            let expired = tokio::select! {
-                biased;
-                changed = refresh.changed() => {
-                    changed.map_err(|_| "task inbox wait notification closed")?;
-                    false
-                }
-                changed = async {
-                    match owner_changes.as_mut() {
-                        Some(changes) => changes.changed().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    changed.map_err(|_| "task inbox owner notification closed")?;
-                    self.refresh_task_control();
-                    false
-                }
-                () = tokio::time::sleep_until(deadline) => true,
-            };
+            let expired = self
+                .task_mailbox_hint(&mut refresh, &mut owner_changes, deadline)
+                .await?;
             if expired {
-                if !self.is_accepting()
-                    || pending
-                        .cancellation_fence
-                        .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    return Err("task inbox wait cancelled".into());
-                }
-                // No new owner observation is fabricated at the deadline. The
-                // previous authorized empty page remains just an observation.
-                self.check_mailbox_wait_source(original, binding).await?;
-                if !self.is_accepting()
-                    || pending
-                        .cancellation_fence
-                        .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    return Err("task inbox wait cancelled".into());
-                }
-                let page = crate::workspace_tasks::messaging::wait_page(
-                    TaskRunAddress {
-                        task_id: task.clone(),
-                        run_epoch: *epoch,
-                        agent_id: agent.clone(),
-                    },
-                    wait,
-                    Vec::new(),
-                    true,
-                )?;
-                return serde_json::to_value(page)
-                    .map(Some)
-                    .map_err(|error| error.to_string());
+                return self
+                    .expired_task_mailbox_page(pending, original, &admitted)
+                    .await;
             }
         }
     }
@@ -377,14 +460,16 @@ impl CapnpBrokerState {
             let record = journal
                 .lookup(key)?
                 .ok_or("native mailbox admitted effect absent")?;
-            serde_json::from_value(
+            let requirement = serde_json::from_value(
                 record
                     .intent
                     .get("native_requirement")
                     .cloned()
                     .ok_or("native mailbox exact admitted requirement absent")?,
             )
-            .map_err(|_| "native mailbox admitted requirement invalid")?
+            .map_err(|_| "native mailbox admitted requirement invalid")?;
+            drop(guard);
+            requirement
         };
         requirement.check_task_message_payload(&recipient, envelope.invocation.0, &send)?;
         let message = service.send_message(

@@ -1,5 +1,9 @@
 //! Certificate-authenticated MODEL RPC, separate from application actions.
-use super::*;
+use super::{
+    AdmittedJoinIdentity, CapnpBrokerState, InvocationOwner, PendingTaskRun, native_media,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak, atomic::Ordering};
 #[path = "native_model_receipt.rs"]
 mod receipt;
 use crate::native_model::{
@@ -39,7 +43,7 @@ impl CapnpBrokerState {
             let registry = self
                 .native_model_leases
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // Keep clones until after unlocking: the last Arc's drop can
             // deliver callbacks and must never run under the registry lock.
             registry.active.clone()
@@ -53,7 +57,7 @@ impl CapnpBrokerState {
             let mut registry = self
                 .native_model_leases
                 .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             registry.active.retain(|lease| !lease.closed());
             let Leases {
                 identities,
@@ -89,7 +93,7 @@ impl CapnpBrokerState {
         self.close_model_leases(|lease| lease.peer == peer);
         self.native_model_leases
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .identities
             .retain(|(owner, _, _), _| *owner != peer);
     }
@@ -98,7 +102,7 @@ impl CapnpBrokerState {
         self.close_model_leases(|_| true);
         self.native_model_leases
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .identities
             .clear();
     }
@@ -120,7 +124,7 @@ impl Lease {
     fn closed(&self) -> bool {
         self.callbacks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_none()
     }
 
@@ -128,7 +132,7 @@ impl Lease {
         let callbacks = self
             .callbacks
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         for callback in callbacks.into_iter().flatten() {
             callback();
@@ -220,11 +224,13 @@ impl NativeModelLease for Lease {
             if callbacks.is_none() || !self.live_registered(Some((view, now))) {
                 return Err("native MODEL connection or delivered lease ended".into());
             }
-            enqueue(self.certified_context(
+            let result = enqueue(self.certified_context(
                 view,
                 contract,
                 now.max(std::time::SystemTime::now()),
-            )?)
+            )?);
+            drop(callbacks);
+            result
         })
     }
     fn connection(&self) -> Option<NativeModelConnection> {
@@ -315,11 +321,17 @@ impl tilo_model_gateway::caller::Session for Session {
 }
 
 fn invocation(request: &Request) -> Result<uuid::Uuid, String> {
-    let value = match request {
-        Request::NativePlan { invocation, .. }
-        | Request::NativeTransform { invocation, .. }
-        | Request::NativeComplete { invocation, .. } => invocation,
-        _ => return Err("protected MODEL RPC refuses ordinary gateway requests".into()),
+    let (Request::NativePlan {
+        invocation: value, ..
+    }
+    | Request::NativeTransform {
+        invocation: value, ..
+    }
+    | Request::NativeComplete {
+        invocation: value, ..
+    }) = request
+    else {
+        return Err("protected MODEL RPC refuses ordinary gateway requests".into());
     };
     serde_json::from_value(value.clone()).map_err(|_| "invalid native MODEL invocation".into())
 }
@@ -356,38 +368,11 @@ fn directed_run(
         .journal_key
         .as_ref()
         .ok_or("native MODEL durable admission absent")?;
-    if key.owner != pending.owner || key.room != pending.cluster_id {
+    let room = &pending.cluster_id;
+    if key.owner != pending.owner || &key.room != room {
         return Err("native MODEL durable owner mismatch".into());
     }
-    let requirement: crate::services::NativeTaskActionRequirement = {
-        let guard = state
-            .journal
-            .lock()
-            .map_err(|_| "native MODEL journal unavailable")?;
-        let journal = guard
-            .as_ref()
-            .map_err(Clone::clone)?
-            .as_ref()
-            .ok_or("native MODEL journal absent")?;
-        let record = journal
-            .lookup(key)?
-            .ok_or("native MODEL admission absent")?;
-        if record.wire_id != invocation_id
-            || record.uncertain
-            || record.cancellation_requested
-            || record.update.is_terminal()
-        {
-            return Err("native MODEL admission no longer live".into());
-        }
-        serde_json::from_value(
-            record
-                .intent
-                .get("native_requirement")
-                .cloned()
-                .ok_or("native MODEL exact child absent")?,
-        )
-        .map_err(|_| "native MODEL exact child invalid")?
-    };
+    let requirement = directed_requirement(state, key, invocation_id)?;
     let binding = requirement
         .binding
         .clone()
@@ -434,7 +419,52 @@ fn directed_run(
     if matching.next().is_some() {
         return Err("native MODEL source run is ambiguous".into());
     }
-    Ok((*id, run.clone(), binding))
+    let result = (*id, run.clone(), binding);
+    drop(runs);
+    Ok(result)
+}
+
+fn directed_requirement(
+    state: &CapnpBrokerState,
+    key: &super::InvocationKey,
+    invocation_id: u64,
+) -> Result<crate::services::NativeTaskActionRequirement, String> {
+    let guard = state
+        .journal
+        .lock()
+        .map_err(|_| "native MODEL journal unavailable")?;
+    let journal = guard
+        .as_ref()
+        .map_err(Clone::clone)?
+        .as_ref()
+        .ok_or("native MODEL journal absent")?;
+    let record = journal
+        .lookup(key)?
+        .ok_or("native MODEL admission absent")?;
+    if record.wire_id != invocation_id
+        || record.uncertain
+        || record.cancellation_requested
+        || record.update.is_terminal()
+    {
+        return Err("native MODEL admission no longer live".into());
+    }
+    let requirement = serde_json::from_value(
+        record
+            .intent
+            .get("native_requirement")
+            .cloned()
+            .ok_or("native MODEL exact child absent")?,
+    )
+    .map_err(|_| "native MODEL exact child invalid")?;
+    drop(guard);
+    Ok(requirement)
+}
+
+struct Delivery {
+    run_id: u64,
+    run: PendingTaskRun,
+    binding: crate::services::NativeTaskBinding,
+    directed: Option<(u64, u64)>,
 }
 
 pub(super) async fn command(
@@ -451,168 +481,205 @@ pub(super) async fn command(
         .ok_or("native MODEL protected launch absent")?;
     protected
         .validate(&local.app_id, Some(&local.workspace_id))
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| error.to_string())?;
     if !local.current() || protected.agent != agent {
         return Err("native MODEL protected process or actor mismatch".into());
     }
-    let reply = match command {
-        command @ (Command::Claim { .. } | Command::ClaimInvocation { .. }) => {
-            let (run_id, run, binding, directed) = match command {
-                Command::Claim { run_id, lease } => {
-                    let run = state.task_run_for(peer, &agent, run_id, &lease)?;
-                    let mut binding = run
-                        .native
-                        .clone()
-                        .ok_or("ordinary run has no native MODEL custody")?;
-                    let (_, revision) = runtime_collab::native_task_revision(&lease)
-                        .ok_or("invalid native MODEL lease revision")?;
-                    binding.revision = revision;
-                    (run_id, run, binding, None)
-                }
-                Command::ClaimInvocation { invocation_id } => {
-                    let (id, run, binding) = directed_run(&state, peer, invocation_id, None)?;
-                    (id, run, binding, Some((peer, invocation_id)))
-                }
-                Command::Execute { .. } => unreachable!(),
-            };
-            if protected.room != run.cluster_id {
-                return Err("native MODEL protected launch room mismatch".into());
-            }
-            // Authority checks may enter owner/journal locks. Reap terminal,
-            // replaced and disconnected deliveries outside the registry lock.
-            state.close_model_leases(|lease| !lease.live());
-            let lease = {
-                let mut registry = state
-                    .native_model_leases
-                    .lock()
-                    .map_err(|_| "native MODEL lease registry unavailable")?;
-                let key = (peer, run_id, binding.revision);
-                if registry.active.len() >= 1024
-                    || (!registry.identities.contains_key(&key)
-                        && registry.identities.len() >= 1024)
-                {
-                    return Err("too many native MODEL delivered leases".into());
-                }
-                let connection = registry
-                    .identities
-                    .entry(key)
-                    .or_insert_with(|| NativeModelConnection {
-                        connection: local.model_connection,
-                        lease: uuid::Uuid::new_v4(),
-                    })
-                    .clone();
-                let lease = Arc::new(Lease {
-                    peer,
-                    connection,
-                    local,
-                    callbacks: Mutex::new(Some(Vec::new())),
-                    state: Arc::downgrade(&state),
-                    run_id,
-                    run,
-                    binding,
-                    identity,
-                    directed,
-                });
-                registry.active.push(lease.clone());
-                lease
-            };
-            if !lease.live() {
-                lease.close();
-                state.close_model_leases(|lease| lease.closed());
-                return Err("native MODEL connection ended".into());
-            }
-            let host = state
-                .services
-                .native_model
+    let delivery = match command {
+        Command::Claim { run_id, lease } => {
+            let run = state.task_run_for(peer, &agent, run_id, &lease)?;
+            let mut binding = run
+                .native
                 .clone()
-                .ok_or("native MODEL host custody unavailable")?;
-            let id = uuid::Uuid::new_v4();
-            let claimed_lease = lease.clone();
-            let dispatch = tokio::task::spawn_blocking(move || host.claim(claimed_lease, id))
-                .await
-                .map_err(|_| "native MODEL selection worker stopped")??;
-            // Liveness enters subscriber/run/journal and membership authority
-            // locks. Never invoke it while holding the claims registry: teardown
-            // and owner callbacks also touch these locks.
-            let candidates: Vec<_> = state
-                .native_model_claims
-                .lock()
-                .map_err(|_| "native MODEL registry unavailable")?
-                .iter()
-                .map(|(id, claim)| (*id, claim.lease.clone()))
-                .collect();
-            let expired: Vec<_> = candidates
-                .into_iter()
-                .filter_map(|(id, lease)| {
-                    if lease.live() {
-                        None
-                    } else {
-                        lease.close();
-                        Some(id)
-                    }
-                })
-                .collect();
-            let mut claims = state
-                .native_model_claims
-                .lock()
-                .map_err(|_| "native MODEL registry unavailable")?;
-            for id in expired {
-                claims.remove(&id);
+                .ok_or("ordinary run has no native MODEL custody")?;
+            let (_, revision) = runtime_collab::native_task_revision(&lease)
+                .ok_or("invalid native MODEL lease revision")?;
+            binding.revision = revision;
+            Delivery {
+                run_id,
+                run,
+                binding,
+                directed: None,
             }
-            if claims.len() >= 256 {
-                drop(claims);
-                return Err("too many pending native MODEL attempts".into());
-            }
-            claims.insert(
-                id,
-                Claim {
-                    peer,
-                    agent,
-                    lease,
-                    dispatch,
-                },
-            );
-            serde_json::to_value(id).map_err(|error| error.to_string())?
         }
-        Command::Execute { request } => {
-            let id = invocation(&request)?;
-            let claim = {
-                let mut claims = state
-                    .native_model_claims
-                    .lock()
-                    .map_err(|_| "native MODEL registry unavailable")?;
-                let claim = claims
-                    .get(&id)
-                    .ok_or("native MODEL invocation missing or consumed")?;
-                if claim.peer != peer || claim.agent != agent {
-                    return Err("native MODEL invocation belongs to another connection".into());
-                }
-                claims
-                    .remove(&id)
-                    .ok_or("native MODEL invocation disappeared")?
-            };
-            if claim.lease.directed.is_some()
-                && !matches!(&request, Request::NativeTransform { .. })
-            {
-                return Err("directed native MODEL custody permits only Transform".into());
+        Command::ClaimInvocation { invocation_id } => {
+            let (run_id, run, binding) = directed_run(&state, peer, invocation_id, None)?;
+            Delivery {
+                run_id,
+                run,
+                binding,
+                directed: Some((peer, invocation_id)),
             }
-            // One attempt only, even if preparation/HTTP fails or the caller
-            // disconnects. No response DTO can authorize another HTTP request.
-            let session = Session {
-                lease: claim.lease,
-                source: Some(NativeGatewaySource::new(claim.dispatch)?),
-            };
-            // Owner/vault/cache turns may block on unrelated host transactions.
-            // Never occupy the broker's LocalSet: it must continue processing
-            // Stop and other task leases while this attempt waits. Dropping the
-            // receiver does not cancel this thread; the final owner fence is
-            // therefore still mandatory at the actual HTTP transfer.
-            return tokio::task::spawn_blocking(move || execute(session, request))
-                .await
-                .map_err(|_| "native MODEL host worker stopped; outcome unknown".to_string())?;
         }
+        Command::Execute { request } => return execute_claim(&state, peer, &agent, request).await,
     };
-    encode_reply(reply)
+    if protected.room != delivery.run.cluster_id {
+        return Err("native MODEL protected launch room mismatch".into());
+    }
+    // Owner/journal reads and close callbacks must remain outside registry locks.
+    state.close_model_leases(|lease| !lease.live());
+    let lease = register_delivery(&state, peer, local, identity, delivery)?;
+    claim_delivery(&state, peer, agent, lease).await
+}
+
+fn register_delivery(
+    state: &Arc<CapnpBrokerState>,
+    peer: u64,
+    local: Arc<native_media::LocalAppConnection>,
+    identity: AdmittedJoinIdentity,
+    delivery: Delivery,
+) -> Result<Arc<Lease>, String> {
+    let mut registry = state
+        .native_model_leases
+        .lock()
+        .map_err(|_| "native MODEL lease registry unavailable")?;
+    let key = (peer, delivery.run_id, delivery.binding.revision);
+    if registry.active.len() >= 1024
+        || (!registry.identities.contains_key(&key) && registry.identities.len() >= 1024)
+    {
+        return Err("too many native MODEL delivered leases".into());
+    }
+    let connection = registry
+        .identities
+        .entry(key)
+        .or_insert_with(|| NativeModelConnection {
+            connection: local.model_connection,
+            lease: uuid::Uuid::new_v4(),
+        })
+        .clone();
+    let lease = Arc::new(Lease {
+        peer,
+        connection,
+        local,
+        callbacks: Mutex::new(Some(Vec::new())),
+        state: Arc::downgrade(state),
+        run_id: delivery.run_id,
+        run: delivery.run,
+        binding: delivery.binding,
+        identity,
+        directed: delivery.directed,
+    });
+    registry.active.push(lease.clone());
+    drop(registry);
+    Ok(lease)
+}
+
+async fn claim_delivery(
+    state: &Arc<CapnpBrokerState>,
+    peer: u64,
+    agent: String,
+    lease: Arc<Lease>,
+) -> Result<Vec<u8>, String> {
+    if !lease.live() {
+        lease.close();
+        state.close_model_leases(Lease::closed);
+        return Err("native MODEL connection ended".into());
+    }
+    let host = state
+        .services
+        .native_model
+        .clone()
+        .ok_or("native MODEL host custody unavailable")?;
+    let id = uuid::Uuid::new_v4();
+    let claimed_lease = lease.clone();
+    let dispatch = tokio::task::spawn_blocking(move || host.claim(claimed_lease, id))
+        .await
+        .map_err(|_| "native MODEL selection worker stopped")??;
+    // Snapshot first: live() enters subscriber/run/journal and owner locks.
+    let candidates = claim_candidates(state)?;
+    let expired = candidates.into_iter().filter_map(|(id, lease)| {
+        if lease.live() {
+            None
+        } else {
+            lease.close();
+            Some(id)
+        }
+    });
+    // Eagerly finish every authority read before acquiring the claims registry.
+    let mut expired_ids = Vec::new();
+    expired_ids.extend(expired);
+    let mut claims = state
+        .native_model_claims
+        .lock()
+        .map_err(|_| "native MODEL registry unavailable")?;
+    for expired in expired_ids {
+        claims.remove(&expired);
+    }
+    if claims.len() >= 256 {
+        return Err("too many pending native MODEL attempts".into());
+    }
+    claims.insert(
+        id,
+        Claim {
+            peer,
+            agent,
+            lease,
+            dispatch,
+        },
+    );
+    drop(claims);
+    encode_reply(&serde_json::to_value(id).map_err(|error| error.to_string())?)
+}
+
+fn claim_candidates(state: &CapnpBrokerState) -> Result<Vec<(uuid::Uuid, Arc<Lease>)>, String> {
+    let claims = state
+        .native_model_claims
+        .lock()
+        .map_err(|_| "native MODEL registry unavailable")?;
+    let candidates = claims
+        .iter()
+        .map(|(id, claim)| (*id, claim.lease.clone()))
+        .collect();
+    drop(claims);
+    Ok(candidates)
+}
+
+fn take_claim(
+    state: &CapnpBrokerState,
+    peer: u64,
+    agent: &str,
+    id: uuid::Uuid,
+) -> Result<Claim, String> {
+    let mut claims = state
+        .native_model_claims
+        .lock()
+        .map_err(|_| "native MODEL registry unavailable")?;
+    match claims.get(&id) {
+        None => return Err("native MODEL invocation missing or consumed".into()),
+        Some(claim) if claim.peer != peer || claim.agent != agent => {
+            return Err("native MODEL invocation belongs to another connection".into());
+        }
+        Some(_) => {}
+    }
+    let claim = claims
+        .remove(&id)
+        .ok_or("native MODEL invocation disappeared")?;
+    drop(claims);
+    Ok(claim)
+}
+
+async fn execute_claim(
+    state: &CapnpBrokerState,
+    peer: u64,
+    agent: &str,
+    request: Request,
+) -> Result<Vec<u8>, String> {
+    let id = invocation(&request)?;
+    let Claim {
+        lease, dispatch, ..
+    } = take_claim(state, peer, agent, id)?;
+    if lease.directed.is_some() && !matches!(&request, Request::NativeTransform { .. }) {
+        return Err("directed native MODEL custody permits only Transform".into());
+    }
+    // One attempt only. The LocalSet stays free for Stop while the owner/vault
+    // worker waits; the actual HTTP transfer still requires its final fence.
+    let session = Session {
+        lease,
+        source: Some(NativeGatewaySource::new(dispatch)?),
+    };
+    tokio::task::spawn_blocking(move || execute(session, request))
+        .await
+        .map_err(|_| "native MODEL host worker stopped; outcome unknown".to_string())?
 }
 
 fn execute(session: Session, request: Request) -> Result<Vec<u8>, String> {
@@ -646,10 +713,10 @@ fn execute(session: Session, request: Request) -> Result<Vec<u8>, String> {
         if overflow {
             return Err("native MODEL event limit exceeded; outcome unknown".into());
         }
-        if response.ok {
-            if let Some(receipt) = receipt {
-                receipt.commit(&session.lease)?;
-            }
+        if response.ok
+            && let Some(receipt) = receipt
+        {
+            receipt.commit(&session.lease)?;
         }
         // The neutral adapter retains token counters when the provider
         // supplies them. Its historical all-zero default is not proof of
@@ -666,7 +733,7 @@ fn execute(session: Session, request: Request) -> Result<Vec<u8>, String> {
                         .any(|value| value.as_u64().is_some_and(|n| n > 0))
                 })
             });
-        encode_reply(serde_json::json!({
+        encode_reply(&serde_json::json!({
             "events": events,
             "response": response,
             "accounting": {"usage": usage, "cost_usd": null},
@@ -674,8 +741,8 @@ fn execute(session: Session, request: Request) -> Result<Vec<u8>, String> {
     })
 }
 
-fn encode_reply(reply: serde_json::Value) -> Result<Vec<u8>, String> {
-    let reply = serde_json::to_vec(&reply).map_err(|error| error.to_string())?;
+fn encode_reply(reply: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let reply = serde_json::to_vec(reply).map_err(|error| error.to_string())?;
     if reply.len() > 16 * 1024 * 1024 {
         return Err("native MODEL reply limit exceeded".into());
     }
@@ -684,7 +751,7 @@ fn encode_reply(reply: serde_json::Value) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Command, Request, invocation};
     #[test]
     fn ordinary_verbs_cannot_consume_native_custody() {
         assert!(invocation(&Request::CancellationSupported).is_err());

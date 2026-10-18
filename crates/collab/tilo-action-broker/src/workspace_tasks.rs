@@ -69,6 +69,9 @@ pub fn task_resource_id(task_id: &str) -> String {
 
 /// Resolve an existing semantic task, never invent a source for an absent id.
 /// MODEL admission still requires the separate trusted person-start ceiling.
+///
+/// # Errors
+/// The snapshot does not publish a task with this id.
 pub fn model_source(
     snapshot: &WorkspaceTaskSnapshot,
     room: &str,
@@ -1301,6 +1304,64 @@ fn stop_result(
     }))
 }
 
+/// The answer a person gave to one task's confirmation request, read back
+/// against the canonical task it was recorded for.
+fn confirmation_result(
+    snapshot: &WorkspaceTaskSnapshot,
+    task_id: &str,
+    result: &WorkspaceTaskMutationResult,
+    generation: u64,
+) -> Result<serde_json::Value, String> {
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("owner confirmation receipt has no canonical task")?;
+    Ok(serde_json::json!({
+        "generation": generation,
+        "result": result,
+        "resource": format!("desktop:{task_id}"),
+        "task": task,
+        "answered": true,
+    }))
+}
+
+/// A saved steer or direct, with whether the active run has already applied it.
+fn direction_result(
+    snapshot: &WorkspaceTaskSnapshot,
+    task_id: &str,
+    result: &WorkspaceTaskMutationResult,
+    revision: u64,
+    generation: u64,
+) -> Result<serde_json::Value, String> {
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or("owner direction receipt has no canonical task")?;
+    let control = snapshot
+        .controls
+        .get(task_id)
+        .ok_or("owner direction receipt has no task control")?;
+    let run_epoch = control
+        .active_run
+        .as_ref()
+        .map(|run| run.epoch)
+        .ok_or("owner direction receipt has no active run")?;
+    Ok(serde_json::json!({
+        "generation": generation,
+        "result": result,
+        "resource": format!("desktop:{task_id}"),
+        "task": task,
+        "run_epoch": run_epoch,
+        "revision": revision,
+        "saved": true,
+        "applied": control.active_run.as_ref().is_some_and(|run| {
+            run.epoch == run_epoch && run.applied_direction_revision >= revision
+        }),
+    }))
+}
+
 pub(super) fn result(
     snapshot: &WorkspaceTaskSnapshot,
     envelope: &InvocationEnvelope,
@@ -1323,49 +1384,13 @@ pub(super) fn result(
             if envelope.action == "answer-confirmation"
                 && task_target(envelope) == task_id.strip_prefix("task:") =>
         {
-            let task = snapshot
-                .tasks
-                .iter()
-                .find(|task| &task.id == task_id)
-                .ok_or("owner confirmation receipt has no canonical task")?;
-            return Ok(serde_json::json!({
-                "generation": generation,
-                "result": result.result,
-                "resource": format!("desktop:{task_id}"),
-                "task": task,
-                "answered": true,
-            }));
+            return confirmation_result(snapshot, task_id, &result.result, generation);
         }
         WorkspaceTaskMutationResult::DirectionAdded { task_id, revision }
             if matches!(envelope.action.as_str(), "steer" | "direct")
                 && task_target(envelope) == task_id.strip_prefix("task:") =>
         {
-            let task = snapshot
-                .tasks
-                .iter()
-                .find(|task| &task.id == task_id)
-                .ok_or("owner direction receipt has no canonical task")?;
-            let control = snapshot
-                .controls
-                .get(task_id)
-                .ok_or("owner direction receipt has no task control")?;
-            let run_epoch = control
-                .active_run
-                .as_ref()
-                .map(|run| run.epoch)
-                .ok_or("owner direction receipt has no active run")?;
-            return Ok(serde_json::json!({
-                "generation": generation,
-                "result": result.result,
-                "resource": format!("desktop:{task_id}"),
-                "task": task,
-                "run_epoch": run_epoch,
-                "revision": revision,
-                "saved": true,
-                "applied": control.active_run.as_ref().is_some_and(|run| {
-                    run.epoch == run_epoch && run.applied_direction_revision >= *revision
-                }),
-            }));
+            return direction_result(snapshot, task_id, &result.result, *revision, generation);
         }
         WorkspaceTaskMutationResult::Finished { task_id }
             if envelope.action == "stop"
@@ -1827,12 +1852,8 @@ mod tests {
         assert!(command(&envelope(&serde_json::json!({"title":"x".repeat(8192)}))).is_err());
     }
 
-    #[test]
-    fn task_catalog_exposes_managed_policy_without_execution_authority() {
-        let mut document = automerge::AutoCommit::new();
-        // Project the real typed production document shape, then read through
-        // the same canonical snapshot function used by the installed service.
-        let mut task = WorkspaceTask {
+    fn catalogue_task() -> WorkspaceTask {
+        WorkspaceTask {
             parent_task_id: None,
             child_order: None,
             labels: Vec::new(),
@@ -1848,18 +1869,14 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             audit: Vec::new(),
-        };
-        tilo_desktop_model::projection::project_workspace_tasks(&mut document, &[task.clone()])
-            .unwrap();
-        let mut snapshot = tilo_peer_state::workspace_task::snapshot(&document).unwrap();
-        snapshot.controls.insert(
-            task.id.clone(),
-            tilo_desktop_model::WorkspaceTaskControl::default(),
-        );
-        let catalogue = actions(&snapshot, "Workspace", &std::collections::BTreeSet::new());
-        // Keep the original nine actions and all seven metadata/private-task
-        // additions. Count and exact names also reject duplicate publications.
-        let expected = std::collections::BTreeSet::from([
+        }
+    }
+
+    /// The exact actions a manual task publishes: the original nine and all
+    /// seven metadata/private-task additions. Count and exact names also
+    /// reject duplicate publications.
+    fn manual_catalogue_actions() -> std::collections::BTreeSet<&'static str> {
+        std::collections::BTreeSet::from([
             "read-current-tasks",
             "read-task-compute",
             "queue",
@@ -1876,7 +1893,24 @@ mod tests {
             "move-task",
             "set-labels",
             "set-assignees",
-        ]);
+        ])
+    }
+
+    #[test]
+    fn task_catalog_exposes_managed_policy_without_execution_authority() {
+        let mut document = automerge::AutoCommit::new();
+        // Project the real typed production document shape, then read through
+        // the same canonical snapshot function used by the installed service.
+        let mut task = catalogue_task();
+        tilo_desktop_model::projection::project_workspace_tasks(&mut document, &[task.clone()])
+            .unwrap();
+        let mut snapshot = tilo_peer_state::workspace_task::snapshot(&document).unwrap();
+        snapshot.controls.insert(
+            task.id.clone(),
+            tilo_desktop_model::WorkspaceTaskControl::default(),
+        );
+        let catalogue = actions(&snapshot, "Workspace", &std::collections::BTreeSet::new());
+        let expected = manual_catalogue_actions();
         assert_eq!(catalogue.len(), expected.len());
         assert_eq!(
             catalogue

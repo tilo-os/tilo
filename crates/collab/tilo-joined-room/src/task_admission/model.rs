@@ -32,7 +32,7 @@ pub enum NativeModelSource {
     Task { task_id: String, resource: TreePath },
 }
 
-/// The actual host-published requestModel contract, not an AppAction.
+/// The actual host-published requestModel contract, not an `AppAction`.
 /// `window` retains its wire/constructor name for compatibility; for a Task
 /// source it contains the task resource node, never a fabricated window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +48,8 @@ impl NativeModelContract {
     /// Read the exact shell snapshot approved at person start at the latest
     /// desired revision, before the resulting plan is acknowledged as applied.
     /// This is not a dispatch permit; policy and custody are rechecked at enqueue.
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     pub fn approved_for_run(
         view: &NativeCommittedView,
         binding: &crate::task_policy::NativeTaskBinding,
@@ -70,9 +72,10 @@ impl NativeModelContract {
             .model_authority
             .as_ref()
             .ok_or("native MODEL conscious start approval absent")?;
-        if run.epoch != binding.epoch
-            || control.run_epoch != binding.epoch
-            || frozen.epoch != binding.epoch
+        let expected_epoch = binding.epoch;
+        if run.epoch != expected_epoch
+            || control.run_epoch != expected_epoch
+            || frozen.epoch != expected_epoch
             || run.agent_id != binding.agent_id
             || control
                 .directions
@@ -120,6 +123,8 @@ impl NativeModelContract {
 
     /// Resolve the closed source against the actual delivered task identity.
     /// Legacy window constructors remain valid without adding a struct field.
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     pub fn source_for(&self, room: &str, task_id: &str) -> Result<NativeModelSource, String> {
         if self.window.room_id() != Some(room)
             || self.window.is_root()
@@ -155,6 +160,8 @@ impl NativeModelContract {
 /// It must snapshot the entire selected nonsecret profile/model and resolve
 /// the actual host source, never accept those values from invocation JSON.
 pub trait NativeModelStartAuthority {
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     fn approved_model_start(
         &self,
         view: &NativeCommittedView,
@@ -208,6 +215,8 @@ pub struct NativeModelContext {
 pub trait NativeModelAuthority {
     /// Pin connection, lease and configuration through the synchronous transfer.
     /// The view is already under the owner turn; implementations must not reenter it.
+    /// # Errors
+    /// Returns an error if current authority, run binding or durable custody cannot be verified.
     fn with_current_model_context(
         &self,
         _view: &NativeCommittedView,
@@ -447,6 +456,7 @@ impl NativeWorkspaceOwner {
 }
 
 /// Governor-only authenticated host evidence and signer; never sent to the app.
+#[derive(Clone, Copy)]
 pub struct NativeModelGovernorCustody<'a> {
     pub host: &'a DeviceCert,
     pub key: &'a SigningKey,
@@ -549,6 +559,7 @@ impl<A: NativeModelAuthority> HostDispatchModel<'_, A> {
 }
 
 /// Exact final bytes in host custody and authenticated source of the permit.
+#[derive(Clone, Copy)]
 pub struct NativeModelHttpAttempt<'a> {
     pub governor: &'a DeviceCert,
     pub outbound_body: &'a [u8],

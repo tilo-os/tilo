@@ -62,7 +62,12 @@ fn set_task_answer(
                 &f.key,
                 f.now,
             )?;
-            peer.durable_mutation_messages(view.peer(), &f.key, f.now, view.generation() + 1)
+            peer.durable_mutation_messages(
+                view.peer(),
+                &f.key,
+                f.now,
+                view.generation().checked_add(1).unwrap(),
+            )
         })
         .unwrap();
     for message in messages {
@@ -167,7 +172,7 @@ fn retained_action_ask_observes_but_deny_and_forged_source_metadata_do_not() {
             3 => forged.invocation.as_mut().unwrap().private_run_digest = [44; 32],
             4 => {
                 forged.invocation.as_mut().unwrap().contract.kind =
-                    tilo_action_policy::ActionKind::Read
+                    tilo_action_policy::ActionKind::Read;
             }
             _ => forged.invocation.as_mut().unwrap().id = uuid::Uuid::new_v4(),
         }

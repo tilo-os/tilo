@@ -357,25 +357,13 @@ impl PrivateTaskTextStore {
                 instruction,
                 assigned_agent,
                 route,
-            } => {
-                validate_text(
-                    instruction,
-                    tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
-                )?;
-                Ok((
-                    C::CreateSubtask {
-                        parent_task_id: parent_task_id.clone(),
-                        title: public_title(title, instruction),
-                        assigned_agent: Some(assigned_agent.clone()),
-                        route: Some(*route),
-                    },
-                    Some(NativePrivateInstructionWrite {
-                        instruction: Some(instruction.clone()),
-                        agent_request: None,
-                        direction: None,
-                    }),
-                ))
-            }
+            } => Self::prepare_private_subtask(
+                parent_task_id,
+                title,
+                instruction,
+                assigned_agent,
+                *route,
+            ),
             C::QueueInstruction {
                 title,
                 instruction,
@@ -434,6 +422,33 @@ impl PrivateTaskTextStore {
             _ => Ok((command.clone(), None)),
         }
     }
+    fn prepare_private_subtask(
+        parent_task_id: &str,
+        title: &str,
+        instruction: &str,
+        assigned_agent: &str,
+        route: tilo_desktop_model::WorkspaceTaskRoute,
+    ) -> Result<PreparedPrivateCommand, String> {
+        use tilo_peer_state::workspace_task::WorkspaceTaskCommand as C;
+        validate_text(
+            instruction,
+            tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+        )?;
+        Ok((
+            C::CreateSubtask {
+                parent_task_id: parent_task_id.to_owned(),
+                title: public_title(title, instruction),
+                assigned_agent: Some(assigned_agent.to_owned()),
+                route: Some(route),
+            },
+            Some(NativePrivateInstructionWrite {
+                instruction: Some(instruction.to_owned()),
+                agent_request: None,
+                direction: None,
+            }),
+        ))
+    }
+
     /// Resolve a canonical parent only from retained owner-private storage.
     /// Matching prose or public resource metadata never identifies a retry.
     pub(crate) fn retained_chat_retry(
@@ -1002,7 +1017,7 @@ mod tests {
             )
             .unwrap();
         candidate.record.peer = candidate.peer.durable().unwrap();
-        candidate.record.generation += 1;
+        candidate.record.generation = candidate.record.generation.checked_add(1).unwrap();
         owner.publish_room(room, candidate, None).unwrap();
         (directory, owner, room, now)
     }
@@ -1073,12 +1088,171 @@ mod tests {
         assert!(denied.unwrap_err().contains("host-only authority"));
     }
 
-    #[test]
-    fn private_mail_and_output_receipts_survive_reopen_without_public_hydration() {
-        use tilo_actions::task_messaging::{
-            TaskMessageSend, TaskOutputRef, TaskOutputStatus, TaskRunAddress,
-        };
-        let (directory, owner, room, now) = enrolled();
+    fn task_authorities(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+    ) -> (WorkspaceTaskAuthority, WorkspaceTaskAuthority) {
+        let (person, host) = owner
+            .with_current(room, |view| {
+                Ok((
+                    WorkspaceTaskAuthority::Person {
+                        caller: view.device().clone(),
+                    },
+                    WorkspaceTaskAuthority::Host {
+                        attestor: view.host().unwrap().clone(),
+                    },
+                ))
+            })
+            .unwrap();
+        (person, host)
+    }
+
+    fn assert_unbound_tasks_cannot_start(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+        host: &WorkspaceTaskAuthority,
+    ) -> tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+        let state = owner.workspace_task_snapshot(room).unwrap();
+        for task in &state.tasks {
+            assert!(task.assigned_agent.is_none());
+            assert_eq!(task.route, WorkspaceTaskRoute::Model);
+            assert_eq!(task.status, tilo_desktop_model::WorkspaceTaskStatus::Queued);
+            assert!(state.controls[&task.id].active_run.is_none());
+            for agent_id in ["", "scribe"] {
+                assert!(
+                    owner
+                        .commit_workspace_task_command(
+                            request(
+                                host.clone(),
+                                WorkspaceTaskCommand::StartRun {
+                                    task_id: task.id.clone(),
+                                    agent_id: agent_id.into(),
+                                }
+                            ),
+                            now
+                        )
+                        .is_err()
+                );
+            }
+        }
+        assert_eq!(owner.workspace_task_snapshot(room).unwrap(), state);
+        state
+    }
+
+    fn check_private_direction_retry(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+        person: &WorkspaceTaskAuthority,
+        child_id: &str,
+    ) -> &'static str {
+        let direction = "Private child follow-up direction";
+        let directed = request(
+            person.clone(),
+            WorkspaceTaskCommand::DirectionForRun {
+                task_id: child_id.to_owned(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: direction.into(),
+            },
+        );
+        owner
+            .commit_workspace_task_command(directed.clone(), now)
+            .unwrap();
+        let accepted = owner
+            .with_current(room, |view| {
+                Ok((
+                    view.generation(),
+                    serde_json::to_value(&view.record.private_task_text).unwrap(),
+                ))
+            })
+            .unwrap();
+        owner.commit_workspace_task_command(directed, now).unwrap();
+        // A stale frontier must not replace the accepted revision's private text.
+        assert!(
+            owner
+                .commit_workspace_task_command(
+                    request(
+                        person.clone(),
+                        WorkspaceTaskCommand::DirectionForRun {
+                            task_id: child_id.to_owned(),
+                            run_epoch: 1,
+                            after_revision: 0,
+                            text: "Rejected replacement direction".into(),
+                        },
+                    ),
+                    now,
+                )
+                .is_err()
+        );
+        owner
+            .with_current(room, |view| {
+                assert_eq!(view.generation(), accepted.0);
+                assert_eq!(
+                    serde_json::to_value(&view.record.private_task_text).unwrap(),
+                    accepted.1
+                );
+                Ok(())
+            })
+            .unwrap();
+        direction
+    }
+
+    fn assert_private_child_projection(
+        view: &crate::NativeCommittedView,
+        child_id: &str,
+        goal: &str,
+        direction: &str,
+    ) {
+        let mut doc = view.peer.admitted_room().unwrap().clone();
+        let canonical = tilo_peer_state::workspace_task::snapshot(&doc).unwrap();
+        assert_eq!(canonical.tasks.len(), 2);
+        assert_eq!(
+            canonical
+                .tasks
+                .iter()
+                .find(|task| task.id == child_id)
+                .unwrap()
+                .title,
+            "Child"
+        );
+        assert!(canonical.controls[child_id].instruction.is_none());
+        assert_eq!(
+            canonical.controls[child_id]
+                .private_instruction_ref
+                .as_deref(),
+            Some(tilo_peer_state::workspace_task::private_instruction_reference(goal).as_str())
+        );
+        assert_eq!(canonical.controls[child_id].directions.len(), 1);
+        assert_eq!(
+            canonical.controls[child_id].directions[0].text,
+            tilo_peer_state::workspace_task::private_instruction_reference(direction)
+        );
+        for change in doc.get_changes(&[]) {
+            for secret in [goal, direction] {
+                assert!(
+                    !change
+                        .raw_bytes()
+                        .windows(secret.len())
+                        .any(|bytes| bytes == secret.as_bytes())
+                );
+            }
+        }
+    }
+
+    fn mailbox_runs(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+    ) -> (
+        WorkspaceTaskAuthority,
+        WorkspaceTaskAuthority,
+        WorkspaceTaskAuthority,
+        tilo_actions::task_messaging::TaskRunAddress,
+        tilo_actions::task_messaging::TaskRunAddress,
+    ) {
+        use tilo_actions::task_messaging::TaskRunAddress;
         let (person, host, agent) = owner
             .with_current(room, |view| {
                 Ok((
@@ -1128,8 +1302,18 @@ mod tests {
             run_epoch: 1,
             agent_id: "scribe".into(),
         };
+        (person, host, agent, source, recipient)
+    }
+
+    fn send_idempotent_private_mail(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        source: tilo_actions::task_messaging::TaskRunAddress,
+        recipient: &tilo_actions::task_messaging::TaskRunAddress,
+        body: &str,
+    ) -> tilo_actions::task_messaging::TaskMessage {
+        use tilo_actions::task_messaging::TaskMessageSend;
         let invocation = uuid::Uuid::new_v4();
-        let body = "  private mailbox canary\nexact body  ";
         let send = TaskMessageSend {
             run_epoch: 1,
             text: body.into(),
@@ -1173,6 +1357,16 @@ mod tests {
                 )
                 .is_err()
         );
+        message
+    }
+
+    #[test]
+    fn private_mail_and_output_receipts_survive_reopen_without_public_hydration() {
+        use tilo_actions::task_messaging::{TaskOutputRef, TaskOutputStatus};
+        let (directory, owner, room, now) = enrolled();
+        let (person, host, agent, source, recipient) = mailbox_runs(&owner, room, now);
+        let body = "  private mailbox canary\nexact body  ";
+        let message = send_idempotent_private_mail(&owner, room, source, &recipient, body);
         let output = TaskOutputRef {
             version: 1,
             task_run: recipient.clone(),
@@ -1192,7 +1386,7 @@ mod tests {
                 &recipient.task_id,
                 1,
                 &agent,
-                &[message.message_id.clone()],
+                std::slice::from_ref(&message.message_id),
             )
             .unwrap();
         assert!(
@@ -1250,162 +1444,339 @@ mod tests {
         );
     }
 
+    fn start_report_run(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+    ) -> (
+        WorkspaceTaskAuthority,
+        WorkspaceTaskAuthority,
+        WorkspaceTaskAuthority,
+        String,
+    ) {
+        let (person, host) = owner
+            .with_current(room, |view| {
+                Ok((
+                    WorkspaceTaskAuthority::Person {
+                        caller: view.device().clone(),
+                    },
+                    WorkspaceTaskAuthority::Host {
+                        attestor: view.host().unwrap().clone(),
+                    },
+                ))
+            })
+            .unwrap();
+        owner
+            .commit_workspace_task_command(
+                request(person.clone(), queue("Review", "private goal")),
+                now,
+            )
+            .unwrap();
+        let id = owner.workspace_task_snapshot(room).unwrap().tasks[0]
+            .id
+            .clone();
+        owner
+            .commit_workspace_task_command(
+                request(
+                    host.clone(),
+                    WorkspaceTaskCommand::StartRun {
+                        task_id: id.clone(),
+                        agent_id: "scribe".into(),
+                    },
+                ),
+                now,
+            )
+            .unwrap();
+        let WorkspaceTaskAuthority::Host { attestor } = &host else {
+            panic!("expected host authority")
+        };
+        let agent = WorkspaceTaskAuthority::Agent {
+            attestor: attestor.clone(),
+            agent_id: "scribe".into(),
+        };
+        owner
+            .commit_workspace_task_command(
+                request(
+                    agent.clone(),
+                    WorkspaceTaskCommand::ExecutionPhase {
+                        task_id: id.clone(),
+                        run_epoch: 1,
+                        sequence: 0,
+                        phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
+                    },
+                ),
+                now,
+            )
+            .unwrap();
+        (person, host, agent, id)
+    }
+
+    fn publish_private_progress(
+        owner: &NativeWorkspaceOwner,
+        now: SystemTime,
+        agent: &WorkspaceTaskAuthority,
+        id: &str,
+        progress: &str,
+    ) -> (uuid::Uuid, u64) {
+        let update = request(
+            agent.clone(),
+            WorkspaceTaskCommand::PublicProgress {
+                task_id: id.to_owned(),
+                run_epoch: 1,
+                sequence: 1,
+                message: progress.into(),
+            },
+        );
+        let progress_invocation = match &update.operation {
+            tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { invocation, .. } => {
+                *invocation
+            }
+            _ => panic!("expected workspace task command"),
+        };
+        let accepted_after = crate::enrollment::ns(SystemTime::now()).unwrap();
+        owner
+            .commit_workspace_task_command(update.clone(), now)
+            .unwrap();
+        owner
+            .commit_workspace_task_command(update.clone(), now)
+            .unwrap();
+        let mut changed_body = update;
+        if let tilo_owner_commit::CommitOperation::WorkspaceTaskCommand {
+            command: WorkspaceTaskCommand::PublicProgress { message, .. },
+            ..
+        } = &mut changed_body.operation
+        {
+            *message = "different private body".into();
+        }
+        assert!(
+            owner
+                .commit_workspace_task_command(changed_body, now)
+                .is_err()
+        );
+        (progress_invocation, accepted_after)
+    }
+
+    fn publish_bounded_private_presentation(
+        owner: &NativeWorkspaceOwner,
+        now: SystemTime,
+        agent: &WorkspaceTaskAuthority,
+        id: &str,
+        path: &std::path::Path,
+    ) -> collab_types::task_presentation::TaskPresentation {
+        let presentation = collab_types::task_presentation::TaskPresentation {
+            run: "private-turn:1".into(),
+            sequence: 3,
+            received_at: Some(1234),
+            text: format!("  exact presentation answer\n{}", "é".repeat(3058)),
+            reasoning: "é".repeat(512),
+            finish: Some(collab_types::task_presentation::TaskPresentationFinish::Complete),
+            detail: "é".repeat(512),
+        };
+        assert_eq!(
+            presentation
+                .text
+                .len()
+                .checked_add(presentation.reasoning.len())
+                .unwrap()
+                .checked_add(presentation.detail.len())
+                .unwrap(),
+            tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
+        );
+        let presentation_request = request(
+            agent.clone(),
+            WorkspaceTaskCommand::Presentation {
+                task_id: id.to_owned(),
+                run_epoch: 1,
+                sequence: 2,
+                presentation: presentation.clone(),
+            },
+        );
+        owner
+            .commit_workspace_task_command(presentation_request.clone(), now)
+            .unwrap();
+        owner
+            .commit_workspace_task_command(presentation_request, now)
+            .unwrap();
+        for field in ["text", "reasoning", "detail"] {
+            let mut oversized = presentation.clone();
+            oversized.text = "é".repeat(3072);
+            oversized.reasoning = "é".repeat(512);
+            oversized.detail = "é".repeat(512);
+            match field {
+                "text" => oversized.text.push('x'),
+                "reasoning" => oversized.reasoning.push('x'),
+                _ => oversized.detail.push('x'),
+            }
+            let before = std::fs::read(path.join("rooms.json")).unwrap();
+            assert!(
+                owner
+                    .commit_workspace_task_command(
+                        request(
+                            agent.clone(),
+                            WorkspaceTaskCommand::Presentation {
+                                task_id: id.to_owned(),
+                                run_epoch: 1,
+                                sequence: 3,
+                                presentation: oversized,
+                            },
+                        ),
+                        now
+                    )
+                    .is_err(),
+                "{field}"
+            );
+            assert_eq!(std::fs::read(path.join("rooms.json")).unwrap(), before);
+        }
+        presentation
+    }
+
+    struct ReportChecks<'a> {
+        id: &'a str,
+        progress: &'a str,
+        terminal: &'a str,
+        presentation: &'a collab_types::task_presentation::TaskPresentation,
+        progress_invocation: uuid::Uuid,
+        attestor: &'a tilo_user_identity::DeviceCert,
+        accepted: std::ops::RangeInclusive<u64>,
+        fail: bool,
+    }
+    impl ReportChecks<'_> {
+        fn assert_reopened(
+            &self,
+            reopened: &NativeWorkspaceOwner,
+            room: RoomId,
+            person: &WorkspaceTaskAuthority,
+            host: &WorkspaceTaskAuthority,
+        ) {
+            let id = self.id;
+            let progress = self.progress;
+            let terminal = self.terminal;
+            let presentation = self.presentation;
+            let progress_invocation = self.progress_invocation;
+            let attestor = self.attestor;
+            let accepted_after = *self.accepted.start();
+            let accepted_before = *self.accepted.end();
+            let reports = reopened
+                .task_report_transcript(room, id, 1, person)
+                .unwrap();
+            assert_eq!(reports.len(), 3);
+            let exact = reports
+                .iter()
+                .find(|report| report.presentation.is_some())
+                .unwrap();
+            assert_eq!(exact.body, presentation.text);
+            assert_eq!(
+                serde_json::to_value(exact.presentation.as_ref().unwrap()).unwrap(),
+                serde_json::to_value(presentation).unwrap()
+            );
+            assert!(reports.iter().any(|report| report.body == terminal));
+            let progress_report = reports
+                .iter()
+                .find(|report| report.body == progress)
+                .unwrap();
+            assert_eq!(progress_report.invocation, progress_invocation);
+            assert_eq!(progress_report.source_device, attestor.device_public_key);
+            assert_eq!(
+                progress_report.role,
+                crate::NativePrivateTaskReportRole::Assistant
+            );
+            assert!(
+                (accepted_after..=accepted_before).contains(&progress_report.accepted_at_unix_ns)
+            );
+            assert!(reopened.task_report_transcript(room, id, 1, host).is_err());
+        }
+        fn assert_committed(&self, view: &crate::NativeCommittedView) {
+            let id = self.id;
+            let progress = self.progress;
+            let terminal = self.terminal;
+            let presentation = self.presentation;
+            let progress_invocation = self.progress_invocation;
+            let attestor = self.attestor;
+            let accepted_after = *self.accepted.start();
+            let accepted_before = *self.accepted.end();
+            let fail = self.fail;
+            let reports = &view.record.private_task_text.reports;
+            assert_eq!(reports.len(), 3);
+            let exact = reports
+                .values()
+                .find(|report| report.presentation.is_some())
+                .unwrap();
+            assert_eq!(exact.body, presentation.text);
+            assert_eq!(
+                serde_json::to_value(exact.presentation.as_ref().unwrap()).unwrap(),
+                serde_json::to_value(presentation).unwrap()
+            );
+            assert_eq!(reports[&progress_invocation.to_string()].body, progress);
+            assert!(reports.values().any(|report| report.body == progress));
+            assert!(reports.values().any(|report| report.body == terminal));
+            for report in reports.values() {
+                assert_eq!(report.task_run.task_id, id);
+                assert_eq!(report.task_run.run_epoch, 1);
+                assert_eq!(report.task_run.agent_id, "scribe");
+                assert_eq!(report.source_device, attestor.device_public_key);
+                assert_eq!(report.role, crate::NativePrivateTaskReportRole::Assistant);
+                assert!((accepted_after..=accepted_before).contains(&report.accepted_at_unix_ns));
+                assert_eq!(
+                    report.actor,
+                    if fail && report.body == terminal {
+                        "host"
+                    } else {
+                        "agent:scribe"
+                    }
+                );
+            }
+            let serialized_public = serde_json::to_string(
+                &tilo_peer_state::workspace_task::snapshot(view.peer.admitted_room().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(!serialized_public.contains("private progress canary"));
+            assert!(!serialized_public.contains("private terminal canary"));
+            assert!(!serialized_public.contains("exact presentation answer"));
+            assert!(!serialized_public.contains("private presentation reasoning"));
+            assert!(!serialized_public.contains("private presentation detail"));
+            assert!(!serialized_public.contains("Agent run"));
+            let mut doc = view.peer.admitted_room().unwrap().clone();
+            for secret in [
+                progress,
+                terminal,
+                presentation.text.as_str(),
+                presentation.reasoning.as_str(),
+                presentation.detail.as_str(),
+            ] {
+                for change in doc.get_changes(&[]) {
+                    assert!(
+                        !change
+                            .raw_bytes()
+                            .windows(secret.len())
+                            .any(|bytes| bytes == secret.as_bytes())
+                    );
+                }
+                for publication in crate::testing::entries(view).unwrap() {
+                    assert!(
+                        !publication
+                            .windows(secret.len())
+                            .any(|bytes| bytes == secret.as_bytes())
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn automatic_reports_keep_exact_private_bodies_out_of_public_history() {
         for fail in [false, true] {
             let (directory, owner, room, now) = enrolled();
-            let (person, host) = owner
-                .with_current(room, |view| {
-                    Ok((
-                        WorkspaceTaskAuthority::Person {
-                            caller: view.device().clone(),
-                        },
-                        WorkspaceTaskAuthority::Host {
-                            attestor: view.host().unwrap().clone(),
-                        },
-                    ))
-                })
-                .unwrap();
-            owner
-                .commit_workspace_task_command(
-                    request(person.clone(), queue("Review", "private goal")),
-                    now,
-                )
-                .unwrap();
-            let id = owner.workspace_task_snapshot(room).unwrap().tasks[0]
-                .id
-                .clone();
-            owner
-                .commit_workspace_task_command(
-                    request(
-                        host.clone(),
-                        WorkspaceTaskCommand::StartRun {
-                            task_id: id.clone(),
-                            agent_id: "scribe".into(),
-                        },
-                    ),
-                    now,
-                )
-                .unwrap();
+            let (person, host, agent, id) = start_report_run(&owner, room, now);
             let WorkspaceTaskAuthority::Host { attestor } = &host else {
-                unreachable!()
+                panic!("expected host authority")
             };
-            let agent = WorkspaceTaskAuthority::Agent {
-                attestor: attestor.clone(),
-                agent_id: "scribe".into(),
-            };
-            owner
-                .commit_workspace_task_command(
-                    request(
-                        agent.clone(),
-                        WorkspaceTaskCommand::ExecutionPhase {
-                            task_id: id.clone(),
-                            run_epoch: 1,
-                            sequence: 0,
-                            phase: tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
-                        },
-                    ),
-                    now,
-                )
-                .unwrap();
             let progress = "  private progress canary\nwith exact whitespace  ";
             let terminal = "  private terminal canary\nwith exact whitespace  ";
-            let update = request(
-                agent.clone(),
-                WorkspaceTaskCommand::PublicProgress {
-                    task_id: id.clone(),
-                    run_epoch: 1,
-                    sequence: 1,
-                    message: progress.into(),
-                },
-            );
-            let progress_invocation = match &update.operation {
-                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { invocation, .. } => {
-                    *invocation
-                }
-                _ => unreachable!(),
-            };
-            let accepted_after = crate::enrollment::ns(SystemTime::now()).unwrap();
-            owner
-                .commit_workspace_task_command(update.clone(), now)
-                .unwrap();
-            owner
-                .commit_workspace_task_command(update.clone(), now)
-                .unwrap();
-            let mut changed_body = update;
-            if let tilo_owner_commit::CommitOperation::WorkspaceTaskCommand {
-                command: WorkspaceTaskCommand::PublicProgress { message, .. },
-                ..
-            } = &mut changed_body.operation
-            {
-                *message = "different private body".into();
-            }
-            assert!(
-                owner
-                    .commit_workspace_task_command(changed_body, now)
-                    .is_err()
-            );
-            let presentation = collab_types::task_presentation::TaskPresentation {
-                run: "private-turn:1".into(),
-                sequence: 3,
-                received_at: Some(1234),
-                text: format!("  exact presentation answer\n{}", "é".repeat(3058)),
-                reasoning: "é".repeat(512),
-                finish: Some(collab_types::task_presentation::TaskPresentationFinish::Complete),
-                detail: "é".repeat(512),
-            };
-            assert_eq!(
-                presentation.text.len() + presentation.reasoning.len() + presentation.detail.len(),
-                tilo_actions::task_messaging::TaskReportPresentation::MAX_PROSE_BYTES
-            );
-            let presentation_request = request(
-                agent.clone(),
-                WorkspaceTaskCommand::Presentation {
-                    task_id: id.clone(),
-                    run_epoch: 1,
-                    sequence: 2,
-                    presentation: presentation.clone(),
-                },
-            );
-            owner
-                .commit_workspace_task_command(presentation_request.clone(), now)
-                .unwrap();
-            owner
-                .commit_workspace_task_command(presentation_request, now)
-                .unwrap();
-            for field in ["text", "reasoning", "detail"] {
-                let mut oversized = presentation.clone();
-                oversized.text = "é".repeat(3072);
-                oversized.reasoning = "é".repeat(512);
-                oversized.detail = "é".repeat(512);
-                match field {
-                    "text" => oversized.text.push('x'),
-                    "reasoning" => oversized.reasoning.push('x'),
-                    _ => oversized.detail.push('x'),
-                }
-                let before = std::fs::read(directory.path().join("rooms.json")).unwrap();
-                assert!(
-                    owner
-                        .commit_workspace_task_command(
-                            request(
-                                agent.clone(),
-                                WorkspaceTaskCommand::Presentation {
-                                    task_id: id.clone(),
-                                    run_epoch: 1,
-                                    sequence: 3,
-                                    presentation: oversized,
-                                },
-                            ),
-                            now
-                        )
-                        .is_err(),
-                    "{field}"
-                );
-                assert_eq!(
-                    std::fs::read(directory.path().join("rooms.json")).unwrap(),
-                    before
-                );
-            }
+            let (progress_invocation, accepted_after) =
+                publish_private_progress(&owner, now, &agent, &id, progress);
+            let presentation =
+                publish_bounded_private_presentation(&owner, now, &agent, &id, directory.path());
             // Rejected stale reports must not leave a private transcript entry.
             assert!(
                 owner
@@ -1450,76 +1821,19 @@ mod tests {
                 .commit_workspace_task_command(terminal_request, now)
                 .unwrap();
             let accepted_before = crate::enrollment::ns(SystemTime::now()).unwrap();
+            let checks = ReportChecks {
+                id: &id,
+                progress,
+                terminal,
+                presentation: &presentation,
+                progress_invocation,
+                attestor,
+                accepted: accepted_after..=accepted_before,
+                fail,
+            };
             owner
                 .with_current(room, |view| {
-                    let reports = &view.record.private_task_text.reports;
-                    assert_eq!(reports.len(), 3);
-                    let exact = reports
-                        .values()
-                        .find(|report| report.presentation.is_some())
-                        .unwrap();
-                    assert_eq!(exact.body, presentation.text);
-                    assert_eq!(
-                        serde_json::to_value(exact.presentation.as_ref().unwrap()).unwrap(),
-                        serde_json::to_value(&presentation).unwrap()
-                    );
-                    assert_eq!(reports[&progress_invocation.to_string()].body, progress);
-                    assert!(reports.values().any(|report| report.body == progress));
-                    assert!(reports.values().any(|report| report.body == terminal));
-                    for report in reports.values() {
-                        assert_eq!(report.task_run.task_id, id);
-                        assert_eq!(report.task_run.run_epoch, 1);
-                        assert_eq!(report.task_run.agent_id, "scribe");
-                        assert_eq!(report.source_device, attestor.device_public_key);
-                        assert_eq!(report.role, crate::NativePrivateTaskReportRole::Assistant);
-                        assert!(
-                            (accepted_after..=accepted_before)
-                                .contains(&report.accepted_at_unix_ns)
-                        );
-                        assert_eq!(
-                            report.actor,
-                            if fail && report.body == terminal {
-                                "host"
-                            } else {
-                                "agent:scribe"
-                            }
-                        );
-                    }
-                    let serialized_public =
-                        serde_json::to_string(&tilo_peer_state::workspace_task::snapshot(
-                            view.peer.admitted_room().unwrap(),
-                        )?)
-                        .unwrap();
-                    assert!(!serialized_public.contains("private progress canary"));
-                    assert!(!serialized_public.contains("private terminal canary"));
-                    assert!(!serialized_public.contains("exact presentation answer"));
-                    assert!(!serialized_public.contains("private presentation reasoning"));
-                    assert!(!serialized_public.contains("private presentation detail"));
-                    assert!(!serialized_public.contains("Agent run"));
-                    let mut doc = view.peer.admitted_room().unwrap().clone();
-                    for secret in [
-                        progress,
-                        terminal,
-                        presentation.text.as_str(),
-                        presentation.reasoning.as_str(),
-                        presentation.detail.as_str(),
-                    ] {
-                        for change in doc.get_changes(&[]) {
-                            assert!(
-                                !change
-                                    .raw_bytes()
-                                    .windows(secret.len())
-                                    .any(|bytes| bytes == secret.as_bytes())
-                            );
-                        }
-                        for publication in crate::testing::entries(view)? {
-                            assert!(
-                                !publication
-                                    .windows(secret.len())
-                                    .any(|bytes| bytes == secret.as_bytes())
-                            );
-                        }
-                    }
+                    checks.assert_committed(view);
                     Ok(())
                 })
                 .unwrap();
@@ -1529,38 +1843,7 @@ mod tests {
             assert!(!public.contains("private terminal canary"));
             drop(owner);
             let reopened = crate::open_file(&directory.path().join("rooms.json")).unwrap();
-            let reports = reopened
-                .task_report_transcript(room, &id, 1, &person)
-                .unwrap();
-            assert_eq!(reports.len(), 3);
-            let exact = reports
-                .iter()
-                .find(|report| report.presentation.is_some())
-                .unwrap();
-            assert_eq!(exact.body, presentation.text);
-            assert_eq!(
-                serde_json::to_value(exact.presentation.as_ref().unwrap()).unwrap(),
-                serde_json::to_value(&presentation).unwrap()
-            );
-            assert!(reports.iter().any(|report| report.body == terminal));
-            let progress_report = reports
-                .iter()
-                .find(|report| report.body == progress)
-                .unwrap();
-            assert_eq!(progress_report.invocation, progress_invocation);
-            assert_eq!(progress_report.source_device, attestor.device_public_key);
-            assert_eq!(
-                progress_report.role,
-                crate::NativePrivateTaskReportRole::Assistant
-            );
-            assert!(
-                (accepted_after..=accepted_before).contains(&progress_report.accepted_at_unix_ns)
-            );
-            assert!(
-                reopened
-                    .task_report_transcript(room, &id, 1, &host)
-                    .is_err()
-            );
+            checks.assert_reopened(&reopened, room, &person, &host);
         }
     }
 
@@ -1736,18 +2019,7 @@ mod tests {
     #[test]
     fn unbound_private_model_tasks_survive_reopen_with_goals_and_labels() {
         let (directory, owner, room, now) = enrolled();
-        let (person, host) = owner
-            .with_current(room, |view| {
-                Ok((
-                    WorkspaceTaskAuthority::Person {
-                        caller: view.device().clone(),
-                    },
-                    WorkspaceTaskAuthority::Host {
-                        attestor: view.host().unwrap().clone(),
-                    },
-                ))
-            })
-            .unwrap();
+        let (person, host) = task_authorities(&owner, room);
         let goal = "Retain this private model goal until an executor is configured";
         owner
             .commit_workspace_task_command(
@@ -1802,30 +2074,7 @@ mod tests {
                 now,
             )
             .unwrap();
-        let state = owner.workspace_task_snapshot(room).unwrap();
-        for task in &state.tasks {
-            assert!(task.assigned_agent.is_none());
-            assert_eq!(task.route, WorkspaceTaskRoute::Model);
-            assert_eq!(task.status, tilo_desktop_model::WorkspaceTaskStatus::Queued);
-            assert!(state.controls[&task.id].active_run.is_none());
-            for agent_id in ["", "scribe"] {
-                assert!(
-                    owner
-                        .commit_workspace_task_command(
-                            request(
-                                host.clone(),
-                                WorkspaceTaskCommand::StartRun {
-                                    task_id: task.id.clone(),
-                                    agent_id: agent_id.into(),
-                                }
-                            ),
-                            now
-                        )
-                        .is_err()
-                );
-            }
-        }
-        assert_eq!(owner.workspace_task_snapshot(room).unwrap(), state);
+        let state = assert_unbound_tasks_cannot_start(&owner, room, now, &host);
         drop(owner);
         let reopened = crate::open_file(&directory.path().join("rooms.json")).unwrap();
         assert_eq!(reopened.workspace_task_snapshot(room).unwrap(), state);
@@ -1862,21 +2111,61 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn private_subtask_is_atomic_and_never_writes_its_goal_into_the_room() {
-        let (_directory, owner, room, now) = enrolled();
-        let (person, host) = owner
+    fn reject_invalid_private_subtasks(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+        person: &WorkspaceTaskAuthority,
+        host: &WorkspaceTaskAuthority,
+        parent: &str,
+        goal: &str,
+    ) {
+        let before = owner.workspace_task_snapshot(room).unwrap();
+        let child_command = |parent_task_id| WorkspaceTaskCommand::QueuePrivateSubtask {
+            parent_task_id,
+            title: "Child".into(),
+            instruction: goal.into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+        };
+        let retained_before = owner
             .with_current(room, |view| {
                 Ok((
-                    WorkspaceTaskAuthority::Person {
-                        caller: view.device().clone(),
-                    },
-                    WorkspaceTaskAuthority::Host {
-                        attestor: view.host().unwrap().clone(),
-                    },
+                    view.generation(),
+                    serde_json::to_value(&view.record.private_task_text).unwrap(),
                 ))
             })
             .unwrap();
+        for (authority, parent_id) in [
+            (person.clone(), "task:missing".to_owned()),
+            (host.clone(), parent.to_owned()),
+        ] {
+            assert!(
+                owner
+                    .commit_workspace_task_command(
+                        request(authority, child_command(parent_id)),
+                        now
+                    )
+                    .is_err()
+            );
+            assert_eq!(owner.workspace_task_snapshot(room).unwrap(), before);
+            owner
+                .with_current(room, |view| {
+                    assert_eq!(view.generation(), retained_before.0);
+                    assert_eq!(
+                        serde_json::to_value(&view.record.private_task_text).unwrap(),
+                        retained_before.1
+                    );
+                    Ok(())
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn private_subtask_is_atomic_and_never_writes_its_goal_into_the_room() {
+        let (_directory, owner, room, now) = enrolled();
+        let (person, host) = task_authorities(&owner, room);
         owner
             .commit_workspace_task_command(
                 request(
@@ -1899,38 +2188,7 @@ mod tests {
             assigned_agent: "scribe".into(),
             route: WorkspaceTaskRoute::Model,
         };
-        let retained_before = owner
-            .with_current(room, |view| {
-                Ok((
-                    view.generation(),
-                    serde_json::to_value(&view.record.private_task_text).unwrap(),
-                ))
-            })
-            .unwrap();
-        for (authority, parent_id) in [
-            (person.clone(), "task:missing".to_owned()),
-            (host.clone(), parent.clone()),
-        ] {
-            assert!(
-                owner
-                    .commit_workspace_task_command(
-                        request(authority, child_command(parent_id)),
-                        now
-                    )
-                    .is_err()
-            );
-            assert_eq!(owner.workspace_task_snapshot(room).unwrap(), before);
-            owner
-                .with_current(room, |view| {
-                    assert_eq!(view.generation(), retained_before.0);
-                    assert_eq!(
-                        serde_json::to_value(&view.record.private_task_text).unwrap(),
-                        retained_before.1
-                    );
-                    Ok(())
-                })
-                .unwrap();
-        }
+        reject_invalid_private_subtasks(&owner, room, now, &person, &host, &parent, goal);
         let queued = request(person.clone(), child_command(parent.clone()));
         owner
             .commit_workspace_task_command(queued.clone(), now)
@@ -1970,55 +2228,7 @@ mod tests {
                 now,
             )
             .unwrap();
-        let direction = "Private child follow-up direction";
-        let directed = request(
-            person.clone(),
-            WorkspaceTaskCommand::DirectionForRun {
-                task_id: child.id.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-                text: direction.into(),
-            },
-        );
-        owner
-            .commit_workspace_task_command(directed.clone(), now)
-            .unwrap();
-        let accepted = owner
-            .with_current(room, |view| {
-                Ok((
-                    view.generation(),
-                    serde_json::to_value(&view.record.private_task_text).unwrap(),
-                ))
-            })
-            .unwrap();
-        owner.commit_workspace_task_command(directed, now).unwrap();
-        // A stale frontier must not replace the accepted revision's private text.
-        assert!(
-            owner
-                .commit_workspace_task_command(
-                    request(
-                        person.clone(),
-                        WorkspaceTaskCommand::DirectionForRun {
-                            task_id: child.id.clone(),
-                            run_epoch: 1,
-                            after_revision: 0,
-                            text: "Rejected replacement direction".into(),
-                        },
-                    ),
-                    now,
-                )
-                .is_err()
-        );
-        owner
-            .with_current(room, |view| {
-                assert_eq!(view.generation(), accepted.0);
-                assert_eq!(
-                    serde_json::to_value(&view.record.private_task_text).unwrap(),
-                    accepted.1
-                );
-                Ok(())
-            })
-            .unwrap();
+        let direction = check_private_direction_retry(&owner, room, now, &person, &child.id);
         let private = owner
             .workspace_task_private_instructions(room, &child.id, 1, &person, now)
             .unwrap()
@@ -2027,63 +2237,19 @@ mod tests {
         assert_eq!(private.directions[&1], direction);
         owner
             .with_current(room, |view| {
-                let mut doc = view.peer.admitted_room().unwrap().clone();
-                let canonical = tilo_peer_state::workspace_task::snapshot(&doc)?;
-                assert_eq!(canonical.tasks.len(), 2);
-                assert_eq!(
-                    canonical
-                        .tasks
-                        .iter()
-                        .find(|task| task.id == child.id)
-                        .unwrap()
-                        .title,
-                    "Child"
-                );
-                assert!(canonical.controls[&child.id].instruction.is_none());
-                assert_eq!(
-                    canonical.controls[&child.id]
-                        .private_instruction_ref
-                        .as_deref(),
-                    Some(
-                        tilo_peer_state::workspace_task::private_instruction_reference(goal)
-                            .as_str()
-                    )
-                );
-                assert_eq!(canonical.controls[&child.id].directions.len(), 1);
-                assert_eq!(
-                    canonical.controls[&child.id].directions[0].text,
-                    tilo_peer_state::workspace_task::private_instruction_reference(direction)
-                );
-                for change in doc.get_changes(&[]) {
-                    for secret in [goal, direction] {
-                        assert!(
-                            !change
-                                .raw_bytes()
-                                .windows(secret.len())
-                                .any(|bytes| bytes == secret.as_bytes())
-                        );
-                    }
-                }
+                assert_private_child_projection(view, &child.id, goal, direction);
                 Ok(())
             })
             .unwrap();
     }
 
-    #[test]
-    fn private_text_is_exact_run_scoped_and_survives_reopen_without_public_hydration() {
-        let (directory, owner, room, now) = enrolled();
-        let (person, host) = owner
-            .with_current(room, |view| {
-                Ok((
-                    WorkspaceTaskAuthority::Person {
-                        caller: view.device().clone(),
-                    },
-                    WorkspaceTaskAuthority::Host {
-                        attestor: view.host().unwrap().clone(),
-                    },
-                ))
-            })
-            .unwrap();
+    fn start_private_review(
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        now: SystemTime,
+        person: &WorkspaceTaskAuthority,
+        host: &WorkspaceTaskAuthority,
+    ) -> (String, WorkspaceTaskAuthority) {
         let queued = request(
             person.clone(),
             queue("Review", "private initial instruction"),
@@ -2098,7 +2264,7 @@ mod tests {
         assert!(public.controls[&id].instruction.is_none());
         assert_eq!(
             owner
-                .workspace_task_private_instructions(room, &id, 0, &person, now)
+                .workspace_task_private_instructions(room, &id, 0, person, now)
                 .unwrap()
                 .unwrap()
                 .instruction
@@ -2107,11 +2273,11 @@ mod tests {
         );
         assert!(
             owner
-                .workspace_task_private_instructions(room, &id, 0, &host, now)
+                .workspace_task_private_instructions(room, &id, 0, host, now)
                 .is_err()
         );
-        let WorkspaceTaskAuthority::Host { attestor } = &host else {
-            unreachable!()
+        let WorkspaceTaskAuthority::Host { attestor } = host else {
+            panic!("expected a host authority")
         };
         let agent = WorkspaceTaskAuthority::Agent {
             attestor: attestor.clone(),
@@ -2134,6 +2300,14 @@ mod tests {
                 now,
             )
             .unwrap();
+        (id, agent)
+    }
+
+    #[test]
+    fn private_text_is_exact_run_scoped_and_survives_reopen_without_public_hydration() {
+        let (directory, owner, room, now) = enrolled();
+        let (person, host) = task_authorities(&owner, room);
+        let (id, agent) = start_private_review(&owner, room, now, &person, &host);
         owner
             .commit_workspace_task_command(
                 request(
@@ -2207,10 +2381,7 @@ mod tests {
         // mistaken for new plaintext during the eventual signed migration.
         reopened
             .commit_workspace_task_command_with_key(
-                request(
-                    person.clone(),
-                    queue("Another task", "another private instruction"),
-                ),
+                request(person, queue("Another task", "another private instruction")),
                 &SigningKey::from_bytes(&[61; 32]),
                 now,
             )
@@ -2340,7 +2511,7 @@ mod tests {
             command,
         } = legacy.operation
         else {
-            unreachable!()
+            panic!("legacy queue must retain its task command");
         };
         // Simulate an on-disk room written before private task storage existed.
         let mut candidate = owner.with_current(room, |view| Ok(view.clone())).unwrap();
@@ -2356,7 +2527,7 @@ mod tests {
             )
             .unwrap();
         let WorkspaceTaskMutationResult::Queued { task_id } = result else {
-            unreachable!()
+            panic!("expected a queued task")
         };
         let before =
             tilo_peer_state::workspace_task::snapshot(candidate.peer.admitted_room().unwrap())

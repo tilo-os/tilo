@@ -45,6 +45,27 @@ pub(super) struct ConfirmationContext<'a> {
     pub provider: &'a str,
 }
 
+type ConfirmationArguments<'a> = (
+    serde_json::Map<String, serde_json::Value>,
+    Option<&'a str>,
+    [u8; 32],
+);
+
+/// The agent's arguments as the wire form every caller uses: JSON behind
+/// `ARGUMENTS_JSON_PREFIX`, a bare object read the same.
+fn native_confirmation_arguments(
+    argument: Option<&str>,
+) -> Result<ConfirmationArguments<'_>, String> {
+    let prefixed = argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
+    let arguments = match prefixed.or(argument) {
+        Some(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+            .map_err(|_| "task action arguments are not a JSON object")?,
+        None => serde_json::Map::new(),
+    };
+    let digest = tilo_actions::draft::arguments_digest(&arguments);
+    Ok((arguments, prefixed, digest))
+}
+
 impl CapnpBrokerState {
     /// Resolve private execution content through the authenticated owner service.
     pub(super) fn native_private_run_digest(
@@ -125,17 +146,8 @@ impl CapnpBrokerState {
         binding.revision = runtime_collab::native_task_revision(context.lease)
             .ok_or("invalid native lease")?
             .1;
-        // An agent sends its arguments in the wire form every caller uses,
-        // JSON behind `ARGUMENTS_JSON_PREFIX`; a bare object is read the same.
-        let prefixed =
-            argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
+        let (arguments, prefixed, digest) = native_confirmation_arguments(argument)?;
         let json = prefixed.or(argument);
-        let arguments = match json {
-            Some(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
-                .map_err(|_| "task action arguments are not a JSON object")?,
-            None => serde_json::Map::new(),
-        };
-        let digest = tilo_actions::draft::arguments_digest(&arguments);
         let descriptor = offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal);
         // Named by the resource itself, not the window alias it is invoked
         // through: a run resumed after a restart asks through a new window

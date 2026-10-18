@@ -27,7 +27,7 @@ mod room_retirement;
 
 struct Fixture {
     workers: Arc<tokio::sync::Semaphore>,
-    _tmp: tempfile::TempDir,
+    directory: tempfile::TempDir,
     root_key: ed25519_dalek::SigningKey,
     source_key: ed25519_dalek::SigningKey,
     workspace: SharedWorkspace,
@@ -141,7 +141,7 @@ impl Fixture {
         let (private, _) = mpsc::channel(8);
         Self {
             workers,
-            _tmp: tmp,
+            directory: tmp,
             root_key: root,
             source_key,
             workspace,
