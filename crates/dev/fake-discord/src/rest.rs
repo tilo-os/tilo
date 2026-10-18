@@ -707,7 +707,16 @@ fn list_messages(state: &State, channel: &str, request: &Recorded) -> Answer {
             picked.reverse();
             picked
         } else {
-            messages.into_iter().rev().take(limit).collect()
+            let before = request
+                .query("before")
+                .and_then(|b| b.parse::<u64>().ok())
+                .unwrap_or(u64::MAX);
+            messages
+                .into_iter()
+                .filter(|m| id_of(m) < before)
+                .rev()
+                .take(limit)
+                .collect()
         };
     Answer::json(200, &json!(selected))
 }

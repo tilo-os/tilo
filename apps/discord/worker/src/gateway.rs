@@ -26,6 +26,8 @@ use zeroize::Zeroizing;
 
 use crate::Ctx;
 use crate::egress::Purpose;
+use discord_wire::op::ChannelKind;
+
 use crate::events::{Emit, Guild, snowflake_ms};
 use crate::rest::{Auth, Body, RestError, segment};
 use crate::secrets::{BOT_TOKEN, TOKEN_ITEM};
@@ -35,6 +37,9 @@ use crate::secrets::{BOT_TOKEN, TOKEN_ITEM};
 pub const INTENTS: u64 = 1 | (1 << 1) | (1 << 2) | (1 << 9) | (1 << 10) | (1 << 15);
 /// Messages read back per channel when a session could not be resumed.
 pub const BACKFILL_LIMIT: u32 = 100;
+/// The newest messages read from each text channel the first time the
+/// worker meets its server, so an adopting room starts with its history.
+pub const HISTORY_LIMIT: u32 = 50;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A rejected token is asked for again this often, so a new one set with
 /// `set-bot-token` is picked up without restarting the worker.
@@ -60,6 +65,9 @@ pub struct Checkpoint {
     /// Channel (or thread) → the last message seen in it.
     #[serde(default)]
     pub last_seen: BTreeMap<String, Seen>,
+    /// The server's history was read, the first time the worker met it.
+    #[serde(default)]
+    pub history_read: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,6 +445,9 @@ impl Gateway {
                 if std::mem::take(&mut self.backfill_pending) {
                     self.backfill().await;
                     self.flush_checkpoint();
+                } else if !self.state.history_read {
+                    self.read_history().await;
+                    self.flush_checkpoint();
                 }
             }
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" | "THREAD_CREATE"
@@ -548,8 +559,17 @@ impl Gateway {
         };
         let channel = data["channel_id"].as_str().unwrap_or_default().to_owned();
         let parent = guild.threads.get(&channel).cloned();
-        self.emit(emit);
         let id = data["id"].as_str().unwrap_or_default().to_owned();
+        // Read from the history just before the gateway delivered it.
+        if self
+            .state
+            .last_seen
+            .get(&channel)
+            .is_some_and(|seen| seen.message == id)
+        {
+            return;
+        }
+        self.emit(emit);
         let newer = self.state.last_seen.get(&channel).is_none_or(|seen| {
             snowflake_ms(&seen.message) <= snowflake_ms(&id) && seen.message != id
         });
@@ -582,42 +602,85 @@ impl Gateway {
                     .entry(channel.clone())
                     .or_insert_with(|| parent.clone());
             }
-            let answer = self
-                .ctx
-                .rest
-                .call(
-                    Method::GET,
-                    &format!("/channels/{}/messages", segment(&channel)),
-                    &[
-                        ("after", last.message.clone()),
-                        ("limit", BACKFILL_LIMIT.to_string()),
-                    ],
-                    Body::Empty,
-                    Auth::Bot,
-                    None,
-                )
+            let read = self
+                .read_channel(&channel, &[("after", last.message.clone())], BACKFILL_LIMIT)
                 .await;
-            match answer {
-                Ok(Value::Array(mut messages)) => {
-                    messages.sort_by_key(|m| {
-                        m["id"]
-                            .as_str()
-                            .and_then(|id| id.parse::<u64>().ok())
-                            .unwrap_or(0)
-                    });
-                    for message in &messages {
-                        self.message(message);
-                    }
-                }
-                Err(RestError::Refused {
-                    status: 403 | 404, ..
-                }) => {
-                    self.state.last_seen.remove(&channel);
-                    self.dirty = true;
-                }
-                _ => {}
+            if let Err(RestError::Refused {
+                status: 403 | 404, ..
+            }) = read
+            {
+                self.state.last_seen.remove(&channel);
+                self.dirty = true;
             }
         }
+    }
+
+    /// The first time the worker meets its server: read the newest
+    /// [`HISTORY_LIMIT`] messages of each text channel it bridges, oldest
+    /// first, as if they had just been posted. They follow the layout event,
+    /// so the bridge has adopted their channels by the time it reads them,
+    /// and one it has mirrored already is known by its id.
+    async fn read_history(&mut self) {
+        let Some(guild) = &self.guild else { return };
+        let only = self.ctx.config.only_channel.as_ref();
+        let channels: Vec<String> = guild
+            .channels
+            .values()
+            .filter(|c| c.kind == ChannelKind::Text)
+            .filter(|c| only.is_none_or(|only| *only == c.id))
+            .map(|c| c.id.clone())
+            .collect();
+        for channel in channels {
+            // What arrived live meanwhile is in the history too: read only
+            // what came before it. A channel the bot may not read is left
+            // out; the rest are read.
+            let before: Vec<(&str, String)> = self
+                .state
+                .last_seen
+                .get(&channel)
+                .map(|seen| ("before", seen.message.clone()))
+                .into_iter()
+                .collect();
+            let _ = self.read_channel(&channel, &before, HISTORY_LIMIT).await;
+        }
+        self.state.history_read = true;
+        self.dirty = true;
+    }
+
+    /// Read up to `limit` messages of `channel` (narrowed by `query`, such
+    /// as `after`) and take each in, oldest first.
+    async fn read_channel(
+        &mut self,
+        channel: &str,
+        query: &[(&str, String)],
+        limit: u32,
+    ) -> Result<(), RestError> {
+        let mut query = query.to_vec();
+        query.push(("limit", limit.to_string()));
+        let answer = self
+            .ctx
+            .rest
+            .call(
+                Method::GET,
+                &format!("/channels/{}/messages", segment(channel)),
+                &query,
+                Body::Empty,
+                Auth::Bot,
+                None,
+            )
+            .await?;
+        if let Value::Array(mut messages) = answer {
+            messages.sort_by_key(|m| {
+                m["id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .unwrap_or(0)
+            });
+            for message in &messages {
+                self.message(message);
+            }
+        }
+        Ok(())
     }
 
     /// Who deleted a message, when the audit log says a moderator just
@@ -753,6 +816,7 @@ mod tests {
                     parent: Some("1101".into()),
                 },
             )]),
+            history_read: true,
         };
         let back: Checkpoint =
             serde_json::from_value(serde_json::to_value(&checkpoint).unwrap()).unwrap();

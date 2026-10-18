@@ -10,7 +10,9 @@
 //! A channel joined that way moves into its Discord channel's category, and
 //! a category of Tilo's own those moves leave empty is removed, so the room
 //! is laid out as the server is. Once adopted, a channel made in Discord
-//! later is imported the same way. Message history is not imported.
+//! later is imported the same way. The messages it already held come as
+//! the worker reads them the first time it meets the server (its newest
+//! messages per channel), at the time they were written.
 
 use discord_wire::op::{ChannelKind, DiscordOp, DiscordResult};
 use serde::{Deserialize, Serialize};

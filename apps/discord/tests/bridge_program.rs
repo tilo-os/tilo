@@ -147,6 +147,7 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
         ("channel", item("channel")),
         ("text", item("text")),
         ("parent", item("parent")),
+        ("written", item("written")),
     ];
     args.extend(extra.iter().cloned());
     let posted = format!("{step}-post");
