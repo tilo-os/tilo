@@ -1577,7 +1577,7 @@ impl CommandPalette {
     /// The Panel radius ([`crate::tokens::Radii::panel`]): the palette is a
     /// floating panel.
     pub fn surface_radius_px(theme: &Theme) -> f64 {
-        f64::from(theme.tokens.radii.panel)
+        crate::widget::floating_surface::radius(theme)
     }
 
     /// The radius of something inset `inset` inside the palette card:
@@ -2740,29 +2740,12 @@ impl Widget for CommandPalette {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
         let colors = &theme.tokens.colors;
-        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
-        // crisp 1 px inset stroke. The declared `border_standard` sat within
-        // rounding distance of `raised` on the dark preset and read as no
-        // edge at all. The ground is opaque: the card is rows of small text,
-        // and a tinted backdrop let the window under it read through them,
-        // text over text. Only the scrim around it lets the desktop show.
-        let radius = Self::surface_radius_px(theme);
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        crate::floating_surface::paint_material(
-            scene,
-            transform,
-            &shape,
-            crate::floating_surface::Material::Opaque,
-            theme,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
-        crate::surface::floating_edge(scene, transform, self.rect, radius, theme);
+        // The one floating card (HIG §9.1): the opaque panel ground and its
+        // edges. Opaque, as the card is rows of small text: a tinted
+        // backdrop let the window under it read through them, text over
+        // text. Only the scrim around it lets the desktop show. The host
+        // paints the card's shadow, fading it in with the card.
+        crate::widget::floating_surface::paint_card_body(scene, transform, self.rect, theme);
 
         // ONE control for the query — the magnifier lives inside its rounded
         // body rather than floating beside it.

@@ -24,9 +24,10 @@ use tilo_lock::MutexRecover as _;
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
 /// one or two logical pixels along each edge: enough to feel soft and held,
-/// never enough to look like a novelty blob. Body, border, app-owned call /
-/// navigation surfaces, and generic floating windows all use this exact path
-/// so their corner radii cannot drift apart.
+/// never enough to look like a novelty blob. Generic floating windows use
+/// this exact path, body and border, so their corner radii cannot drift
+/// apart. (App-owned call and navigation cards are floating cards:
+/// [`crate::widget::floating_surface::paint_card`].)
 pub fn soft_outline(rect: Rect) -> BezPath {
     let mut path = BezPath::new();
     path.move_to((rect.x0 + 21.0, rect.y0 + 1.5));

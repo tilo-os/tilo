@@ -1304,37 +1304,16 @@ pub fn choice_rects(band: Rect, gap: f64, secondary: f64, primary: f64) -> (Rect
     }
 }
 
-/// The card's body: a raised floating surface lifted by two shadows, at
-/// the card's concentric radius, fading with the card.
-///
-/// A banner arrives over whatever is on screen, so it is lifted the way
-/// macOS lifts its banners: by its shadow and a surface a step off the
-/// desktop, not by an outline. The token's wide shadow, a little larger
-/// and stronger for a card that must stand off busy windows, reads as
-/// distance; a tight contact shadow defines the edge, and a faint hairline
-/// only keeps it registering over a window of the same tone. Under forced
-/// colours the theme's panel ground and its full border do the work
-/// instead.
+/// The card's body: the one floating card
+/// ([`crate::widget::floating_surface::paint_card`]), fading with the card.
 ///
 /// Anything that stands in a column of cards (a locked-screen stand-in for
 /// them, the card for the ones that did not fit) paints this same body, so
-/// the column is one material and one shape.
+/// the column is one material and one shape, and the palette's.
 pub fn paint_card_surface(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
-    alpha: f32,
-    theme: &Theme,
-) {
-    paint_surface(scene, transform, rect, card_radius(theme), alpha, theme);
-}
-
-/// [`paint_card_surface`] at `radius`.
-fn paint_surface(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    radius: f64,
     alpha: f32,
     theme: &Theme,
 ) {
@@ -1348,60 +1327,19 @@ fn paint_surface(
             &crate::widget::floating_surface::painted_bounds(rect, theme),
         );
     }
-    let elevation = &theme.tokens.elevation;
-    let floating = elevation.floating;
-    let ambient = crate::tokens::Shadow {
-        offset_y: floating.offset_y * CARD_SHADOW_REACH,
-        blur: floating.blur * CARD_SHADOW_REACH,
-        color: floating.color.multiply_alpha(CARD_SHADOW_STRENGTH),
-    };
-    crate::surface::shadow(scene, transform, rect, radius, &ambient);
-    crate::surface::shadow(scene, transform, rect, radius, &elevation.contact);
-    let shape = RoundedRect::from_rect(rect, radius);
-    let (ground, border) = card_ground(theme);
-    crate::backdrop::fill_with_ground(
-        scene,
-        transform,
-        &shape,
-        crate::floating_surface::Material::Floating,
-        theme,
-        ground,
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        border,
-        None,
-        &crate::surface::edge_outline(rect, radius),
-    );
+    crate::widget::floating_surface::paint_card(scene, transform, rect, theme);
     if faded {
         scene.pop_layer();
     }
 }
 
-/// How much further a card's ambient shadow reaches than the floating
-/// token's.
-const CARD_SHADOW_REACH: f32 = 1.5;
-/// How much stronger a card's ambient shadow is than the floating token's.
-const CARD_SHADOW_STRENGTH: f32 = 1.6;
-/// How much of the panel border a card keeps as its hairline: enough for
-/// its edge to register against its own fill and over a window of the same
-/// tone, faint enough that the shadow, not a line, is what lifts it.
-const CARD_HAIRLINE: f32 = 0.45;
-
-/// A card's ground and its edge: the declared floating surface, a step off
-/// the desktop, with a faint hairline. Under forced colours (which the
-/// high-contrast theme also sets), where surfaces are declared equal and an
-/// edge is what separates them, the panel ground and its full border.
+/// A card's ground and its edge: the floating card's opaque panel ground
+/// and the panel edge.
 #[must_use]
 pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
-    let border = crate::chrome::panel_border(theme);
-    if theme.forced_colors {
-        return (crate::chrome::panel_ground(theme), border);
-    }
     (
-        theme.tokens.colors.surfaces.overlay,
-        border.multiply_alpha(CARD_HAIRLINE),
+        crate::widget::floating_surface::card_ground(theme),
+        crate::chrome::panel_border(theme),
     )
 }
 

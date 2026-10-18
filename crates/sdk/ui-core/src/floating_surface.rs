@@ -100,7 +100,7 @@ pub fn paint_material(
 }
 
 /// The native allocation around retained interactive content, including the
-/// shared floating silhouette, its rim and the themed elevation. Content
+/// floating card's frame, its edge and the themed elevation. Content
 /// geometry stays unchanged: the extra pixels are a transparent frame gutter,
 /// not padding inserted into the app's layout or input coordinates.
 #[must_use]
@@ -109,22 +109,21 @@ pub fn app_owned_content_window_rect(
     shadow: &crate::tokens::Shadow,
     rim_width: f64,
 ) -> Rect {
-    use vello::kurbo::Shape;
-
-    let frame = crate::surface::soft_outline(content_rect)
-        .bounding_box()
-        .inflate(rim_width / 2.0, rim_width / 2.0)
-        .union(content_rect);
+    let frame = content_rect.inflate(rim_width / 2.0, rim_width / 2.0);
     crate::surface::shadow_bounds(content_rect, shadow).map_or(frame, |bounds| frame.union(bounds))
 }
 
-/// Paint the framework-owned frame around one interactive app-owned surface.
+/// Paint the framework-owned frame around one interactive app-owned surface
+/// (an app's call or navigation card).
 ///
-/// Retained app content stands on the ordinary opaque Object ground, not a
-/// translucent Panel material. The shared floating silhouette clips every app
-/// paint, and its rim is drawn last so square app backgrounds cannot erase the
-/// frame. The native allocation remains transparent outside the silhouette and
-/// its shadow; hosts allocate it with [`app_owned_content_window_rect`].
+/// The frame is the one floating card
+/// ([`crate::widget::floating_surface::paint_card`]): its shape, shadow and
+/// edges, the same as a banner's or the palette's. Retained app content
+/// stands on the ordinary opaque Object ground inside it, not a translucent
+/// Panel material. The card's shape clips every app paint, and its edge is
+/// drawn last so square app backgrounds cannot erase the frame. The native
+/// allocation remains transparent outside the card and its shadow; hosts
+/// allocate it with [`app_owned_content_window_rect`].
 pub fn paint_app_owned_content(
     scene: &mut vello::Scene,
     transform: Affine,
@@ -132,45 +131,23 @@ pub fn paint_app_owned_content(
     theme: &crate::theme::Theme,
     draw: impl FnOnce(&mut vello::Scene) -> bool,
 ) -> bool {
-    use vello::kurbo::Stroke;
+    use crate::widget::floating_surface as card;
+    use vello::kurbo::RoundedRect;
     use vello::peniko::{BlendMode, Fill};
 
-    let body = crate::surface::soft_outline(content_rect);
-    crate::surface::shadow(
+    card::paint_card_shadow(scene, transform, content_rect, 1.0, theme);
+    card::paint_card_body_with(
         scene,
         transform,
         content_rect,
-        f64::from(theme.tokens.radii.tile),
-        &theme.tokens.elevation.floating,
-    );
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
-    scene.fill(
-        Fill::NonZero,
-        transform,
         theme.tokens.colors.surfaces.content,
-        None,
-        &body,
+        theme,
     );
-    // The shared soft silhouette has a slight outward bow. Its framework
-    // ground may occupy that frame, but app paints still cannot escape the
-    // authenticated content rectangle.
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        1.0,
-        transform,
-        &content_rect,
-    );
+    let body = RoundedRect::from_rect(content_rect, card::card_radius(content_rect, theme));
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
     let drawn = draw(scene);
     scene.pop_layer();
-    scene.pop_layer();
-    scene.stroke(
-        &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
-        transform,
-        theme.tokens.colors.window_edge(),
-        None,
-        &body,
-    );
+    card::paint_card_edge(scene, transform, content_rect, theme);
     drawn
 }
 
