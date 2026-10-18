@@ -1405,7 +1405,7 @@ mod tests {
 
     #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
-        assert!(relay_args("--chat-channel", &[]).is_empty());
+        assert_eq!(relay_args("--chat-channel", &[]), ["general"]);
         assert_eq!(
             relay_args(
                 "--chat-channel",
