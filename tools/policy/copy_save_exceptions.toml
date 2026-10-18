@@ -1,0 +1,51 @@
+# Copy allowed to say "Saved" or "Saving" (check_copy_language.py, rule
+# `save-status`).
+#
+# Saving is the system's job and says nothing: a framework window's save
+# status (`ui::SaveStatusSurface`) speaks only when a save stalls or fails
+# (HIG §7, "Status has two homes"). An entry here is copy that uses the word
+# for something else: the save status's own one-time "Saved", a name for a
+# kept thing, or the outcome of a deliberate action the person cannot see
+# otherwise. Each says why. Name a catalogue message by `unit` (its crate path
+# with `/` as `-`) and `key`; a production Rust literal by `file` and `text`.
+# An entry that no longer matches anything fails the check.
+
+[[allow]]
+unit = "crates-sdk-ui-core"
+key = "save-status-saved"
+reason = "The save status surface's own one-time Saved, after a save the person saw stall or fail; the one place the word answers a save."
+
+[[allow]]
+unit = "crates-sdk-ui-core"
+key = "widget-screenshot-saved"
+reason = "A screenshot receipt says whether the person's capture went to a file or the clipboard, an outcome that is out of sight."
+
+[[allow]]
+unit = "apps-mail"
+key = "mail-save-draft"
+reason = "A History sentence naming the save-draft action; History records what was done, it does not announce it."
+
+[[allow]]
+unit = "apps-passwords"
+key = "passwords-saved-item"
+reason = "Closing the item editor after Save looks like Cancel, so the deliberate save names the item it kept."
+
+[[allow]]
+file = "apps/maps/src/app.rs"
+text = "Saved"
+reason = "The label of a place's Save toggle while the place is in the saved places: a bookmark, not persistence."
+
+[[allow]]
+file = "apps/shortcuts/src/view.rs"
+text = "Saved"
+reason = "The heading of the saved shortcuts in the navigation list: a collection's name."
+
+[[allow]]
+unit = "apps-notes"
+key = "notes-status-saved"
+reason = "The note's save state readable on request by assistive technology and automation, never painted or announced."
+
+[[allow]]
+unit = "apps-notes"
+key = "notes-status-saving"
+reason = "The note's save state readable on request by assistive technology and automation, never painted or announced."

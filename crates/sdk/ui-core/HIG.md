@@ -635,10 +635,19 @@ in its area's bottom-trailing corner. An error the person must act on is a
 `Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
 button). A document's save state is `SaveStatusSurface`: autosave is the
 system's job, so "Saving…" and "Saved" never show (they stay in the
-accessibility status); a failed save is an error card with Try again that
-stays until the save succeeds, and that success is a one-time "Saved" in the
-transient bubble. An app never pokes or pins a save bubble or paints its own
-save pill.
+accessibility status); a save still unconfirmed after `SAVE_STALL` (10 s) says
+"Couldn't save yet. Retrying…", then "Not saved" with Try again; a failed save
+is an error card with Try again that stays until the save succeeds, and that
+success is a one-time "Saved" in the transient bubble. The framework presents
+it for every framework window from the record's durability, with no wiring in
+the app; an app that also writes elsewhere (a file) reports those saves
+through `cx.saves()` (`framework::Saves`) and answers its Try again. Saving to
+the place a document already lives, Ctrl+S included, says nothing either; a
+save that put a copy somewhere out of sight names where ("Saved a copy as
+report.pdf"). An app never pokes or pins a save bubble, paints its own save
+pill or toasts "Saved"; `tools/policy/check_copy_language.py` fails such copy,
+and `copy_save_exceptions.toml` lists, with reasons, the few uses of the word
+that are not about saving.
 
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on
