@@ -1,53 +1,19 @@
-//! Live system sampler. Wraps `sysinfo` and folds a fresh reading into a
-//! [`MonitorModel`]. Constructed eagerly (cheap), but only *refreshed* on
-//! the app's throttle — so the very first `--shots` frame, which never
-//! ticks the throttle, renders the seeded sample data untouched.
+//! The platform's own sampler, where Tilo runs on another operating system
+//! (macOS): an app there is confined by the platform, which lets it read the
+//! machine's process table itself. Wraps `sysinfo` and folds a fresh reading
+//! into a [`MonitorModel`] on the app's cadence.
 
 use ui::time::Instant;
 
-#[cfg(test)]
-use std::cell::Cell;
-
 use sysinfo::{Networks, Pid, ProcessesToUpdate, Signal, System, Users};
 
+use super::{StopKind, note_provider_read};
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 
-#[cfg(test)]
-thread_local! {
-    static PROVIDER_READ_COUNT: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-fn note_provider_read() {
-    PROVIDER_READ_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-}
-
-#[cfg(test)]
-pub(crate) fn reset_provider_read_count() {
-    PROVIDER_READ_COUNT.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn provider_read_count() -> usize {
-    PROVIDER_READ_COUNT.with(Cell::get)
-}
-
-/// Which POSIX signal a stop action dispatches. `Term` asks a process to
-/// shut down cleanly (catchable); `Kill` is the un-catchable hard stop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StopKind {
-    /// `SIGTERM` — polite, catchable termination request ("Stop").
-    Term,
-    /// `SIGKILL` — immediate, un-catchable kill ("Kill").
-    Kill,
-}
-
-impl StopKind {
-    fn signal(self) -> Signal {
-        match self {
-            StopKind::Term => Signal::Term,
-            StopKind::Kill => Signal::Kill,
-        }
+fn signal(kind: StopKind) -> Signal {
+    match kind {
+        StopKind::Term => Signal::Term,
+        StopKind::Kill => Signal::Kill,
     }
 }
 
@@ -63,20 +29,11 @@ impl Sampler {
         let mut sys = System::new();
         // Prime CPU + process state so the first real `refresh` produces
         // meaningful deltas rather than a cold zero reading.
-        #[cfg(test)]
         note_provider_read();
         sys.refresh_cpu_all();
-        #[cfg(test)]
-        note_provider_read();
         sys.refresh_memory();
-        #[cfg(test)]
-        note_provider_read();
         sys.refresh_processes(ProcessesToUpdate::All, true);
-        #[cfg(test)]
-        note_provider_read();
         let networks = Networks::new_with_refreshed_list();
-        #[cfg(test)]
-        note_provider_read();
         let users = Users::new_with_refreshed_list();
         Self {
             sys,
@@ -101,7 +58,8 @@ impl Sampler {
     /// Fold a fresh reading into `model`. Network and disk throughput are
     /// computed as byte deltas since the previous call divided by the
     /// elapsed wall time.
-    pub fn refresh(&mut self, model: &mut MonitorModel) {
+    pub fn refresh(&mut self, model: &mut MonitorModel) -> bool {
+        note_provider_read();
         let now = ui::time::now();
         let dt = self.last.map_or(1.0, |l| (now - l).as_secs_f32()).max(0.05);
 
@@ -208,6 +166,7 @@ impl Sampler {
                 open_files: host_info::process::open_file_count(pid_u32),
                 // Kernel worker threads have no resident memory.
                 kernel: mem == 0,
+                app: None,
             });
         }
         model.processes = procs;
@@ -218,6 +177,7 @@ impl Sampler {
             process_snapshot_status(model.processes.len(), host_info::process::probe_process_table());
 
         self.last = Some(now);
+        true
     }
 
     /// Re-check a PID's kernel generation and then send `kind`'s signal.
@@ -234,8 +194,34 @@ impl Sampler {
         self.sys
             .process(target)
             .filter(|p| p.start_time() == started_at)
-            .and_then(|p| p.kill_with(kind.signal()))
+            .and_then(|p| p.kill_with(signal(kind)))
             .unwrap_or(false)
+    }
+}
+
+impl Sampler {
+    /// Read now, as the person asked: here every reading is taken on demand.
+    pub fn refresh_now(&mut self, model: &mut MonitorModel) -> bool {
+        self.refresh(model)
+    }
+
+    /// Readings are taken on the app's cadence, not pushed.
+    pub fn is_pushed(&self) -> bool {
+        false
+    }
+
+    /// The cadence is the app's own here.
+    pub fn set_interval(&mut self, _interval_ms: Option<u32>) {}
+
+    /// Nothing arrives from another thread here.
+    pub fn set_waker(&mut self, _waker: ui::WakeHandle) {}
+
+    /// Apps are not told apart on this platform.
+    ///
+    /// # Errors
+    /// Always: there is no app to end.
+    pub fn end_app(&mut self, _app: &str) -> Result<u32, String> {
+        Err("apps are ended from the system's own task manager here".into())
     }
 }
 
@@ -258,89 +244,5 @@ fn process_snapshot_status(
 impl Default for Sampler {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::MonitorModel;
-
-    /// The sampler reports empty, permission and failure states distinctly, and signal
-    /// effects on an unknown or stale PID dispatch nothing.
-    #[test]
-    fn process_source_status_and_signals_refuse_to_pretend() {
-        // Phase `process_source_status_distinguishes_empty_permission_and_failure`.
-        {
-            assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
-            assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
-            assert_eq!(
-                process_snapshot_status(
-                    0,
-                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-                ),
-                ProcessDataStatus::PermissionDenied
-            );
-            assert_eq!(
-                process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
-                ProcessDataStatus::Unavailable
-            );
-        }
-
-        // Phase `signal_and_kill_reject_unknown_or_stale_pid`.
-        // Signal effects route through a generation-checked real process handle:
-        // an unknown or stale PID dispatches nothing rather than pretending to
-        // succeed.
-        {
-            let mut s = Sampler::new();
-            assert!(
-                !s.signal_if_current(u32::MAX, 0, StopKind::Term),
-                "no such process to SIGTERM"
-            );
-            assert!(
-                !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
-                "no such process to SIGKILL"
-            );
-        }
-    }
-
-    /// A live refresh folds real metrics into the model and ties the
-    /// network/disk throughput calculations to their rolling histories — the
-    /// delta path the live app draws from.
-    #[test]
-    fn refresh_populates_metrics_and_throughput_histories() {
-        let mut s = Sampler::new();
-        let mut model = MonitorModel::empty();
-        s.refresh(&mut model);
-        let m = &model.metrics;
-        assert!(!m.cores.is_empty(), "real per-core readings sampled");
-        assert!(m.mem_total > 0, "real memory total sampled");
-        assert!(!model.processes.is_empty(), "real process list sampled");
-        // Throughput deltas are non-negative, finite, and pushed to histories.
-        assert!(
-            m.net_rx >= 0.0 && m.net_rx.is_finite(),
-            "net rx is a real rate"
-        );
-        assert!(
-            m.disk_read >= 0.0 && m.disk_read.is_finite(),
-            "disk read is a real rate"
-        );
-        assert_eq!(
-            m.net_rx_hist.last(),
-            m.net_rx,
-            "net rx history tracks the throughput"
-        );
-        assert_eq!(
-            m.disk_read_hist.last(),
-            m.disk_read,
-            "disk read history tracks the throughput"
-        );
-        // A second refresh recomputes deltas over real elapsed wall time.
-        s.refresh(&mut model);
-        assert!(model.metrics.net_tx >= 0.0 && model.metrics.net_tx.is_finite());
-        assert_eq!(
-            model.metrics.disk_write_hist.last(),
-            model.metrics.disk_write
-        );
     }
 }

@@ -151,13 +151,14 @@ pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
         MonitorEffect::CopyPid {
             process: id.clone(),
         },
-        MonitorEffect::Stop {
+        MonitorEffect::EndProcess {
             process: id.clone(),
         },
         MonitorEffect::Kill { process: id },
     ]
-    .iter()
-    .fold(row, LiveRow::effect)
+    .into_iter()
+    .chain(process.app.clone().map(|app| MonitorEffect::EndApp { app }))
+    .fold(row, |row, effect| row.effect(&effect))
 }
 
 /// `value` as one line of searchable text, bounded like a published label.
@@ -197,8 +198,9 @@ enum MenuChoice {
     ShowDetails,
     Expand(bool),
     Copy,
-    Stop,
+    End,
     Kill,
+    EndApp,
 }
 
 /// What the inspector currently shows.
@@ -407,30 +409,74 @@ impl MonitorApp {
 
     // ---- sampling ---------------------------------------------------------
 
-    /// Refresh from sysinfo at most once per cadence. A capture never trips
+    /// Take the machine's newest reading. Where the session pushes them
+    /// (Linux), each arrival wakes the window and is taken here; elsewhere
+    /// the machine is read at most once per cadence. A capture never trips
     /// this, so `--shots` shows the sample snapshot.
     fn maybe_refresh(&mut self) {
         if self.sample_only {
             return;
         }
-        if self.prefs.auto_refresh
+        if self.sampler.is_pushed() {
+            self.sampler.set_interval(
+                self.prefs
+                    .auto_refresh
+                    .then(|| u32::try_from(self.prefs.interval_ms).unwrap_or(u32::MAX)),
+            );
+            if self.model.process_status == ProcessDataStatus::Loading {
+                // The first frame waits for the first reading, which the
+                // session sends at once: the window opens on the machine,
+                // not on a loading state.
+                self.refresh_live_snapshot();
+                return;
+            }
+            let selected_before = self.selected_identity();
+            if self.sampler.refresh(&mut self.model) {
+                self.after_refresh(selected_before);
+            }
+        } else if self.prefs.auto_refresh
             && self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms)
         {
-            self.refresh_live_snapshot();
+            let selected_before = self.selected_identity();
+            self.sampler.refresh(&mut self.model);
+            self.after_refresh(selected_before);
         }
     }
 
-    /// Refresh system data while preserving the identity boundary of the
-    /// selected detail. If an OS has recycled a selected PID between samples,
-    /// leave no action surface silently pointed at the replacement process.
+    /// Read the machine now, as the person (or an agent) asked.
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
-        self.sampler.refresh(&mut self.model);
+        self.sampler.refresh_now(&mut self.model);
+        self.after_refresh(selected_before);
+    }
+
+    /// A new reading landed: keep the identity boundary of the selected
+    /// detail. If the OS recycled a selected PID between readings, leave no
+    /// action surface silently pointed at the replacement process.
+    fn after_refresh(&mut self, selected_before: Option<(u32, u64)>) {
         self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
         self.metrics_changed();
         self.clear_selection_if_filtered_out();
+    }
+
+    /// Wake the window with `waker` when a pushed reading arrives.
+    pub(crate) fn wake_with(&mut self, waker: ui::WakeHandle) {
+        if !self.sample_only {
+            self.sampler.set_waker(waker);
+        }
+    }
+
+    /// The live window over `sampler`'s readings.
+    #[cfg(test)]
+    pub(crate) fn live_over(sampler: Sampler) -> Self {
+        let stale = ui::time::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(Instant::now);
+        let mut app = Self::build(MonitorModel::empty(), stale, sampler);
+        app.publish();
+        app
     }
 
     fn metrics_changed(&mut self) {
@@ -918,8 +964,45 @@ impl MonitorApp {
                 self.copy_pid(process.pid);
                 Ok(())
             }
-            MonitorEffect::Stop { process } => self.signal(&process, StopKind::Term),
+            MonitorEffect::EndProcess { process } => self.signal(&process, StopKind::Term),
             MonitorEffect::Kill { process } => self.signal(&process, StopKind::Kill),
+            MonitorEffect::EndApp { app } => self.end_app(&app),
+        }
+    }
+
+    /// End every process of `app` the person may end.
+    fn end_app(&mut self, app: &str) -> Result<(), String> {
+        if !self
+            .model
+            .processes
+            .iter()
+            .any(|process| process.app.as_deref() == Some(app))
+        {
+            return Err(format!("`{app}` is not running"));
+        }
+        if self.sample_only {
+            self.model
+                .processes
+                .retain(|process| process.app.as_deref() != Some(app));
+            self.selected_pid = None;
+            self.metrics_changed();
+            return Ok(());
+        }
+        self.sampler.end_app(app)?;
+        self.refresh_live_snapshot();
+        Ok(())
+    }
+
+    /// Ask for End app on the app `pid` belongs to.
+    fn request_end_app(&mut self, pid: u32) {
+        if let Some(app) = self
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .and_then(|process| process.app.clone())
+        {
+            self.request(MonitorEffect::EndApp { app });
         }
     }
 
@@ -1019,11 +1102,22 @@ impl MonitorApp {
         }
         push(MenuItem::selection("Copy PID"), Some(MenuChoice::Copy));
         push(MenuItem::separator(), None);
-        push(MenuItem::selection("Stop process"), Some(MenuChoice::Stop));
+        push(MenuItem::selection("End process"), Some(MenuChoice::End));
         push(
             MenuItem::destructive_selection("Kill process"),
             Some(MenuChoice::Kill),
         );
+        if self
+            .model
+            .processes
+            .iter()
+            .any(|process| process.pid == pid && process.app.is_some())
+        {
+            push(
+                MenuItem::destructive_selection("End app"),
+                Some(MenuChoice::EndApp),
+            );
+        }
         menu.open_anchored(Rect::from_origin_size(at, (0.0, 0.0)), self.rect);
         menu.anchor_row(row);
         self.context = menu;
@@ -1046,12 +1140,13 @@ impl MonitorApp {
             MenuChoice::Copy => {
                 self.request_process_control(pid, |process| MonitorEffect::CopyPid { process });
             }
-            MenuChoice::Stop => {
-                self.request_process_control(pid, |process| MonitorEffect::Stop { process });
+            MenuChoice::End => {
+                self.request_process_control(pid, |process| MonitorEffect::EndProcess { process });
             }
             MenuChoice::Kill => {
                 self.request_process_control(pid, |process| MonitorEffect::Kill { process });
             }
+            MenuChoice::EndApp => self.request_end_app(pid),
         }
         self.context_pid = None;
     }
@@ -1340,12 +1435,15 @@ impl MonitorApp {
                     self.open_context_menu(pid, at, row);
                 }
                 Request::Refresh => self.request(MonitorEffect::Refresh),
-                Request::Stop(pid) => {
-                    self.request_process_control(pid, |process| MonitorEffect::Stop { process });
+                Request::End(pid) => {
+                    self.request_process_control(pid, |process| MonitorEffect::EndProcess {
+                        process,
+                    });
                 }
                 Request::Kill(pid) => {
                     self.request_process_control(pid, |process| MonitorEffect::Kill { process });
                 }
+                Request::EndApp(pid) => self.request_end_app(pid),
             }
         }
     }
@@ -1605,7 +1703,9 @@ impl Widget for MonitorApp {
         let mut consider = |deadline: Instant| {
             next = Some(next.map_or(deadline, |current: Instant| current.min(deadline)));
         };
-        if !self.sample_only && self.prefs.auto_refresh {
+        // Pushed readings wake the window themselves; only a machine read
+        // on the window's own cadence needs a deadline.
+        if !self.sample_only && self.prefs.auto_refresh && !self.sampler.is_pushed() {
             consider(
                 self.last_refresh
                     .checked_add(Duration::from_millis(self.prefs.interval_ms))
@@ -1881,14 +1981,14 @@ mod tests {
         assert_eq!(taken(&mut a), Some(MonitorEffect::Refresh));
 
         let busiest = a.busiest_visible_pid().expect("a listed process");
-        push(&a, Request::Stop(busiest));
+        push(&a, Request::End(busiest));
         a.apply_requests();
         assert_eq!(
             taken(&mut a),
-            Some(MonitorEffect::Stop {
+            Some(MonitorEffect::EndProcess {
                 process: resource_id_for(&a, busiest)
             }),
-            "the inspector's Stop asks the host, which confirms it"
+            "the inspector's End process asks the host, which confirms it"
         );
     }
 
@@ -1912,7 +2012,7 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            ["Expand", "Copy PID", "Stop process", "Kill process"],
+            ["Expand", "Copy PID", "End process", "Kill process"],
             "a parent can be expanded from its menu"
         );
         let kill = a
@@ -2204,5 +2304,165 @@ mod tests {
 
         click(&mut harness, "Memory");
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+    }
+
+    /// A machine as the session's service would describe it.
+    #[cfg(target_os = "linux")]
+    fn served_machine(notes_running: bool) -> tilo_system_stats::protocol::Snapshot {
+        use tilo_system_stats::protocol::{
+            CpuStats, HostInfo, MemoryStats, ProcessState, ProcessStats, Snapshot, SystemStats,
+        };
+        let process =
+            |pid: u32, name: &str, app: Option<&str>, user: &str, cpu: f32| ProcessStats {
+                pid,
+                ppid: None,
+                started_at: u64::from(pid) * 7,
+                name: name.into(),
+                app: app.map(str::to_owned),
+                uid: if user == "root" { 0 } else { 1000 },
+                user: user.into(),
+                cpu,
+                memory_bytes: 300 << 20,
+                virtual_bytes: 900 << 20,
+                threads: 4,
+                state: ProcessState::Running,
+                run_secs: 60,
+                kernel_thread: false,
+                command: None,
+                endable: app.is_some(),
+            };
+        let mut processes = vec![process(700, "sshd", None, "root", 0.5)];
+        if notes_running {
+            processes.push(process(4242, "notes", Some("so.tilo.notes"), "ada", 12.0));
+            processes.push(process(
+                4250,
+                "notes-renderer",
+                Some("so.tilo.notes"),
+                "ada",
+                30.0,
+            ));
+        }
+        Snapshot {
+            taken_ms: 1,
+            window_ms: 1500,
+            system: Some(SystemStats {
+                host: HostInfo {
+                    hostname: "ada-laptop".into(),
+                    kernel: "7.0.9".into(),
+                    cpu_model: Some("Test CPU 9000".into()),
+                    logical_cpus: 4,
+                    uptime_secs: 3600,
+                },
+                cpu: Some(CpuStats {
+                    total: 40.0,
+                    per_core: vec![70.0, 50.0, 30.0, 10.0],
+                }),
+                load_average: [1.5, 1.0, 0.5],
+                memory: MemoryStats {
+                    total: 16 << 30,
+                    available: 4 << 30,
+                    swap_total: 2 << 30,
+                    swap_free: 1 << 30,
+                },
+                ..SystemStats::default()
+            }),
+            apps: Vec::new(),
+            processes,
+            processes_included: true,
+        }
+    }
+
+    /// A service on the far end of a socket pair: every subscription is
+    /// answered with the machine, and End app ends the app.
+    #[cfg(target_os = "linux")]
+    fn fake_service() -> tilo_system_stats::client::Client {
+        use tilo_system_stats::protocol::{Reply, Request, read_message, write_message};
+        let (app, mut service) = std::os::unix::net::UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            let mut notes_running = true;
+            while let Ok(Some(request)) = read_message::<_, Request>(&mut service) {
+                let reply = match request {
+                    Request::Subscribe { subscription, .. } => Reply::Snapshot {
+                        subscription,
+                        snapshot: Box::new(served_machine(notes_running)),
+                    },
+                    Request::EndApp { request, app, .. } if app == "so.tilo.notes" => {
+                        notes_running = false;
+                        Reply::Ended { request, ended: 2 }
+                    }
+                    Request::EndApp { request, .. } | Request::EndProcess { request, .. } => {
+                        Reply::Refused {
+                            request,
+                            refusal: tilo_system_stats::protocol::Refusal::NotAnApp,
+                        }
+                    }
+                    _ => continue,
+                };
+                if write_message(&mut service, &reply).is_err() {
+                    break;
+                }
+            }
+        });
+        tilo_system_stats::client::Client::from_stream(app).unwrap()
+    }
+
+    /// USER REQUIREMENT: Monitor shows the machine's processes and stats,
+    /// which on Linux reach it only through the session's service.
+    // USER REQUIREMENT (2026-10-18): "the resource monitor isn't allowed to read the system process list/or any system stats"
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_monitor_shows_the_processes_and_stats_the_session_serves() {
+        let live = MonitorApp::live_over(Sampler::with_client(fake_service()));
+        let mut harness = window(live, (1280, 800));
+        assert!(
+            center_of(&harness, "notes-renderer").is_some(),
+            "the served process list is on screen"
+        );
+        assert!(
+            center_of(&harness, "sshd").is_some(),
+            "with the system's services"
+        );
+        {
+            let monitor = harness.root::<MonitorApp>();
+            assert_eq!(monitor.model.process_status, ProcessDataStatus::Ready);
+            assert_eq!(monitor.model.metrics.host, "ada-laptop");
+            assert_eq!(monitor.model.metrics.cores, vec![70.0, 50.0, 30.0, 10.0]);
+            assert_eq!(monitor.model.metrics.mem_used, 12 << 30);
+            let notes = monitor
+                .model
+                .processes
+                .iter()
+                .find(|p| p.name == "notes")
+                .expect("notes is listed");
+            assert_eq!(notes.app.as_deref(), Some("so.tilo.notes"));
+            assert_eq!(notes.user, "ada");
+        }
+
+        click(&mut harness, "Resources");
+        let resources = harness.inspection_json().unwrap();
+        assert!(resources.contains("ada-laptop"), "the served host");
+        assert!(resources.contains("Test CPU 9000"), "the served processor");
+        assert!(resources.contains("Linux 7.0.9"), "the served kernel");
+        click(&mut harness, "Processes");
+
+        // End app goes to the service, and the app leaves the list.
+        harness
+            .root_mut::<MonitorApp>()
+            .answer(MonitorEffect::EndApp {
+                app: "so.tilo.notes".into(),
+            })
+            .expect("the service ended it");
+        harness.relayout();
+        assert!(center_of(&harness, "notes-renderer").is_none(), "ended");
+        assert!(center_of(&harness, "sshd").is_some());
+        assert!(
+            harness
+                .root_mut::<MonitorApp>()
+                .answer(MonitorEffect::EndApp {
+                    app: "so.tilo.notes".into(),
+                })
+                .is_err(),
+            "an app that is not running is refused"
+        );
     }
 }

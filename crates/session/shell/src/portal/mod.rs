@@ -300,6 +300,9 @@ pub enum CapabilityKind {
     InputCapture,
     Print,
     Network,
+    SystemInfo,
+    Processes,
+    ProcessCommands,
 }
 
 impl CapabilityKind {
@@ -314,6 +317,9 @@ impl CapabilityKind {
             Self::InputCapture => "input-capture",
             Self::Print => "print",
             Self::Network => "network",
+            Self::SystemInfo => "system-info",
+            Self::Processes => "processes",
+            Self::ProcessCommands => "process-commands",
         }
     }
 
@@ -331,7 +337,10 @@ impl CapabilityKind {
             | (CapabilityKind::Screencast, Capability::Screencast { .. })
             | (CapabilityKind::RemoteDesktop, Capability::RemoteDesktop { .. })
             | (CapabilityKind::Print, Capability::Print { .. })
-            | (CapabilityKind::Network, Capability::Network { .. }) => true,
+            | (CapabilityKind::Network, Capability::Network { .. })
+            | (CapabilityKind::SystemInfo, Capability::SystemInfo { .. })
+            | (CapabilityKind::Processes, Capability::Processes { .. })
+            | (CapabilityKind::ProcessCommands, Capability::ProcessCommands { .. }) => true,
             _ => false,
         }
     }
@@ -705,6 +714,9 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::RemoteDesktop { scope } => (CapabilityKind::RemoteDesktop, *scope),
         Capability::Print { scope } => (CapabilityKind::Print, *scope),
         Capability::Network { scope, .. } => (CapabilityKind::Network, *scope),
+        Capability::SystemInfo { scope } => (CapabilityKind::SystemInfo, *scope),
+        Capability::Processes { scope } => (CapabilityKind::Processes, *scope),
+        Capability::ProcessCommands { scope } => (CapabilityKind::ProcessCommands, *scope),
         // The shell runtime keeps this decision; no portal asks for it.
         Capability::HostShell { .. } => return None,
     })

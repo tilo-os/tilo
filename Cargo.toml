@@ -373,6 +373,7 @@ members = [
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/system-stats",
     "crates/system/image-policy-check",
     "crates/system/tilo-pycompat",
     "crates/system/install-helpers",

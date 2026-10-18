@@ -709,6 +709,9 @@ capability-screencast = Screen capture
 capability-remote-desktop = Remote control (pointer + keyboard)
 capability-print = Send documents to a printer
 capability-host-shell = Open this device's own shell, outside every sandbox
+capability-system-info = See how busy this device is
+capability-processes = See the programs running on this device and end your own
+capability-process-commands = See the command lines of running programs
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 

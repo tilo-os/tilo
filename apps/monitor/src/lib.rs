@@ -3,13 +3,15 @@
 //!
 //! Two tabs (Processes / Resources) present live system stats as content:
 //! summary tiles over a process table with the selected process in the
-//! inspector, and a reflowing resource dashboard. Real `sysinfo` data drives
-//! the live binary; a representative [`model::MonitorModel::sample`]
-//! snapshot drives `--shots` so a capture is fully populated offline.
+//! inspector, and a reflowing resource dashboard. On Linux the session's
+//! system information service drives the live window (the sandbox shows
+//! Monitor no other process); elsewhere the platform's own interfaces do. A
+//! representative [`model::MonitorModel::sample`] snapshot drives `--shots`
+//! so a capture is fully populated offline.
 //!
 //! Layers:
 //! - [`model`]    — pure data: rolling histories, process rows, formatting.
-//! - [`sampler`]  — live `sysinfo` readings folded into the model.
+//! - [`sampler`]  — live readings folded into the model.
 //! - [`tree`]     — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`prefs`]    — the person's cadence and kernel-thread preferences (a
 //!   personal settings section, outside Automerge and collaborative
