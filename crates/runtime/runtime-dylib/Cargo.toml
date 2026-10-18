@@ -21,7 +21,8 @@ crate-type = ["dylib"]
 # host, the install CLI), light crates only one app uses, and engines a few
 # apps use, which have their own library under crates/runtime/engines/
 # (Typst, Spotify playback, Canvas's painting engines, the YouTube client of
-# Music and Tube, account custody and IMAP for Mail and Settings, the
+# Music and Tube, account custody, IMAP and WebDAV for Mail, Settings and
+# Calendar, the
 # time-zone database for Calendar and Clocks, the contact directory for
 # Contacts, Mail and Messages). Every app process maps this library, so a
 # crate here costs every app its relocations and dirty pages; an app that
@@ -69,11 +70,11 @@ tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
 # implementations are stored once per runtime generation.
 vte = "0.15.0"
 tilo-pdf = { path = "../../platform/tilo-pdf" }
-# Document codecs (Notes, Files, Mail, the office apps, ...) and the WebDAV
-# client (Calendar, Settings). Apps choose the codec features; the union is
-# built here once.
+# Document codecs (Notes, Files, Mail, the office apps, ...). Apps choose the
+# codec features; the union is built here once. The WebDAV client is not here:
+# its calendar sign-in reaches account custody, so Calendar and Settings load
+# it from the accounts engine.
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
-tilo-dav = { path = "../../system/tilo-dav", default-features = false }
 tilo-thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"

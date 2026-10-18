@@ -42,6 +42,7 @@ thin = [
     "dep:account-custody",
     "dep:tilo-oauth",
     "dep:async-imap",
+    "dep:tilo-dav",
     "dep:workspace-hack",
 ]
 
@@ -53,6 +54,9 @@ runtime-dylib = { path = "../../runtime-dylib", optional = true }
 account-custody = { path = "../../../system/account-custody", optional = true }
 tilo-oauth = { path = "../../../system/tilo-oauth", optional = true }
 async-imap = { workspace = true, optional = true }
+# The WebDAV/CalDAV client, with the account custody Calendar's sign-in reaches
+# through it (`oauth`): Calendar and Settings load it from here.
+tilo-dav = { path = "../../../system/tilo-dav", optional = true, features = ["oauth"] }
 # Optional like everything else: an empty build must not link the hack's whole
 # dependency set into a shared object.
 workspace-hack = { version = "0.1", optional = true }

@@ -1634,6 +1634,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
+ "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -13468,7 +13469,6 @@ dependencies = [
  "tilo-app",
  "tilo-bluez",
  "tilo-cli-kit",
- "tilo-dav",
  "tilo-desktop-entry",
  "tilo-doc-codecs",
  "tilo-document",
@@ -16301,6 +16301,7 @@ dependencies = [
  "account-custody",
  "async-imap",
  "runtime-dylib",
+ "tilo-dav",
  "tilo-oauth",
  "workspace-hack",
 ]

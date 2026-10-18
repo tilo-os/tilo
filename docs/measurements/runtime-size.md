@@ -67,8 +67,9 @@ Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
 simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
 Music and Tube; account custody with its OAuth client and cloud-storage
-providers, and the IMAP client: `libtilo_accounts_engine.so` for Mail,
-Settings and the Spotify engine; the time-zone database, chrono-tz:
+providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
+reaches custody: `libtilo_accounts_engine.so` for Mail, Settings, Calendar and
+the Spotify engine; the time-zone database, chrono-tz:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
 `libtilo_contact_directory_engine.so` for Contacts, Mail and Messages). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
