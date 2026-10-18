@@ -52,9 +52,9 @@ pub mod video;
 pub use cache::{ThumbCache, ThumbKey};
 pub use category::{FileCategory, category_for_ext, category_for_path};
 pub use generate::{
-    DEFAULT_EDGE, DecodeLimits, MAX_DECODE_PIXELS, MAX_IMAGE_BYTES, MAX_SOURCE_BYTES, RgbaThumb,
-    PdfRasteriser, Source, ThumbSize, decode_image, decode_image_with, decode_png, encode_png,
-    epub_cover_thumb, fit_within, generate, image_thumb, image_thumb_with, pdf_previews,
-    read_bounded, rgba_to_thumb, set_pdf_rasteriser,
+    DEFAULT_EDGE, DecodeLimits, MAX_DECODE_PIXELS, MAX_IMAGE_BYTES, MAX_SOURCE_BYTES,
+    PdfRasteriser, RgbaThumb, Source, ThumbSize, decode_image, decode_image_with, decode_png,
+    encode_png, epub_cover_thumb, fit_within, generate, image_thumb, image_thumb_with,
+    pdf_previews, read_bounded, rgba_to_thumb, set_pdf_rasteriser,
 };
 pub use service::{Priority, ThumbRequest, ThumbState, ThumbnailService};
