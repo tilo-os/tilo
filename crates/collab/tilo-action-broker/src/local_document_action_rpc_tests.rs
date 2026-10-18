@@ -1,3 +1,27 @@
+struct LocalReportGrants(WorkspaceTreeHandle);
+impl crate::services::AppActionGrants for LocalReportGrants {
+    fn may_grant(&self, _room: &str, _person: &str) -> bool {
+        false
+    }
+    fn record(
+        &self,
+        _request: &crate::app_actions::AppActionConsentRequest,
+        _grant: tilo_action_policy::Grant,
+        _answer: crate::app_actions::AppActionConsent,
+    ) -> Option<String> {
+        None
+    }
+    fn revoke(&self, room: &str, grant: &str) {
+        let mut tree = self.0.write();
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room.to_string() == room)
+            .unwrap();
+        assert!(workspace.revoke_grant(&tilo_action_policy::GrantId::new(grant)));
+    }
+}
+
 struct LocalDocumentDirectory {
     kind: tilo_actions::OperationKind,
     pin_dropped: Rc<std::cell::Cell<bool>>,
@@ -50,7 +74,9 @@ async fn local_report_admission(kind: tilo_actions::OperationKind, mutation_hash
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
-            let rig = Rig::new(&env).await;
+            let mut services = env.membership.services();
+            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            let rig = Rig::with_services(&env, services).await;
             let pin_dropped = Rc::new(std::cell::Cell::new(false));
             let resolutions = Rc::new(std::cell::Cell::new(0));
             rig.worker
