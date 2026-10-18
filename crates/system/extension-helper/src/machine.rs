@@ -240,7 +240,7 @@ fn write_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {
+pub(crate) fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).at(parent)?;
     }
@@ -266,6 +266,14 @@ fn read_json(path: &Path) -> Map<String, Value> {
 fn write_text(path: &Path, text: &str, mode: u32) -> Result<()> {
     fs::write(path, text).at(path)?;
     chmod(path, mode)
+}
+
+/// [`write_text`], creating the parent directory first.
+fn write_text_creating(path: &Path, text: &str, mode: u32) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).at(parent)?;
+    }
+    write_text(path, text, mode)
 }
 
 /// `int(value)` of a status field.
@@ -1334,6 +1342,11 @@ fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<St
                 .strip_suffix(RAW_SUFFIX)
                 .is_some_and(|stem| ours.contains(stem))
                 && entry.is_file();
+            // The live update's layer, linked from /run where only it links,
+            // to where only it builds layers from the verified staged image.
+            if entry == crate::live::link(layout) && crate::live::linked(layout) {
+                continue;
+            }
             if directory == extensions
                 && !entry.is_symlink()
                 && ((ours.contains(&name) && entry.is_dir()) || our_image)
@@ -1466,28 +1479,41 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
         .flat_map(|c| c.parts.iter().cloned())
         .collect();
     let any_part_present = || ours.iter().any(|name| live_exists(layout, name));
-    if !catalogues.iter().any(|c| layout.desired(&c.id).exists()) && !any_part_present() {
+    let wanted = catalogues.iter().any(|c| layout.desired(&c.id).exists()) || any_part_present();
+    // The live update's layer (crate::live): merged when linked, and merged
+    // away when it was and no longer is.
+    let live_linked = crate::live::linked(layout);
+    let live_marker = crate::live::merged_marker(layout);
+    let live_was_merged = live_marker.exists();
+    if !wanted && !live_linked && !live_was_merged {
         return Ok(0);
     }
-    let base = match probe_base(host, layout) {
-        Ok(base) => base,
-        Err(error) => {
-            // Without knowing the base nothing can be shown to fit it: merge none.
-            for name in &ours {
-                live_remove(layout, name)?;
-            }
-            host.sysext_unmerge(layout)?;
-            return Err(error);
-        }
-    };
     let mut outcome = Vec::new();
-    for catalogue in &catalogues {
-        let lock = locked(layout, &catalogue.id)?;
-        let result = activate_one(host, layout, catalogue, &base);
-        drop(lock);
-        outcome.push(result?);
+    if wanted {
+        let base = match probe_base(host, layout) {
+            Ok(base) => base,
+            Err(error) => {
+                // Without knowing the base nothing can be shown to fit it: merge none.
+                for name in &ours {
+                    live_remove(layout, name)?;
+                }
+                host.sysext_unmerge(layout)?;
+                let _ = fs::remove_file(&live_marker);
+                return Err(error);
+            }
+        };
+        for catalogue in &catalogues {
+            let lock = locked(layout, &catalogue.id)?;
+            let result = activate_one(host, layout, catalogue, &base);
+            drop(lock);
+            outcome.push(result?);
+        }
     }
-    if outcome.iter().any(|result| result.changed) || any_part_present() {
+    if outcome.iter().any(|result| result.changed)
+        || any_part_present()
+        || live_linked
+        || live_was_merged
+    {
         let foreign = if host.sysext_masked()? {
             foreign_extensions(layout, &ours)?
         } else {
@@ -1517,9 +1543,15 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
                 ]))?;
             }
             host.sysext_unmerge(layout)?;
+            let _ = fs::remove_file(&live_marker);
             return Ok(1);
         }
         host.sysext_refresh(layout)?;
+        if live_linked {
+            write_text_creating(&live_marker, "merged\n", 0o644)?;
+        } else {
+            let _ = fs::remove_file(&live_marker);
+        }
     }
     report_activation(layout, &catalogues, outcome)
 }
@@ -1827,11 +1859,36 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
         println!("{}", py::Dumps::INDENTED.dumps(&Value::Object(status)));
         return 0;
     }
+    if verb == "live" && ident == "status" {
+        return crate::live::status(layout);
+    }
     if host.euid() != 0 {
         eprintln!("tilo-extension: must run as root (start tilo-extension@<verb>:<id>.service)");
         return 2;
     }
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+    if verb == "live" {
+        let Some(phase) = crate::live::Phase::parse(&ident) else {
+            eprintln!("tilo-extension: unknown live phase {ident}");
+            return 2;
+        };
+        let lock = match locked(layout, crate::live::LIVE_NAME) {
+            Ok(lock) => lock,
+            Err(error) => {
+                eprintln!("tilo-extension: {error}");
+                return 1;
+            }
+        };
+        let code = match crate::live::apply(host, &crate::System, layout, phase) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("tilo-extension: live update: {error}");
+                1
+            }
+        };
+        drop(lock);
+        return code;
+    }
     let ids = match select(host, layout, &verb, &ident) {
         Ok(Some(ids)) => ids,
         Ok(None) => return 0,

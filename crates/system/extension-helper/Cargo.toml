@@ -28,6 +28,8 @@ tilo-advisory-lock = { path = "../advisory-lock" }
 # The one blocking HTTP client builder on Tilo's TLS provider and trust.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-pycompat = { path = "../tilo-pycompat" }
+# The image's component manifest, which a live system update classifies by.
+toml.workspace = true
 workspace-hack = { version = "0.1" }
 
 [lints]

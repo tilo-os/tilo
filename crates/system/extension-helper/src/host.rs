@@ -59,7 +59,7 @@ pub struct Output {
 /// # Errors
 /// `Os` when it cannot start; with `check`, `Pack` when it fails, with the
 /// last lines of what it said.
-fn run(argv: &[&OsStr], check: bool) -> Result<Output> {
+pub(crate) fn run(argv: &[&OsStr], check: bool) -> Result<Output> {
     let (program, rest) = argv
         .split_first()
         .ok_or_else(|| Error::pack("no command"))?;

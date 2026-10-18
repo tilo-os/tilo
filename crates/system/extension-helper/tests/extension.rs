@@ -56,6 +56,12 @@ fn accepts_verb_and_catalogue_id() {
         parse_command(&args(&["activate"])).unwrap(),
         ("activate".into(), String::new())
     );
+    for phase in ["system", "session", "status"] {
+        assert_eq!(
+            parse_command(&args(&[&format!("live:{phase}")])).unwrap(),
+            ("live".into(), phase.into())
+        );
+    }
 }
 
 #[test]
@@ -72,6 +78,8 @@ fn rejects_everything_else() {
         &["upgrade:media-codecs"],
         &["install:media-codecs;rm"],
         &["activate:x"],
+        &["live:everything"],
+        &["live"],
         &["guard"],
     ];
     for argv in cases {

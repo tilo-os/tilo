@@ -4598,10 +4598,15 @@ fn post_drive_events(frame_builder: &mut FrameBuilder) -> bool {
     true
 }
 
-/// A staged system update asks for a restart, at most every two days
-/// ([`crate::shell::system_update`]).
-fn post_system_update_asks(frame_builder: &mut FrameBuilder) -> bool {
+/// A staged system update applies live; the desktop finishes it while the
+/// person is away, and asks for a restart of the machine only when part of
+/// it needs one, at most every two days ([`crate::shell::system_update`]).
+fn post_system_update_asks(frame_builder: &mut FrameBuilder, session: &SessionManager) -> bool {
     crate::shell::system_update::start();
+    crate::shell::system_update::note_presence(
+        session.idle_for(Instant::now()),
+        session.is_locked() || session.is_blanked(),
+    );
     let asks = crate::shell::system_update::drain();
     if asks.is_empty() {
         return false;
@@ -11856,7 +11861,7 @@ pub fn run() {
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
-        session_changed |= post_system_update_asks(&mut frame_builder);
+        session_changed |= post_system_update_asks(&mut frame_builder, &session);
         session_changed |= post_collaborator_version_notices(&mut frame_builder);
         session_changed |= post_drive_events(&mut frame_builder);
         run_autostart_once(&frame_builder);

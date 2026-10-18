@@ -10,6 +10,11 @@
 //! tilo-extension activate       rebuild every part from verified bytes for the
 //!                               booted base and merge exactly those (at boot,
 //!                               offline, and after every change)
+//! tilo-extension live:system    apply the staged system image's components
+//!                               that need no desktop restart ([`live`])
+//! tilo-extension live:session   apply the rest and restart the desktops in
+//!                               place
+//! tilo-extension live:status    print the live update's state
 //! ```
 //!
 //! Some optional /usr content is not part of the Tilo image because Tilo does
@@ -42,6 +47,7 @@
 //! the tests drive the whole state machine against a temporary root.
 
 mod host;
+pub mod live;
 mod machine;
 mod model;
 pub mod py;

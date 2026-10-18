@@ -138,6 +138,12 @@ image, because the image decides which bytes are acceptable:
    everything instead), and then runs `systemd-sysext refresh`. A file changed in `/var` does not survive the next
    activation; a changed artifact or manifest is not merged.
 
+The one other entry the activation merges is the live system update's
+layer: `/run/extensions/tilo-live-update`, a link that only exists until the
+next boot, to a layer `tilo-extension live:*` built under
+`/var/lib/tilo/live-update/layers` from the staged image it mounted with its
+fs-verity digest (docs/architecture/compatibility.md).
+
 `/usr/libexec/tilo-extension` (built from `crates/system/extension-helper`)
 is the only consumer. It takes exactly one
 argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
