@@ -17,10 +17,14 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 
 pub const PROVIDER_ID: &str = "quick-answers";
 
+mod currency;
 mod units;
 
 const SUM_ID: &str = "sum";
 const UNIT_ID: &str = "unit";
+const MONEY_ID: &str = "money";
+/// Rates older than this say how old they are on the answer.
+const RATES_STALE_SECS: u64 = 24 * 60 * 60;
 const ADDRESS_ID: &str = "address";
 const WEB_ID: &str = "web";
 
@@ -109,6 +113,11 @@ impl SearchProvider for QuickAnswersProvider {
         &self.kinds
     }
 
+    /// New rates change what money answers.
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        format!("answers:{}", crate::shell::net_answers::revision())
+    }
+
     fn is_fallback(&self, result: &SearchResult) -> bool {
         result
             .id
@@ -132,6 +141,43 @@ impl SearchProvider for QuickAnswersProvider {
 }
 
 impl QuickAnswersProvider {
+    /// Money converted at the last rates the network-answers helper fetched.
+    /// Rates are asked for only when money is typed, and never waited for:
+    /// until the first ones arrive there is no row.
+    fn money(&self, typed: &str) -> Option<SearchResult> {
+        currency::request(typed)?;
+        let kept = crate::shell::net_answers::rates()?;
+        let (from, to) = currency::convert(typed, &kept.value)?;
+        let age = tilo_clock::unix_now().saturating_sub(kept.fetched_at);
+        let subtitle = if age > RATES_STALE_SECS {
+            t_args(
+                "search-answer-money-stale",
+                &[
+                    ("amount", from.into()),
+                    (
+                        "age",
+                        ui::format::relative(i64::try_from(age).unwrap_or(i64::MAX)).into(),
+                    ),
+                ],
+            )
+        } else {
+            t_args("search-answer-sum", &[("expression", from.into())])
+        };
+        let copied = to.clone();
+        Some(row(
+            self.kind(),
+            format!("{MONEY_ID}:{typed}"),
+            to,
+            Some(subtitle),
+            self.max_score(),
+            move |chrome| {
+                ui::text_selection::clipboard_copy(&copied);
+                chrome.borrow_mut().acknowledge(t("search-answer-copied"));
+                Ok(())
+            },
+        ))
+    }
+
     /// What answers `typed`: its sum, the address it is, or a web search.
     fn answers(&self, typed: &str) -> Vec<SearchResult> {
         let typed = typed.trim();
@@ -172,6 +218,9 @@ impl QuickAnswersProvider {
                     Ok(())
                 },
             ));
+        }
+        if let Some(row) = self.money(typed) {
+            out.push(row);
         }
         if let Some((uri, shown)) = address(typed) {
             out.push(row(
@@ -504,5 +553,37 @@ mod tests {
         assert_eq!(address("two words.com"), None);
         assert_eq!(address("ftp://example.com"), None);
         assert_eq!(percent_encode("wetter köln"), "wetter+k%C3%B6ln");
+    }
+
+    #[test]
+    fn money_answers_from_the_kept_rates_and_says_when_they_are_old() {
+        let rates = tilo_net_answers::Rates {
+            base: "EUR".into(),
+            date: "2026-10-16".into(),
+            rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
+        };
+        let provider = QuickAnswersProvider::new();
+        crate::shell::net_answers::keep_rates_for_test(rates.clone(), tilo_clock::unix_now());
+        let fresh = provider.money("10 usd in eur").expect("an answer");
+        assert_eq!(fresh.title, "8.00 EUR");
+        assert_eq!(
+            fresh.subtitle.as_deref(),
+            Some("10.00 USD ="),
+            "fresh rates say nothing"
+        );
+        crate::shell::net_answers::keep_rates_for_test(
+            rates,
+            tilo_clock::unix_now().saturating_sub(3 * 24 * 60 * 60),
+        );
+        let stale = provider.money("10 usd in eur").expect("an answer offline");
+        assert!(
+            stale
+                .subtitle
+                .as_deref()
+                .is_some_and(|line| line.contains("3 days ago")),
+            "{:?}",
+            stale.subtitle
+        );
+        assert!(provider.money("10 km in mi").is_none());
     }
 }

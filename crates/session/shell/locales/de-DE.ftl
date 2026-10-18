@@ -1213,6 +1213,7 @@ search-provider-quick-answers = Schnelle Antworten
 search-provider-people = Personen
 search-answer-sum = { $expression } =
 search-answer-copied = Kopiert
+search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
 search-answer-open-address = { $address } öffnen
 search-answer-web = Im Web nach „{ $query }“ suchen

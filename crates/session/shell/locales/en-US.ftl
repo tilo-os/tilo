@@ -1227,6 +1227,7 @@ search-provider-quick-answers = Quick answers
 search-provider-people = People
 search-answer-sum = { $expression } =
 search-answer-copied = Copied
+search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
 search-answer-open-address = Open { $address }
 search-answer-web = Search the web for “{ $query }”

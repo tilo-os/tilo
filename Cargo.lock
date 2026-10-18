@@ -14812,6 +14812,7 @@ dependencies = [
  "tilo-messaging-protocol",
  "tilo-moq",
  "tilo-net",
+ "tilo-net-answers",
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-ntfs-mount",
@@ -18215,6 +18216,17 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-net-answers"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "tilo-sandbox-core",
+ "workspace-hack",
 ]
 
 [[package]]
