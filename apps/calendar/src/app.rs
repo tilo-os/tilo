@@ -3635,6 +3635,9 @@ impl CalendarApp {
             return false;
         };
         let p = self.last_mouse;
+        // Only the visible part of the sheet's scrolled body holds its
+        // fields: a field scrolled under the footer is not where Done is.
+        let form_active = form_active && self.modal.as_ref().is_some_and(|m| m.body.contains(p));
         // A click inside a form text field focuses it and lands the caret.
         if form_active && self.form.title.contains(p) {
             self.location_input.set_focus(false);
