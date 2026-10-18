@@ -10,7 +10,8 @@ import re
 import subprocess
 
 repo = Path(__file__).resolve().parents[2]
-recipe = (repo / "os/Containerfile").read_text()
+# The release compile, outside the image build (os/image/compile.sh).
+recipe = (repo / "os/image/compile.sh").read_text()
 start = recipe.index('    && if [ "${TILO_WITH_BROWSER}" = "0" ]; then')
 end = recipe.index('    && build_phase rust-windows-vm', start)
 # Execute the recipe's actual conditionals and argv with a recording cargo stub.
