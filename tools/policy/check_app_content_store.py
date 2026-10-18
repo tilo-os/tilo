@@ -43,6 +43,7 @@ ALLOWED = (
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
     Path("crates/system/fs/src/main.rs"),
     Path("crates/runtime/tilo-runtime/src/cli.rs"),
+    Path("crates/runtime/tilo-runtime/src/standalone.rs"),
 )
 CALL = re.compile(r"\bContentStore\s*::\s*for_app\b")
 # A `static` (or a `thread_local!` item) whose type names a content store.

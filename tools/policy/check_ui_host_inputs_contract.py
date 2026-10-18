@@ -49,6 +49,7 @@ NATIVE_RUNNER_FILES = {
     "presentation_feedback.rs",
     "profiling/resource_trace.rs",
     "render_thread.rs",
+    "render_thread/remote.rs",
     "webview/chromium/mod.rs",
     "webview/chromium/runtime.rs",
     "webview/frame_trace.rs",
